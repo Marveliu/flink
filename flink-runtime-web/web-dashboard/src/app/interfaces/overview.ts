@@ -18,12 +18,28 @@
 
 export interface Overview {
   taskmanagers: number;
+  'taskmanagers-blocked'?: number; // only exist if non-zero
   'slots-total': number;
   'slots-available': number;
+  'slots-free-and-blocked'?: number; // only exist if non-zero
   'jobs-running': number;
   'jobs-finished': number;
   'jobs-cancelled': number;
   'jobs-failed': number;
+  'flink-version': string;
+  'flink-commit': string;
+}
+
+export interface OverviewWithApplicationStatistics {
+  taskmanagers: number;
+  'taskmanagers-blocked'?: number; // only exist if non-zero
+  'slots-total': number;
+  'slots-available': number;
+  'slots-free-and-blocked'?: number; // only exist if non-zero
+  'applications-running': number;
+  'applications-finished': number;
+  'applications-cancelled': number;
+  'applications-failed': number;
   'flink-version': string;
   'flink-commit': string;
 }

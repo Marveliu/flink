@@ -15,48 +15,57 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.planner.plan.nodes.logical
+
+import org.apache.flink.table.planner.plan.nodes.FlinkConventions
+import org.apache.flink.table.planner.plan.nodes.calcite.{LogicalWatermarkAssigner, WatermarkAssigner, WatermarkUtils}
 
 import org.apache.calcite.plan._
 import org.apache.calcite.rel.RelNode
 import org.apache.calcite.rel.convert.ConverterRule
+import org.apache.calcite.rel.convert.ConverterRule.Config
+import org.apache.calcite.rel.hint.RelHint
 import org.apache.calcite.rex.RexNode
-import org.apache.flink.table.planner.plan.nodes.FlinkConventions
-import org.apache.flink.table.planner.plan.nodes.calcite.{LogicalWatermarkAssigner, WatermarkAssigner}
+
+import java.util
+import java.util.Collections
 
 /**
-  * Sub-class of [[WatermarkAssigner]] that is a relational operator
-  * which generates [[org.apache.flink.streaming.api.watermark.Watermark]].
-  */
+ * Sub-class of [[WatermarkAssigner]] that is a relational operator which generates
+ * [[org.apache.flink.streaming.api.watermark.Watermark]].
+ */
 class FlinkLogicalWatermarkAssigner(
     cluster: RelOptCluster,
     traits: RelTraitSet,
     input: RelNode,
+    hints: util.List[RelHint],
     rowtimeFieldIndex: Int,
     watermarkExpr: RexNode)
-  extends WatermarkAssigner(cluster, traits, input, rowtimeFieldIndex, watermarkExpr)
+  extends WatermarkAssigner(cluster, traits, input, hints, rowtimeFieldIndex, watermarkExpr)
   with FlinkLogicalRel {
 
-
-  /**
-    * Copies a new WatermarkAssigner.
-    */
+  /** Copies a new WatermarkAssigner. */
   override def copy(
       traitSet: RelTraitSet,
       input: RelNode,
+      hints: util.List[RelHint],
       rowtime: Int,
       watermark: RexNode): RelNode = {
-    new FlinkLogicalWatermarkAssigner(cluster, traitSet, input, rowtime, watermark)
+    new FlinkLogicalWatermarkAssigner(cluster, traitSet, input, hints, rowtime, watermark)
   }
 
+  override def withHints(hintList: util.List[RelHint]): RelNode = {
+    new FlinkLogicalWatermarkAssigner(
+      cluster,
+      traitSet,
+      input,
+      hints,
+      rowtimeFieldIndex,
+      WatermarkUtils.simplify(cluster, watermarkExpr))
+  }
 }
 
-class FlinkLogicalWatermarkAssignerConverter extends ConverterRule(
-  classOf[LogicalWatermarkAssigner],
-  Convention.NONE,
-  FlinkConventions.LOGICAL,
-  "FlinkLogicalWatermarkAssignerConverter") {
+class FlinkLogicalWatermarkAssignerConverter(config: Config) extends ConverterRule(config) {
 
   override def convert(rel: RelNode): RelNode = {
     val watermark = rel.asInstanceOf[LogicalWatermarkAssigner]
@@ -69,7 +78,12 @@ class FlinkLogicalWatermarkAssignerConverter extends ConverterRule(
 }
 
 object FlinkLogicalWatermarkAssigner {
-  val CONVERTER = new FlinkLogicalWatermarkAssignerConverter
+  val CONVERTER = new FlinkLogicalWatermarkAssignerConverter(
+    Config.INSTANCE.withConversion(
+      classOf[LogicalWatermarkAssigner],
+      Convention.NONE,
+      FlinkConventions.LOGICAL,
+      "FlinkLogicalWatermarkAssignerConverter"))
 
   def create(
       input: RelNode,
@@ -77,6 +91,12 @@ object FlinkLogicalWatermarkAssigner {
       watermarkExpr: RexNode): FlinkLogicalWatermarkAssigner = {
     val cluster = input.getCluster
     val traitSet = cluster.traitSet().replace(FlinkConventions.LOGICAL).simplify()
-    new FlinkLogicalWatermarkAssigner(cluster, traitSet, input, rowtimeFieldIndex, watermarkExpr)
+    new FlinkLogicalWatermarkAssigner(
+      cluster,
+      traitSet,
+      input,
+      Collections.emptyList(),
+      rowtimeFieldIndex,
+      WatermarkUtils.simplify(cluster, watermarkExpr))
   }
 }

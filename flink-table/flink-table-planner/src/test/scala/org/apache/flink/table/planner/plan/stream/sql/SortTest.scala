@@ -15,20 +15,18 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.planner.plan.stream.sql
 
-import org.apache.flink.api.scala._
 import org.apache.flink.table.api._
 import org.apache.flink.table.planner.utils.TableTestBase
 
-import org.junit.Test
+import org.junit.jupiter.api.Test
 
 class SortTest extends TableTestBase {
 
   private val util = streamTestUtil()
-  util.addDataStream[(Int, String, Long)](
-    "MyTable", 'a, 'b, 'c, 'proctime.proctime, 'rowtime.rowtime)
+  util
+    .addDataStream[(Int, String, Long)]("MyTable", 'a, 'b, 'c, 'proctime.proctime, 'rowtime.rowtime)
 
   @Test
   def testSortProcessingTime(): Unit = {
@@ -43,37 +41,10 @@ class SortTest extends TableTestBase {
   }
 
   @Test
-  def testSortProcessingTimeDesc(): Unit = {
-    util.verifyExecPlan("SELECT a FROM MyTable ORDER BY proctime desc, c")
+  def testSortOnRowTimeAlias(): Unit = {
+    util.verifyExecPlan("SELECT a, rowtime AS t FROM MyTable ORDER BY t, c")
   }
 
-  @Test
-  def testSortRowTimeDesc(): Unit = {
-    util.verifyExecPlan("SELECT a FROM MyTable ORDER BY rowtime desc, c")
-  }
-
-  @Test
-  def testSortProcessingTimeSecond(): Unit = {
-    util.verifyExecPlan("SELECT a FROM MyTable ORDER BY c, proctime")
-  }
-
-  @Test
-  def testSortRowTimeSecond(): Unit = {
-    util.verifyExecPlan("SELECT a FROM MyTable ORDER BY c, rowtime")
-  }
-
-  @Test
-  def testSortProcessingTimeSecondDesc(): Unit = {
-    util.verifyExecPlan("SELECT a FROM MyTable ORDER BY c, proctime desc")
-  }
-
-  @Test
-  def testSortRowTimeSecondDesc(): Unit = {
-    util.verifyExecPlan("SELECT a FROM MyTable ORDER BY c, rowtime desc")
-  }
-
-  @Test
-  def testSortWithoutTime(): Unit = {
-    util.verifyExecPlan("SELECT a FROM MyTable ORDER BY c")
-  }
+  // Non-temporal streaming sorts (first sort field is not an ascending time attribute) are now
+  // rejected during optimization; see SortValidationTest for the corresponding negative cases.
 }

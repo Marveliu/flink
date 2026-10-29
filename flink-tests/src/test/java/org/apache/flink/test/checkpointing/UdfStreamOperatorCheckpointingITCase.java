@@ -18,27 +18,26 @@
 
 package org.apache.flink.test.checkpointing;
 
+import org.apache.flink.api.common.functions.OpenContext;
 import org.apache.flink.api.common.functions.ReduceFunction;
 import org.apache.flink.api.common.functions.RichMapFunction;
-import org.apache.flink.api.java.tuple.Tuple;
 import org.apache.flink.api.java.tuple.Tuple2;
-import org.apache.flink.configuration.Configuration;
 import org.apache.flink.streaming.api.checkpoint.ListCheckpointed;
 import org.apache.flink.streaming.api.datastream.KeyedStream;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
-import org.apache.flink.streaming.api.functions.sink.SinkFunction;
-import org.apache.flink.streaming.api.functions.source.RichSourceFunction;
+import org.apache.flink.streaming.api.functions.sink.legacy.SinkFunction;
+import org.apache.flink.streaming.api.functions.source.legacy.RichSourceFunction;
 import org.apache.flink.streaming.api.operators.AbstractUdfStreamOperator;
 import org.apache.flink.streaming.api.operators.StreamGroupedReduceOperator;
 
-import org.apache.flink.shaded.guava30.com.google.common.collect.EvictingQueue;
-
-import org.junit.Assert;
+import org.apache.flink.shaded.guava33.com.google.common.collect.EvictingQueue;
 
 import java.util.Collections;
 import java.util.List;
 import java.util.Queue;
 import java.util.Random;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Integration test ensuring that the persistent state defined by the implementations of {@link
@@ -47,8 +46,7 @@ import java.util.Random;
  * <p>The topology currently tests the proper behaviour of the {@link StreamGroupedReduceOperator}
  * operator.
  */
-@SuppressWarnings("serial")
-public class UdfStreamOperatorCheckpointingITCase extends StreamFaultToleranceTestBase {
+class UdfStreamOperatorCheckpointingITCase extends StreamFaultToleranceTestBase {
 
     private static final long NUM_INPUT = 500_000L;
     private static final int NUM_OUTPUT = 1_000;
@@ -61,15 +59,15 @@ public class UdfStreamOperatorCheckpointingITCase extends StreamFaultToleranceTe
     public void testProgram(StreamExecutionEnvironment env) {
 
         // base stream
-        KeyedStream<Tuple2<Integer, Long>, Tuple> stream =
-                env.addSource(new StatefulMultipleSequence()).keyBy(0);
+        KeyedStream<Tuple2<Integer, Long>, Integer> stream =
+                env.addSource(new StatefulMultipleSequence()).keyBy(x -> x.f0);
 
         stream
                 // testing built-in aggregate
                 .min(1)
                 // failure generation
                 .map(new OnceFailingIdentityMapFunction(NUM_INPUT))
-                .keyBy(0)
+                .keyBy(x -> x.f0)
                 .addSink(new MinEvictingQueueSink());
 
         stream
@@ -83,7 +81,7 @@ public class UdfStreamOperatorCheckpointingITCase extends StreamFaultToleranceTe
                                 return Tuple2.of(value1.f0, value1.f1 + value2.f1);
                             }
                         })
-                .keyBy(0)
+                .keyBy(x -> x.f0)
                 .addSink(new SumEvictingQueueSink());
     }
 
@@ -95,7 +93,7 @@ public class UdfStreamOperatorCheckpointingITCase extends StreamFaultToleranceTe
         // Checking the result of the built-in aggregate
         for (int i = 0; i < PARALLELISM; i++) {
             for (Long value : MinEvictingQueueSink.queues[i]) {
-                Assert.assertTrue("Value different from 1 found, was " + value + ".", value == 1);
+                assertThat(value).as("Value different from 1 found, was " + value + ".").isOne();
             }
         }
 
@@ -106,9 +104,9 @@ public class UdfStreamOperatorCheckpointingITCase extends StreamFaultToleranceTe
             while (!SumEvictingQueueSink.queues[i].isEmpty()) {
                 sum += ++prevCount;
                 Long value = SumEvictingQueueSink.queues[i].remove();
-                Assert.assertTrue(
-                        "Unexpected reduce value " + value + " instead of " + sum + ".",
-                        value == sum);
+                assertThat(value)
+                        .as("Unexpected reduce value " + value + " instead of " + sum + ".")
+                        .isEqualTo(sum);
             }
         }
     }
@@ -175,11 +173,21 @@ public class UdfStreamOperatorCheckpointingITCase extends StreamFaultToleranceTe
         }
 
         @Override
-        public void open(Configuration parameters) throws Exception {
+        public void open(OpenContext openContext) throws Exception {
             long failurePosMin =
-                    (long) (0.4 * numElements / getRuntimeContext().getNumberOfParallelSubtasks());
+                    (long)
+                            (0.4
+                                    * numElements
+                                    / getRuntimeContext()
+                                            .getTaskInfo()
+                                            .getNumberOfParallelSubtasks());
             long failurePosMax =
-                    (long) (0.7 * numElements / getRuntimeContext().getNumberOfParallelSubtasks());
+                    (long)
+                            (0.7
+                                    * numElements
+                                    / getRuntimeContext()
+                                            .getTaskInfo()
+                                            .getNumberOfParallelSubtasks());
 
             failurePos =
                     (new Random().nextLong() % (failurePosMax - failurePosMin)) + failurePosMin;

@@ -1,6 +1,6 @@
 ---
 title: 流式分析
-weight: 3
+weight: 2
 type: docs
 ---
 <!--
@@ -83,7 +83,7 @@ Flink 中事件时间的处理取决于 *watermark 生成器*，后者将带有�
 <a name="latency-vs-completeness"></a>
 ### 延迟 VS 正确性
 
-watermarks 给了开发者流处理的一种选择，它们使开发人员在开发应用程序时可以控制延迟和完整性之间的权衡。与批处理不同，批处理中的奢侈之处在于可以在产生任何结果之前完全了解输入，而使用流式传输，我们不被允许等待所有的时间都产生了，才输出排序好的数据，这与流相违背。
+watermarks 给了开发者流处理的一种选择，它们使开发人员可以在延迟和完整性之间进行权衡。与批处理不同，批处理可以在产生结果之前完全了解输入，流处理则需要及时的输出结果，而无法等待所有数据的到来。
 
 我们可以把 watermarks 的边界时间配置的相对较短，从而冒着在输入了解不完全的情况下产生结果的风险-即可能会很快产生错误结果。或者，你可以等待更长的时间，并利用对输入流的更全面的了解来产生结果。
 
@@ -104,7 +104,7 @@ watermarks 给了开发者流处理的一种选择，它们使开发人员在开
 动手练习中使用的出租车数据源已经为我们处理了这些详细信息。但是，在您自己的应用程序中，您将必须自己进行处理，这通常是通过实现一个类来实现的，该类从事件中提取时间戳，并根据需要生成 watermarks。最简单的方法是使用 `WatermarkStrategy`：
 
 ```java
-DataStream<Event> stream = ...
+DataStream<Event> stream = ...;
 
 WatermarkStrategy<Event> strategy = WatermarkStrategy
         .<Event>forBoundedOutOfOrderness(Duration.ofSeconds(20))
@@ -143,18 +143,18 @@ Flink 的窗口 API 还具有 _Triggers_ 和 _Evictors_ 的概念，_Triggers_ �
 举一个简单的例子，我们一般这样使用键控事件流（基于 key 分组的输入事件流）：
 
 ```java
-stream.
+stream
     .keyBy(<key selector>)
     .window(<window assigner>)
-    .reduce|aggregate|process(<window function>)
+    .reduce|aggregate|process(<window function>);
 ```
 
 您不是必须使用键控事件流（keyed stream），但是值得注意的是，如果不使用键控事件流，我们的程序就不能 _并行_ 处理。
 
 ```java
-stream.
+stream
     .windowAll(<window assigner>)
-    .reduce|aggregate|process(<window function>)
+    .reduce|aggregate|process(<window function>);
 ```
 
 <a name="window-assigners"></a>
@@ -169,18 +169,18 @@ Flink 有一些内置的窗口分配器，如下所示：
 
 * 滚动时间窗口
   * _每分钟页面浏览量_
-  * `TumblingEventTimeWindows.of(Time.minutes(1))`
+  * `TumblingEventTimeWindows.of(Duration.ofMinutes(1))`
 * 滑动时间窗口
   * _每10秒钟计算前1分钟的页面浏览量_
-  * `SlidingEventTimeWindows.of(Time.minutes(1), Time.seconds(10))`
+  * `SlidingEventTimeWindows.of(Duration.ofMinutes(1), Duration.ofSeconds(10))`
 * 会话窗口
   * _每个会话的网页浏览量，其中会话之间的间隔至少为30分钟_
-  * `EventTimeSessionWindows.withGap(Time.minutes(30))`
+  * `EventTimeSessionWindows.withGap(Duration.ofMinutes(30))`
 
-以下都是一些可以使用的间隔时间 `Time.milliseconds(n)`, `Time.seconds(n)`, `Time.minutes(n)`,
- `Time.hours(n)`, 和 `Time.days(n)`。
+以下都是一些可以使用的间隔时间 `Duration.ofMillis(n)`, `Duration.ofSeconds(n)`, `Duration.ofMinutes(n)`,
+ `Duration.ofHours(n)`, 和 `Duration.ofDays(n)`。
 
-基于时间的窗口分配器（包括会话时间）既可以处理 `事件时间`，也可以处理 `处理时间`。这两种基于时间的处理没有哪一个更好，我们必须折衷。使用 `处理时间`，我们必须接受以下限制：
+基于时间的窗口分配器（包括会话窗口）既可以处理 `事件时间`，也可以处理 `处理时间`。这两种基于时间的处理没有哪一个更好，我们必须折中。使用 `处理时间`，我们必须接受以下限制：
 
 * 无法正确处理历史数据,
 * 无法正确处理超过最大无序边界的数据,
@@ -210,11 +210,11 @@ Flink 有一些内置的窗口分配器，如下所示：
 #### ProcessWindowFunction 示例
 
 ```java
-DataStream<SensorReading> input = ...
+DataStream<SensorReading> input = ...;
 
 input
     .keyBy(x -> x.key)
-    .window(TumblingEventTimeWindows.of(Time.minutes(1)))
+    .window(TumblingEventTimeWindows.of(Duration.ofMinutes(1)))
     .process(new MyWastefulMax());
 
 public static class MyWastefulMax extends ProcessWindowFunction<
@@ -254,6 +254,8 @@ public abstract class Context implements java.io.Serializable {
 
     public abstract KeyedStateStore windowState();
     public abstract KeyedStateStore globalState();
+
+    public abstract <X> void output(OutputTag<X> outputTag, X value);
 }
 ```
 
@@ -264,11 +266,11 @@ public abstract class Context implements java.io.Serializable {
 #### 增量聚合示例
 
 ```java
-DataStream<SensorReading> input = ...
+DataStream<SensorReading> input = ...;
 
 input
     .keyBy(x -> x.key)
-    .window(TumblingEventTimeWindows.of(Time.minutes(1)))
+    .window(TumblingEventTimeWindows.of(Duration.ofMinutes(1)))
     .reduce(new MyReducingMax(), new MyWindowFunction());
 
 private static class MyReducingMax implements ReduceFunction<SensorReading> {
@@ -306,7 +308,7 @@ private static class MyWindowFunction extends ProcessWindowFunction<
 ```java
 OutputTag<Event> lateTag = new OutputTag<Event>("late"){};
 
-SingleOutputStreamOperator<Event> result = stream.
+SingleOutputStreamOperator<Event> result = stream
     .keyBy(...)
     .window(...)
     .sideOutputLateData(lateTag)
@@ -322,10 +324,10 @@ DataStream<Event> lateStream = result.getSideOutput(lateTag);
 举例说明:
 
 ```java
-stream.
+stream
     .keyBy(...)
     .window(...)
-    .allowedLateness(Time.seconds(10))
+    .allowedLateness(Duration.ofSeconds(10))
     .process(...);
 ```
 
@@ -361,12 +363,12 @@ stream
     .window(<window assigner>)
     .reduce(<reduce function>)
     .windowAll(<same window assigner>)
-    .reduce(<same reduce function>)
+    .reduce(<same reduce function>);
 ```
 
 可能我们会猜测以 Flink 的能力，想要做到这样看起来是可行的（前提是你使用的是 ReduceFunction 或 AggregateFunction ），但不是。
 
-之所以可行，是因为时间窗口产生的事件是根据窗口结束时的时间分配时间戳的。例如，一个小时小时的窗口所产生的所有事件都将带有标记一个小时结束的时间戳。后面的窗口内的数据消费和前面的流产生的数据是一致的。
+之所以可行，是因为时间窗口产生的事件是根据窗口结束时的时间分配时间戳的。例如，一个小时的窗口所产生的所有事件都将带有标记一个小时结束的时间戳。后面的窗口内的数据消费和前面的流产生的数据是一致的。
 
 <a name="no-results-for-empty-timewindows"></a>
 

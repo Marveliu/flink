@@ -15,14 +15,12 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.planner.plan.stream.table
 
-import org.apache.flink.api.scala._
 import org.apache.flink.table.api._
 import org.apache.flink.table.planner.utils.{PythonEmptyTableAggFunc, TableTestBase}
 
-import org.junit.Test
+import org.junit.jupiter.api.Test
 
 class PythonTableAggregateTest extends TableTestBase {
 
@@ -32,8 +30,9 @@ class PythonTableAggregateTest extends TableTestBase {
     val sourceTable = util.addTableSource[(Int, Long, Int)]("MyTable", 'a, 'b, 'c)
     val func = new PythonEmptyTableAggFunc
 
-    val resultTable = sourceTable.groupBy('b)
-      .flatAggregate(func('a, 'c) as ('d, 'e))
+    val resultTable = sourceTable
+      .groupBy('b)
+      .flatAggregate(func('a, 'c).as('d, 'e))
       .select('d, 'e)
 
     util.verifyExecPlan(resultTable)
@@ -45,7 +44,7 @@ class PythonTableAggregateTest extends TableTestBase {
     val sourceTable = util.addTableSource[(Int, Long, Int)]("MyTable", 'a, 'b, 'c)
     val func = new PythonEmptyTableAggFunc
 
-    val resultTable = sourceTable.flatAggregate(func('a, 'c) as ('d, 'e)).select('d, 'e)
+    val resultTable = sourceTable.flatAggregate(func('a, 'c).as('d, 'e)).select('d, 'e)
 
     util.verifyExecPlan(resultTable)
   }
@@ -56,8 +55,9 @@ class PythonTableAggregateTest extends TableTestBase {
     val sourceTable = util.addTableSource[(Int, Long, Int)]("MyTable", 'a, 'b, 'c)
     val func = new PythonEmptyTableAggFunc
 
-    val resultTable = sourceTable.groupBy('b)
-      .flatAggregate(func('a, 'c + 1) as ('d, 'e))
+    val resultTable = sourceTable
+      .groupBy('b)
+      .flatAggregate(func('a, 'c + 1).as('d, 'e))
       .select('d, 'e)
 
     util.verifyExecPlan(resultTable)

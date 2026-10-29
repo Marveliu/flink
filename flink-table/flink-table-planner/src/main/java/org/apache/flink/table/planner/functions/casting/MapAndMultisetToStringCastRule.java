@@ -19,6 +19,7 @@
 package org.apache.flink.table.planner.functions.casting;
 
 import org.apache.flink.table.data.ArrayData;
+import org.apache.flink.table.planner.codegen.CodeGeneratorContext;
 import org.apache.flink.table.types.logical.IntType;
 import org.apache.flink.table.types.logical.LogicalType;
 import org.apache.flink.table.types.logical.LogicalTypeFamily;
@@ -72,65 +73,63 @@ class MapAndMultisetToStringCastRule
 
     isNull$0 = _myInputIsNull;
     if (!isNull$0) {
-        org.apache.flink.table.data.ArrayData keys$2 = _myInput.keyArray();
-        org.apache.flink.table.data.ArrayData values$3 = _myInput.valueArray();
-        builder$1.setLength(0);
-        builder$1.append("{");
-        for (int i$5 = 0; i$5 < _myInput.size(); i$5++) {
-            if (builder$1.length() > 12) {
+        int size$4 = _myInput.size();
+        org.apache.flink.table.data.ArrayData keys$1 = _myInput.keyArray();
+        org.apache.flink.table.data.ArrayData values$2 = _myInput.valueArray();
+        builder$0.setLength(0);
+        builder$0.append("{");
+        for (int i$5 = 0; i$5 < size$4; i$5++) {
+            if (builder$0.length() > 12) {
                 break;
             }
             if (i$5 != 0) {
-                builder$1.append(", ");
+                builder$0.append(", ");
             }
             org.apache.flink.table.data.binary.BinaryStringData key$6 = org.apache.flink.table.data.binary.BinaryStringData.EMPTY_UTF8;
-            boolean keyIsNull$7 = keys$2.isNullAt(i$5);
+            boolean keyIsNull$7 = keys$1.isNullAt(i$5);
             int value$8 = -1;
-            boolean valueIsNull$9 = values$3.isNullAt(i$5);
+            boolean valueIsNull$9 = values$2.isNullAt(i$5);
             if (!keyIsNull$7) {
-                key$6 = ((org.apache.flink.table.data.binary.BinaryStringData) keys$2.getString(i$5));
-                builder$1.append(key$6);
+                key$6 = ((org.apache.flink.table.data.binary.BinaryStringData) keys$1.getString(i$5));
+                builder$0.append(key$6);
             } else {
-                builder$1.append("NULL");
+                builder$0.append("NULL");
             }
-            builder$1.append("=");
+            builder$0.append("=");
             if (!valueIsNull$9) {
-                value$8 = values$3.getInt(i$5);
-                isNull$2 = valueIsNull$9;
+                value$8 = values$2.getInt(i$5);
+                isNull$2 = false;
                 if (!isNull$2) {
-                    result$3 = org.apache.flink.table.data.binary.BinaryStringData.fromString("" + value$8);
+                    result$3 = org.apache.flink.table.data.binary.BinaryStringData.fromString(org.apache.flink.table.utils.DateTimeUtils.formatIntervalYearMonth(value$8));
                     isNull$2 = result$3 == null;
                 } else {
                     result$3 = org.apache.flink.table.data.binary.BinaryStringData.EMPTY_UTF8;
                 }
-                builder$1.append(result$3);
-            } else {
-                builder$1.append("NULL");
-            }
-        }
-        builder$1.append("}");
-        java.lang.String resultString$4;
-        resultString$4 = builder$1.toString();
-        if (builder$1.length() > 12) {
-            resultString$4 = builder$1.substring(0, java.lang.Math.min(builder$1.length(), 12));
-        } else {
-            if (resultString$.length() < 12) {
-                int padLength$10;
-                padLength$10 = 12 - resultString$.length();
-                java.lang.StringBuilder sbPadding$11;
-                sbPadding$11 = new java.lang.StringBuilder();
-                for (int i$12 = 0; i$12 < padLength$10; i$12++) {
-                    sbPadding$11.append(" ");
+                builder$0.append(result$3);
+                } else {
+                    builder$0.append("NULL");
                 }
-                resultString$4 = resultString$4 + sbPadding$11.toString();
+            }
+            builder$0.append("}");
+            java.lang.String resultString$3;
+            if (builder$0.length() > 12) {
+                resultString$3 = builder$0.substring(0, 12);
+            } else {
+                resultString$3 = builder$0.toString();
+                if (builder$0.length() < 12) {
+                int padLength$10;
+                padLength$10 = 12 - builder$0.length();
+                resultString$3 = resultString$3 + " ".repeat(padLength$10);
             }
         }
-        result$1 = org.apache.flink.table.data.binary.BinaryStringData.fromString(resultString$4);
+        result$1 = org.apache.flink.table.data.binary.BinaryStringData.fromString(resultString$3);
         isNull$0 = result$1 == null;
     } else {
         result$1 = org.apache.flink.table.data.binary.BinaryStringData.EMPTY_UTF8;
     }
 
+    returnTerm = result$1
+    isNullTerm = isNull$0
     */
     @Override
     protected String generateCodeBlockInternal(
@@ -147,19 +146,21 @@ class MapAndMultisetToStringCastRule
                 inputLogicalType.is(LogicalTypeRoot.MULTISET)
                         ? new IntType(false)
                         : ((MapType) inputLogicalType).getValueType();
-
-        final String builderTerm = newName("builder");
+        CodeGeneratorContext codeGeneratorContext = context.getCodeGeneratorContext();
+        final String builderTerm = newName(codeGeneratorContext, "builder");
         context.declareClassField(
                 className(StringBuilder.class), builderTerm, constructorCall(StringBuilder.class));
 
-        final String keyArrayTerm = newName("keys");
-        final String valueArrayTerm = newName("values");
+        final String keyArrayTerm = newName(codeGeneratorContext, "keys");
+        final String valueArrayTerm = newName(codeGeneratorContext, "values");
 
-        final String resultStringTerm = newName("resultString");
+        final String resultStringTerm = newName(codeGeneratorContext, "resultString");
+        final String sizeTerm = newName(codeGeneratorContext, "size");
         final int length = LogicalTypeChecks.getLength(targetLogicalType);
 
         CastRuleUtils.CodeWriter writer =
                 new CastRuleUtils.CodeWriter()
+                        .declStmt(int.class, sizeTerm, methodCall(inputTerm, "size"))
                         .declStmt(ArrayData.class, keyArrayTerm, methodCall(inputTerm, "keyArray"))
                         .declStmt(
                                 ArrayData.class,
@@ -168,12 +169,14 @@ class MapAndMultisetToStringCastRule
                         .stmt(methodCall(builderTerm, "setLength", 0))
                         .stmt(methodCall(builderTerm, "append", strLiteral("{")))
                         .forStmt(
-                                methodCall(inputTerm, "size"),
+                                sizeTerm,
                                 (indexTerm, loopBodyWriter) -> {
-                                    String keyTerm = newName("key");
-                                    String keyIsNullTerm = newName("keyIsNull");
-                                    String valueTerm = newName("value");
-                                    String valueIsNullTerm = newName("valueIsNull");
+                                    String keyTerm = newName(codeGeneratorContext, "key");
+                                    String keyIsNullTerm =
+                                            newName(codeGeneratorContext, "keyIsNull");
+                                    String valueTerm = newName(codeGeneratorContext, "value");
+                                    String valueIsNullTerm =
+                                            newName(codeGeneratorContext, "valueIsNull");
 
                                     CastCodeBlock keyCast =
                                             // Null check is done at the key array access level
@@ -282,7 +285,8 @@ class MapAndMultisetToStringCastRule
                                                                                 context
                                                                                         .legacyBehaviour()))));
                                     }
-                                })
+                                },
+                                codeGeneratorContext)
                         .stmt(methodCall(builderTerm, "append", strLiteral("}")));
 
         return CharVarCharTrimPadCastRule.padAndTrimStringIfNeeded(
@@ -291,7 +295,8 @@ class MapAndMultisetToStringCastRule
                         context.legacyBehaviour(),
                         length,
                         resultStringTerm,
-                        builderTerm)
+                        builderTerm,
+                        codeGeneratorContext)
                 // Assign the result value
                 .assignStmt(
                         returnVariable,

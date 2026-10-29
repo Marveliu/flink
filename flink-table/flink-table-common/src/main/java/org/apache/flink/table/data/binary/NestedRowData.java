@@ -27,6 +27,8 @@ import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.data.StringData;
 import org.apache.flink.table.data.TimestampData;
 import org.apache.flink.types.RowKind;
+import org.apache.flink.types.bitmap.Bitmap;
+import org.apache.flink.types.variant.Variant;
 
 import static org.apache.flink.table.data.binary.BinaryRowData.calculateBitSetWidthInBytes;
 import static org.apache.flink.util.Preconditions.checkArgument;
@@ -296,6 +298,18 @@ public final class NestedRowData extends BinarySection implements RowData, Typed
     public RowData getRow(int pos, int numFields) {
         assertIndexIsValid(pos);
         return BinarySegmentUtils.readRowData(segments, numFields, offset, getLong(pos));
+    }
+
+    @Override
+    public Variant getVariant(int pos) {
+        assertIndexIsValid(pos);
+        return BinarySegmentUtils.readVariant(segments, offset, getLong(pos));
+    }
+
+    @Override
+    public Bitmap getBitmap(int pos) {
+        assertIndexIsValid(pos);
+        return BinarySegmentUtils.readBitmap(segments, offset, getLong(pos));
     }
 
     @Override

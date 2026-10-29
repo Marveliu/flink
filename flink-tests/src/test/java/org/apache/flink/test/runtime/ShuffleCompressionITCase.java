@@ -19,10 +19,9 @@
 package org.apache.flink.test.runtime;
 
 import org.apache.flink.api.common.ExecutionConfig;
-import org.apache.flink.api.common.ExecutionMode;
-import org.apache.flink.configuration.AkkaOptions;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.NettyShuffleEnvironmentOptions;
+import org.apache.flink.configuration.RpcOptions;
 import org.apache.flink.runtime.execution.Environment;
 import org.apache.flink.runtime.io.network.api.reader.MutableRecordReader;
 import org.apache.flink.runtime.io.network.api.writer.RecordWriter;
@@ -37,21 +36,25 @@ import org.apache.flink.runtime.jobgraph.tasks.AbstractInvokable;
 import org.apache.flink.runtime.jobmanager.scheduler.SlotSharingGroup;
 import org.apache.flink.runtime.util.EnvironmentInformation;
 import org.apache.flink.streaming.runtime.partitioner.BroadcastPartitioner;
+import org.apache.flink.testutils.junit.extensions.parameterized.Parameter;
+import org.apache.flink.testutils.junit.extensions.parameterized.ParameterizedTestExtension;
+import org.apache.flink.testutils.junit.extensions.parameterized.Parameters;
 import org.apache.flink.types.LongValue;
 
-import org.junit.Test;
-import org.junit.runner.RunWith;
-import org.junit.runners.Parameterized;
+import org.junit.jupiter.api.TestTemplate;
+import org.junit.jupiter.api.extension.ExtendWith;
 
 import java.io.IOException;
 import java.time.Duration;
 import java.util.Arrays;
+import java.util.Collection;
 
-import static org.junit.Assert.assertEquals;
+import static org.apache.flink.runtime.util.JobVertexConnectionUtils.connectNewDataSetAsInput;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /** Tests network shuffle when data compression is enabled. */
-@RunWith(Parameterized.class)
-public class ShuffleCompressionITCase {
+@ExtendWith(ParameterizedTestExtension.class)
+class ShuffleCompressionITCase {
 
     private static final int NUM_BUFFERS_TO_SEND = 1000;
 
@@ -74,40 +77,26 @@ public class ShuffleCompressionITCase {
 
     private static final LongValue RECORD_TO_SEND = new LongValue(4387942071694473832L);
 
-    @Parameterized.Parameter public static boolean useBroadcastPartitioner = false;
+    @Parameter private static Boolean useBroadcastPartitioner;
 
-    @Parameterized.Parameters(name = "useBroadcastPartitioner = {0}")
-    public static Boolean[] params() {
-        return new Boolean[] {true, false};
+    @Parameters(name = "useBroadcastPartitioner = {0}")
+    public static Collection<Boolean> params() {
+        return Arrays.asList(true, false);
     }
 
-    @Test
-    public void testNoDataCompressionForBoundedBlockingShuffle() throws Exception {
+    @TestTemplate
+    void testNoDataCompressionForSortMergeBlockingShuffle() throws Exception {
         Configuration configuration = new Configuration();
-        configuration.setBoolean(
-                NettyShuffleEnvironmentOptions.BLOCKING_SHUFFLE_COMPRESSION_ENABLED, false);
-        configuration.set(AkkaOptions.ASK_TIMEOUT_DURATION, Duration.ofMinutes(1));
-        configuration.setInteger(
-                NettyShuffleEnvironmentOptions.NETWORK_SORT_SHUFFLE_MIN_PARALLELISM,
-                Integer.MAX_VALUE);
+        configuration.set(
+                NettyShuffleEnvironmentOptions.SHUFFLE_COMPRESSION_CODEC,
+                NettyShuffleEnvironmentOptions.CompressionCodec.NONE);
+        configuration.set(RpcOptions.ASK_TIMEOUT_DURATION, Duration.ofMinutes(1));
 
-        JobGraph jobGraph = createJobGraph(ResultPartitionType.BLOCKING, ExecutionMode.BATCH);
+        JobGraph jobGraph = createJobGraph(ResultPartitionType.BLOCKING);
         JobGraphRunningUtil.execute(jobGraph, configuration, NUM_TASKMANAGERS, NUM_SLOTS);
     }
 
-    @Test
-    public void testNoDataCompressionForSortMergeBlockingShuffle() throws Exception {
-        Configuration configuration = new Configuration();
-        configuration.setBoolean(
-                NettyShuffleEnvironmentOptions.BLOCKING_SHUFFLE_COMPRESSION_ENABLED, false);
-        configuration.set(AkkaOptions.ASK_TIMEOUT_DURATION, Duration.ofMinutes(1));
-
-        JobGraph jobGraph = createJobGraph(ResultPartitionType.BLOCKING, ExecutionMode.BATCH);
-        JobGraphRunningUtil.execute(jobGraph, configuration, NUM_TASKMANAGERS, NUM_SLOTS);
-    }
-
-    private static JobGraph createJobGraph(
-            ResultPartitionType resultPartitionType, ExecutionMode executionMode)
+    private static JobGraph createJobGraph(ResultPartitionType resultPartitionType)
             throws IOException {
         SlotSharingGroup slotSharingGroup = new SlotSharingGroup();
 
@@ -121,10 +110,9 @@ public class ShuffleCompressionITCase {
         sink.setParallelism(PARALLELISM);
         sink.setSlotSharingGroup(slotSharingGroup);
 
-        sink.connectNewDataSetAsInput(source, DistributionPattern.ALL_TO_ALL, resultPartitionType);
+        connectNewDataSetAsInput(sink, source, DistributionPattern.ALL_TO_ALL, resultPartitionType);
 
         ExecutionConfig executionConfig = new ExecutionConfig();
-        executionConfig.setExecutionMode(executionMode);
 
         return JobGraphBuilder.newBatchJobGraphBuilder()
                 .addJobVertices(Arrays.asList(source, sink))
@@ -143,11 +131,6 @@ public class ShuffleCompressionITCase {
         public void invoke() throws Exception {
             ResultPartitionWriter resultPartitionWriter = getEnvironment().getWriter(0);
             RecordWriterBuilder<LongValue> recordWriterBuilder = new RecordWriterBuilder<>();
-            if (getEnvironment().getExecutionConfig().getExecutionMode()
-                    == ExecutionMode.PIPELINED) {
-                // enable output flush for pipeline mode
-                recordWriterBuilder.setTimeout(100);
-            }
             if (useBroadcastPartitioner) {
                 recordWriterBuilder.setChannelSelector(new BroadcastPartitioner());
             }
@@ -178,7 +161,7 @@ public class ShuffleCompressionITCase {
             LongValue value = new LongValue();
             for (int i = 0; i < PARALLELISM * NUM_RECORDS_TO_SEND; ++i) {
                 reader.next(value);
-                assertEquals(RECORD_TO_SEND.getValue(), value.getValue());
+                assertThat(value.getValue()).isEqualTo(RECORD_TO_SEND.getValue());
             }
         }
     }

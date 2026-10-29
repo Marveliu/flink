@@ -17,15 +17,16 @@
 ################################################################################
 
 from pyflink.java_gateway import get_gateway
-from pyflink.table import TableSchema, DataTypes
+from pyflink.table import Schema, TableSchema, DataTypes
 
 from pyflink.table.catalog import ObjectPath, Catalog, CatalogDatabase, CatalogBaseTable, \
-    CatalogFunction, CatalogPartition, CatalogPartitionSpec
+    CatalogFunction, CatalogPartition, CatalogPartitionSpec, CatalogModel
 from pyflink.testing.test_case_utils import PyFlinkTestCase
 from pyflink.util.exceptions import DatabaseNotExistException, FunctionNotExistException, \
     PartitionNotExistException, TableNotExistException, DatabaseAlreadyExistException, \
     FunctionAlreadyExistException, PartitionAlreadyExistsException, PartitionSpecInvalidException, \
-    TableNotPartitionedException, TableAlreadyExistException, DatabaseNotEmptyException
+    TableNotPartitionedException, TableAlreadyExistException, DatabaseNotEmptyException, \
+    ModelNotExistException, ModelAlreadyExistException
 
 
 class CatalogTestBase(PyFlinkTestCase):
@@ -36,6 +37,8 @@ class CatalogTestBase(PyFlinkTestCase):
     t1 = "t1"
     t2 = "t2"
     t3 = "t3"
+    m1 = "m1"
+    m2 = "m2"
     test_catalog_name = "test-catalog"
     test_comment = "test comment"
 
@@ -48,6 +51,8 @@ class CatalogTestBase(PyFlinkTestCase):
         self.path2 = ObjectPath(self.db2, self.t2)
         self.path3 = ObjectPath(self.db1, self.t2)
         self.path4 = ObjectPath(self.db1, self.t3)
+        self.modelPath1 = ObjectPath(self.db1, self.m1)
+        self.modelPath2 = ObjectPath(self.db1, self.m2)
         self.non_exist_db_path = ObjectPath.from_string("non.exist")
         self.non_exist_object_path = ObjectPath.from_string("db1.nonexist")
 
@@ -56,18 +61,19 @@ class CatalogTestBase(PyFlinkTestCase):
         self.assertEqual(cd1.get_properties(), cd2.get_properties())
 
     def check_catalog_table_equals(self, t1, t2):
-        self.assertEqual(t1.get_schema(), t2.get_schema())
         self.assertEqual(t1.get_options(), t2.get_options())
         self.assertEqual(t1.get_comment(), t2.get_comment())
 
+    def check_catalog_model_equals(self, m1, m2):
+        self.assertEqual(m1.get_options(), m2.get_options())
+        self.assertEqual(m1.get_comment(), m2.get_comment())
+
     def check_catalog_view_equals(self, v1, v2):
-        self.assertEqual(v1.get_schema(), v1.get_schema())
         self.assertEqual(v1.get_options(), v2.get_options())
         self.assertEqual(v1.get_comment(), v2.get_comment())
 
     def check_catalog_function_equals(self, f1, f2):
         self.assertEqual(f1.get_class_name(), f2.get_class_name())
-        self.assertEqual(f1.is_generic(), f2.is_generic())
         self.assertEqual(f1.get_function_language(), f2.get_function_language())
 
     def check_catalog_partition_equals(self, p1, p2):
@@ -87,6 +93,10 @@ class CatalogTestBase(PyFlinkTestCase):
                            [DataTypes.STRING(), DataTypes.INT(), DataTypes.STRING()])
 
     @staticmethod
+    def create_model_schema():
+        return Schema.new_builder().column("id", DataTypes.STRING()).build()
+
+    @staticmethod
     def create_another_table_schema():
         return TableSchema(["first2", "second", "third"],
                            [DataTypes.STRING(), DataTypes.STRING(), DataTypes.STRING()])
@@ -102,6 +112,22 @@ class CatalogTestBase(PyFlinkTestCase):
     @staticmethod
     def create_partition_keys():
         return ["second", "third"]
+
+    @staticmethod
+    def create_model():
+        return CatalogModel.create_model(
+            CatalogTestBase.create_model_schema(),
+            CatalogTestBase.create_model_schema(),
+            options={},
+            comment="some comment")
+
+    @staticmethod
+    def create_another_model():
+        return CatalogModel.create_model(
+            CatalogTestBase.create_model_schema(),
+            CatalogTestBase.create_model_schema(),
+            options={"key": "value"},
+            comment="some comment")
 
     @staticmethod
     def create_table():
@@ -464,6 +490,122 @@ class CatalogTestBase(PyFlinkTestCase):
         self.catalog.create_table(self.path1, self.create_table(), False)
 
         self.assertTrue(self.catalog.table_exists(self.path1))
+
+    def test_create_model_database_not_exist_exception(self):
+        self.assertFalse(self.catalog.database_exists(self.db1))
+
+        with self.assertRaises(DatabaseNotExistException):
+            self.catalog.create_model(self.non_exist_object_path, self.create_model(), False)
+
+    def test_create_model_model_already_exist_exception(self):
+        self.catalog.create_database(self.db1, self.create_db(), False)
+        self.catalog.create_model(self.modelPath1, self.create_model(), False)
+
+        with self.assertRaises(ModelAlreadyExistException):
+            self.catalog.create_model(self.modelPath1, self.create_model(), False)
+
+    def test_create_model_model_already_exist_ignored(self):
+        self.catalog.create_database(self.db1, self.create_db(), False)
+
+        model = self.create_model()
+        self.catalog.create_model(self.modelPath1, model, False)
+
+        self.check_catalog_model_equals(model, self.catalog.get_model(self.modelPath1))
+
+        self.catalog.create_model(self.modelPath1, self.create_another_model(), True)
+
+        self.check_catalog_model_equals(model, self.catalog.get_model(self.modelPath1))
+
+    def test_get_model_model_not_exist_exception(self):
+        self.catalog.create_database(self.db1, self.create_db(), False)
+
+        with self.assertRaises(ModelNotExistException):
+            self.catalog.get_model(self.non_exist_object_path)
+
+    def test_get_model_model_not_exist_exception_no_db(self):
+        with self.assertRaises(ModelNotExistException):
+            self.catalog.get_model(self.non_exist_object_path)
+
+    def test_drop_model_model_not_exist_exception(self):
+        with self.assertRaises(ModelNotExistException):
+            self.catalog.drop_model(self.non_exist_db_path, False)
+
+    def test_drop_model_model_not_exist_ignored(self):
+        self.catalog.create_database(self.db1, self.create_db(), False)
+        self.catalog.drop_model(self.non_exist_object_path, True)
+
+    def test_alter_model(self):
+        self.catalog.create_database(self.db1, self.create_db(), False)
+
+        model = self.create_model()
+        self.catalog.create_model(self.modelPath1, model, False)
+
+        self.check_catalog_model_equals(model, self.catalog.get_model(self.modelPath1))
+
+        new_model = self.create_another_model()
+        self.catalog.alter_model(self.modelPath1, new_model, False)
+
+        self.assertNotEqual(model, self.catalog.get_model(self.modelPath1))
+        self.check_catalog_model_equals(new_model, self.catalog.get_model(self.modelPath1))
+        self.catalog.drop_model(self.modelPath1, False)
+
+    def test_alter_model_model_not_exist_exception(self):
+        with self.assertRaises(ModelNotExistException):
+            self.catalog.alter_model(self.non_exist_db_path, self.create_model(), False)
+
+    def test_alter_model_model_not_exist_ignored(self):
+        self.catalog.create_database(self.db1, self.create_db(), False)
+        self.catalog.alter_model(self.non_exist_object_path, self.create_model(), True)
+
+        self.assertFalse(self.catalog.table_exists(self.non_exist_object_path))
+
+    def test_rename_model(self):
+        self.catalog.create_database(self.db1, self.create_db(), False)
+        model = self.create_model()
+        self.catalog.create_model(self.modelPath1, model, False)
+
+        self.check_catalog_model_equals(model, self.catalog.get_model(self.modelPath1))
+
+        self.catalog.rename_model(self.modelPath1, self.m2, False)
+
+        self.check_catalog_model_equals(model, self.catalog.get_model(self.modelPath2))
+        self.assertFalse(self.catalog.model_exists(self.modelPath1))
+
+    def test_rename_model_model_not_exist_exception(self):
+        self.catalog.create_database(self.db1, self.create_db(), False)
+
+        with self.assertRaises(ModelNotExistException):
+            self.catalog.rename_model(self.modelPath1, self.m2, False)
+
+    def test_rename_model_model_not_exist_exception_ignored(self):
+        self.catalog.create_database(self.db1, self.create_db(), False)
+        self.catalog.rename_model(self.modelPath1, self.m2, True)
+
+    def test_rename_model_model_already_exist_exception(self):
+        self.catalog.create_database(self.db1, self.create_db(), False)
+        model = self.create_model()
+        self.catalog.create_model(self.modelPath1, model, False)
+        self.catalog.create_model(self.modelPath2, self.create_another_model(), False)
+
+        with self.assertRaises(ModelAlreadyExistException):
+            self.catalog.rename_model(self.modelPath1, self.m2, False)
+
+    def test_list_models(self):
+        self.catalog.create_database(self.db1, self.create_db(), False)
+
+        self.catalog.create_model(self.modelPath1, self.create_model(), False)
+        self.catalog.create_model(self.modelPath2, self.create_model(), False)
+
+        self.assertEqual(2, len(self.catalog.list_models(self.db1)))
+
+    def test_model_exists(self):
+        self.catalog.create_database(self.db1, self.create_db(), False)
+
+        self.assertFalse(self.catalog.model_exists(self.modelPath1))
+
+        self.catalog.create_model(self.modelPath1, self.create_model(), False)
+
+        self.assertTrue(self.catalog.model_exists(self.modelPath1))
 
     def test_create_view(self):
         self.catalog.create_database(self.db1, self.create_db(), False)
@@ -895,3 +1037,163 @@ class CatalogTestBase(PyFlinkTestCase):
         self.assertEqual(1,
                          len(self.catalog.list_partitions(
                              self.path1, self.create_another_partition_spec_subset())))
+
+
+class ObjectPathTest(PyFlinkTestCase):
+    """Unit tests for ObjectPath covering construction, property
+    access, equality, hashing, string representation, comparison
+    operators and edge cases."""
+
+    def test_get_database_name(self):
+        path = ObjectPath("db", "table")
+        self.assertEqual("db", path.get_database_name())
+
+    def test_get_object_name(self):
+        path = ObjectPath("db", "table")
+        self.assertEqual("table", path.get_object_name())
+
+    def test_get_full_name(self):
+        path = ObjectPath("db", "table")
+        self.assertEqual("db.table", path.get_full_name())
+
+    def test_str(self):
+        path = ObjectPath("mydb", "mytable")
+        self.assertEqual("mydb.mytable", str(path))
+
+    def test_from_string(self):
+        path = ObjectPath.from_string("mydb.mytable")
+        self.assertEqual("mydb", path.get_database_name())
+        self.assertEqual("mytable", path.get_object_name())
+
+    # ---- __eq__ and __hash__ tests ----
+
+    def test_eq_same_path(self):
+        path1 = ObjectPath("db", "table")
+        path2 = ObjectPath("db", "table")
+        self.assertEqual(path1, path2)
+
+    def test_eq_different_database(self):
+        path1 = ObjectPath("db1", "table")
+        path2 = ObjectPath("db2", "table")
+        self.assertNotEqual(path1, path2)
+
+    def test_eq_different_object(self):
+        path1 = ObjectPath("db", "table1")
+        path2 = ObjectPath("db", "table2")
+        self.assertNotEqual(path1, path2)
+
+    def test_eq_non_object_path(self):
+        path = ObjectPath("db", "table")
+        self.assertNotEqual(path, "db.table")
+        self.assertNotEqual(path, 42)
+        self.assertNotEqual(path, None)
+
+    def test_hash_equal_objects(self):
+        path1 = ObjectPath("db", "table")
+        path2 = ObjectPath("db", "table")
+        self.assertEqual(hash(path1), hash(path2))
+
+    def test_hash_can_be_dict_key(self):
+        path1 = ObjectPath("db", "t1")
+        path2 = ObjectPath("db", "t2")
+        d = {path1: "value1", path2: "value2"}
+        self.assertEqual("value1", d[ObjectPath("db", "t1")])
+        self.assertEqual("value2", d[ObjectPath("db", "t2")])
+
+    def test_hash_can_be_in_set(self):
+        path1 = ObjectPath("db", "table")
+        path2 = ObjectPath("db", "table")
+        s = {path1, path2}
+        self.assertEqual(1, len(s))
+
+    # ---- Comparison operator tests (happy path) ----
+
+    def test_lt(self):
+        path_a = ObjectPath("a", "table")
+        path_b = ObjectPath("b", "table")
+        self.assertTrue(path_a < path_b)
+        self.assertFalse(path_b < path_a)
+
+    def test_lt_same(self):
+        path1 = ObjectPath("db", "table")
+        path2 = ObjectPath("db", "table")
+        self.assertFalse(path1 < path2)
+
+    def test_le(self):
+        path_a = ObjectPath("a", "table")
+        path_b = ObjectPath("b", "table")
+        path_a2 = ObjectPath("a", "table")
+        self.assertTrue(path_a <= path_b)
+        self.assertTrue(path_a <= path_a2)
+        self.assertFalse(path_b <= path_a)
+
+    def test_gt(self):
+        path_a = ObjectPath("a", "table")
+        path_b = ObjectPath("b", "table")
+        self.assertTrue(path_b > path_a)
+        self.assertFalse(path_a > path_b)
+
+    def test_gt_same(self):
+        path1 = ObjectPath("db", "table")
+        path2 = ObjectPath("db", "table")
+        self.assertFalse(path1 > path2)
+
+    def test_ge(self):
+        path_a = ObjectPath("a", "table")
+        path_b = ObjectPath("b", "table")
+        path_b2 = ObjectPath("b", "table")
+        self.assertTrue(path_b >= path_a)
+        self.assertTrue(path_b >= path_b2)
+        self.assertFalse(path_a >= path_b)
+
+    def test_compare_by_object_name(self):
+        """Within the same database, ordering is by object name."""
+        path1 = ObjectPath("db", "alpha")
+        path2 = ObjectPath("db", "beta")
+        self.assertTrue(path1 < path2)
+        self.assertTrue(path2 > path1)
+
+    def test_sorting(self):
+        """Verify that a list of ObjectPath instances can be correctly sorted."""
+        paths = [
+            ObjectPath("db2", "table"),
+            ObjectPath("db1", "table"),
+            ObjectPath("db1", "alpha"),
+        ]
+        sorted_paths = sorted(paths)
+        self.assertEqual("db1.alpha", str(sorted_paths[0]))
+        self.assertEqual("db1.table", str(sorted_paths[1]))
+        self.assertEqual("db2.table", str(sorted_paths[2]))
+
+    # ---- Comparison with non-ObjectPath objects (edge cases) ----
+
+    def test_lt_non_object_path_raises_type_error(self):
+        """Comparison with a non-ObjectPath object should raise TypeError."""
+        path = ObjectPath("db", "table")
+        with self.assertRaises(TypeError):
+            path < 42
+
+    def test_le_non_object_path_raises_type_error(self):
+        path = ObjectPath("db", "table")
+        with self.assertRaises(TypeError):
+            path <= "some_string"
+
+    def test_gt_non_object_path_raises_type_error(self):
+        path = ObjectPath("db", "table")
+        with self.assertRaises(TypeError):
+            path > 3.14
+
+    def test_ge_non_object_path_raises_type_error(self):
+        path = ObjectPath("db", "table")
+        with self.assertRaises(TypeError):
+            path >= None
+
+    def test_comparison_with_list_raises_type_error(self):
+        path = ObjectPath("db", "table")
+        with self.assertRaises(TypeError):
+            path < ["db", "table"]
+
+    def test_comparison_with_dict_raises_type_error(self):
+        path = ObjectPath("db", "table")
+        with self.assertRaises(TypeError):
+            path >= {"db": "table"}

@@ -19,10 +19,13 @@
 package org.apache.flink.runtime.rest.messages.checkpoints;
 
 import org.apache.flink.runtime.checkpoint.CheckpointStatsStatus;
+import org.apache.flink.runtime.rest.messages.util.stats.StatsSummaryDto;
 import org.apache.flink.util.Preconditions;
 
 import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.annotation.JsonCreator;
 import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.annotation.JsonProperty;
+
+import io.swagger.v3.oas.annotations.media.Schema;
 
 import java.util.List;
 import java.util.Objects;
@@ -111,6 +114,7 @@ public final class TaskCheckpointStatisticsWithSubtaskDetails extends TaskCheckp
     // -----------------------------------------------------------------------------------
 
     /** Summary of the checkpoint statistics for a given task. */
+    @Schema(name = "TaskCheckpointStatisticsWithSubtaskDetailsSummary")
     public static final class Summary {
 
         public static final String FIELD_NAME_CHECKPOINTED_SIZE = "checkpointed_size";
@@ -219,6 +223,7 @@ public final class TaskCheckpointStatisticsWithSubtaskDetails extends TaskCheckp
     }
 
     /** Duration of a checkpoint split up into its synchronous and asynchronous part. */
+    @Schema(name = "CheckpointDurationSummary")
     public static final class CheckpointDuration {
 
         public static final String FIELD_NAME_SYNCHRONOUS_DURATION = "sync";
@@ -268,6 +273,7 @@ public final class TaskCheckpointStatisticsWithSubtaskDetails extends TaskCheckp
     }
 
     /** Alignment information for a specific checkpoint at a given task. */
+    @Schema(name = "CheckpointAlignmentSummary")
     public static final class CheckpointAlignment {
 
         public static final String FIELD_NAME_BUFFERED_DATA = "buffered";

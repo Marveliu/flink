@@ -15,12 +15,12 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.planner.codegen
 
 import org.apache.flink.api.common.functions.Function
 import org.apache.flink.api.dag.Transformation
-import org.apache.flink.table.api.{TableConfig, TableException, ValidationException}
+import org.apache.flink.configuration.ReadableConfig
+import org.apache.flink.table.api.{TableException, ValidationException}
 import org.apache.flink.table.data.RowData
 import org.apache.flink.table.data.utils.JoinedRowData
 import org.apache.flink.table.functions.FunctionKind
@@ -40,7 +40,7 @@ import org.apache.calcite.rex._
 object CorrelateCodeGenerator {
 
   def generateCorrelateTransformation(
-      tableConfig: TableConfig,
+      tableConfig: ReadableConfig,
       operatorCtx: CodeGeneratorContext,
       inputTransformation: Transformation[RowData],
       inputType: RowType,
@@ -51,15 +51,15 @@ object CorrelateCodeGenerator {
       parallelism: Int,
       retainHeader: Boolean,
       opName: String,
-      transformationMeta: TransformationMetadata)
-  : Transformation[RowData] = {
+      transformationMeta: TransformationMetadata,
+      parallelismConfigured: Boolean): Transformation[RowData] = {
 
     // according to the SQL standard, every scalar function should also be a table function
     // but we don't allow that for now
     invocation.getOperator match {
       case func: BridgingSqlFunction if func.getDefinition.getKind == FunctionKind.TABLE => // ok
       case _: TableSqlFunction => // ok
-      case f@_ =>
+      case f @ _ =>
         throw new ValidationException(
           s"Invalid use of function '$f'. " +
             s"Currently, only table functions can be used in a correlate operation.")
@@ -89,23 +89,21 @@ object CorrelateCodeGenerator {
       substituteStreamOperator,
       InternalTypeInfo.of(outputType),
       parallelism,
-      0)
+      0,
+      parallelismConfigured)
   }
 
-  /**
-    * Generates the flat map operator to run the user-defined table function.
-    */
+  /** Generates the flat map operator to run the user-defined table function. */
   private[flink] def generateOperator[T <: Function](
       ctx: CodeGeneratorContext,
-      tableConfig: TableConfig,
+      tableConfig: ReadableConfig,
       inputType: RowType,
       condition: Option[RexNode],
       returnType: RowType,
       joinType: FlinkJoinType,
       rexCall: RexCall,
       ruleDescription: String,
-      retainHeader: Boolean = true)
-    : CodeGenOperatorFactory[RowData] = {
+      retainHeader: Boolean = true): CodeGenOperatorFactory[RowData] = {
 
     val functionResultType = FlinkTypeFactory.toLogicalRowType(rexCall.getType)
 
@@ -130,7 +128,7 @@ object CorrelateCodeGenerator {
       s"""
          |$correlateCollectorTerm.setCollector(
          | new ${classOf[StreamRecordCollector[_]].getCanonicalName}(
-         |     ${CodeGenUtils.DEFAULT_OPERATOR_COLLECTOR_TERM }));
+         |     ${CodeGenUtils.DEFAULT_OPERATOR_COLLECTOR_TERM}));
          |$resultCollectorTerm.setCollector($correlateCollectorTerm);
          |""".stripMargin
     ctx.addReusableOpenStatement(setCollectors)
@@ -148,8 +146,8 @@ object CorrelateCodeGenerator {
       // output all fields of left and right
       // in case of left outer join and the returned row of table function is empty,
       // fill all fields of row with null
-      val joinedRowTerm = CodeGenUtils.newName("joinedRow")
-      val nullRowTerm = CodeGenUtils.newName("nullRow")
+      val joinedRowTerm = CodeGenUtils.newName(ctx, "joinedRow")
+      val nullRowTerm = CodeGenUtils.newName(ctx, "nullRow")
       ctx.addReusableOutputRecord(returnType, classOf[JoinedRowData], joinedRowTerm)
       ctx.addReusableNullRow(nullRowTerm, functionResultType.getFieldCount)
       val header = if (retainHeader) {
@@ -171,7 +169,10 @@ object CorrelateCodeGenerator {
     }
 
     val genOperator = OperatorCodeGenerator.generateOneInputStreamOperator[RowData, RowData](
-      ctx, ruleDescription, body, inputType)
+      ctx,
+      ruleDescription,
+      body,
+      inputType)
     new CodeGenOperatorFactory(genOperator)
   }
 
@@ -181,23 +182,22 @@ object CorrelateCodeGenerator {
    */
   private def generateCorrelateCollector(
       ctx: CodeGeneratorContext,
-      tableConfig: TableConfig,
+      tableConfig: ReadableConfig,
       inputType: RowType,
       functionResultType: RowType,
       resultType: RowType,
       condition: Option[RexNode],
-      retainHeader: Boolean = true)
-    : String = {
+      retainHeader: Boolean = true): String = {
 
-    val correlateCollectorTerm = newName("correlateCollector")
+    val correlateCollectorTerm = newName(ctx, "correlateCollector")
     val inputTerm = CodeGenUtils.DEFAULT_INPUT1_TERM
     val udtfInputTerm = CodeGenUtils.DEFAULT_INPUT2_TERM
 
-    val collectorCtx = CodeGeneratorContext(tableConfig)
+    val collectorCtx = new CodeGeneratorContext(tableConfig, ctx.classLoader, ctx)
 
     val body = {
       // completely output left input + right
-      val joinedRowTerm = CodeGenUtils.newName("joinedRow")
+      val joinedRowTerm = CodeGenUtils.newName(ctx, "joinedRow")
       collectorCtx.addReusableOutputRecord(resultType, classOf[JoinedRowData], joinedRowTerm)
 
       val header = if (retainHeader) {
@@ -206,9 +206,9 @@ object CorrelateCodeGenerator {
         ""
       }
       s"""
-        |$joinedRowTerm.replace($inputTerm, $udtfInputTerm);
-        |$header
-        |outputResult($joinedRowTerm);
+         |$joinedRowTerm.replace($inputTerm, $udtfInputTerm);
+         |$header
+         |outputResult($joinedRowTerm);
       """.stripMargin
     }
 

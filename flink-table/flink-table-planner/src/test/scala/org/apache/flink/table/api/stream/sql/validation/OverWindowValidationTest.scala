@@ -15,27 +15,23 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.api.stream.sql.validation
 
-import org.apache.flink.api.scala._
 import org.apache.flink.table.api._
 import org.apache.flink.table.api.bridge.scala._
 import org.apache.flink.table.planner.runtime.utils.JavaUserDefinedAggFunctions.OverAgg0
 import org.apache.flink.table.planner.utils.TableTestBase
-import org.apache.flink.types.Row
 
-import org.junit.Test
+import org.assertj.core.api.Assertions.assertThatExceptionOfType
+import org.junit.jupiter.api.Test
 
 class OverWindowValidationTest extends TableTestBase {
 
   private val streamUtil = scalaStreamTestUtil()
   streamUtil.addDataStream[(Int, String, Long)]("T1", 'a, 'b, 'c, 'proctime.proctime)
 
-  /**
-    * All aggregates must be computed on the same window.
-    */
-  @Test(expected = classOf[TableException])
+  /** All aggregates must be computed on the same window. */
+  @Test
   def testMultiWindow(): Unit = {
 
     val sqlQuery = "SELECT " +
@@ -44,18 +40,18 @@ class OverWindowValidationTest extends TableTestBase {
       "sum(a) OVER (PARTITION BY b ORDER BY proctime RANGE UNBOUNDED preceding) " +
       "from T1"
 
-    streamUtil.tableEnv.sqlQuery(sqlQuery).toAppendStream[Row]
+    assertThatExceptionOfType(classOf[TableException])
+      .isThrownBy(() => streamUtil.tableEnv.sqlQuery(sqlQuery).toDataStream)
   }
 
-  /**
-    * OVER clause is necessary for [[OverAgg0]] window function.
-    */
-  @Test(expected = classOf[ValidationException])
+  /** OVER clause is necessary for [[OverAgg0]] window function. */
+  @Test
   def testInvalidOverAggregation(): Unit = {
-    streamUtil.addFunction("overAgg", new OverAgg0)
+    streamUtil.addTemporarySystemFunction("overAgg", new OverAgg0)
 
     val sqlQuery = "SELECT overAgg(c, a) FROM MyTable"
 
-    streamUtil.tableEnv.sqlQuery(sqlQuery)
+    assertThatExceptionOfType(classOf[ValidationException])
+      .isThrownBy(() => streamUtil.tableEnv.sqlQuery(sqlQuery))
   }
 }

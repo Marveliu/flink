@@ -30,25 +30,25 @@ import org.apache.flink.cep.pattern.conditions.SimpleCondition;
 import org.apache.flink.cep.utils.CepOperatorTestUtilities;
 import org.apache.flink.runtime.checkpoint.OperatorSubtaskState;
 import org.apache.flink.streaming.api.watermark.Watermark;
-import org.apache.flink.streaming.api.windowing.time.Time;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
 import org.apache.flink.streaming.util.KeyedOneInputStreamOperatorTestHarness;
 import org.apache.flink.streaming.util.OneInputStreamOperatorTestHarness;
 import org.apache.flink.streaming.util.OperatorSnapshotUtil;
+import org.apache.flink.test.util.MigrationTest;
+import org.apache.flink.testutils.junit.extensions.parameterized.Parameter;
+import org.apache.flink.testutils.junit.extensions.parameterized.ParameterizedTestExtension;
+import org.apache.flink.testutils.junit.extensions.parameterized.Parameters;
 
-import org.junit.Ignore;
-import org.junit.Test;
-import org.junit.runner.RunWith;
-import org.junit.runners.Parameterized;
+import org.junit.jupiter.api.TestTemplate;
+import org.junit.jupiter.api.extension.ExtendWith;
 
-import java.util.Arrays;
+import java.time.Duration;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentLinkedQueue;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Tests for checking whether CEP operator can restore from snapshots that were done using previous
@@ -57,41 +57,20 @@ import static org.junit.Assert.assertTrue;
  * <p>For regenerating the binary snapshot file of previous versions you have to run the {@code
  * write*()} method on the corresponding Flink release-* branch.
  */
-@RunWith(Parameterized.class)
-public class CEPMigrationTest {
+@ExtendWith(ParameterizedTestExtension.class)
+class CEPMigrationTest implements MigrationTest {
 
-    /**
-     * TODO change this to the corresponding savepoint version to be written (e.g. {@link
-     * FlinkVersion#v1_3} for 1.3) TODO and remove all @Ignore annotations on write*Snapshot()
-     * methods to generate savepoints TODO Note: You should generate the savepoint based on the
-     * release branch instead of the master.
-     */
-    private final FlinkVersion flinkGenerateSavepointVersion = null;
+    @Parameter public FlinkVersion migrateVersion;
 
-    private final FlinkVersion migrateVersion;
-
-    @Parameterized.Parameters(name = "Migration Savepoint: {0}")
+    @Parameters(name = "Migration Savepoint: {0}")
     public static Collection<FlinkVersion> parameters() {
-        return Arrays.asList(
-                FlinkVersion.v1_6,
-                FlinkVersion.v1_7,
-                FlinkVersion.v1_8,
-                FlinkVersion.v1_9,
-                FlinkVersion.v1_10,
-                FlinkVersion.v1_11,
-                FlinkVersion.v1_12,
-                FlinkVersion.v1_13,
-                FlinkVersion.v1_14);
+        return FlinkVersion.rangeOf(
+                FlinkVersion.v2_0, MigrationTest.getMostRecentlyPublishedVersion());
     }
 
-    public CEPMigrationTest(FlinkVersion migrateVersion) {
-        this.migrateVersion = migrateVersion;
-    }
-
-    /** Manually run this to write binary snapshot data. */
-    @Ignore
-    @Test
-    public void writeAfterBranchingPatternSnapshot() throws Exception {
+    @SnapshotsGenerator
+    public void writeAfterBranchingPatternSnapshot(FlinkVersion flinkGenerateSavepointVersion)
+            throws Exception {
 
         KeySelector<Event, Integer> keySelector =
                 new KeySelector<Event, Integer>() {
@@ -138,8 +117,8 @@ public class CEPMigrationTest {
         }
     }
 
-    @Test
-    public void testRestoreAfterBranchingPattern() throws Exception {
+    @TestTemplate
+    void testRestoreAfterBranchingPattern() throws Exception {
 
         KeySelector<Event, Integer> keySelector =
                 new KeySelector<Event, Integer>() {
@@ -179,33 +158,33 @@ public class CEPMigrationTest {
             ConcurrentLinkedQueue<Object> result = harness.getOutput();
 
             // watermark and 2 results
-            assertEquals(3, result.size());
+            assertThat(result).hasSize(3);
 
             Object resultObject1 = result.poll();
-            assertTrue(resultObject1 instanceof StreamRecord);
+            assertThat(resultObject1).isInstanceOf(StreamRecord.class);
             StreamRecord<?> resultRecord1 = (StreamRecord<?>) resultObject1;
-            assertTrue(resultRecord1.getValue() instanceof Map);
+            assertThat(resultRecord1.getValue()).isInstanceOf(Map.class);
 
             Object resultObject2 = result.poll();
-            assertTrue(resultObject2 instanceof StreamRecord);
+            assertThat(resultObject2).isInstanceOf(StreamRecord.class);
             StreamRecord<?> resultRecord2 = (StreamRecord<?>) resultObject2;
-            assertTrue(resultRecord2.getValue() instanceof Map);
+            assertThat(resultRecord2.getValue()).isInstanceOf(Map.class);
 
             @SuppressWarnings("unchecked")
             Map<String, List<Event>> patternMap1 =
                     (Map<String, List<Event>>) resultRecord1.getValue();
 
-            assertEquals(startEvent, patternMap1.get("start").get(0));
-            assertEquals(middleEvent1, patternMap1.get("middle").get(0));
-            assertEquals(endEvent, patternMap1.get("end").get(0));
+            assertThat(patternMap1.get("start").get(0)).isEqualTo(startEvent);
+            assertThat(patternMap1.get("middle").get(0)).isEqualTo(middleEvent1);
+            assertThat(patternMap1.get("end").get(0)).isEqualTo(endEvent);
 
             @SuppressWarnings("unchecked")
             Map<String, List<Event>> patternMap2 =
                     (Map<String, List<Event>>) resultRecord2.getValue();
 
-            assertEquals(startEvent, patternMap2.get("start").get(0));
-            assertEquals(middleEvent2, patternMap2.get("middle").get(0));
-            assertEquals(endEvent, patternMap2.get("end").get(0));
+            assertThat(patternMap2.get("start").get(0)).isEqualTo(startEvent);
+            assertThat(patternMap2.get("middle").get(0)).isEqualTo(middleEvent2);
+            assertThat(patternMap2.get("end").get(0)).isEqualTo(endEvent);
 
             // and now go for a checkpoint with the new serializers
 
@@ -237,29 +216,28 @@ public class CEPMigrationTest {
             result = harness.getOutput();
 
             // watermark and the result
-            assertEquals(2, result.size());
+            assertThat(result).hasSize(2);
 
             Object resultObject3 = result.poll();
-            assertTrue(resultObject3 instanceof StreamRecord);
+            assertThat(resultObject3).isInstanceOf(StreamRecord.class);
             StreamRecord<?> resultRecord3 = (StreamRecord<?>) resultObject3;
-            assertTrue(resultRecord3.getValue() instanceof Map);
+            assertThat(resultRecord3.getValue()).isInstanceOf(Map.class);
 
             @SuppressWarnings("unchecked")
             Map<String, List<Event>> patternMap3 =
                     (Map<String, List<Event>>) resultRecord3.getValue();
 
-            assertEquals(startEvent1, patternMap3.get("start").get(0));
-            assertEquals(middleEvent3, patternMap3.get("middle").get(0));
-            assertEquals(endEvent1, patternMap3.get("end").get(0));
+            assertThat(patternMap3.get("start").get(0)).isEqualTo(startEvent1);
+            assertThat(patternMap3.get("middle").get(0)).isEqualTo(middleEvent3);
+            assertThat(patternMap3.get("end").get(0)).isEqualTo(endEvent1);
         } finally {
             harness.close();
         }
     }
 
-    /** Manually run this to write binary snapshot data. */
-    @Ignore
-    @Test
-    public void writeStartingNewPatternAfterMigrationSnapshot() throws Exception {
+    @SnapshotsGenerator
+    public void writeStartingNewPatternAfterMigrationSnapshot(
+            FlinkVersion flinkGenerateSavepointVersion) throws Exception {
 
         KeySelector<Event, Integer> keySelector =
                 new KeySelector<Event, Integer>() {
@@ -302,8 +280,8 @@ public class CEPMigrationTest {
         }
     }
 
-    @Test
-    public void testRestoreStartingNewPatternAfterMigration() throws Exception {
+    @TestTemplate
+    void testRestoreStartingNewPatternAfterMigration() throws Exception {
 
         KeySelector<Event, Integer> keySelector =
                 new KeySelector<Event, Integer>() {
@@ -347,46 +325,46 @@ public class CEPMigrationTest {
             ConcurrentLinkedQueue<Object> result = harness.getOutput();
 
             // watermark and 3 results
-            assertEquals(4, result.size());
+            assertThat(result).hasSize(4);
 
             Object resultObject1 = result.poll();
-            assertTrue(resultObject1 instanceof StreamRecord);
+            assertThat(resultObject1).isInstanceOf(StreamRecord.class);
             StreamRecord<?> resultRecord1 = (StreamRecord<?>) resultObject1;
-            assertTrue(resultRecord1.getValue() instanceof Map);
+            assertThat(resultRecord1.getValue()).isInstanceOf(Map.class);
 
             Object resultObject2 = result.poll();
-            assertTrue(resultObject2 instanceof StreamRecord);
+            assertThat(resultObject2).isInstanceOf(StreamRecord.class);
             StreamRecord<?> resultRecord2 = (StreamRecord<?>) resultObject2;
-            assertTrue(resultRecord2.getValue() instanceof Map);
+            assertThat(resultRecord2.getValue()).isInstanceOf(Map.class);
 
             Object resultObject3 = result.poll();
-            assertTrue(resultObject3 instanceof StreamRecord);
+            assertThat(resultObject3).isInstanceOf(StreamRecord.class);
             StreamRecord<?> resultRecord3 = (StreamRecord<?>) resultObject3;
-            assertTrue(resultRecord3.getValue() instanceof Map);
+            assertThat(resultRecord3.getValue()).isInstanceOf(Map.class);
 
             @SuppressWarnings("unchecked")
             Map<String, List<Event>> patternMap1 =
                     (Map<String, List<Event>>) resultRecord1.getValue();
 
-            assertEquals(startEvent1, patternMap1.get("start").get(0));
-            assertEquals(middleEvent1, patternMap1.get("middle").get(0));
-            assertEquals(endEvent, patternMap1.get("end").get(0));
+            assertThat(patternMap1.get("start").get(0)).isEqualTo(startEvent1);
+            assertThat(patternMap1.get("middle").get(0)).isEqualTo(middleEvent1);
+            assertThat(patternMap1.get("end").get(0)).isEqualTo(endEvent);
 
             @SuppressWarnings("unchecked")
             Map<String, List<Event>> patternMap2 =
                     (Map<String, List<Event>>) resultRecord2.getValue();
 
-            assertEquals(startEvent1, patternMap2.get("start").get(0));
-            assertEquals(middleEvent2, patternMap2.get("middle").get(0));
-            assertEquals(endEvent, patternMap2.get("end").get(0));
+            assertThat(patternMap2.get("start").get(0)).isEqualTo(startEvent1);
+            assertThat(patternMap2.get("middle").get(0)).isEqualTo(middleEvent2);
+            assertThat(patternMap2.get("end").get(0)).isEqualTo(endEvent);
 
             @SuppressWarnings("unchecked")
             Map<String, List<Event>> patternMap3 =
                     (Map<String, List<Event>>) resultRecord3.getValue();
 
-            assertEquals(startEvent2, patternMap3.get("start").get(0));
-            assertEquals(middleEvent2, patternMap3.get("middle").get(0));
-            assertEquals(endEvent, patternMap3.get("end").get(0));
+            assertThat(patternMap3.get("start").get(0)).isEqualTo(startEvent2);
+            assertThat(patternMap3.get("middle").get(0)).isEqualTo(middleEvent2);
+            assertThat(patternMap3.get("end").get(0)).isEqualTo(endEvent);
 
             // and now go for a checkpoint with the new serializers
 
@@ -418,29 +396,28 @@ public class CEPMigrationTest {
             result = harness.getOutput();
 
             // watermark and the result
-            assertEquals(2, result.size());
+            assertThat(result).hasSize(2);
 
             Object resultObject4 = result.poll();
-            assertTrue(resultObject4 instanceof StreamRecord);
+            assertThat(resultObject4).isInstanceOf(StreamRecord.class);
             StreamRecord<?> resultRecord4 = (StreamRecord<?>) resultObject4;
-            assertTrue(resultRecord4.getValue() instanceof Map);
+            assertThat(resultRecord4.getValue()).isInstanceOf(Map.class);
 
             @SuppressWarnings("unchecked")
             Map<String, List<Event>> patternMap4 =
                     (Map<String, List<Event>>) resultRecord4.getValue();
 
-            assertEquals(startEvent3, patternMap4.get("start").get(0));
-            assertEquals(middleEvent3, patternMap4.get("middle").get(0));
-            assertEquals(endEvent1, patternMap4.get("end").get(0));
+            assertThat(patternMap4.get("start").get(0)).isEqualTo(startEvent3);
+            assertThat(patternMap4.get("middle").get(0)).isEqualTo(middleEvent3);
+            assertThat(patternMap4.get("end").get(0)).isEqualTo(endEvent1);
         } finally {
             harness.close();
         }
     }
 
-    /** Manually run this to write binary snapshot data. */
-    @Ignore
-    @Test
-    public void writeSinglePatternAfterMigrationSnapshot() throws Exception {
+    @SnapshotsGenerator
+    public void writeSinglePatternAfterMigrationSnapshot(FlinkVersion flinkGenerateSavepointVersion)
+            throws Exception {
 
         KeySelector<Event, Integer> keySelector =
                 new KeySelector<Event, Integer>() {
@@ -478,8 +455,8 @@ public class CEPMigrationTest {
         }
     }
 
-    @Test
-    public void testSinglePatternAfterMigration() throws Exception {
+    @TestTemplate
+    void testSinglePatternAfterMigration() throws Exception {
 
         KeySelector<Event, Integer> keySelector =
                 new KeySelector<Event, Integer>() {
@@ -518,27 +495,26 @@ public class CEPMigrationTest {
             ConcurrentLinkedQueue<Object> result = harness.getOutput();
 
             // watermark and the result
-            assertEquals(2, result.size());
+            assertThat(result).hasSize(2);
 
             Object resultObject = result.poll();
-            assertTrue(resultObject instanceof StreamRecord);
+            assertThat(resultObject).isInstanceOf(StreamRecord.class);
             StreamRecord<?> resultRecord = (StreamRecord<?>) resultObject;
-            assertTrue(resultRecord.getValue() instanceof Map);
+            assertThat(resultRecord.getValue()).isInstanceOf(Map.class);
 
             @SuppressWarnings("unchecked")
             Map<String, List<Event>> patternMap =
                     (Map<String, List<Event>>) resultRecord.getValue();
 
-            assertEquals(startEvent1, patternMap.get("start").get(0));
+            assertThat(patternMap.get("start").get(0)).isEqualTo(startEvent1);
         } finally {
             harness.close();
         }
     }
 
-    /** Manually run this to write binary snapshot data. */
-    @Ignore
-    @Test
-    public void writeAndOrSubtypConditionsPatternAfterMigrationSnapshot() throws Exception {
+    @SnapshotsGenerator
+    public void writeAndOrSubtypConditionsPatternAfterMigrationSnapshot(
+            FlinkVersion flinkGenerateSavepointVersion) throws Exception {
 
         KeySelector<Event, Integer> keySelector =
                 new KeySelector<Event, Integer>() {
@@ -577,8 +553,8 @@ public class CEPMigrationTest {
         }
     }
 
-    @Test
-    public void testAndOrSubtypeConditionsAfterMigration() throws Exception {
+    @TestTemplate
+    void testAndOrSubtypeConditionsAfterMigration() throws Exception {
 
         KeySelector<Event, Integer> keySelector =
                 new KeySelector<Event, Integer>() {
@@ -615,19 +591,19 @@ public class CEPMigrationTest {
             ConcurrentLinkedQueue<Object> result = harness.getOutput();
 
             // watermark and the result
-            assertEquals(2, result.size());
+            assertThat(result).hasSize(2);
 
             Object resultObject = result.poll();
-            assertTrue(resultObject instanceof StreamRecord);
+            assertThat(resultObject).isInstanceOf(StreamRecord.class);
             StreamRecord<?> resultRecord = (StreamRecord<?>) resultObject;
-            assertTrue(resultRecord.getValue() instanceof Map);
+            assertThat(resultRecord.getValue()).isInstanceOf(Map.class);
 
             @SuppressWarnings("unchecked")
             Map<String, List<Event>> patternMap =
                     (Map<String, List<Event>>) resultRecord.getValue();
 
-            assertEquals(startEvent1, patternMap.get("start").get(0));
-            assertEquals(endEvent, patternMap.get("start").get(1));
+            assertThat(patternMap.get("start").get(0)).isEqualTo(startEvent1);
+            assertThat(patternMap.get("start").get(1)).isEqualTo(endEvent);
         } finally {
             harness.close();
         }
@@ -653,7 +629,7 @@ public class CEPMigrationTest {
             Pattern<Event, ?> pattern =
                     Pattern.<Event>begin("start")
                             .where(new StartFilter())
-                            .within(Time.milliseconds(10L));
+                            .within(Duration.ofMillis(10L));
 
             return NFACompiler.compileFactory(pattern, handleTimeout).createNFA();
         }
@@ -682,7 +658,7 @@ public class CEPMigrationTest {
                             .where(new MiddleFilter())
                             .or(new SubEventEndFilter())
                             .times(2)
-                            .within(Time.milliseconds(10L));
+                            .within(Duration.ofMillis(10L));
 
             return NFACompiler.compileFactory(pattern, handleTimeout).createNFA();
         }
@@ -715,7 +691,7 @@ public class CEPMigrationTest {
                             .where(new EndFilter())
                             // add a window timeout to test whether timestamps of elements in the
                             // priority queue in CEP operator are correctly checkpointed/restored
-                            .within(Time.milliseconds(10L));
+                            .within(Duration.ofMillis(10L));
 
             return NFACompiler.compileFactory(pattern, handleTimeout).createNFA();
         }

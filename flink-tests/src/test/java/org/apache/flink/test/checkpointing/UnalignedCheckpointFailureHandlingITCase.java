@@ -20,6 +20,9 @@ package org.apache.flink.test.checkpointing;
 import org.apache.flink.api.common.JobID;
 import org.apache.flink.api.common.eventtime.WatermarkStrategy;
 import org.apache.flink.api.connector.source.lib.NumberSequenceSource;
+import org.apache.flink.configuration.IllegalConfigurationException;
+import org.apache.flink.configuration.ReadableConfig;
+import org.apache.flink.core.execution.CheckpointingMode;
 import org.apache.flink.core.execution.JobClient;
 import org.apache.flink.core.fs.FileSystem;
 import org.apache.flink.runtime.minicluster.MiniCluster;
@@ -27,6 +30,7 @@ import org.apache.flink.runtime.state.CheckpointStateOutputStream;
 import org.apache.flink.runtime.state.CheckpointStateToolset;
 import org.apache.flink.runtime.state.CheckpointStorage;
 import org.apache.flink.runtime.state.CheckpointStorageAccess;
+import org.apache.flink.runtime.state.CheckpointStorageFactory;
 import org.apache.flink.runtime.state.CheckpointStorageLocation;
 import org.apache.flink.runtime.state.CheckpointStorageLocationReference;
 import org.apache.flink.runtime.state.CheckpointStreamFactory;
@@ -38,23 +42,27 @@ import org.apache.flink.runtime.state.storage.JobManagerCheckpointStorage;
 import org.apache.flink.runtime.state.ttl.mock.MockKeyedStateBackend.MockSnapshotSupplier;
 import org.apache.flink.runtime.state.ttl.mock.MockStateBackend;
 import org.apache.flink.runtime.testutils.MiniClusterResourceConfiguration;
-import org.apache.flink.streaming.api.CheckpointingMode;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
-import org.apache.flink.streaming.api.functions.sink.DiscardingSink;
-import org.apache.flink.test.util.MiniClusterWithClientResource;
-import org.apache.flink.testutils.junit.SharedObjects;
+import org.apache.flink.streaming.api.functions.sink.v2.DiscardingSink;
+import org.apache.flink.streaming.util.CheckpointStorageUtils;
+import org.apache.flink.streaming.util.StateBackendUtils;
+import org.apache.flink.test.junit5.InjectMiniCluster;
+import org.apache.flink.test.junit5.MiniClusterExtension;
+import org.apache.flink.testutils.junit.SharedObjectsExtension;
 import org.apache.flink.testutils.junit.SharedReference;
+import org.apache.flink.testutils.junit.utils.TempDirUtils;
 import org.apache.flink.util.SerializedThrowable;
 
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.TemporaryFolder;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.RegisterExtension;
+import org.junit.jupiter.api.io.TempDir;
 
 import javax.annotation.Nullable;
 
 import java.io.File;
 import java.io.IOException;
 import java.io.UnsupportedEncodingException;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
 import java.util.Optional;
@@ -63,7 +71,6 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 import static java.util.Collections.singletonList;
 import static org.apache.flink.api.common.JobStatus.RUNNING;
-import static org.apache.flink.api.common.time.Deadline.fromNow;
 import static org.apache.flink.core.fs.Path.fromLocalFile;
 import static org.apache.flink.runtime.testutils.CommonTestUtils.waitForAllTaskRunning;
 import static org.apache.flink.runtime.testutils.CommonTestUtils.waitForJobStatus;
@@ -75,53 +82,63 @@ import static org.apache.flink.util.ExceptionUtils.rethrow;
  *
  * @see <a href="https://issues.apache.org/jira/browse/FLINK-24667">FLINK-24667</a>
  */
-public class UnalignedCheckpointFailureHandlingITCase {
+class UnalignedCheckpointFailureHandlingITCase {
 
     private static final int PARALLELISM = 2;
 
-    @Rule public final TemporaryFolder temporaryFolder = new TemporaryFolder();
+    @TempDir private Path temporaryFolder;
 
-    @Rule public final SharedObjects sharedObjects = SharedObjects.create();
+    @RegisterExtension
+    private final SharedObjectsExtension sharedObjects = SharedObjectsExtension.create();
 
-    @Rule
-    public final MiniClusterWithClientResource miniClusterResource =
-            new MiniClusterWithClientResource(
+    @RegisterExtension
+    private static final MiniClusterExtension MINI_CLUSTER_EXTENSION =
+            new MiniClusterExtension(
                     new MiniClusterResourceConfiguration.Builder()
                             .setNumberTaskManagers(PARALLELISM)
                             .setNumberSlotsPerTaskManager(1)
                             .build());
 
     @Test
-    public void testCheckpointSuccessAfterFailure() throws Exception {
-        final StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
-        TestCheckpointStorage storage =
-                new TestCheckpointStorage(
-                        new JobManagerCheckpointStorage(), sharedObjects, temporaryFolder);
+    void testCheckpointSuccessAfterFailure(@InjectMiniCluster MiniCluster miniCluster)
+            throws Exception {
+        SharedReference<AtomicBoolean> failOnCloseRef = sharedObjects.add(new AtomicBoolean(true));
 
-        configure(env, storage);
+        final StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        TestCheckpointStorageFactory.failOnCloseRef = failOnCloseRef;
+        TestCheckpointStorageFactory.tempFolderRef = sharedObjects.add(temporaryFolder);
+
+        configure(
+                env,
+                "org.apache.flink.test.checkpointing.UnalignedCheckpointFailureHandlingITCase$TestCheckpointStorageFactory");
         buildGraph(env);
 
-        JobClient jobClient = env.executeAsync();
-        JobID jobID = jobClient.getJobID();
-        MiniCluster miniCluster = miniClusterResource.getMiniCluster();
+        // use non-snapshotting backend to test channel state persistence integration with
+        // checkpoint storage
+        MockStateBackend stateBackend = new MockStateBackend(MockSnapshotSupplier.EMPTY);
+        JobClient jobClient =
+                StateBackendUtils.configureStateBackendAndExecuteAsync(env, stateBackend);
 
-        waitForJobStatus(jobClient, singletonList(RUNNING), fromNow(Duration.ofSeconds(30)));
+        JobID jobID = jobClient.getJobID();
+
+        waitForJobStatus(jobClient, singletonList(RUNNING));
         waitForAllTaskRunning(miniCluster, jobID, false);
 
-        triggerFailingCheckpoint(jobID, TestException.class, miniCluster);
+        triggerFailingCheckpoint(jobID, TestException.class, failOnCloseRef, miniCluster);
 
         miniCluster.triggerCheckpoint(jobID).get();
     }
 
-    private void configure(StreamExecutionEnvironment env, TestCheckpointStorage storage) {
+    private void configure(StreamExecutionEnvironment env, String storageFactory) {
         // enable checkpointing but only via API
-        env.enableCheckpointing(Long.MAX_VALUE, CheckpointingMode.EXACTLY_ONCE);
+        // use big enough interval so a manual checkpoint can be performed
+        env.enableCheckpointing(100000, CheckpointingMode.EXACTLY_ONCE);
 
-        env.getCheckpointConfig().setCheckpointStorage(storage);
+        // always delay the first checkpoint (even after restart)
+        // to prioritize manual checkpoint so that its failure can be checked
+        env.getCheckpointConfig().setMinPauseBetweenCheckpoints(100000);
 
-        // use non-snapshotting backend to test channel state persistence integration with
-        // checkpoint storage
-        env.setStateBackend(new MockStateBackend(MockSnapshotSupplier.EMPTY));
+        CheckpointStorageUtils.configureCheckpointStorageWithFactory(env, storageFactory);
 
         env.getCheckpointConfig().enableUnalignedCheckpoints();
 
@@ -152,27 +169,40 @@ public class UnalignedCheckpointFailureHandlingITCase {
                             Thread.sleep(1);
                             return value;
                         })
-                .addSink(new DiscardingSink<>());
+                .sinkTo(new DiscardingSink<>());
     }
 
+    /**
+     * Trigger checkpoints until the first failing checkpoint. The exception should come from {@link
+     * CheckpointStateOutputStream#close()} which should get called by the channel state writer
+     * after catching an exception in {@link CheckpointStateOutputStream#closeAndGetHandle()}. In
+     * some cases on writing checkpoints, only {@link CheckpointStateOutputStream#close()} will be
+     * called, so `failOnClose` has to be checked here.
+     */
     private void triggerFailingCheckpoint(
-            JobID jobID, Class<TestException> expectedException, MiniCluster miniCluster)
+            JobID jobID,
+            Class<TestException> expectedException,
+            SharedReference<AtomicBoolean> failOnCloseRef,
+            MiniCluster miniCluster)
             throws InterruptedException, ExecutionException {
-        while (true) {
-            Optional<Throwable> cpFailure =
+        boolean foundCheckpointFailure = false;
+        do {
+            Optional<Throwable> cpFailureOpt =
                     miniCluster
                             .triggerCheckpoint(jobID)
                             .thenApply(ign -> Optional.empty())
                             .handle((ign, err) -> Optional.ofNullable(err))
                             .get();
-            if (!cpFailure.isPresent()) {
-                Thread.sleep(50); // trigger again - in case of no channel data was written
-            } else if (isCausedBy(cpFailure.get(), expectedException)) {
-                return;
-            } else {
-                rethrow(cpFailure.get());
+
+            if (cpFailureOpt.isPresent()) {
+                Throwable cpFailure = cpFailureOpt.get();
+                if (isCausedBy(cpFailure, expectedException)) {
+                    foundCheckpointFailure = true;
+                } else {
+                    rethrow(cpFailure);
+                }
             }
-        }
+        } while (!foundCheckpointFailure || failOnCloseRef.get().get());
     }
 
     private boolean isCausedBy(Throwable t, Class<TestException> expectedException) {
@@ -185,18 +215,31 @@ public class UnalignedCheckpointFailureHandlingITCase {
                 .isPresent();
     }
 
+    public static class TestCheckpointStorageFactory implements CheckpointStorageFactory {
+
+        private static SharedReference<AtomicBoolean> failOnCloseRef;
+        private static SharedReference<Path> tempFolderRef;
+
+        @Override
+        public CheckpointStorage createFromConfig(ReadableConfig config, ClassLoader classLoader)
+                throws IllegalConfigurationException {
+            return new TestCheckpointStorage(
+                    new JobManagerCheckpointStorage(), failOnCloseRef, tempFolderRef);
+        }
+    }
+
     private static class TestCheckpointStorage implements CheckpointStorage {
         private final CheckpointStorage delegate;
         private final SharedReference<AtomicBoolean> failOnCloseRef;
-        private final SharedReference<TemporaryFolder> tempFolderRef;
+        private final SharedReference<Path> tempFolderRef;
 
         private TestCheckpointStorage(
                 CheckpointStorage delegate,
-                SharedObjects sharedObjects,
-                TemporaryFolder tempFolder) {
+                SharedReference<AtomicBoolean> failOnCloseRef,
+                SharedReference<Path> tempFolderRef) {
             this.delegate = delegate;
-            this.failOnCloseRef = sharedObjects.add(new AtomicBoolean(true));
-            this.tempFolderRef = sharedObjects.add(tempFolder);
+            this.failOnCloseRef = failOnCloseRef;
+            this.tempFolderRef = tempFolderRef;
         }
 
         @Override
@@ -204,7 +247,7 @@ public class UnalignedCheckpointFailureHandlingITCase {
             return new TestCheckpointStorageAccess(
                     delegate.createCheckpointStorage(jobId),
                     failOnCloseRef.get(),
-                    tempFolderRef.get().newFolder());
+                    TempDirUtils.newFolder(tempFolderRef.get()));
         }
 
         @Override

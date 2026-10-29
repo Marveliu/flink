@@ -18,18 +18,14 @@
 
 package org.apache.flink.sql.parser.validate;
 
+import org.apache.calcite.sql.fun.SqlLibrary;
 import org.apache.calcite.sql.validate.SqlConformance;
+import org.apache.calcite.sql.validate.SqlConformanceEnum;
 
 /** Sql conformance used for flink to set specific sql dialect parser. * */
 public enum FlinkSqlConformance implements SqlConformance {
     /** Calcite's default SQL behavior. */
-    DEFAULT,
-
-    /**
-     * Conformance value that instructs Calcite to use SQL semantics consistent with the Apache
-     * HIVE, but ignoring its more inconvenient or controversial dicta.
-     */
-    HIVE;
+    DEFAULT;
 
     @Override
     public boolean isLiberal() {
@@ -47,6 +43,16 @@ public enum FlinkSqlConformance implements SqlConformance {
     }
 
     @Override
+    public SelectAliasLookup isSelectAlias() {
+        return SqlConformanceEnum.DEFAULT.isSelectAlias();
+    }
+
+    @Override
+    public boolean isNonStrictGroupBy() {
+        return false;
+    }
+
+    @Override
     public boolean isGroupByOrdinal() {
         return false;
     }
@@ -58,29 +64,22 @@ public enum FlinkSqlConformance implements SqlConformance {
 
     @Override
     public boolean isSortByOrdinal() {
-        switch (this) {
-            case DEFAULT:
-            case HIVE:
-                return true;
-            default:
-                return false;
-        }
+        return true;
     }
 
     @Override
     public boolean isSortByAlias() {
-        switch (this) {
-            case DEFAULT:
-            case HIVE:
-                return true;
-            default:
-                return false;
-        }
+        return true;
     }
 
     @Override
     public boolean isSortByAliasObscures() {
         return false;
+    }
+
+    @Override
+    public boolean isSupportedDualTable() {
+        return SqlConformanceEnum.DEFAULT.isSupportedDualTable();
     }
 
     @Override
@@ -130,16 +129,17 @@ public enum FlinkSqlConformance implements SqlConformance {
 
     @Override
     public boolean allowNiladicParentheses() {
-        return false;
+        return true;
+    }
+
+    @Override
+    public boolean allowNiladicConstantWithoutParentheses() {
+        return true;
     }
 
     @Override
     public boolean allowExplicitRowValueConstructor() {
-        switch (this) {
-            case DEFAULT:
-                return true;
-        }
-        return false;
+        return true;
     }
 
     @Override
@@ -149,6 +149,11 @@ public enum FlinkSqlConformance implements SqlConformance {
 
     @Override
     public boolean isLimitStartCountAllowed() {
+        return false;
+    }
+
+    @Override
+    public boolean isOffsetLimitAllowed() {
         return false;
     }
 
@@ -174,6 +179,31 @@ public enum FlinkSqlConformance implements SqlConformance {
 
     @Override
     public boolean allowQualifyingCommonColumn() {
+        return true;
+    }
+
+    @Override
+    public SqlLibrary semantics() {
+        return SqlConformanceEnum.DEFAULT.semantics();
+    }
+
+    @Override
+    public boolean allowLenientCoercion() {
+        return SqlConformanceEnum.DEFAULT.allowLenientCoercion();
+    }
+
+    @Override
+    public boolean checkedArithmetic() {
+        return SqlConformanceEnum.DEFAULT.checkedArithmetic();
+    }
+
+    @Override
+    public boolean supportsUnsignedTypes() {
+        return false;
+    }
+
+    @Override
+    public boolean isValueAllowed() {
         return true;
     }
 }

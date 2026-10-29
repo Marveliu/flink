@@ -23,8 +23,9 @@ import org.apache.flink.api.common.JobID;
 import org.apache.flink.python.env.AbstractPythonEnvironmentManager;
 import org.apache.flink.python.env.PythonDependencyInfo;
 import org.apache.flink.python.env.PythonEnvironment;
-import org.apache.flink.python.util.PythonEnvironmentManagerUtils;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import pemja.core.PythonInterpreterConfig;
 
 import java.io.File;
@@ -37,6 +38,8 @@ import java.util.Map;
  */
 @Internal
 public class EmbeddedPythonEnvironmentManager extends AbstractPythonEnvironmentManager {
+    private static final Logger LOG =
+            LoggerFactory.getLogger(EmbeddedPythonEnvironmentManager.class);
 
     public EmbeddedPythonEnvironmentManager(
             PythonDependencyInfo dependencyInfo,
@@ -54,28 +57,11 @@ public class EmbeddedPythonEnvironmentManager extends AbstractPythonEnvironmentM
 
         String executionMode = dependencyInfo.getExecutionMode();
 
-        if (executionMode.equalsIgnoreCase("sub-interpreter")) {
-            execType = PythonInterpreterConfig.ExecType.SUB_INTERPRETER;
-        } else if (executionMode.equalsIgnoreCase("multi-thread")) {
+        if (executionMode.equalsIgnoreCase("thread")) {
             execType = PythonInterpreterConfig.ExecType.MULTI_THREAD;
         } else {
             throw new RuntimeException(
                     String.format("Unsupported execution mode %s.", executionMode));
-        }
-
-        String pythonVersion =
-                PythonEnvironmentManagerUtils.getPythonVersion(dependencyInfo.getPythonExec());
-
-        if (execType == PythonInterpreterConfig.ExecType.SUB_INTERPRETER) {
-            if (pythonVersion.compareTo("3.8") < 0) {
-                throw new RuntimeException(
-                        "`SUB-INTERPRETER` execution mode only supports Python 3.8+");
-            }
-        } else {
-            if (pythonVersion.compareTo("3.7") < 0) {
-                throw new RuntimeException(
-                        "`MULTI-THREAD` execution mode only supports Python 3.7+");
-            }
         }
 
         if (env.containsKey("FLINK_TESTING")) {
@@ -88,13 +74,41 @@ public class EmbeddedPythonEnvironmentManager extends AbstractPythonEnvironmentM
                     flinkPython + File.pathSeparator + env.getOrDefault("PYTHONPATH", ""));
         }
 
-        PythonInterpreterConfig interpreterConfig =
+        PythonInterpreterConfig.PythonInterpreterConfigBuilder interpreterConfigBuilder =
                 PythonInterpreterConfig.newBuilder()
-                        .setPythonExec(dependencyInfo.getPythonExec())
                         .setExcType(execType)
-                        .addPythonPaths(env.getOrDefault("PYTHONPATH", ""))
-                        .build();
-
-        return new EmbeddedPythonEnvironment(interpreterConfig, env);
+                        .addPythonPaths(env.getOrDefault("PYTHONPATH", ""));
+        if (dependencyInfo.isPythonExecFromArchives()) {
+            String pythonExecPath = dependencyInfo.getPythonExec();
+            String binSeparator = File.separator + "bin" + File.separator;
+            int binIndex = pythonExecPath.lastIndexOf(binSeparator);
+            if (binIndex == -1) {
+                throw new RuntimeException(
+                        String.format(
+                                "Python executable '%s' is from archives but does not contain "
+                                        + "a '%s' path component. Expected a path like "
+                                        + "'venv/bin/python'.",
+                                pythonExecPath, binSeparator));
+            }
+            String pythonHome =
+                    String.join(
+                            File.separator,
+                            env.get(PYTHON_WORKING_DIR),
+                            pythonExecPath.substring(0, binIndex));
+            String pythonExec =
+                    String.join(File.separator, env.get(PYTHON_WORKING_DIR), pythonExecPath);
+            LOG.info(
+                    "Use python home and python exec from archives. Python home: {}, Python exec: {}",
+                    pythonHome,
+                    pythonExec);
+            interpreterConfigBuilder.setPythonHome(pythonHome).setPythonExec(pythonExec);
+        } else {
+            LOG.info(
+                    "Python interpreter path is not from archives, use python exec from "
+                            + "config {}.",
+                    dependencyInfo.getPythonExec());
+            interpreterConfigBuilder.setPythonExec(dependencyInfo.getPythonExec());
+        }
+        return new EmbeddedPythonEnvironment(interpreterConfigBuilder.build(), env);
     }
 }

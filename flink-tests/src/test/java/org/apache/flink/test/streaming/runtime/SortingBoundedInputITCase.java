@@ -23,6 +23,7 @@ import org.apache.flink.api.common.eventtime.Watermark;
 import org.apache.flink.api.common.eventtime.WatermarkGenerator;
 import org.apache.flink.api.common.eventtime.WatermarkOutput;
 import org.apache.flink.api.common.eventtime.WatermarkStrategy;
+import org.apache.flink.api.common.functions.OpenContext;
 import org.apache.flink.api.common.state.MapState;
 import org.apache.flink.api.common.state.MapStateDescriptor;
 import org.apache.flink.api.common.state.ValueState;
@@ -36,7 +37,6 @@ import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.ExecutionOptions;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.datastream.DataStreamSource;
-import org.apache.flink.streaming.api.datastream.DataStreamUtils;
 import org.apache.flink.streaming.api.datastream.KeyedStream;
 import org.apache.flink.streaming.api.datastream.SingleOutputStreamOperator;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
@@ -64,8 +64,7 @@ import org.apache.flink.util.Collector;
 import org.apache.flink.util.OutputTag;
 import org.apache.flink.util.SplittableIterator;
 
-import org.junit.Assert;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.Arrays;
 import java.util.HashSet;
@@ -77,16 +76,14 @@ import java.util.Random;
 import java.util.Set;
 import java.util.function.Consumer;
 
-import static org.hamcrest.CoreMatchers.equalTo;
-import static org.hamcrest.Matchers.greaterThanOrEqualTo;
-import static org.junit.Assert.assertThat;
-import static org.junit.Assert.assertTrue;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.fail;
 
 /** An end to end test for sorted inputs for a keyed operator with bounded inputs. */
-public class SortingBoundedInputITCase extends AbstractTestBase {
+class SortingBoundedInputITCase extends AbstractTestBase {
 
     @Test
-    public void testOneInputOperator() {
+    void testOneInputOperator() throws Exception {
         long numberOfRecords = 1_000_000;
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
 
@@ -109,15 +106,15 @@ public class SortingBoundedInputITCase extends AbstractTestBase {
                                 new AssertingOperator());
 
         long sum =
-                CollectionUtil.iteratorToList(DataStreamUtils.collect(counts)).stream()
+                CollectionUtil.iteratorToList(counts.executeAndCollect()).stream()
                         .mapToLong(l -> l)
                         .sum();
 
-        assertThat(sum, equalTo(numberOfRecords));
+        assertThat(sum).isEqualTo(numberOfRecords);
     }
 
     @Test
-    public void testTwoInputOperator() {
+    void testTwoInputOperator() throws Exception {
         long numberOfRecords = 500_000;
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
 
@@ -148,15 +145,15 @@ public class SortingBoundedInputITCase extends AbstractTestBase {
                                 new AssertingTwoInputOperator());
 
         long sum =
-                CollectionUtil.iteratorToList(DataStreamUtils.collect(counts)).stream()
+                CollectionUtil.iteratorToList(counts.executeAndCollect()).stream()
                         .mapToLong(l -> l)
                         .sum();
 
-        assertThat(sum, equalTo(numberOfRecords * 2));
+        assertThat(sum).isEqualTo(numberOfRecords * 2);
     }
 
     @Test
-    public void testThreeInputOperator() {
+    void testThreeInputOperator() throws Exception {
         long numberOfRecords = 500_000;
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
 
@@ -203,15 +200,15 @@ public class SortingBoundedInputITCase extends AbstractTestBase {
         DataStream<Long> counts = new DataStream<>(env, assertingTransformation);
 
         long sum =
-                CollectionUtil.iteratorToList(DataStreamUtils.collect(counts)).stream()
+                CollectionUtil.iteratorToList(counts.executeAndCollect()).stream()
                         .mapToLong(l -> l)
                         .sum();
 
-        assertThat(sum, equalTo(numberOfRecords * 3));
+        assertThat(sum).isEqualTo(numberOfRecords * 3);
     }
 
     @Test
-    public void testBatchExecutionWithTimersOneInput() {
+    void testBatchExecutionWithTimersOneInput() throws Exception {
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
         env.setParallelism(1); // set parallelism to 1 to have consistent order of results
 
@@ -223,7 +220,7 @@ public class SortingBoundedInputITCase extends AbstractTestBase {
                 WatermarkStrategy.forGenerator(ctx -> GENERATE_WATERMARK_AFTER_4_14_TIMESTAMP)
                         .withTimestampAssigner((r, previousTimestamp) -> r.f1);
         SingleOutputStreamOperator<Tuple2<Integer, Integer>> elements =
-                env.fromElements(
+                env.fromData(
                                 Tuple2.of(1, 3),
                                 Tuple2.of(1, 1),
                                 Tuple2.of(2, 1),
@@ -252,7 +249,7 @@ public class SortingBoundedInputITCase extends AbstractTestBase {
                                     private ValueState<Long> previousTimestampState;
 
                                     @Override
-                                    public void open(Configuration parameters) {
+                                    public void open(OpenContext openContext) {
                                         countState =
                                                 getRuntimeContext()
                                                         .getMapState(
@@ -290,9 +287,8 @@ public class SortingBoundedInputITCase extends AbstractTestBase {
                                                     Optional.ofNullable(
                                                                     previousTimestampState.value())
                                                             .orElse(0L);
-                                            assertThat(
-                                                    elementTimestamp,
-                                                    greaterThanOrEqualTo(previousTimestamp));
+                                            assertThat(elementTimestamp)
+                                                    .isGreaterThanOrEqualTo(previousTimestamp);
                                             previousTimestampState.update(elementTimestamp);
 
                                             Integer currentCount =
@@ -323,23 +319,21 @@ public class SortingBoundedInputITCase extends AbstractTestBase {
 
         DataStream<Integer> lateStream = sums.getSideOutput(lateElements);
         List<Integer> lateRecordsCollected =
-                CollectionUtil.iteratorToList(DataStreamUtils.collect(lateStream));
+                CollectionUtil.iteratorToList(lateStream.executeAndCollect());
         List<Tuple3<Long, Integer, Integer>> sumsCollected =
-                CollectionUtil.iteratorToList(DataStreamUtils.collect(sums));
+                CollectionUtil.iteratorToList(sums.executeAndCollect());
 
-        assertTrue(lateRecordsCollected.isEmpty());
-        assertThat(
-                sumsCollected,
-                equalTo(
-                        Arrays.asList(
-                                Tuple3.of(10L, 1, 4),
-                                Tuple3.of(20L, 1, 3),
-                                Tuple3.of(10L, 2, 2),
-                                Tuple3.of(20L, 2, 1))));
+        assertThat(lateRecordsCollected).isEmpty();
+        assertThat(sumsCollected)
+                .containsExactly(
+                        Tuple3.of(10L, 1, 4),
+                        Tuple3.of(20L, 1, 3),
+                        Tuple3.of(10L, 2, 2),
+                        Tuple3.of(20L, 2, 1));
     }
 
     @Test
-    public void testBatchExecutionWithTimersTwoInput() {
+    void testBatchExecutionWithTimersTwoInput() throws Exception {
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
         env.setParallelism(1); // set parallelism to 1 to have consistent order of results
 
@@ -351,7 +345,7 @@ public class SortingBoundedInputITCase extends AbstractTestBase {
                 WatermarkStrategy.forGenerator(ctx -> GENERATE_WATERMARK_AFTER_4_14_TIMESTAMP)
                         .withTimestampAssigner((r, previousTimestamp) -> r.f1);
         SingleOutputStreamOperator<Integer> elements1 =
-                env.fromElements(
+                env.fromData(
                                 Tuple2.of(1, 3),
                                 Tuple2.of(1, 1),
                                 Tuple2.of(2, 1),
@@ -369,7 +363,7 @@ public class SortingBoundedInputITCase extends AbstractTestBase {
                         .map(element -> element.f0);
 
         SingleOutputStreamOperator<Integer> elements2 =
-                env.fromElements(
+                env.fromData(
                                 Tuple2.of(1, 3),
                                 Tuple2.of(1, 1),
                                 Tuple2.of(2, 1),
@@ -403,7 +397,7 @@ public class SortingBoundedInputITCase extends AbstractTestBase {
                                     private ValueState<Long> previousTimestampState;
 
                                     @Override
-                                    public void open(Configuration parameters) {
+                                    public void open(OpenContext openContext) {
                                         countState =
                                                 getRuntimeContext()
                                                         .getMapState(
@@ -453,9 +447,8 @@ public class SortingBoundedInputITCase extends AbstractTestBase {
                                                     Optional.ofNullable(
                                                                     previousTimestampState.value())
                                                             .orElse(0L);
-                                            assertThat(
-                                                    elementTimestamp,
-                                                    greaterThanOrEqualTo(previousTimestamp));
+                                            assertThat(elementTimestamp)
+                                                    .isGreaterThanOrEqualTo(previousTimestamp);
                                             previousTimestampState.update(elementTimestamp);
 
                                             Integer currentCount =
@@ -486,19 +479,18 @@ public class SortingBoundedInputITCase extends AbstractTestBase {
 
         DataStream<Integer> lateStream = sums.getSideOutput(lateElements);
         List<Integer> lateRecordsCollected =
-                CollectionUtil.iteratorToList(DataStreamUtils.collect(lateStream));
+                CollectionUtil.iteratorToList(lateStream.executeAndCollect());
         List<Tuple3<Long, Integer, Integer>> sumsCollected =
-                CollectionUtil.iteratorToList(DataStreamUtils.collect(sums));
+                CollectionUtil.iteratorToList(sums.executeAndCollect());
 
-        assertTrue(lateRecordsCollected.isEmpty());
-        assertThat(
-                sumsCollected,
-                equalTo(
-                        Arrays.asList(
-                                Tuple3.of(10L, 1, 8),
-                                Tuple3.of(20L, 1, 6),
-                                Tuple3.of(10L, 2, 4),
-                                Tuple3.of(20L, 2, 2))));
+        assertThat(lateRecordsCollected).isEmpty();
+
+        assertThat(sumsCollected)
+                .containsExactly(
+                        Tuple3.of(10L, 1, 8),
+                        Tuple3.of(20L, 1, 6),
+                        Tuple3.of(10L, 2, 4),
+                        Tuple3.of(20L, 2, 2));
     }
 
     private static final WatermarkGenerator<Tuple2<Integer, Integer>>
@@ -532,7 +524,7 @@ public class SortingBoundedInputITCase extends AbstractTestBase {
             Integer incomingKey = element.getValue().f0;
             if (!Objects.equals(incomingKey, currentKey)) {
                 if (!seenKeys.add(incomingKey)) {
-                    Assert.fail("Received an out of order key: " + incomingKey);
+                    fail("Received an out of order key: " + incomingKey);
                 }
                 this.currentKey = incomingKey;
             }
@@ -569,7 +561,7 @@ public class SortingBoundedInputITCase extends AbstractTestBase {
             Integer incomingKey = element.getValue().f0;
             if (!Objects.equals(incomingKey, currentKey)) {
                 if (!seenKeys.add(incomingKey)) {
-                    Assert.fail("Received an out of order key: " + incomingKey);
+                    fail("Received an out of order key: " + incomingKey);
                 }
                 this.currentKey = incomingKey;
             }
@@ -611,7 +603,7 @@ public class SortingBoundedInputITCase extends AbstractTestBase {
             Integer incomingKey = element.f0;
             if (!Objects.equals(incomingKey, currentKey)) {
                 if (!seenKeys.add(incomingKey)) {
-                    Assert.fail("Received an out of order key: " + incomingKey);
+                    fail("Received an out of order key: " + incomingKey);
                 }
                 this.currentKey = incomingKey;
             }

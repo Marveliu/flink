@@ -17,17 +17,22 @@
  */
 package org.apache.flink.table.planner.plan.nodes.physical.stream
 
+import org.apache.flink.table.planner.JList
 import org.apache.flink.table.planner.calcite.FlinkTypeFactory
+import org.apache.flink.table.planner.hint.StateTtlHint
+import org.apache.flink.table.planner.plan.nodes.exec.{ExecNode, InputProperty}
 import org.apache.flink.table.planner.plan.nodes.exec.stream.StreamExecIncrementalGroupAggregate
-import org.apache.flink.table.planner.plan.nodes.exec.{InputProperty, ExecNode}
 import org.apache.flink.table.planner.plan.utils._
+import org.apache.flink.table.planner.utils.ShortcutUtils.{unwrapTableConfig, unwrapTypeFactory}
 
 import org.apache.calcite.plan.{RelOptCluster, RelTraitSet}
 import org.apache.calcite.rel.`type`.RelDataType
-import org.apache.calcite.rel.core.AggregateCall
 import org.apache.calcite.rel.{RelNode, RelWriter}
+import org.apache.calcite.rel.core.AggregateCall
+import org.apache.calcite.rel.hint.RelHint
 
 import java.util
+import java.util.Collections
 
 /**
  * Stream physical RelNode for unbounded incremental group aggregate.
@@ -42,9 +47,8 @@ import java.util
  *               +- StreamPhysicalLocalGroupAggregate (partial-local-aggregate)
  * }}}
  *
- * partial-global-aggregate and final-local-aggregate can be combined as
- * this node to share [[org.apache.flink.api.common.state.State]].
- * now the sub-plan is
+ * partial-global-aggregate and final-local-aggregate can be combined as this node to share
+ * [[org.apache.flink.api.common.state.State]]. now the sub-plan is
  * {{{
  *   StreamPhysicalGlobalGroupAggregate (final-global-aggregate)
  *   +- StreamPhysicalExchange
@@ -53,7 +57,8 @@ import java.util
  *            +- StreamPhysicalLocalGroupAggregate (partial-local-aggregate)
  * }}}
  *
- * @see [[StreamPhysicalGroupAggregateBase]] for more info.
+ * @see
+ *   [[StreamPhysicalGroupAggregateBase]] for more info.
  */
 class StreamPhysicalIncrementalGroupAggregate(
     cluster: RelOptCluster,
@@ -61,20 +66,29 @@ class StreamPhysicalIncrementalGroupAggregate(
     inputRel: RelNode,
     val partialAggGrouping: Array[Int],
     val partialAggCalls: Array[AggregateCall],
-    val finalAggGrouping: Array[Int],
-    val finalAggCalls: Array[AggregateCall],
+    finalAggGrouping: Array[Int],
+    finalAggCalls: Array[AggregateCall],
     partialOriginalAggCalls: Array[AggregateCall],
     partialAggCallNeedRetractions: Array[Boolean],
     partialAggNeedRetraction: Boolean,
     partialLocalAggInputRowType: RelDataType,
-    partialGlobalAggRowType: RelDataType)
-  extends StreamPhysicalGroupAggregateBase(cluster, traitSet, inputRel) {
+    partialGlobalAggRowType: RelDataType,
+    hints: JList[RelHint] = Collections.emptyList())
+  extends StreamPhysicalGroupAggregateBase(
+    cluster,
+    traitSet,
+    inputRel,
+    finalAggGrouping,
+    finalAggCalls,
+    hints) {
 
   private lazy val incrementalAggInfo = AggregateUtil.createIncrementalAggInfoList(
+    unwrapTypeFactory(inputRel),
     FlinkTypeFactory.toLogicalRowType(partialLocalAggInputRowType),
     partialOriginalAggCalls,
     partialAggCallNeedRetractions,
-    partialAggNeedRetraction)
+    partialAggNeedRetraction
+  )
 
   override def deriveRowType(): RelDataType = {
     AggregateUtil.inferLocalAggRowType(
@@ -99,34 +113,40 @@ class StreamPhysicalIncrementalGroupAggregate(
       partialAggCallNeedRetractions,
       partialAggNeedRetraction,
       partialLocalAggInputRowType,
-      partialGlobalAggRowType)
+      partialGlobalAggRowType,
+      hints)
   }
 
   override def explainTerms(pw: RelWriter): RelWriter = {
-    super.explainTerms(pw)
-      .item("partialAggGrouping",
+    super
+      .explainTerms(pw)
+      .item(
+        "partialAggGrouping",
         RelExplainUtil.fieldToString(partialAggGrouping, inputRel.getRowType))
-      .item("finalAggGrouping",
-        RelExplainUtil.fieldToString(finalAggGrouping, inputRel.getRowType))
-      .item("select", RelExplainUtil.streamGroupAggregationToString(
-        inputRel.getRowType,
-        getRowType,
-        incrementalAggInfo,
-        finalAggGrouping,
-        shuffleKey = Some(partialAggGrouping)))
+      .item("finalAggGrouping", RelExplainUtil.fieldToString(finalAggGrouping, inputRel.getRowType))
+      .item(
+        "select",
+        RelExplainUtil.streamGroupAggregationToString(
+          inputRel.getRowType,
+          getRowType,
+          incrementalAggInfo,
+          finalAggGrouping,
+          shuffleKey = Some(partialAggGrouping))
+      )
   }
 
   override def translateToExecNode(): ExecNode[_] = {
     new StreamExecIncrementalGroupAggregate(
+      unwrapTableConfig(this),
       partialAggGrouping,
       finalAggGrouping,
       partialOriginalAggCalls,
       partialAggCallNeedRetractions,
       FlinkTypeFactory.toLogicalRowType(partialLocalAggInputRowType),
       partialAggNeedRetraction,
+      StateTtlHint.getStateTtlFromHintOnSingleRel(hints),
       InputProperty.DEFAULT,
       FlinkTypeFactory.toLogicalRowType(getRowType),
-      getRelDetailedDescription
-    )
+      getRelDetailedDescription)
   }
 }

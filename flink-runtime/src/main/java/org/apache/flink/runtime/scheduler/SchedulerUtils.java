@@ -21,12 +21,15 @@ package org.apache.flink.runtime.scheduler;
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.JobID;
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.core.execution.RecoveryClaimMode;
 import org.apache.flink.runtime.checkpoint.CheckpointIDCounter;
 import org.apache.flink.runtime.checkpoint.CheckpointRecoveryFactory;
+import org.apache.flink.runtime.checkpoint.CheckpointStatsTracker;
 import org.apache.flink.runtime.checkpoint.CompletedCheckpointStore;
 import org.apache.flink.runtime.checkpoint.DeactivatedCheckpointCompletedCheckpointStore;
 import org.apache.flink.runtime.checkpoint.DeactivatedCheckpointIDCounter;
 import org.apache.flink.runtime.checkpoint.DefaultCompletedCheckpointStoreUtils;
+import org.apache.flink.runtime.checkpoint.NoOpCheckpointStatsTracker;
 import org.apache.flink.runtime.client.JobExecutionException;
 import org.apache.flink.runtime.executiongraph.DefaultExecutionGraphBuilder;
 import org.apache.flink.runtime.jobgraph.JobGraph;
@@ -35,6 +38,7 @@ import org.apache.flink.runtime.state.SharedStateRegistry;
 import org.slf4j.Logger;
 
 import java.util.concurrent.Executor;
+import java.util.function.Supplier;
 
 /** Utils class for Flink's scheduler implementations. */
 public final class SchedulerUtils {
@@ -55,7 +59,12 @@ public final class SchedulerUtils {
         if (DefaultExecutionGraphBuilder.isCheckpointingEnabled(jobGraph)) {
             try {
                 return createCompletedCheckpointStore(
-                        configuration, checkpointRecoveryFactory, ioExecutor, log, jobId);
+                        configuration,
+                        checkpointRecoveryFactory,
+                        ioExecutor,
+                        log,
+                        jobId,
+                        jobGraph.getSavepointRestoreSettings().getRecoveryClaimMode());
             } catch (Exception e) {
                 throw new JobExecutionException(
                         jobId,
@@ -73,14 +82,16 @@ public final class SchedulerUtils {
             CheckpointRecoveryFactory recoveryFactory,
             Executor ioExecutor,
             Logger log,
-            JobID jobId)
+            JobID jobId,
+            RecoveryClaimMode recoveryClaimMode)
             throws Exception {
         return recoveryFactory.createRecoveredCompletedCheckpointStore(
                 jobId,
                 DefaultCompletedCheckpointStoreUtils.getMaximumNumberOfRetainedCheckpoints(
                         jobManagerConfig, log),
                 SharedStateRegistry.DEFAULT_FACTORY,
-                ioExecutor);
+                ioExecutor,
+                recoveryClaimMode);
     }
 
     public static CheckpointIDCounter createCheckpointIDCounterIfCheckpointingIsEnabled(
@@ -96,6 +107,15 @@ public final class SchedulerUtils {
             }
         } else {
             return DeactivatedCheckpointIDCounter.INSTANCE;
+        }
+    }
+
+    public static CheckpointStatsTracker createCheckpointStatsTrackerIfCheckpointingIsEnabled(
+            JobGraph jobGraph, Supplier<CheckpointStatsTracker> checkpointStatsTrackerFactory) {
+        if (DefaultExecutionGraphBuilder.isCheckpointingEnabled(jobGraph)) {
+            return checkpointStatsTrackerFactory.get();
+        } else {
+            return NoOpCheckpointStatsTracker.INSTANCE;
         }
     }
 

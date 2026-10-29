@@ -73,7 +73,10 @@ public class DefaultOperatorCoordinatorHandler implements OperatorCoordinatorHan
     @Override
     public void initializeOperatorCoordinators(ComponentMainThreadExecutor mainThreadExecutor) {
         for (OperatorCoordinatorHolder coordinatorHolder : coordinatorMap.values()) {
-            coordinatorHolder.lazyInitialize(globalFailureHandler, mainThreadExecutor);
+            coordinatorHolder.lazyInitialize(
+                    globalFailureHandler,
+                    mainThreadExecutor,
+                    executionGraph.getCheckpointCoordinator());
         }
     }
 
@@ -84,7 +87,9 @@ public class DefaultOperatorCoordinatorHandler implements OperatorCoordinatorHan
 
     @Override
     public void disposeAllOperatorCoordinators() {
-        coordinatorMap.values().forEach(IOUtils::closeQuietly);
+        executionGraph.getAllVertices().values().stream()
+                .flatMap(vertex -> vertex.getOperatorCoordinatorsEvenIfUninitialized().stream())
+                .forEach(IOUtils::closeQuietly);
     }
 
     @Override
@@ -118,7 +123,8 @@ public class DefaultOperatorCoordinatorHandler implements OperatorCoordinatorHan
         }
 
         try {
-            coordinator.handleEventFromOperator(exec.getParallelSubtaskIndex(), evt);
+            coordinator.handleEventFromOperator(
+                    exec.getParallelSubtaskIndex(), exec.getAttemptNumber(), evt);
         } catch (Throwable t) {
             ExceptionUtils.rethrowIfFatalErrorOrOOM(t);
             globalFailureHandler.handleGlobalFailure(t);
@@ -131,10 +137,8 @@ public class DefaultOperatorCoordinatorHandler implements OperatorCoordinatorHan
 
         final OperatorCoordinatorHolder coordinatorHolder = coordinatorMap.get(operator);
         if (coordinatorHolder == null) {
-            throw new FlinkException(
-                    "Coordinator of operator "
-                            + operator
-                            + " does not exist or the job vertex this operator belongs to is not initialized.");
+            throw new CoordinatorNotExistException(
+                    operator, "the job vertex this operator belongs to is not initialized.", false);
         }
 
         final OperatorCoordinator coordinator = coordinatorHolder.coordinator();
@@ -149,11 +153,16 @@ public class DefaultOperatorCoordinatorHandler implements OperatorCoordinatorHan
     @Override
     public void registerAndStartNewCoordinators(
             Collection<OperatorCoordinatorHolder> coordinators,
-            ComponentMainThreadExecutor mainThreadExecutor) {
+            ComponentMainThreadExecutor mainThreadExecutor,
+            final int parallelism) {
 
         for (OperatorCoordinatorHolder coordinator : coordinators) {
             coordinatorMap.put(coordinator.operatorId(), coordinator);
-            coordinator.lazyInitialize(globalFailureHandler, mainThreadExecutor);
+            coordinator.lazyInitialize(
+                    globalFailureHandler,
+                    mainThreadExecutor,
+                    executionGraph.getCheckpointCoordinator(),
+                    parallelism);
         }
         startOperatorCoordinators(coordinators);
     }

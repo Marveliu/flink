@@ -18,21 +18,24 @@
 
 package org.apache.flink.state.api.utils;
 
-import org.apache.flink.api.common.ExecutionConfig;
 import org.apache.flink.api.common.JobID;
+import org.apache.flink.api.common.serialization.SerializerConfigImpl;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.java.typeutils.TypeExtractor;
 import org.apache.flink.client.program.ClusterClient;
+import org.apache.flink.client.program.rest.RestClusterClient;
 import org.apache.flink.core.execution.SavepointFormatType;
 import org.apache.flink.runtime.execution.ExecutionState;
 import org.apache.flink.runtime.jobgraph.JobGraph;
 import org.apache.flink.runtime.rest.messages.job.JobDetailsInfo;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
-import org.apache.flink.streaming.api.functions.source.FromElementsFunction;
-import org.apache.flink.streaming.api.functions.source.SourceFunction;
+import org.apache.flink.streaming.api.functions.source.legacy.FromElementsFunction;
+import org.apache.flink.streaming.api.functions.source.legacy.SourceFunction;
+import org.apache.flink.test.junit5.InjectClusterClient;
 import org.apache.flink.test.util.AbstractTestBase;
-import org.apache.flink.test.util.MiniClusterWithClientResource;
 import org.apache.flink.util.AbstractID;
+
+import org.junit.jupiter.api.BeforeEach;
 
 import java.io.IOException;
 import java.util.Arrays;
@@ -48,6 +51,13 @@ import static org.apache.flink.runtime.execution.ExecutionState.RUNNING;
 /** A test base that includes utilities for taking a savepoint. */
 public abstract class SavepointTestBase extends AbstractTestBase {
 
+    private RestClusterClient<?> clusterClient;
+
+    @BeforeEach
+    void setClusterClient(@InjectClusterClient RestClusterClient<?> clusterClient) {
+        this.clusterClient = clusterClient;
+    }
+
     public String takeSavepoint(StreamExecutionEnvironment executionEnvironment) {
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
         env.getConfig().disableClosureCleaner();
@@ -56,26 +66,23 @@ public abstract class SavepointTestBase extends AbstractTestBase {
 
         JobID jobId = jobGraph.getJobID();
 
-        ClusterClient<?> client = MINI_CLUSTER_RESOURCE.getClusterClient();
-
         try {
-            JobID jobID = client.submitJob(jobGraph).get();
+            JobID jobID = clusterClient.submitJob(jobGraph).get();
 
-            waitForAllRunningOrSomeTerminal(jobID, MINI_CLUSTER_RESOURCE);
+            waitForAllRunningOrSomeTerminal(jobID, clusterClient);
 
-            return triggerSavepoint(client, jobID).get(5, TimeUnit.MINUTES);
+            return triggerSavepoint(clusterClient, jobID).get(5, TimeUnit.MINUTES);
         } catch (Exception e) {
             throw new RuntimeException("Failed to take savepoint", e);
         } finally {
-            client.cancel(jobId);
+            clusterClient.cancel(jobId);
         }
     }
 
     public static void waitForAllRunningOrSomeTerminal(
-            JobID jobID, MiniClusterWithClientResource miniClusterResource) throws Exception {
+            JobID jobID, RestClusterClient<?> clusterClient) throws Exception {
         while (true) {
-            JobDetailsInfo jobInfo =
-                    miniClusterResource.getRestClusterClient().getJobDetails(jobID).get();
+            JobDetailsInfo jobInfo = clusterClient.getJobDetails(jobID).get();
             Set<ExecutionState> vertexStates =
                     jobInfo.getJobVertexInfos().stream()
                             .map(JobDetailsInfo.JobVertexDetailsInfo::getExecutionState)
@@ -103,7 +110,7 @@ public abstract class SavepointTestBase extends AbstractTestBase {
         try {
             SourceFunction<T> inner =
                     new FromElementsFunction<>(
-                            typeInfo.createSerializer(new ExecutionConfig()), data);
+                            typeInfo.createSerializer(new SerializerConfigImpl()), data);
             return new WaitingSource<>(inner, typeInfo);
         } catch (IOException e) {
             throw new RuntimeException(e);

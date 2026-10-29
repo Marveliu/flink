@@ -15,10 +15,10 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.planner.plan.nodes.calcite
 
-import org.apache.flink.table.catalog.{CatalogTable, ContextResolvedTable, ObjectIdentifier, ResolvedCatalogTable}
+import org.apache.flink.table.api.InsertConflictStrategy
+import org.apache.flink.table.catalog.ContextResolvedTable
 import org.apache.flink.table.connector.sink.DynamicTableSink
 import org.apache.flink.table.planner.plan.abilities.sink.SinkAbilitySpec
 
@@ -28,13 +28,12 @@ import org.apache.calcite.rel.hint.RelHint
 
 import java.util
 
-import scala.collection.JavaConversions._
+import scala.collection.JavaConverters._
 
 /**
-  * Sub-class of [[Sink]] that is a relational expression
-  * which writes out data of input node into a [[DynamicTableSink]].
-  * This class corresponds to Calcite logical rel.
-  */
+ * Sub-class of [[Sink]] that is a relational expression which writes out data of input node into a
+ * [[DynamicTableSink]]. This class corresponds to Calcite logical rel.
+ */
 final class LogicalSink(
     cluster: RelOptCluster,
     traitSet: RelTraitSet,
@@ -42,20 +41,32 @@ final class LogicalSink(
     hints: util.List[RelHint],
     contextResolvedTable: ContextResolvedTable,
     tableSink: DynamicTableSink,
+    targetColumns: Array[Array[Int]],
     val staticPartitions: Map[String, String],
-    val abilitySpecs: Array[SinkAbilitySpec])
-  extends Sink(cluster, traitSet, input, hints, contextResolvedTable, tableSink) {
+    abilitySpecs: Array[SinkAbilitySpec],
+    val conflictStrategy: InsertConflictStrategy)
+  extends Sink(
+    cluster,
+    traitSet,
+    input,
+    hints,
+    targetColumns,
+    contextResolvedTable,
+    tableSink,
+    abilitySpecs) {
 
   override def copy(traitSet: RelTraitSet, inputs: util.List[RelNode]): RelNode = {
     new LogicalSink(
       cluster,
       traitSet,
-      inputs.head,
+      inputs.asScala.head,
       hints,
       contextResolvedTable,
       tableSink,
+      targetColumns,
       staticPartitions,
-      abilitySpecs)
+      abilitySpecs,
+      conflictStrategy)
   }
 }
 
@@ -67,7 +78,9 @@ object LogicalSink {
       contextResolvedTable: ContextResolvedTable,
       tableSink: DynamicTableSink,
       staticPartitions: util.Map[String, String],
-      abilitySpecs: Array[SinkAbilitySpec]): LogicalSink = {
+      targetColumns: Array[Array[Int]],
+      abilitySpecs: Array[SinkAbilitySpec],
+      conflictStrategy: InsertConflictStrategy): LogicalSink = {
     val traits = input.getCluster.traitSetOf(Convention.NONE)
     new LogicalSink(
       input.getCluster,
@@ -76,11 +89,9 @@ object LogicalSink {
       hints,
       contextResolvedTable,
       tableSink,
-      staticPartitions.toMap,
-      abilitySpecs)
+      targetColumns,
+      staticPartitions.asScala.toMap,
+      abilitySpecs,
+      conflictStrategy)
   }
 }
-
-
-
-

@@ -105,6 +105,19 @@ Format Options
       <td>Specify the endianness to encode the bytes of numeric value. Valid values are 'big-endian' and 'little-endian'.
       See more details of <a href="https://en.wikipedia.org/wiki/Endianness">endianness</a>.</td>
     </tr>
+    <tr>
+      <td><h5>raw.line-delimiter</h5></td>
+      <td>optional</td>
+      <td style="word-wrap: break-word;">(none)</td>
+      <td>String</td>
+      <td>Specify the line delimiter for splitting incoming messages into multiple rows during
+      deserialization. When set, each incoming message is decoded using 'raw.charset' and then split
+      by this delimiter; one row is emitted per segment. During serialization, the delimiter bytes
+      are appended to each serialized value. Common values are '\n' (newline) or '||'.
+      <br><strong>Note:</strong> When the same delimiter is configured for both serialization and
+      deserialization, the two are round-trip compatible: a trailing delimiter appended by the
+      serializer is automatically stripped during deserialization.</td>
+    </tr>
     </tbody>
 </table>
 
@@ -167,6 +180,17 @@ The table below details the SQL types the format supports, including details of 
       <td><code>RAW</code></td>
       <td>The sequence of bytes serialized by the underlying TypeSerializer of the RAW type.</td>
     </tr>
+    <tr>
+      <td><code>VARIANT</code></td>
+      <td>A UTF-8 (by default) encoded JSON document.<br>
+       The encoding charset can be configured by 'raw.charset'.<br>
+       On read, the decoded text is parsed like <code>PARSE_JSON</code>, so duplicate object keys are rejected and
+       malformed JSON fails the job. On write, the value is rendered by <code>Variant#toJson</code>. The round trip is
+       value-lossless but not byte-lossless: insignificant whitespace is dropped and object keys are ordered.</td>
+    </tr>
     </tbody>
 </table>
+
+Note: combining `VARIANT` with `raw.line-delimiter` gives you newline-delimited JSON, where each line of a message
+becomes one row.
 

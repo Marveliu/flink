@@ -20,6 +20,7 @@ package org.apache.flink.runtime.taskmanager;
 
 import org.apache.flink.api.common.ExecutionConfig;
 import org.apache.flink.api.common.JobID;
+import org.apache.flink.api.common.JobInfo;
 import org.apache.flink.api.common.TaskInfo;
 import org.apache.flink.api.common.operators.MailboxExecutor;
 import org.apache.flink.configuration.Configuration;
@@ -29,6 +30,8 @@ import org.apache.flink.runtime.broadcast.BroadcastVariableManager;
 import org.apache.flink.runtime.checkpoint.CheckpointException;
 import org.apache.flink.runtime.checkpoint.CheckpointMetrics;
 import org.apache.flink.runtime.checkpoint.TaskStateSnapshot;
+import org.apache.flink.runtime.checkpoint.channel.ChannelStateWriteRequestExecutorFactory;
+import org.apache.flink.runtime.checkpoint.channel.ChannelStateWriter;
 import org.apache.flink.runtime.execution.Environment;
 import org.apache.flink.runtime.executiongraph.ExecutionAttemptID;
 import org.apache.flink.runtime.externalresource.ExternalResourceInfoProvider;
@@ -36,10 +39,12 @@ import org.apache.flink.runtime.io.disk.iomanager.IOManager;
 import org.apache.flink.runtime.io.network.TaskEventDispatcher;
 import org.apache.flink.runtime.io.network.api.writer.ResultPartitionWriter;
 import org.apache.flink.runtime.io.network.partition.consumer.IndexedInputGate;
+import org.apache.flink.runtime.jobgraph.JobType;
 import org.apache.flink.runtime.jobgraph.JobVertexID;
 import org.apache.flink.runtime.jobgraph.tasks.InputSplitProvider;
 import org.apache.flink.runtime.jobgraph.tasks.TaskOperatorEventGateway;
 import org.apache.flink.runtime.memory.MemoryManager;
+import org.apache.flink.runtime.memory.SharedResources;
 import org.apache.flink.runtime.metrics.groups.TaskMetricGroup;
 import org.apache.flink.runtime.query.TaskKvStateRegistry;
 import org.apache.flink.runtime.state.CheckpointStorageAccess;
@@ -53,6 +58,7 @@ import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
 
+import static org.apache.flink.util.Preconditions.checkArgument;
 import static org.apache.flink.util.Preconditions.checkNotNull;
 import static org.apache.flink.util.Preconditions.checkState;
 
@@ -61,7 +67,12 @@ public class RuntimeEnvironment implements Environment {
 
     private final JobID jobId;
     private final JobVertexID jobVertexId;
+
+    private final JobType jobType;
+
     private final ExecutionAttemptID executionId;
+
+    private final JobInfo jobInfo;
 
     private final TaskInfo taskInfo;
 
@@ -72,6 +83,7 @@ public class RuntimeEnvironment implements Environment {
     private final UserCodeClassLoader userCodeClassLoader;
 
     private final MemoryManager memManager;
+    private final SharedResources sharedResources;
     private final IOManager ioManager;
     private final BroadcastVariableManager bcVarManager;
     private final TaskStateManager taskStateManager;
@@ -82,6 +94,7 @@ public class RuntimeEnvironment implements Environment {
     private final Map<String, Future<Path>> distCacheEntries;
 
     private final ResultPartitionWriter[] writers;
+    private final int[] writerConsumerParallelisms;
     private final IndexedInputGate[] inputGates;
 
     private final TaskEventDispatcher taskEventDispatcher;
@@ -98,24 +111,33 @@ public class RuntimeEnvironment implements Environment {
 
     private final Task containingTask;
 
+    private final TaskManagerActions taskManagerActions;
+
     @Nullable private MailboxExecutor mainMailboxExecutor;
 
     @Nullable private ExecutorService asyncOperationsThreadPool;
 
     @Nullable private CheckpointStorageAccess checkpointStorageAccess;
 
+    ChannelStateWriteRequestExecutorFactory channelStateExecutorFactory;
+
+    @Nullable private ChannelStateWriter channelStateWriter;
+
     // ------------------------------------------------------------------------
 
     public RuntimeEnvironment(
             JobID jobId,
+            JobType jobType,
             JobVertexID jobVertexId,
             ExecutionAttemptID executionId,
             ExecutionConfig executionConfig,
+            JobInfo jobInfo,
             TaskInfo taskInfo,
             Configuration jobConfiguration,
             Configuration taskConfiguration,
             UserCodeClassLoader userCodeClassLoader,
             MemoryManager memManager,
+            SharedResources sharedResources,
             IOManager ioManager,
             BroadcastVariableManager bcVarManager,
             TaskStateManager taskStateManager,
@@ -125,6 +147,7 @@ public class RuntimeEnvironment implements Environment {
             InputSplitProvider splitProvider,
             Map<String, Future<Path>> distCacheEntries,
             ResultPartitionWriter[] writers,
+            int[] writerConsumerParallelisms,
             IndexedInputGate[] inputGates,
             TaskEventDispatcher taskEventDispatcher,
             CheckpointResponder checkpointResponder,
@@ -132,17 +155,22 @@ public class RuntimeEnvironment implements Environment {
             TaskManagerRuntimeInfo taskManagerInfo,
             TaskMetricGroup metrics,
             Task containingTask,
-            ExternalResourceInfoProvider externalResourceInfoProvider) {
+            ExternalResourceInfoProvider externalResourceInfoProvider,
+            ChannelStateWriteRequestExecutorFactory channelStateExecutorFactory,
+            TaskManagerActions taskManagerActions) {
 
         this.jobId = checkNotNull(jobId);
+        this.jobType = checkNotNull(jobType);
         this.jobVertexId = checkNotNull(jobVertexId);
         this.executionId = checkNotNull(executionId);
+        this.jobInfo = checkNotNull(jobInfo);
         this.taskInfo = checkNotNull(taskInfo);
         this.executionConfig = checkNotNull(executionConfig);
         this.jobConfiguration = checkNotNull(jobConfiguration);
         this.taskConfiguration = checkNotNull(taskConfiguration);
         this.userCodeClassLoader = checkNotNull(userCodeClassLoader);
         this.memManager = checkNotNull(memManager);
+        this.sharedResources = checkNotNull(sharedResources);
         this.ioManager = checkNotNull(ioManager);
         this.bcVarManager = checkNotNull(bcVarManager);
         this.taskStateManager = checkNotNull(taskStateManager);
@@ -152,6 +180,8 @@ public class RuntimeEnvironment implements Environment {
         this.splitProvider = checkNotNull(splitProvider);
         this.distCacheEntries = checkNotNull(distCacheEntries);
         this.writers = checkNotNull(writers);
+        this.writerConsumerParallelisms = checkNotNull(writerConsumerParallelisms);
+        checkArgument(writers.length == writerConsumerParallelisms.length);
         this.inputGates = checkNotNull(inputGates);
         this.taskEventDispatcher = checkNotNull(taskEventDispatcher);
         this.checkpointResponder = checkNotNull(checkpointResponder);
@@ -160,6 +190,8 @@ public class RuntimeEnvironment implements Environment {
         this.containingTask = containingTask;
         this.metrics = metrics;
         this.externalResourceInfoProvider = checkNotNull(externalResourceInfoProvider);
+        this.channelStateExecutorFactory = checkNotNull(channelStateExecutorFactory);
+        this.taskManagerActions = checkNotNull(taskManagerActions);
     }
 
     // ------------------------------------------------------------------------
@@ -175,6 +207,11 @@ public class RuntimeEnvironment implements Environment {
     }
 
     @Override
+    public JobType getJobType() {
+        return jobType;
+    }
+
+    @Override
     public JobVertexID getJobVertexId() {
         return jobVertexId;
     }
@@ -182,6 +219,11 @@ public class RuntimeEnvironment implements Environment {
     @Override
     public ExecutionAttemptID getExecutionId() {
         return executionId;
+    }
+
+    @Override
+    public JobInfo getJobInfo() {
+        return jobInfo;
     }
 
     @Override
@@ -217,6 +259,11 @@ public class RuntimeEnvironment implements Environment {
     @Override
     public MemoryManager getMemoryManager() {
         return memManager;
+    }
+
+    @Override
+    public SharedResources getSharedResources() {
+        return sharedResources;
     }
 
     @Override
@@ -265,6 +312,11 @@ public class RuntimeEnvironment implements Environment {
     }
 
     @Override
+    public int getWriterConsumerParallelism(int index) {
+        return writerConsumerParallelisms[index];
+    }
+
+    @Override
     public ResultPartitionWriter[] getAllWriters() {
         return writers;
     }
@@ -287,6 +339,11 @@ public class RuntimeEnvironment implements Environment {
     @Override
     public ExternalResourceInfoProvider getExternalResourceInfoProvider() {
         return externalResourceInfoProvider;
+    }
+
+    @Override
+    public TaskManagerActions getTaskManagerActions() {
+        return taskManagerActions;
     }
 
     @Override
@@ -358,5 +415,21 @@ public class RuntimeEnvironment implements Environment {
     public CheckpointStorageAccess getCheckpointStorageAccess() {
         return checkNotNull(
                 checkpointStorageAccess, "checkpointStorage has not been initialized yet!");
+    }
+
+    @Override
+    public ChannelStateWriteRequestExecutorFactory getChannelStateExecutorFactory() {
+        return channelStateExecutorFactory;
+    }
+
+    public void setChannelStateWriter(ChannelStateWriter channelStateWriter) {
+        checkState(this.channelStateWriter == null, "Cannot set channelStateWriter twice!");
+        this.channelStateWriter = channelStateWriter;
+    }
+
+    @Override
+    @Nullable
+    public ChannelStateWriter getChannelStateWriter() {
+        return this.channelStateWriter;
     }
 }

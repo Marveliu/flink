@@ -20,22 +20,42 @@ package org.apache.flink.test.completeness;
 
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.common.typeutils.TypeInformationTestBase;
-import org.apache.flink.util.TestLogger;
+import org.apache.flink.formats.avro.typeutils.AvroTypeInfo;
+import org.apache.flink.formats.avro.typeutils.GenericRecordAvroTypeInfo;
+import org.apache.flink.table.dataview.ListViewTypeInfo;
+import org.apache.flink.table.dataview.MapViewTypeInfo;
+import org.apache.flink.table.runtime.typeutils.BigDecimalTypeInfo;
+import org.apache.flink.table.runtime.typeutils.DecimalDataTypeInfo;
+import org.apache.flink.table.runtime.typeutils.ExternalTypeInfo;
+import org.apache.flink.table.runtime.typeutils.InternalTypeInfo;
+import org.apache.flink.table.runtime.typeutils.LegacyInstantTypeInfo;
+import org.apache.flink.table.runtime.typeutils.LegacyLocalDateTimeTypeInfo;
+import org.apache.flink.table.runtime.typeutils.LegacyTimestampTypeInfo;
+import org.apache.flink.table.runtime.typeutils.SortedMapTypeInfo;
+import org.apache.flink.table.runtime.typeutils.StringDataTypeInfo;
+import org.apache.flink.table.runtime.typeutils.TimestampDataTypeInfo;
+import org.apache.flink.table.typeutils.TimeIndicatorTypeInfo;
+import org.apache.flink.table.typeutils.TimeIntervalTypeInfo;
+import org.apache.flink.util.TestLoggerExtension;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.reflections.Reflections;
 
 import java.lang.reflect.Modifier;
+import java.util.Arrays;
+import java.util.List;
 import java.util.Set;
 import java.util.stream.Collectors;
 
-import static org.junit.Assert.fail;
+import static org.junit.jupiter.api.Assertions.fail;
 
 /** Scans the class path for type information and checks if there is a test for it. */
-public class TypeInfoTestCoverageTest extends TestLogger {
+@ExtendWith(TestLoggerExtension.class)
+class TypeInfoTestCoverageTest {
 
     @Test
-    public void testTypeInfoTestCoverage() {
+    void testTypeInfoTestCoverage() {
         Reflections reflections = new Reflections("org.apache.flink");
 
         Set<Class<? extends TypeInformation>> typeInfos =
@@ -45,6 +65,26 @@ public class TypeInfoTestCoverageTest extends TestLogger {
                 reflections.getSubTypesOf(TypeInformationTestBase.class).stream()
                         .map(Class::getName)
                         .collect(Collectors.toSet());
+
+        //  type info whitelist for TypeInformationTestBase test coverage (see FLINK-27725)
+        final List<String> typeInfoTestBaseWhitelist =
+                Arrays.asList(
+                        LegacyTimestampTypeInfo.class.getName(),
+                        InternalTypeInfo.class.getName(),
+                        LegacyLocalDateTimeTypeInfo.class.getName(),
+                        TimeIntervalTypeInfo.class.getName(),
+                        TimeIndicatorTypeInfo.class.getName(),
+                        TimestampDataTypeInfo.class.getName(),
+                        MapViewTypeInfo.class.getName(),
+                        LegacyInstantTypeInfo.class.getName(),
+                        ListViewTypeInfo.class.getName(),
+                        StringDataTypeInfo.class.getName(),
+                        SortedMapTypeInfo.class.getName(),
+                        ExternalTypeInfo.class.getName(),
+                        BigDecimalTypeInfo.class.getName(),
+                        DecimalDataTypeInfo.class.getName(),
+                        GenericRecordAvroTypeInfo.class.getName(),
+                        AvroTypeInfo.class.getName());
 
         // check if a test exists for each type information
         for (Class<? extends TypeInformation> typeInfo : typeInfos) {
@@ -61,7 +101,8 @@ public class TypeInfoTestCoverageTest extends TestLogger {
             }
 
             final String testToFind = typeInfo.getName() + "Test";
-            if (!typeInfoTestNames.contains(testToFind)) {
+            if (!typeInfoTestNames.contains(testToFind)
+                    && !typeInfoTestBaseWhitelist.contains(typeInfo.getName())) {
                 fail(
                         "Could not find test '"
                                 + testToFind

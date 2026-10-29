@@ -1,0 +1,987 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.apache.flink.types.variant;
+
+import org.apache.flink.annotation.Internal;
+import org.apache.flink.types.variant.Variant.Type;
+
+import java.math.BigDecimal;
+import java.math.BigInteger;
+import java.nio.charset.StandardCharsets;
+import java.time.Instant;
+import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeFormatterBuilder;
+import java.time.temporal.ChronoUnit;
+import java.util.Arrays;
+import java.util.Locale;
+import java.util.UUID;
+
+/* This file is based on source code from the Spark Project (http://spark.apache.org/), licensed by the Apache
+ * Software Foundation (ASF) under the Apache License, Version 2.0. See the NOTICE file distributed with this work for
+ * additional information regarding copyright ownership. */
+
+/**
+ * This class defines constants related to the variant format and provides functions for
+ * manipulating variant binaries.
+ *
+ * <p>A variant is made up of 2 binaries: value and metadata. A variant value consists of a one-byte
+ * header and a number of content bytes (can be zero). The header byte is divided into upper 6 bits
+ * (called "type info") and lower 2 bits (called "basic type"). The content format is explained in
+ * the below constants for all possible basic type and type info values.
+ *
+ * <p>The variant metadata includes a version id and a dictionary of distinct strings
+ * (case-sensitive). Its binary format is:
+ *
+ * <ul>
+ *   <li>Version: 1-byte unsigned integer. The only acceptable value is 1 currently.
+ *   <li>Dictionary size: 4-byte little-endian unsigned integer. The number of keys in the
+ *       dictionary.
+ *   <li>Offsets: (size + 1) * 4-byte little-endian unsigned integers. {@code offsets[i]} represents
+ *       the starting position of string i, counting starting from the address of {@code
+ *       offsets[0]}. Strings must be stored contiguously, so we don’t need to store the string
+ *       size, instead, we compute it with {@code offset[i + 1] - offset[i]}.
+ *   <li>UTF-8 string data.
+ * </ul>
+ */
+@Internal
+public class BinaryVariantUtil {
+    public static final int BASIC_TYPE_BITS = 2;
+    public static final int BASIC_TYPE_MASK = 0x3;
+    public static final int TYPE_INFO_MASK = 0x3F;
+
+    /**
+     * The inclusive maximum value of the type info value. It is the size limit of {@link
+     * #SHORT_STR}.
+     */
+    public static final int MAX_SHORT_STR_SIZE = 0x3F;
+
+    // Below are all possible basic type values.
+
+    /** Primitive value. The type info value must be one of the values in the below section. */
+    public static final int PRIMITIVE = 0;
+
+    /**
+     * Short string value. The type info value is the string size, which must be in {@code [0,
+     * MAX_SHORT_STR_SIZE]}. The string content bytes directly follow the header byte.
+     */
+    public static final int SHORT_STR = 1;
+
+    /**
+     * Object value. The content contains a size, a list of field ids, a list of field offsets, and
+     * the actual field data. The length of the id list is {@code size}, while the length of the
+     * offset list is {@code size + 1}, where the last offset represent the total size of the field
+     * data. The fields in an object must be sorted by the unsigned UTF-8 bytes of their names.
+     * Duplicate field names in one object are not allowed.
+     *
+     * <p>We use 5 bits in the type info to specify the integer type of the object header: it should
+     * be 0_b4_b3b2_b1b0 (MSB is 0), where:
+     *
+     * <ul>
+     *   <li>b4 specifies the type of size. When it is 0/1, {@code size} is a little-endian 1/4-byte
+     *       unsigned integer.
+     *   <li>b3b2/b1b0 specifies the integer type of id and offset. When the 2 bits are 0/1/2, the
+     *       list contains 1/2/3-byte little-endian unsigned integers.
+     * </ul>
+     */
+    public static final int OBJECT = 2;
+
+    /**
+     * Array value. The content contains a size, a list of field offsets, and the actual element
+     * data. It is similar to an object without the id list. The length of the offset list is {@code
+     * size + 1}, where the last offset represent the total size of the element data.
+     *
+     * <p>Its type info should be: 000_b2_b1b0:
+     *
+     * <ul>
+     *   <li>b2 specifies the type of size.
+     *   <li>b1b0 specifies the integer type of offset.
+     * </ul>
+     */
+    public static final int ARRAY = 3;
+
+    // Below are all possible type info values for PRIMITIVE.
+
+    /** JSON Null value. Empty content. */
+    public static final int NULL = 0;
+
+    /** True value. Empty content. */
+    public static final int TRUE = 1;
+
+    /** False value. Empty content. */
+    public static final int FALSE = 2;
+
+    /** 1-byte little-endian signed integer. */
+    public static final int INT1 = 3;
+
+    /** 2-byte little-endian signed integer. */
+    public static final int INT2 = 4;
+
+    /** 4-byte little-endian signed integer. */
+    public static final int INT4 = 5;
+
+    /** 8-byte little-endian signed integer. */
+    public static final int INT8 = 6;
+
+    /** 8-byte IEEE double. */
+    public static final int DOUBLE = 7;
+
+    /** 4-byte decimal. Content is 1-byte scale + 4-byte little-endian signed integer. */
+    public static final int DECIMAL4 = 8;
+
+    /** 8-byte decimal. Content is 1-byte scale + 8-byte little-endian signed integer. */
+    public static final int DECIMAL8 = 9;
+
+    /** 16-byte decimal. Content is 1-byte scale + 16-byte little-endian signed integer. */
+    public static final int DECIMAL16 = 10;
+
+    /**
+     * Date value. Content is 4-byte little-endian signed integer that represents the number of days
+     * from the Unix epoch.
+     */
+    public static final int DATE = 11;
+
+    /**
+     * TimestampLTZ value. Content is 8-byte little-endian signed integer that represents the number
+     * of microseconds elapsed since the Unix epoch, 1970-01-01 00:00:00 UTC. It is displayed to
+     * users in their local time zones and may be displayed differently depending on the execution
+     * environment.
+     */
+    public static final int TIMESTAMP_LTZ = 12;
+
+    /**
+     * Timestamp value. It has the same content as {@link #TIMESTAMP_LTZ} but should always be
+     * interpreted as if the local time zone is UTC.
+     */
+    public static final int TIMESTAMP = 13;
+
+    /** 4-byte IEEE float. */
+    public static final int FLOAT = 14;
+
+    /**
+     * Binary value. The content is (4-byte little-endian unsigned integer representing the binary
+     * size) + (size bytes of binary content).
+     */
+    public static final int BINARY = 15;
+
+    /**
+     * Long string value. The content is (4-byte little-endian unsigned integer representing the
+     * string size) + (size bytes of string content).
+     */
+    public static final int LONG_STR = 16;
+
+    /**
+     * Time value, no time zone. Content is 8-byte little-endian signed integer that represents the
+     * number of microseconds since midnight.
+     */
+    public static final int TIME = 17;
+
+    /**
+     * TimestampLTZ value with nanosecond precision. Content is 8-byte little-endian signed integer
+     * that represents the number of nanoseconds elapsed since the Unix epoch, 1970-01-01 00:00:00
+     * UTC.
+     */
+    public static final int TIMESTAMP_LTZ_NS = 18;
+
+    /**
+     * Timestamp value with nanosecond precision. It has the same content as {@link
+     * #TIMESTAMP_LTZ_NS} but should always be interpreted as if the local time zone is UTC.
+     */
+    public static final int TIMESTAMP_NS = 19;
+
+    /** UUID value */
+    public static final int UUID = 20;
+
+    public static final byte VERSION = 1;
+
+    /** The lower 4 bits of the first metadata byte contain the version. */
+    public static final byte VERSION_MASK = 0x0F;
+
+    public static final int U8_MAX = 0xFF;
+    public static final int U16_MAX = 0xFFFF;
+    public static final int U24_MAX = 0xFFFFFF;
+    public static final int U24_SIZE = 3;
+    public static final int U32_SIZE = 4;
+
+    /** Both variant value and variant metadata need to be no longer than 16MiB. */
+    public static final int SIZE_LIMIT = U24_MAX + 1;
+
+    public static final int MAX_DECIMAL4_PRECISION = 9;
+    public static final int MAX_DECIMAL8_PRECISION = 18;
+    public static final int MAX_DECIMAL16_PRECISION = 38;
+
+    public static final int BINARY_SEARCH_THRESHOLD = 32;
+
+    public static final DateTimeFormatter TIMESTAMP_FORMATTER =
+            new DateTimeFormatterBuilder()
+                    .append(DateTimeFormatter.ISO_LOCAL_DATE)
+                    .appendLiteral('T')
+                    .append(DateTimeFormatter.ISO_LOCAL_TIME)
+                    .toFormatter(Locale.US);
+
+    public static final DateTimeFormatter TIMESTAMP_LTZ_FORMATTER =
+            new DateTimeFormatterBuilder()
+                    .append(TIMESTAMP_FORMATTER)
+                    .appendOffset("+HH:MM", "Z")
+                    .toFormatter(Locale.US);
+
+    public static final DateTimeFormatter TIME_FORMATTER =
+            new DateTimeFormatterBuilder()
+                    .append(DateTimeFormatter.ISO_LOCAL_TIME)
+                    .toFormatter(Locale.US);
+
+    /**
+     * Write the least significant {@code numBytes} bytes in {@code value} into {@code bytes[pos,
+     * pos + numBytes)} in little endian.
+     */
+    public static void writeLong(byte[] bytes, int pos, long value, int numBytes) {
+        for (int i = 0; i < numBytes; ++i) {
+            bytes[pos + i] = (byte) ((value >>> (8 * i)) & 0xFF);
+        }
+    }
+
+    /**
+     * Write a big-endian 8-byte long value to {@code bytes[pos, pos + 8)}. Variant primitives are
+     * little-endian except for UUID, which the spec stores as 16 big-endian bytes.
+     */
+    static void writeLongBigEndian(byte[] bytes, int pos, long value) {
+        for (int i = 0; i < 8; ++i) {
+            bytes[pos + i] = (byte) ((value >>> (8 * (7 - i))) & 0xFF);
+        }
+    }
+
+    public static byte primitiveHeader(int type) {
+        return (byte) (type << 2 | PRIMITIVE);
+    }
+
+    public static byte shortStrHeader(int size) {
+        return (byte) (size << 2 | SHORT_STR);
+    }
+
+    public static byte objectHeader(boolean largeSize, int idSize, int offsetSize) {
+        return (byte)
+                (((largeSize ? 1 : 0) << (BASIC_TYPE_BITS + 4))
+                        | ((idSize - 1) << (BASIC_TYPE_BITS + 2))
+                        | ((offsetSize - 1) << BASIC_TYPE_BITS)
+                        | OBJECT);
+    }
+
+    public static byte arrayHeader(boolean largeSize, int offsetSize) {
+        return (byte)
+                (((largeSize ? 1 : 0) << (BASIC_TYPE_BITS + 2))
+                        | ((offsetSize - 1) << BASIC_TYPE_BITS)
+                        | ARRAY);
+    }
+
+    /**
+     * An exception indicating that the variant value or metadata doesn't conform to the variant
+     * format.
+     */
+    static VariantTypeException malformedVariant() {
+        return new VariantTypeException("MALFORMED_VARIANT");
+    }
+
+    static VariantTypeException unknownPrimitiveTypeInVariant(int id) {
+        return new VariantTypeException("UNKNOWN_PRIMITIVE_TYPE_IN_VARIANT, id: " + id);
+    }
+
+    /**
+     * An exception indicating that an external caller tried to call the Variant constructor with
+     * value or metadata exceeding the 16MiB size limit. We will never construct a Variant this
+     * large, so it should only be possible to encounter this exception when reading a Variant
+     * produced by another tool.
+     */
+    static VariantTypeException variantConstructorSizeLimit() {
+        return new VariantTypeException("VARIANT_CONSTRUCTOR_SIZE_LIMIT");
+    }
+
+    /**
+     * Check the validity of an array index {@code pos}.
+     *
+     * @throws VariantTypeException if {@code pos} is out of bound, meaning the variant is malformed
+     */
+    static void checkIndex(int pos, int length) {
+        if (pos < 0 || pos >= length) {
+            throw malformedVariant();
+        }
+    }
+
+    /** Read a little-endian signed long value from {@code bytes[pos, pos + numBytes)}. */
+    static long readLong(byte[] bytes, int pos, int numBytes) {
+        checkIndex(pos, bytes.length);
+        checkIndex(pos + numBytes - 1, bytes.length);
+        long result = 0;
+        // All bytes except the most significant byte should be unsign-extended and shifted (so we
+        // need `& 0xFF`). The most significant byte should be sign-extended and is handled after
+        // the loop.
+        for (int i = 0; i < numBytes - 1; ++i) {
+            long unsignedByteValue = bytes[pos + i] & 0xFF;
+            result |= unsignedByteValue << (8 * i);
+        }
+        long signedByteValue = bytes[pos + numBytes - 1];
+        result |= signedByteValue << (8 * (numBytes - 1));
+        return result;
+    }
+
+    /**
+     * Read a big-endian 8-byte long value from {@code bytes[pos, pos + 8)}. The caller must ensure
+     * those 8 bytes are within bounds.
+     */
+    private static long readLongBigEndian(byte[] bytes, int pos) {
+        long result = 0;
+        for (int i = 0; i < 8; ++i) {
+            result = (result << 8) | (bytes[pos + i] & 0xFF);
+        }
+        return result;
+    }
+
+    /**
+     * Read a little-endian unsigned int value from {@code bytes[pos, pos + numBytes)}. The value
+     * must fit into a non-negative int ({@code [0, Integer.MAX_VALUE]}).
+     */
+    static int readUnsigned(byte[] bytes, int pos, int numBytes) {
+        checkIndex(pos, bytes.length);
+        checkIndex(pos + numBytes - 1, bytes.length);
+        int result = 0;
+        // Similar to the `readLong` loop, but all bytes should be unsign-extended.
+        for (int i = 0; i < numBytes; ++i) {
+            int unsignedByteValue = bytes[pos + i] & 0xFF;
+            result |= unsignedByteValue << (8 * i);
+        }
+        if (result < 0) {
+            throw malformedVariant();
+        }
+        return result;
+    }
+
+    public static int getTypeInfo(byte[] value, int pos) {
+        checkIndex(pos, value.length);
+        return (value[pos] >> BASIC_TYPE_BITS) & TYPE_INFO_MASK;
+    }
+
+    /**
+     * Get the value type of variant value {@code value[pos...]}. It is only legal to call {@code
+     * get*} if {@code getType} returns this type (for example, it is only legal to call {@link
+     * #getLong(byte[], int)} if {@code getType} returns {@code Type.Long}).
+     *
+     * @throws VariantTypeException if the variant is malformed or holds an unknown primitive type
+     */
+    public static Type getType(byte[] value, int pos) {
+        checkIndex(pos, value.length);
+        int basicType = value[pos] & BASIC_TYPE_MASK;
+        int typeInfo = (value[pos] >> BASIC_TYPE_BITS) & TYPE_INFO_MASK;
+        switch (basicType) {
+            case SHORT_STR:
+                return Type.STRING;
+            case OBJECT:
+                return Type.OBJECT;
+            case ARRAY:
+                return Type.ARRAY;
+            default:
+                switch (typeInfo) {
+                    case NULL:
+                        return Type.NULL;
+                    case TRUE:
+                    case FALSE:
+                        return Type.BOOLEAN;
+                    case INT1:
+                        return Type.TINYINT;
+                    case INT2:
+                        return Type.SMALLINT;
+                    case INT4:
+                        return Type.INT;
+                    case INT8:
+                        return Type.BIGINT;
+                    case DOUBLE:
+                        return Type.DOUBLE;
+                    case DECIMAL4:
+                    case DECIMAL8:
+                    case DECIMAL16:
+                        return Type.DECIMAL;
+                    case DATE:
+                        return Type.DATE;
+                    case TIMESTAMP_LTZ:
+                        return Type.TIMESTAMP_LTZ;
+                    case TIMESTAMP:
+                        return Type.TIMESTAMP;
+                    case FLOAT:
+                        return Type.FLOAT;
+                    case BINARY:
+                        return Type.BYTES;
+                    case LONG_STR:
+                        return Type.STRING;
+                    case TIME:
+                        return Type.TIME;
+                    case TIMESTAMP_LTZ_NS:
+                        return Type.TIMESTAMP_LTZ_NS;
+                    case TIMESTAMP_NS:
+                        return Type.TIMESTAMP_NS;
+                    case UUID:
+                        return Type.UUID;
+                    default:
+                        throw unknownPrimitiveTypeInVariant(typeInfo);
+                }
+        }
+    }
+
+    /**
+     * Returns the placeholder for a node that cannot be decoded: {@code <UNKNOWN>} for a type id
+     * this version does not know, such as one written by a newer version, and {@code <INVALID>}
+     * otherwise. Never throws.
+     */
+    public static String undecodableNode(byte[] value, int pos) {
+        return isUnknownType(value, pos) ? "<UNKNOWN>" : "<INVALID>";
+    }
+
+    /** Same as {@link #undecodableNode(byte[], int)} for a {@link BinaryVariant} node. */
+    public static String undecodableNode(Variant variant) {
+        if (!(variant instanceof BinaryVariant)) {
+            return "<INVALID>";
+        }
+        final BinaryVariant binary = (BinaryVariant) variant;
+        return undecodableNode(binary.rawValue(), binary.getPos());
+    }
+
+    private static boolean isUnknownType(byte[] value, int pos) {
+        if (pos < 0 || pos >= value.length || (value[pos] & BASIC_TYPE_MASK) != PRIMITIVE) {
+            return false;
+        }
+        // With the header in bounds, getType fails on a primitive only for an unknown type id.
+        try {
+            getType(value, pos);
+            return false;
+        } catch (VariantTypeException e) {
+            return true;
+        }
+    }
+
+    /**
+     * Compute the size in bytes of the variant value {@code value[pos...]}. {@code value.length -
+     * pos} is an upper bound of the size, but the actual size can be smaller.
+     *
+     * @throws VariantTypeException if the variant is malformed or holds an unknown primitive type
+     */
+    public static int valueSize(byte[] value, int pos) {
+        checkIndex(pos, value.length);
+        int basicType = value[pos] & BASIC_TYPE_MASK;
+        int typeInfo = (value[pos] >> BASIC_TYPE_BITS) & TYPE_INFO_MASK;
+        switch (basicType) {
+            case SHORT_STR:
+                return 1 + typeInfo;
+            case OBJECT:
+                return handleObject(
+                        value,
+                        pos,
+                        (size, idSize, offsetSize, idStart, offsetStart, dataStart) ->
+                                dataStart
+                                        - pos
+                                        + readUnsigned(
+                                                value,
+                                                offsetStart + size * offsetSize,
+                                                offsetSize));
+            case ARRAY:
+                return handleArray(
+                        value,
+                        pos,
+                        (size, offsetSize, offsetStart, dataStart) ->
+                                dataStart
+                                        - pos
+                                        + readUnsigned(
+                                                value,
+                                                offsetStart + size * offsetSize,
+                                                offsetSize));
+            default:
+                switch (typeInfo) {
+                    case NULL:
+                    case TRUE:
+                    case FALSE:
+                        return 1;
+                    case INT1:
+                        return 2;
+                    case INT2:
+                        return 3;
+                    case INT4:
+                    case DATE:
+                    case FLOAT:
+                        return 5;
+                    case INT8:
+                    case DOUBLE:
+                    case TIMESTAMP_LTZ:
+                    case TIMESTAMP:
+                    case TIME:
+                    case TIMESTAMP_LTZ_NS:
+                    case TIMESTAMP_NS:
+                        return 9;
+                    case DECIMAL4:
+                        return 6;
+                    case DECIMAL8:
+                        return 10;
+                    case UUID:
+                        return 17;
+                    case DECIMAL16:
+                        return 18;
+                    case BINARY:
+                    case LONG_STR:
+                        return 1 + U32_SIZE + readUnsigned(value, pos + 1, U32_SIZE);
+                    default:
+                        throw unknownPrimitiveTypeInVariant(typeInfo);
+                }
+        }
+    }
+
+    static VariantTypeException unexpectedType(Type type) {
+        return new VariantTypeException("Expect type to be " + type);
+    }
+
+    /**
+     * Get a boolean value from variant value {@code value[pos...]}.
+     *
+     * @throws VariantTypeException if the variant is malformed or does not hold a boolean
+     */
+    public static boolean getBoolean(byte[] value, int pos) {
+        checkIndex(pos, value.length);
+        int basicType = value[pos] & BASIC_TYPE_MASK;
+        int typeInfo = (value[pos] >> BASIC_TYPE_BITS) & TYPE_INFO_MASK;
+        if (basicType != PRIMITIVE || (typeInfo != TRUE && typeInfo != FALSE)) {
+            throw unexpectedType(Type.BOOLEAN);
+        }
+        return typeInfo == TRUE;
+    }
+
+    /**
+     * Get a long value from variant value {@code value[pos...]}. It is only legal to call it for an
+     * integer, date, time, or timestamp value, as detailed below.
+     *
+     * <p>For an integer type ({@link Type#TINYINT}, {@link Type#SMALLINT}, {@link Type#INT}, {@link
+     * Type#BIGINT}), the return value is simply that integer widened to a long.
+     *
+     * <p>If the type is {@link Type#DATE}, the return value is guaranteed to fit into an int and
+     * represents the number of days from the Unix epoch.
+     *
+     * <p>If the type is {@link Type#TIME}, the return value represents the number of microseconds
+     * since midnight.
+     *
+     * <p>If the type is {@link Type#TIMESTAMP}/{@link Type#TIMESTAMP_LTZ}, the return value
+     * represents the number of microseconds from the Unix epoch.
+     *
+     * <p>If the type is {@link Type#TIMESTAMP_NS}/{@link Type#TIMESTAMP_LTZ_NS}, the return value
+     * represents the number of nanoseconds from the Unix epoch.
+     */
+    public static long getLong(byte[] value, int pos) {
+        checkIndex(pos, value.length);
+        int basicType = value[pos] & BASIC_TYPE_MASK;
+        int typeInfo = (value[pos] >> BASIC_TYPE_BITS) & TYPE_INFO_MASK;
+        String exceptionMessage =
+                "Expect type to be LONG/DATE/TIME/TIMESTAMP/TIMESTAMP_LTZ/TIMESTAMP_NS/TIMESTAMP_LTZ_NS";
+        if (basicType != PRIMITIVE) {
+            throw new IllegalStateException(exceptionMessage);
+        }
+        switch (typeInfo) {
+            case INT1:
+                return readLong(value, pos + 1, 1);
+            case INT2:
+                return readLong(value, pos + 1, 2);
+            case INT4:
+            case DATE:
+                return readLong(value, pos + 1, 4);
+            case INT8:
+            case TIME:
+            case TIMESTAMP_LTZ:
+            case TIMESTAMP:
+            case TIMESTAMP_LTZ_NS:
+            case TIMESTAMP_NS:
+                return readLong(value, pos + 1, 8);
+            default:
+                throw new IllegalStateException(exceptionMessage);
+        }
+    }
+
+    /**
+     * Get a double value from variant value {@code value[pos...]}.
+     *
+     * @throws VariantTypeException if the variant is malformed or does not hold a double
+     */
+    public static double getDouble(byte[] value, int pos) {
+        checkIndex(pos, value.length);
+        int basicType = value[pos] & BASIC_TYPE_MASK;
+        int typeInfo = (value[pos] >> BASIC_TYPE_BITS) & TYPE_INFO_MASK;
+        if (basicType != PRIMITIVE || typeInfo != DOUBLE) {
+            throw unexpectedType(Type.DOUBLE);
+        }
+        return Double.longBitsToDouble(readLong(value, pos + 1, 8));
+    }
+
+    /**
+     * Returns whether a decimal can be stored as a variant decimal: its precision and its
+     * non-negative scale must both be at most {@code maxPrecision}.
+     */
+    static boolean fitsVariantDecimal(BigDecimal d, int maxPrecision) {
+        return d.scale() >= 0 && d.scale() <= maxPrecision && d.precision() <= maxPrecision;
+    }
+
+    /** Check whether the precision and scale of the decimal are within the limit. */
+    private static void checkDecimal(BigDecimal d, int maxPrecision) {
+        if (!fitsVariantDecimal(d, maxPrecision)) {
+            throw malformedVariant();
+        }
+    }
+
+    /**
+     * Get a decimal value from variant value {@code value[pos...]}.
+     *
+     * @throws VariantTypeException if the variant is malformed or does not hold a decimal
+     */
+    public static BigDecimal getDecimalWithOriginalScale(byte[] value, int pos) {
+        checkIndex(pos, value.length);
+        int basicType = value[pos] & BASIC_TYPE_MASK;
+        int typeInfo = (value[pos] >> BASIC_TYPE_BITS) & TYPE_INFO_MASK;
+        if (basicType != PRIMITIVE) {
+            throw unexpectedType(Type.DECIMAL);
+        }
+        // Interpret the scale byte as unsigned. If it is a negative byte, the unsigned value must
+        // be greater than `MAX_DECIMAL16_PRECISION` and will trigger an error in `checkDecimal`.
+        int scale = value[pos + 1] & 0xFF;
+        BigDecimal result;
+        switch (typeInfo) {
+            case DECIMAL4:
+                result = BigDecimal.valueOf(readLong(value, pos + 2, 4), scale);
+                checkDecimal(result, MAX_DECIMAL4_PRECISION);
+                break;
+            case DECIMAL8:
+                result = BigDecimal.valueOf(readLong(value, pos + 2, 8), scale);
+                checkDecimal(result, MAX_DECIMAL8_PRECISION);
+                break;
+            case DECIMAL16:
+                checkIndex(pos + 17, value.length);
+                byte[] bytes = new byte[16];
+                // Copy the bytes reversely because the `BigInteger` constructor expects a
+                // big-endian representation.
+                for (int i = 0; i < 16; ++i) {
+                    bytes[i] = value[pos + 17 - i];
+                }
+                result = new BigDecimal(new BigInteger(bytes), scale);
+                checkDecimal(result, MAX_DECIMAL16_PRECISION);
+                break;
+            default:
+                throw unexpectedType(Type.DECIMAL);
+        }
+        return result;
+    }
+
+    public static BigDecimal getDecimal(byte[] value, int pos) {
+        return getDecimalWithOriginalScale(value, pos).stripTrailingZeros();
+    }
+
+    /**
+     * Get a float value from variant value {@code value[pos...]}.
+     *
+     * @throws VariantTypeException if the variant is malformed or does not hold a float
+     */
+    public static float getFloat(byte[] value, int pos) {
+        checkIndex(pos, value.length);
+        int basicType = value[pos] & BASIC_TYPE_MASK;
+        int typeInfo = (value[pos] >> BASIC_TYPE_BITS) & TYPE_INFO_MASK;
+        if (basicType != PRIMITIVE || typeInfo != FLOAT) {
+            throw unexpectedType(Type.FLOAT);
+        }
+        return Float.intBitsToFloat((int) readLong(value, pos + 1, 4));
+    }
+
+    /**
+     * Get a binary value from variant value {@code value[pos...]}.
+     *
+     * @throws VariantTypeException if the variant is malformed or does not hold a binary value
+     */
+    public static byte[] getBinary(byte[] value, int pos) {
+        checkIndex(pos, value.length);
+        int basicType = value[pos] & BASIC_TYPE_MASK;
+        int typeInfo = (value[pos] >> BASIC_TYPE_BITS) & TYPE_INFO_MASK;
+        if (basicType != PRIMITIVE || typeInfo != BINARY) {
+            throw unexpectedType(Type.BYTES);
+        }
+        int start = pos + 1 + U32_SIZE;
+        int length = readUnsigned(value, pos + 1, U32_SIZE);
+        checkIndex(start + length - 1, value.length);
+        return Arrays.copyOfRange(value, start, start + length);
+    }
+
+    /**
+     * Get a string value from variant value {@code value[pos...]}.
+     *
+     * @throws VariantTypeException if the variant is malformed or does not hold a string
+     */
+    public static String getString(byte[] value, int pos) {
+        checkIndex(pos, value.length);
+        int basicType = value[pos] & BASIC_TYPE_MASK;
+        int typeInfo = (value[pos] >> BASIC_TYPE_BITS) & TYPE_INFO_MASK;
+        if (basicType == SHORT_STR || (basicType == PRIMITIVE && typeInfo == LONG_STR)) {
+            int start;
+            int length;
+            if (basicType == SHORT_STR) {
+                start = pos + 1;
+                length = typeInfo;
+            } else {
+                start = pos + 1 + U32_SIZE;
+                length = readUnsigned(value, pos + 1, U32_SIZE);
+            }
+            checkIndex(start + length - 1, value.length);
+            return new String(value, start, length, StandardCharsets.UTF_8);
+        }
+        throw unexpectedType(Type.STRING);
+    }
+
+    public static UUID getUuid(byte[] value, int pos) {
+        // The header byte and the 16 UUID bytes occupy value[pos, pos + 16], so checking the first
+        // and last index once covers the whole read.
+        checkIndex(pos, value.length);
+        checkIndex(pos + 16, value.length);
+        int basicType = value[pos] & BASIC_TYPE_MASK;
+        int typeInfo = (value[pos] >> BASIC_TYPE_BITS) & TYPE_INFO_MASK;
+        if (basicType != PRIMITIVE || typeInfo != UUID) {
+            throw unexpectedType(Type.UUID);
+        }
+        // The 16 UUID bytes are big-endian (most significant bytes first): the most significant 8
+        // bytes followed by the least significant 8 bytes.
+        long msb = readLongBigEndian(value, pos + 1);
+        long lsb = readLongBigEndian(value, pos + 9);
+        return new UUID(msb, lsb);
+    }
+
+    static Instant microsToInstant(long timestamp) {
+        return Instant.EPOCH.plus(timestamp, ChronoUnit.MICROS);
+    }
+
+    static Instant nanosToInstant(long timestamp) {
+        return Instant.EPOCH.plus(timestamp, ChronoUnit.NANOS);
+    }
+
+    /** A handler that receives the decoded header fields of a variant object. */
+    public interface ObjectHandler<T> {
+        /**
+         * @param size Number of object fields.
+         * @param idSize The integer size of the field id list.
+         * @param offsetSize The integer size of the offset list.
+         * @param idStart The starting index of the field id list in the variant value array.
+         * @param offsetStart The starting index of the offset list in the variant value array.
+         * @param dataStart The starting index of field data in the variant value array.
+         */
+        T apply(int size, int idSize, int offsetSize, int idStart, int offsetStart, int dataStart);
+    }
+
+    /**
+     * A helper function to access a variant object. It provides {@code handler} with its required
+     * parameters and returns what it returns.
+     */
+    public static <T> T handleObject(byte[] value, int pos, ObjectHandler<T> handler) {
+        int typeInfo = objectTypeInfo(value, pos);
+        int sizeBytes = objectSizeBytes(typeInfo);
+        int size = readUnsigned(value, pos + 1, sizeBytes);
+        int idSize = objectIdSize(typeInfo);
+        int offsetSize = objectOffsetSize(typeInfo);
+        int idStart = pos + 1 + sizeBytes;
+        int offsetStart = idStart + size * idSize;
+        int dataStart = offsetStart + (size + 1) * offsetSize;
+        return handler.apply(size, idSize, offsetSize, idStart, offsetStart, dataStart);
+    }
+
+    /**
+     * Returns the type info of the object at {@code pos}. Refer to the comment of the {@code
+     * OBJECT} constant for its encoding, a bit representation of 0_b4_b3b2_b1b0.
+     *
+     * @throws VariantTypeException if the value at {@code pos} is not an object
+     */
+    static int objectTypeInfo(byte[] value, int pos) {
+        checkIndex(pos, value.length);
+        if ((value[pos] & BASIC_TYPE_MASK) != OBJECT) {
+            throw unexpectedType(Type.OBJECT);
+        }
+        return (value[pos] >> BASIC_TYPE_BITS) & TYPE_INFO_MASK;
+    }
+
+    /** Extracts b4 of an object type info to determine whether the size takes 1 or 4 bytes. */
+    static int objectSizeBytes(int typeInfo) {
+        return ((typeInfo >> 4) & 0x1) != 0 ? U32_SIZE : 1;
+    }
+
+    /** Extracts b3b2 of an object type info to determine the integer size of the field ids. */
+    static int objectIdSize(int typeInfo) {
+        return ((typeInfo >> 2) & 0x3) + 1;
+    }
+
+    /** Extracts b1b0 of an object type info to determine the integer size of the offsets. */
+    static int objectOffsetSize(int typeInfo) {
+        return (typeInfo & 0x3) + 1;
+    }
+
+    /** A handler that receives the decoded header fields of a variant array. */
+    public interface ArrayHandler<T> {
+        /**
+         * @param size Number of array elements.
+         * @param offsetSize The integer size of the offset list.
+         * @param offsetStart The starting index of the offset list in the variant value array.
+         * @param dataStart The starting index of element data in the variant value array.
+         */
+        T apply(int size, int offsetSize, int offsetStart, int dataStart);
+    }
+
+    /** A helper function to access a variant array. */
+    public static <T> T handleArray(byte[] value, int pos, ArrayHandler<T> handler) {
+        checkIndex(pos, value.length);
+        int basicType = value[pos] & BASIC_TYPE_MASK;
+        int typeInfo = (value[pos] >> BASIC_TYPE_BITS) & TYPE_INFO_MASK;
+        if (basicType != ARRAY) {
+            throw unexpectedType(Type.ARRAY);
+        }
+        // Refer to the comment of the `ARRAY` constant for the details of the object header
+        // encoding.
+        // Suppose `typeInfo` has a bit representation of 000_b2_b1b0, the following line extracts
+        // b2 to determine whether the object uses a 1/4-byte size.
+        boolean largeSize = ((typeInfo >> 2) & 0x1) != 0;
+        int sizeBytes = (largeSize ? U32_SIZE : 1);
+        int size = readUnsigned(value, pos + 1, sizeBytes);
+        // Extracts b1b0 to determine the integer size of the offset list.
+        int offsetSize = (typeInfo & 0x3) + 1;
+        int offsetStart = pos + 1 + sizeBytes;
+        int dataStart = offsetStart + (size + 1) * offsetSize;
+        return handler.apply(size, offsetSize, offsetStart, dataStart);
+    }
+
+    /**
+     * Get a key at {@code id} in the variant metadata.
+     *
+     * @throws VariantTypeException if the variant is malformed. An out-of-bound {@code id} is also
+     *     considered a malformed variant because it is read from the corresponding variant value.
+     */
+    public static String getMetadataKey(byte[] metadata, int id) {
+        long range = metadataKeyRange(metadata, id);
+        return new String(metadata, keyStart(range), keyLength(range), StandardCharsets.UTF_8);
+    }
+
+    /** Encodes an object key the way the variant metadata stores it. */
+    static byte[] encodeKey(String key) {
+        return key.getBytes(StandardCharsets.UTF_8);
+    }
+
+    /** Whether the key at {@code id} in the variant metadata is the UTF-8 encoded {@code key}. */
+    static boolean metadataKeyEquals(byte[] metadata, int id, byte[] key) {
+        long range = metadataKeyRange(metadata, id);
+        int start = keyStart(range);
+        int length = keyLength(range);
+        return length == key.length
+                && Arrays.equals(metadata, start, start + length, key, 0, length);
+    }
+
+    /**
+     * Compares the key at {@code id} in the variant metadata with the UTF-8 encoded {@code key} by
+     * their unsigned bytes, the order of object fields in the variant spec.
+     */
+    static int compareMetadataKey(byte[] metadata, int id, byte[] key) {
+        long range = metadataKeyRange(metadata, id);
+        int start = keyStart(range);
+        return Arrays.compareUnsigned(
+                metadata, start, start + keyLength(range), key, 0, key.length);
+    }
+
+    /**
+     * Whether the UTF-8 encoded {@code key} has a code point from U+E000 up, which encodes to a
+     * lead byte of 0xEE or above. UTF-16 order differs from UTF-8 byte order only between a code
+     * point from U+E000 to U+FFFF and one from U+10000 up, whose UTF-16 surrogates sort below
+     * U+E000. So a binary search for a key without such a code point finds the same field in either
+     * order, and a miss is final.
+     */
+    static boolean hasCodePointFromE000(byte[] key) {
+        for (byte b : key) {
+            if ((b & 0xFF) >= 0xEE) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Locates the key at {@code id} in the variant metadata. The range is packed into a long so
+     * that a lookup allocates nothing.
+     *
+     * @return the start index of the key in the high 32 bits and its length in the low 32 bits
+     */
+    private static long metadataKeyRange(byte[] metadata, int id) {
+        checkIndex(0, metadata.length);
+        // Extracts the highest 2 bits in the metadata header to determine the integer size of the
+        // offset list.
+        int offsetSize = ((metadata[0] >> 6) & 0x3) + 1;
+        int dictSize = readUnsigned(metadata, 1, offsetSize);
+        if (id >= dictSize) {
+            throw malformedVariant();
+        }
+        // There are a header byte, a `dictSize` with `offsetSize` bytes, and `(dictSize + 1)`
+        // offsets before the string data.
+        int stringStart = 1 + (dictSize + 2) * offsetSize;
+        int offset = readUnsigned(metadata, 1 + (id + 1) * offsetSize, offsetSize);
+        int nextOffset = readUnsigned(metadata, 1 + (id + 2) * offsetSize, offsetSize);
+        if (offset > nextOffset) {
+            throw malformedVariant();
+        }
+        checkIndex(stringStart + nextOffset - 1, metadata.length);
+        return ((long) (stringStart + offset) << 32) | (nextOffset - offset);
+    }
+
+    private static int keyStart(long range) {
+        return (int) (range >>> 32);
+    }
+
+    private static int keyLength(long range) {
+        return (int) range;
+    }
+
+    /**
+     * Returns the microseconds since the epoch, as stored by a microsecond precision timestamp.
+     *
+     * @throws VariantTypeException if the instant is outside the supported range
+     */
+    public static long microsSinceEpoch(Instant instant) {
+        try {
+            return Math.addExact(
+                    Math.multiplyExact(instant.getEpochSecond(), 1_000_000L),
+                    instant.getNano() / 1000);
+        } catch (ArithmeticException e) {
+            throw new VariantTypeException(
+                    String.format(
+                            "%s is outside the range supported by microsecond precision variant "
+                                    + "timestamps.",
+                            instant));
+        }
+    }
+
+    /**
+     * Returns the nanoseconds since the epoch, as stored by a nanosecond precision timestamp.
+     *
+     * @throws VariantTypeException if the instant is outside the supported range
+     */
+    public static long nanosSinceEpoch(Instant instant) {
+        try {
+            return ChronoUnit.NANOS.between(Instant.EPOCH, instant);
+        } catch (ArithmeticException e) {
+            throw new VariantTypeException(
+                    String.format(
+                            "%s is outside the +/-292 year range (1677-09-21 to 2262-04-11) "
+                                    + "supported by nanosecond precision variant timestamps. Use "
+                                    + "microsecond precision instead.",
+                            instant));
+        }
+    }
+}

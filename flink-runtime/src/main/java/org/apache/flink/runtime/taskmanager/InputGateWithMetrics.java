@@ -22,6 +22,7 @@ import org.apache.flink.metrics.Counter;
 import org.apache.flink.runtime.checkpoint.channel.ChannelStateWriter;
 import org.apache.flink.runtime.checkpoint.channel.InputChannelInfo;
 import org.apache.flink.runtime.event.TaskEvent;
+import org.apache.flink.runtime.io.network.partition.ResultPartitionType;
 import org.apache.flink.runtime.io.network.partition.consumer.BufferOrEvent;
 import org.apache.flink.runtime.io.network.partition.consumer.IndexedInputGate;
 import org.apache.flink.runtime.io.network.partition.consumer.InputChannel;
@@ -55,6 +56,10 @@ public class InputGateWithMetrics extends IndexedInputGate {
         return inputGate.getAvailableFuture();
     }
 
+    public void resumeGateConsumption() throws IOException {
+        inputGate.resumeGateConsumption();
+    }
+
     @Override
     public void resumeConsumption(InputChannelInfo channelInfo) throws IOException {
         inputGate.resumeConsumption(channelInfo);
@@ -76,6 +81,11 @@ public class InputGateWithMetrics extends IndexedInputGate {
     }
 
     @Override
+    public InputChannel getChannel(InputChannelInfo channelInfo) {
+        return inputGate.getChannel(channelInfo);
+    }
+
+    @Override
     public int getGateIndex() {
         return inputGate.getGateIndex();
     }
@@ -83,6 +93,11 @@ public class InputGateWithMetrics extends IndexedInputGate {
     @Override
     public List<InputChannelInfo> getUnfinishedChannels() {
         return inputGate.getUnfinishedChannels();
+    }
+
+    @Override
+    public ResultPartitionType getConsumedPartitionType() {
+        return inputGate.getConsumedPartitionType();
     }
 
     @Override
@@ -113,6 +128,11 @@ public class InputGateWithMetrics extends IndexedInputGate {
     @Override
     public void requestPartitions() throws IOException {
         inputGate.requestPartitions();
+    }
+
+    @Override
+    public void requestPartitions(boolean needsRecovery) throws IOException {
+        inputGate.requestPartitions(needsRecovery);
     }
 
     @Override

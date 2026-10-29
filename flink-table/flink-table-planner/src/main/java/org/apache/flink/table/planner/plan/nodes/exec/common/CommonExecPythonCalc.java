@@ -20,15 +20,20 @@ package org.apache.flink.table.planner.plan.nodes.exec.common;
 
 import org.apache.flink.api.dag.Transformation;
 import org.apache.flink.api.java.tuple.Tuple2;
+import org.apache.flink.configuration.ConfigOptions;
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.configuration.ReadableConfig;
 import org.apache.flink.core.memory.ManagedMemoryUseCase;
 import org.apache.flink.streaming.api.operators.OneInputStreamOperator;
 import org.apache.flink.streaming.api.transformations.OneInputTransformation;
 import org.apache.flink.table.api.TableException;
 import org.apache.flink.table.connector.Projection;
 import org.apache.flink.table.data.RowData;
+import org.apache.flink.table.functions.python.InputRef;
 import org.apache.flink.table.functions.python.PythonFunctionInfo;
+import org.apache.flink.table.functions.python.PythonFunctionInput;
 import org.apache.flink.table.functions.python.PythonFunctionKind;
+import org.apache.flink.table.functions.python.ResultRef;
 import org.apache.flink.table.planner.calcite.FlinkTypeFactory;
 import org.apache.flink.table.planner.codegen.CodeGeneratorContext;
 import org.apache.flink.table.planner.codegen.ProjectionCodeGenerator;
@@ -39,23 +44,31 @@ import org.apache.flink.table.planner.plan.nodes.exec.ExecNodeConfig;
 import org.apache.flink.table.planner.plan.nodes.exec.ExecNodeContext;
 import org.apache.flink.table.planner.plan.nodes.exec.InputProperty;
 import org.apache.flink.table.planner.plan.nodes.exec.SingleTransformationTranslator;
+import org.apache.flink.table.planner.plan.nodes.exec.batch.BatchExecNode;
 import org.apache.flink.table.planner.plan.nodes.exec.utils.CommonPythonUtil;
 import org.apache.flink.table.planner.plan.nodes.exec.utils.ExecNodeUtil;
+import org.apache.flink.table.planner.plan.nodes.exec.utils.PythonCallCseResult;
+import org.apache.flink.table.planner.plan.nodes.exec.utils.PythonCallDeduplicator;
 import org.apache.flink.table.planner.plan.utils.PythonUtil;
 import org.apache.flink.table.runtime.generated.GeneratedProjection;
 import org.apache.flink.table.runtime.typeutils.InternalTypeInfo;
 import org.apache.flink.table.types.logical.LogicalType;
 import org.apache.flink.table.types.logical.RowType;
 
+import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.annotation.JsonProperty;
+
 import org.apache.calcite.rex.RexCall;
 import org.apache.calcite.rex.RexFieldAccess;
 import org.apache.calcite.rex.RexInputRef;
 import org.apache.calcite.rex.RexNode;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.lang.reflect.Constructor;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Optional;
 import java.util.stream.Collectors;
 
 import static org.apache.flink.util.Preconditions.checkArgument;
@@ -64,6 +77,10 @@ import static org.apache.flink.util.Preconditions.checkNotNull;
 /** Base class for exec Python Calc. */
 public abstract class CommonExecPythonCalc extends ExecNodeBase<RowData>
         implements SingleTransformationTranslator<RowData> {
+
+    private static final Logger LOG = LoggerFactory.getLogger(CommonExecPythonCalc.class);
+
+    public static final String PYTHON_CALC_TRANSFORMATION = "python-calc";
 
     public static final String FIELD_NAME_PROJECTION = "projection";
 
@@ -79,16 +96,18 @@ public abstract class CommonExecPythonCalc extends ExecNodeBase<RowData>
             "org.apache.flink.table.runtime.operators.python.scalar.arrow."
                     + "ArrowPythonScalarFunctionOperator";
 
+    @JsonProperty(FIELD_NAME_PROJECTION)
     private final List<RexNode> projection;
 
     public CommonExecPythonCalc(
             int id,
             ExecNodeContext context,
+            ReadableConfig persistedConfig,
             List<RexNode> projection,
             List<InputProperty> inputProperties,
             RowType outputType,
             String description) {
-        super(id, context, inputProperties, outputType, description);
+        super(id, context, persistedConfig, inputProperties, outputType, description);
         checkArgument(inputProperties.size() == 1);
         this.projection = checkNotNull(projection);
     }
@@ -101,10 +120,16 @@ public abstract class CommonExecPythonCalc extends ExecNodeBase<RowData>
         final Transformation<RowData> inputTransform =
                 (Transformation<RowData>) inputEdge.translateToPlan(planner);
         final Configuration pythonConfig =
-                CommonPythonUtil.getMergedConfig(planner.getExecEnv(), config.getTableConfig());
+                CommonPythonUtil.extractPythonConfiguration(
+                        planner.getTableConfig(), planner.getFlinkContext().getClassLoader());
         OneInputTransformation<RowData, RowData> ret =
-                createPythonOneInputTransformation(inputTransform, config, pythonConfig);
-        if (CommonPythonUtil.isPythonWorkerUsingManagedMemory(pythonConfig)) {
+                createPythonOneInputTransformation(
+                        inputTransform,
+                        config,
+                        planner.getFlinkContext().getClassLoader(),
+                        pythonConfig);
+        if (CommonPythonUtil.isPythonWorkerUsingManagedMemory(
+                pythonConfig, planner.getFlinkContext().getClassLoader())) {
             ret.declareManagedMemoryUseCaseAtSlotScope(ManagedMemoryUseCase.PYTHON);
         }
         return ret;
@@ -113,6 +138,7 @@ public abstract class CommonExecPythonCalc extends ExecNodeBase<RowData>
     private OneInputTransformation<RowData, RowData> createPythonOneInputTransformation(
             Transformation<RowData> inputTransform,
             ExecNodeConfig config,
+            ClassLoader classLoader,
             Configuration pythonConfig) {
         List<RexCall> pythonRexCalls =
                 projection.stream()
@@ -126,10 +152,20 @@ public abstract class CommonExecPythonCalc extends ExecNodeBase<RowData>
                         .map(x -> ((RexInputRef) x).getIndex())
                         .collect(Collectors.toList());
 
+        // Flatten nested Python UDF call trees so that a sub-expression shared between calls is
+        // computed only once. The projection-level duplicates have already been removed by
+        // RemoteCalcProjectionCseRule, so this only concerns nested sub-expressions.
+        PythonCallCseResult cseResult = PythonCallDeduplicator.deduplicate(pythonRexCalls);
+        int[] outputIndices = cseResult.getOutputIndices();
+
         Tuple2<int[], PythonFunctionInfo[]> extractResult =
-                extractPythonScalarFunctionInfos(pythonRexCalls);
+                extractPythonScalarFunctionInfos(cseResult, classLoader);
         int[] pythonUdfInputOffsets = extractResult.f0;
         PythonFunctionInfo[] pythonFunctionInfos = extractResult.f1;
+        boolean[] hasColumn = new boolean[pythonFunctionInfos.length];
+        for (int i = 0; i < pythonFunctionInfos.length; i++) {
+            hasColumn[i] = validateArrowInputs(pythonFunctionInfos[i], hasColumn);
+        }
         LogicalType[] inputLogicalTypes =
                 ((InternalTypeInfo<RowData>) inputTransform.getOutputType()).toRowFieldTypes();
         InternalTypeInfo<RowData> pythonOperatorInputTypeInfo =
@@ -139,6 +175,8 @@ public abstract class CommonExecPythonCalc extends ExecNodeBase<RowData>
                 forwardedFields.stream()
                         .map(i -> inputLogicalTypes[i])
                         .collect(Collectors.toList());
+        // The operator emits only the projection results, so the output row type is built from the
+        // original top-level calls rather than from the wider flattened list.
         List<LogicalType> pythonCallLogicalTypes =
                 pythonRexCalls.stream()
                         .map(node -> FlinkTypeFactory.toLogicalType(node.getType()))
@@ -148,38 +186,75 @@ public abstract class CommonExecPythonCalc extends ExecNodeBase<RowData>
         fieldsLogicalTypes.addAll(pythonCallLogicalTypes);
         InternalTypeInfo<RowData> pythonOperatorResultTyeInfo =
                 InternalTypeInfo.ofFields(fieldsLogicalTypes.toArray(new LogicalType[0]));
+        final int maxArrowBatchSize = CommonPythonUtil.deriveArrowBatchSize(pythonFunctionInfos);
+        if (maxArrowBatchSize > 0) {
+            pythonConfig.set(
+                    ConfigOptions.key("python.fn-execution.arrow.batch.size")
+                            .intType()
+                            .noDefaultValue(),
+                    maxArrowBatchSize);
+        }
+        final Optional<Integer> explicitParallelism =
+                CommonPythonUtil.deriveExplicitPythonFunctionParallelism(
+                        pythonFunctionInfos, "Python functions", this instanceof BatchExecNode);
         OneInputStreamOperator<RowData, RowData> pythonOperator =
                 getPythonScalarFunctionOperator(
                         config,
+                        classLoader,
                         pythonConfig,
                         pythonOperatorInputTypeInfo,
                         pythonOperatorResultTyeInfo,
                         pythonUdfInputOffsets,
                         pythonFunctionInfos,
+                        outputIndices,
                         forwardedFields.stream().mapToInt(x -> x).toArray(),
-                        pythonRexCalls.stream()
+                        cseResult.getDeduplicatedCalls().stream()
                                 .anyMatch(
                                         x ->
                                                 PythonUtil.containsPythonCall(
-                                                        x, PythonFunctionKind.PANDAS)));
+                                                                x, PythonFunctionKind.PANDAS)
+                                                        || PythonUtil.containsPythonCall(
+                                                                x, PythonFunctionKind.ARROW)));
 
         return ExecNodeUtil.createOneInputTransformation(
                 inputTransform,
-                createTransformationName(config),
-                createTransformationDescription(config),
+                createTransformationMeta(PYTHON_CALC_TRANSFORMATION, config),
                 pythonOperator,
                 pythonOperatorResultTyeInfo,
-                inputTransform.getParallelism());
+                explicitParallelism.orElse(inputTransform.getParallelism()),
+                explicitParallelism.isPresent());
+    }
+
+    private static boolean validateArrowInputs(
+            PythonFunctionInfo function, boolean[] resultHasColumn) {
+        boolean hasColumn = false;
+        for (PythonFunctionInput input : function.getInputs()) {
+            if (input instanceof PythonFunctionInfo) {
+                hasColumn |= validateArrowInputs((PythonFunctionInfo) input, resultHasColumn);
+            } else if (input instanceof InputRef) {
+                hasColumn = true;
+            } else if (input instanceof ResultRef) {
+                hasColumn |= resultHasColumn[((ResultRef) input).getIndex()];
+            }
+        }
+        if (function.getPythonFunction().getPythonFunctionKind() == PythonFunctionKind.ARROW
+                && !hasColumn) {
+            throw new TableException(
+                    "Arrow scalar UDFs require at least one column-valued argument.");
+        }
+        return hasColumn;
     }
 
     private Tuple2<int[], PythonFunctionInfo[]> extractPythonScalarFunctionInfos(
-            List<RexCall> rexCalls) {
+            PythonCallCseResult cseResult, ClassLoader classLoader) {
+        List<RexCall> rexCalls = cseResult.getDeduplicatedCalls();
         LinkedHashMap<RexNode, Integer> inputNodes = new LinkedHashMap<>();
-        PythonFunctionInfo[] pythonFunctionInfos =
-                rexCalls.stream()
-                        .map(x -> CommonPythonUtil.createPythonFunctionInfo(x, inputNodes))
-                        .collect(Collectors.toList())
-                        .toArray(new PythonFunctionInfo[rexCalls.size()]);
+        PythonFunctionInfo[] pythonFunctionInfos = new PythonFunctionInfo[rexCalls.size()];
+        for (int i = 0; i < rexCalls.size(); i++) {
+            pythonFunctionInfos[i] =
+                    CommonPythonUtil.createPythonFunctionInfo(
+                            rexCalls.get(i), inputNodes, classLoader, cseResult.getOperandRefs(i));
+        }
 
         int[] udfInputOffsets =
                 inputNodes.keySet().stream()
@@ -200,22 +275,36 @@ public abstract class CommonExecPythonCalc extends ExecNodeBase<RowData>
     @SuppressWarnings("unchecked")
     private OneInputStreamOperator<RowData, RowData> getPythonScalarFunctionOperator(
             ExecNodeConfig config,
+            ClassLoader classLoader,
             Configuration pythonConfig,
             InternalTypeInfo<RowData> inputRowTypeInfo,
             InternalTypeInfo<RowData> outputRowTypeInfo,
             int[] udfInputOffsets,
             PythonFunctionInfo[] pythonFunctionInfos,
+            int[] udfOutputIndices,
             int[] forwardedFields,
             boolean isArrow) {
         Class<?> clazz;
-        boolean isInProcessMode = CommonPythonUtil.isPythonWorkerInProcessMode(pythonConfig);
+        boolean isInProcessMode =
+                CommonPythonUtil.isPythonWorkerInProcessMode(pythonConfig, classLoader);
         if (isArrow) {
-            clazz = CommonPythonUtil.loadClass(ARROW_PYTHON_SCALAR_FUNCTION_OPERATOR_NAME);
+            clazz =
+                    CommonPythonUtil.loadClass(
+                            ARROW_PYTHON_SCALAR_FUNCTION_OPERATOR_NAME, classLoader);
+            if (!isInProcessMode) {
+                LOG.warn(
+                        "Vectorized Python scalar function only supports process mode, so fallback to process mode.");
+                isInProcessMode = true;
+            }
         } else {
             if (isInProcessMode) {
-                clazz = CommonPythonUtil.loadClass(PYTHON_SCALAR_FUNCTION_OPERATOR_NAME);
+                clazz =
+                        CommonPythonUtil.loadClass(
+                                PYTHON_SCALAR_FUNCTION_OPERATOR_NAME, classLoader);
             } else {
-                clazz = CommonPythonUtil.loadClass(EMBEDDED_PYTHON_SCALAR_FUNCTION_OPERATOR_NAME);
+                clazz =
+                        CommonPythonUtil.loadClass(
+                                EMBEDDED_PYTHON_SCALAR_FUNCTION_OPERATOR_NAME, classLoader);
             }
         }
 
@@ -235,6 +324,7 @@ public abstract class CommonExecPythonCalc extends ExecNodeBase<RowData>
                         clazz.getConstructor(
                                 Configuration.class,
                                 PythonFunctionInfo[].class,
+                                int[].class,
                                 RowType.class,
                                 RowType.class,
                                 RowType.class,
@@ -244,64 +334,53 @@ public abstract class CommonExecPythonCalc extends ExecNodeBase<RowData>
                         ctor.newInstance(
                                 pythonConfig,
                                 pythonFunctionInfos,
+                                udfOutputIndices,
                                 inputType,
                                 udfInputType,
                                 udfOutputType,
                                 ProjectionCodeGenerator.generateProjection(
-                                        CodeGeneratorContext.apply(config.getTableConfig()),
+                                        new CodeGeneratorContext(config, classLoader),
                                         "UdfInputProjection",
                                         inputType,
                                         udfInputType,
                                         udfInputOffsets),
                                 ProjectionCodeGenerator.generateProjection(
-                                        CodeGeneratorContext.apply(config.getTableConfig()),
+                                        new CodeGeneratorContext(config, classLoader),
                                         "ForwardedFieldProjection",
                                         inputType,
                                         forwardedFieldType,
                                         forwardedFields));
             } else {
+                GeneratedProjection forwardedFieldGeneratedProjection = null;
                 if (forwardedFields.length > 0) {
-                    Constructor<?> ctor =
-                            clazz.getConstructor(
-                                    Configuration.class,
-                                    PythonFunctionInfo[].class,
-                                    RowType.class,
-                                    RowType.class,
-                                    RowType.class,
-                                    int[].class,
-                                    GeneratedProjection.class);
-                    return (OneInputStreamOperator<RowData, RowData>)
-                            ctor.newInstance(
-                                    pythonConfig,
-                                    pythonFunctionInfos,
+                    forwardedFieldGeneratedProjection =
+                            ProjectionCodeGenerator.generateProjection(
+                                    new CodeGeneratorContext(config, classLoader),
+                                    "ForwardedFieldProjection",
                                     inputType,
-                                    udfInputType,
-                                    udfOutputType,
-                                    udfInputOffsets,
-                                    ProjectionCodeGenerator.generateProjection(
-                                            CodeGeneratorContext.apply(config.getTableConfig()),
-                                            "ForwardedFieldProjection",
-                                            inputType,
-                                            forwardedFieldType,
-                                            forwardedFields));
-                } else {
-                    Constructor<?> ctor =
-                            clazz.getConstructor(
-                                    Configuration.class,
-                                    PythonFunctionInfo[].class,
-                                    RowType.class,
-                                    RowType.class,
-                                    RowType.class,
-                                    int[].class);
-                    return (OneInputStreamOperator<RowData, RowData>)
-                            ctor.newInstance(
-                                    pythonConfig,
-                                    pythonFunctionInfos,
-                                    inputType,
-                                    udfInputType,
-                                    udfOutputType,
-                                    udfInputOffsets);
+                                    forwardedFieldType,
+                                    forwardedFields);
                 }
+                Constructor<?> ctor =
+                        clazz.getConstructor(
+                                Configuration.class,
+                                PythonFunctionInfo[].class,
+                                int[].class,
+                                RowType.class,
+                                RowType.class,
+                                RowType.class,
+                                int[].class,
+                                GeneratedProjection.class);
+                return (OneInputStreamOperator<RowData, RowData>)
+                        ctor.newInstance(
+                                pythonConfig,
+                                pythonFunctionInfos,
+                                udfOutputIndices,
+                                inputType,
+                                udfInputType,
+                                udfOutputType,
+                                udfInputOffsets,
+                                forwardedFieldGeneratedProjection);
             }
         } catch (Exception e) {
             throw new TableException("Python Scalar Function Operator constructed failed.", e);

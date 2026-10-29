@@ -18,12 +18,13 @@
 
 package org.apache.flink.runtime.blob;
 
+import org.apache.flink.api.common.ApplicationID;
 import org.apache.flink.api.common.JobID;
 import org.apache.flink.core.fs.FSDataOutputStream;
 import org.apache.flink.core.fs.FileSystem;
 import org.apache.flink.core.fs.Path;
 
-import org.apache.flink.shaded.guava30.com.google.common.io.Files;
+import org.apache.flink.shaded.guava33.com.google.common.io.Files;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -49,6 +50,8 @@ public class FileSystemBlobStore implements BlobStoreService {
     /** The file system in which blobs are stored. */
     private final FileSystem fileSystem;
 
+    private volatile boolean basePathCreated;
+
     /** The base path of the blob store. */
     private final String basePath;
 
@@ -57,12 +60,17 @@ public class FileSystemBlobStore implements BlobStoreService {
 
     public FileSystemBlobStore(FileSystem fileSystem, String storagePath) throws IOException {
         this.fileSystem = checkNotNull(fileSystem);
+        this.basePathCreated = false;
         this.basePath = checkNotNull(storagePath) + "/" + BLOB_PATH_NAME;
+    }
 
-        LOG.info("Creating highly available BLOB storage directory at {}", basePath);
-
-        fileSystem.mkdirs(new Path(basePath));
-        LOG.debug("Created highly available BLOB storage directory at {}", basePath);
+    private void createBasePathIfNeeded() throws IOException {
+        if (!basePathCreated) {
+            LOG.info("Creating highly available BLOB storage directory at {}", basePath);
+            fileSystem.mkdirs(new Path(basePath));
+            LOG.debug("Created highly available BLOB storage directory at {}", basePath);
+            basePathCreated = true;
+        }
     }
 
     // - Put ------------------------------------------------------------------
@@ -72,11 +80,18 @@ public class FileSystemBlobStore implements BlobStoreService {
         return put(localFile, BlobUtils.getStorageLocationPath(basePath, jobId, blobKey));
     }
 
-    private boolean put(File fromFile, String toBlobPath) throws IOException {
+    @Override
+    public boolean put(File localFile, ApplicationID applicationId, BlobKey blobKey)
+            throws IOException {
+        return put(localFile, BlobUtils.getStorageLocationPath(basePath, applicationId, blobKey));
+    }
+
+    private boolean put(File localFile, String toBlobPath) throws IOException {
+        createBasePathIfNeeded();
         try (FSDataOutputStream os =
                 fileSystem.create(new Path(toBlobPath), FileSystem.WriteMode.OVERWRITE)) {
-            LOG.debug("Copying from {} to {}.", fromFile, toBlobPath);
-            Files.copy(fromFile, os);
+            LOG.debug("Copying from {} to {}.", localFile, toBlobPath);
+            Files.copy(localFile, os);
 
             os.sync();
         }
@@ -88,6 +103,15 @@ public class FileSystemBlobStore implements BlobStoreService {
     @Override
     public boolean get(JobID jobId, BlobKey blobKey, File localFile) throws IOException {
         return get(BlobUtils.getStorageLocationPath(basePath, jobId, blobKey), localFile, blobKey);
+    }
+
+    @Override
+    public boolean get(ApplicationID applicationId, BlobKey blobKey, File localFile)
+            throws IOException {
+        return get(
+                BlobUtils.getStorageLocationPath(basePath, applicationId, blobKey),
+                localFile,
+                blobKey);
     }
 
     private boolean get(String fromBlobPath, File toFile, BlobKey blobKey) throws IOException {
@@ -148,8 +172,18 @@ public class FileSystemBlobStore implements BlobStoreService {
     }
 
     @Override
+    public boolean delete(ApplicationID applicationId, BlobKey blobKey) {
+        return delete(BlobUtils.getStorageLocationPath(basePath, applicationId, blobKey));
+    }
+
+    @Override
     public boolean deleteAll(JobID jobId) {
         return delete(BlobUtils.getStorageLocationPath(basePath, jobId));
+    }
+
+    @Override
+    public boolean deleteAll(ApplicationID applicationId) {
+        return delete(BlobUtils.getStorageLocationPath(basePath, applicationId));
     }
 
     private boolean delete(String blobPath) {
@@ -181,7 +215,7 @@ public class FileSystemBlobStore implements BlobStoreService {
     }
 
     @Override
-    public void closeAndCleanupAllData() {
+    public void cleanupAllData() {
         try {
             LOG.debug("Cleaning up {}.", basePath);
 

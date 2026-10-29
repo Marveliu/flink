@@ -17,7 +17,7 @@
 
 package org.apache.flink.runtime.operators.lifecycle.command;
 
-import org.apache.flink.testutils.junit.SharedObjects;
+import org.apache.flink.testutils.junit.SharedObjectsExtension;
 import org.apache.flink.testutils.junit.SharedReference;
 
 /**
@@ -27,7 +27,8 @@ import org.apache.flink.testutils.junit.SharedReference;
 class SharedTestCommandDispatcher implements TestCommandDispatcher {
     private final SharedReference<TestCommandDispatcher> ref;
 
-    public SharedTestCommandDispatcher(SharedObjects shared, TestCommandDispatcher delegate) {
+    public SharedTestCommandDispatcher(
+            SharedObjectsExtension shared, TestCommandDispatcher delegate) {
         this.ref = shared.add(delegate);
     }
 
@@ -44,5 +45,10 @@ class SharedTestCommandDispatcher implements TestCommandDispatcher {
     @Override
     public void broadcast(TestCommand testCommand, TestCommandScope scope) {
         ref.get().broadcast(testCommand, scope);
+    }
+
+    @Override
+    public void unsubscribe(String operatorID, CommandExecutor commandExecutor) {
+        ref.get().unsubscribe(operatorID, commandExecutor);
     }
 }

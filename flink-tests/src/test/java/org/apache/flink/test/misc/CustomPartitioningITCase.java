@@ -18,40 +18,38 @@
 
 package org.apache.flink.test.misc;
 
+import org.apache.flink.api.common.JobExecutionResult;
 import org.apache.flink.api.common.functions.Partitioner;
 import org.apache.flink.api.common.functions.RichMapFunction;
-import org.apache.flink.api.java.ExecutionEnvironment;
 import org.apache.flink.api.java.functions.KeySelector;
-import org.apache.flink.api.java.io.DiscardingOutputFormat;
+import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
+import org.apache.flink.streaming.api.functions.sink.v2.DiscardingSink;
 import org.apache.flink.test.util.JavaProgramTestBase;
 
-import org.junit.Assert;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /** Integration tests for custom {@link Partitioner}. */
-@SuppressWarnings("serial")
-public class CustomPartitioningITCase extends JavaProgramTestBase {
+class CustomPartitioningITCase extends JavaProgramTestBase {
 
     @Override
-    protected void testProgram() throws Exception {
-        ExecutionEnvironment env = ExecutionEnvironment.getExecutionEnvironment();
+    protected JobExecutionResult testProgram() throws Exception {
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
 
-        if (!isCollectionExecution()) {
-            Assert.assertTrue(env.getParallelism() > 1);
-        }
+        assertThat(env.getParallelism()).isGreaterThan(1);
 
-        env.generateSequence(1, 1000)
+        env.fromSequence(1, 1000)
                 .partitionCustom(new AllZeroPartitioner(), new IdKeySelector<Long>())
                 .map(new FailExceptInPartitionZeroMapper())
-                .output(new DiscardingOutputFormat<Long>());
+                .sinkTo(new DiscardingSink<>());
 
-        env.execute();
+        return env.execute();
     }
 
     private static class FailExceptInPartitionZeroMapper extends RichMapFunction<Long, Long> {
 
         @Override
         public Long map(Long value) throws Exception {
-            if (getRuntimeContext().getIndexOfThisSubtask() == 0) {
+            if (getRuntimeContext().getTaskInfo().getIndexOfThisSubtask() == 0) {
                 return value;
             } else {
                 throw new Exception("Received data in a partition other than partition 0");

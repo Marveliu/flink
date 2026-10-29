@@ -63,20 +63,51 @@ public final class ResolvedSchema {
     private final List<Column> columns;
     private final List<WatermarkSpec> watermarkSpecs;
     private final @Nullable UniqueConstraint primaryKey;
+    private final List<Index> indexes;
+    private final @Nullable ImmutableColumnsConstraint immutableColumns;
 
+    /**
+     * Please use {@link #ResolvedSchema(List, List, UniqueConstraint, List,
+     * ImmutableColumnsConstraint)} instead.
+     */
+    @Deprecated
     public ResolvedSchema(
             List<Column> columns,
             List<WatermarkSpec> watermarkSpecs,
             @Nullable UniqueConstraint primaryKey) {
+        this(columns, watermarkSpecs, primaryKey, Collections.emptyList());
+    }
+
+    public ResolvedSchema(
+            List<Column> columns,
+            List<WatermarkSpec> watermarkSpecs,
+            @Nullable UniqueConstraint primaryKey,
+            List<Index> indexes) {
+        this(columns, watermarkSpecs, primaryKey, indexes, null);
+    }
+
+    public ResolvedSchema(
+            List<Column> columns,
+            List<WatermarkSpec> watermarkSpecs,
+            @Nullable UniqueConstraint primaryKey,
+            List<Index> indexes,
+            @Nullable ImmutableColumnsConstraint immutableColumns) {
         this.columns = Preconditions.checkNotNull(columns, "Columns must not be null.");
         this.watermarkSpecs =
                 Preconditions.checkNotNull(watermarkSpecs, "Watermark specs must not be null.");
         this.primaryKey = primaryKey;
+        this.indexes = Preconditions.checkNotNull(indexes, "Indexes must not be null.");
+        this.immutableColumns = immutableColumns;
+
+        Preconditions.checkArgument(
+                primaryKey != null || immutableColumns == null,
+                "Immutable constraint must be defined on the table that contains primary key.");
     }
 
     /** Shortcut for a resolved schema of only columns. */
     public static ResolvedSchema of(List<Column> columns) {
-        return new ResolvedSchema(columns, Collections.emptyList(), null);
+        return new ResolvedSchema(
+                columns, Collections.emptyList(), null, Collections.emptyList(), null);
     }
 
     /** Shortcut for a resolved schema of only columns. */
@@ -94,7 +125,8 @@ public final class ResolvedSchema {
                 IntStream.range(0, columnNames.size())
                         .mapToObj(i -> Column.physical(columnNames.get(i), columnDataTypes.get(i)))
                         .collect(Collectors.toList());
-        return new ResolvedSchema(columns, Collections.emptyList(), null);
+        return new ResolvedSchema(
+                columns, Collections.emptyList(), null, Collections.emptyList(), null);
     }
 
     /** Shortcut for a resolved schema of only physical columns. */
@@ -163,12 +195,47 @@ public final class ResolvedSchema {
         return Optional.ofNullable(primaryKey);
     }
 
-    /** Returns the primary key indexes, if any, otherwise returns an empty array. */
+    /** Returns all table indexes. */
+    public List<Index> getIndexes() {
+        return indexes;
+    }
+
+    /** Returns the constraint about immutable columns if it has been defined. */
+    public Optional<ImmutableColumnsConstraint> getImmutableColumns() {
+        return Optional.ofNullable(immutableColumns);
+    }
+
+    /**
+     * Returns the primary key indexes in the {@link #toPhysicalRowDataType()}, if any, otherwise
+     * returns an empty array.
+     */
     public int[] getPrimaryKeyIndexes() {
-        final List<String> columns = getColumnNames();
+        final List<String> columns =
+                getColumns().stream()
+                        .filter(Column::isPhysical)
+                        .map(Column::getName)
+                        .collect(Collectors.toList());
         return getPrimaryKey()
                 .map(UniqueConstraint::getColumns)
                 .map(pkColumns -> pkColumns.stream().mapToInt(columns::indexOf).toArray())
+                .orElseGet(() -> new int[] {});
+    }
+
+    /**
+     * Returns the indexes of columns about the immutable constraint in the {@link
+     * #toPhysicalRowDataType()}, if any, otherwise returns an empty array.
+     */
+    public int[] getImmutableColumnIndexes() {
+        final List<String> columns =
+                getColumns().stream()
+                        .filter(Column::isPhysical)
+                        .map(Column::getName)
+                        .collect(Collectors.toList());
+        return getImmutableColumns()
+                .map(ImmutableColumnsConstraint::getColumns)
+                .map(
+                        immutableColumns ->
+                                immutableColumns.stream().mapToInt(columns::indexOf).toArray())
                 .orElseGet(() -> new int[] {});
     }
 
@@ -228,6 +295,10 @@ public final class ResolvedSchema {
         if (primaryKey != null) {
             components.add(primaryKey);
         }
+        components.addAll(indexes);
+        if (immutableColumns != null) {
+            components.add(immutableColumns);
+        }
         return components.stream()
                 .map(Objects::toString)
                 .map(s -> "  " + s)
@@ -245,12 +316,14 @@ public final class ResolvedSchema {
         final ResolvedSchema that = (ResolvedSchema) o;
         return Objects.equals(columns, that.columns)
                 && Objects.equals(watermarkSpecs, that.watermarkSpecs)
-                && Objects.equals(primaryKey, that.primaryKey);
+                && Objects.equals(primaryKey, that.primaryKey)
+                && Objects.equals(indexes, that.indexes)
+                && Objects.equals(immutableColumns, that.immutableColumns);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(columns, watermarkSpecs, primaryKey);
+        return Objects.hash(columns, watermarkSpecs, primaryKey, indexes, immutableColumns);
     }
 
     // --------------------------------------------------------------------------------------------

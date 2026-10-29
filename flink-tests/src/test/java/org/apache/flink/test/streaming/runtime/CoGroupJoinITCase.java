@@ -20,42 +20,42 @@ package org.apache.flink.test.streaming.runtime;
 import org.apache.flink.api.common.functions.CoGroupFunction;
 import org.apache.flink.api.common.functions.JoinFunction;
 import org.apache.flink.api.common.typeinfo.BasicTypeInfo;
+import org.apache.flink.api.connector.sink2.Sink;
+import org.apache.flink.api.connector.sink2.SinkWriter;
+import org.apache.flink.api.connector.sink2.WriterInitContext;
 import org.apache.flink.api.java.functions.KeySelector;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.api.java.tuple.Tuple3;
 import org.apache.flink.streaming.api.datastream.CoGroupedStreams;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
-import org.apache.flink.streaming.api.functions.AssignerWithPunctuatedWatermarks;
-import org.apache.flink.streaming.api.functions.sink.SinkFunction;
-import org.apache.flink.streaming.api.functions.source.SourceFunction;
 import org.apache.flink.streaming.api.operators.OneInputStreamOperator;
 import org.apache.flink.streaming.api.transformations.OneInputTransformation;
 import org.apache.flink.streaming.api.watermark.Watermark;
 import org.apache.flink.streaming.api.windowing.assigners.TumblingEventTimeWindows;
-import org.apache.flink.streaming.api.windowing.time.Time;
+import org.apache.flink.streaming.runtime.operators.util.WatermarkStrategyWithPunctuatedWatermarks;
 import org.apache.flink.streaming.util.KeyedOneInputStreamOperatorTestHarness;
 import org.apache.flink.streaming.util.OneInputStreamOperatorTestHarness;
 import org.apache.flink.test.util.AbstractTestBase;
 import org.apache.flink.util.Collector;
 
-import org.junit.Assert;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
-import java.util.concurrent.TimeUnit;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 /** Integration tests for windowed join / coGroup operators. */
-@SuppressWarnings("serial")
-public class CoGroupJoinITCase extends AbstractTestBase {
+class CoGroupJoinITCase extends AbstractTestBase {
 
     private static List<String> testResults;
 
     @Test
-    public void testCoGroup() throws Exception {
+    void testCoGroup() throws Exception {
 
         testResults = new ArrayList<>();
 
@@ -63,63 +63,35 @@ public class CoGroupJoinITCase extends AbstractTestBase {
         env.setParallelism(1);
 
         DataStream<Tuple2<String, Integer>> source1 =
-                env.addSource(
-                                new SourceFunction<Tuple2<String, Integer>>() {
-                                    private static final long serialVersionUID = 1L;
+                env.fromData(
+                                Tuple2.of("a", 0),
+                                Tuple2.of("a", 1),
+                                Tuple2.of("a", 2),
+                                Tuple2.of("b", 3),
+                                Tuple2.of("b", 4),
+                                Tuple2.of("b", 5),
+                                Tuple2.of("a", 6),
+                                Tuple2.of("a", 7),
+                                Tuple2.of("a", 8))
 
-                                    @Override
-                                    public void run(SourceContext<Tuple2<String, Integer>> ctx)
-                                            throws Exception {
-                                        ctx.collect(Tuple2.of("a", 0));
-                                        ctx.collect(Tuple2.of("a", 1));
-                                        ctx.collect(Tuple2.of("a", 2));
-
-                                        ctx.collect(Tuple2.of("b", 3));
-                                        ctx.collect(Tuple2.of("b", 4));
-                                        ctx.collect(Tuple2.of("b", 5));
-
-                                        ctx.collect(Tuple2.of("a", 6));
-                                        ctx.collect(Tuple2.of("a", 7));
-                                        ctx.collect(Tuple2.of("a", 8));
-
-                                        // source is finite, so it will have an implicit MAX
-                                        // watermark when it finishes
-                                    }
-
-                                    @Override
-                                    public void cancel() {}
-                                })
+                        // source is finite, so it will have an implicit MAX
+                        // watermark when it finishes
                         .assignTimestampsAndWatermarks(new Tuple2TimestampExtractor());
 
         DataStream<Tuple2<String, Integer>> source2 =
-                env.addSource(
-                                new SourceFunction<Tuple2<String, Integer>>() {
-
-                                    @Override
-                                    public void run(SourceContext<Tuple2<String, Integer>> ctx)
-                                            throws Exception {
-                                        ctx.collect(Tuple2.of("a", 0));
-                                        ctx.collect(Tuple2.of("a", 1));
-
-                                        ctx.collect(Tuple2.of("b", 3));
-
-                                        ctx.collect(Tuple2.of("c", 6));
-                                        ctx.collect(Tuple2.of("c", 7));
-                                        ctx.collect(Tuple2.of("c", 8));
-
-                                        // source is finite, so it will have an implicit MAX
-                                        // watermark when it finishes
-                                    }
-
-                                    @Override
-                                    public void cancel() {}
-                                })
+                env.fromData(
+                                Tuple2.of("a", 0),
+                                Tuple2.of("a", 1),
+                                Tuple2.of("b", 3),
+                                Tuple2.of("c", 6),
+                                Tuple2.of("c", 7),
+                                Tuple2.of("c", 8))
                         .assignTimestampsAndWatermarks(new Tuple2TimestampExtractor());
 
         source1.coGroup(source2)
                 .where(new Tuple2KeyExtractor())
                 .equalTo(new Tuple2KeyExtractor())
-                .window(TumblingEventTimeWindows.of(Time.of(3, TimeUnit.MILLISECONDS)))
+                .window(TumblingEventTimeWindows.of(Duration.ofMillis(3)))
                 .apply(
                         new CoGroupFunction<
                                 Tuple2<String, Integer>, Tuple2<String, Integer>, String>() {
@@ -141,13 +113,7 @@ public class CoGroupJoinITCase extends AbstractTestBase {
                                 out.collect(result.toString());
                             }
                         })
-                .addSink(
-                        new SinkFunction<String>() {
-                            @Override
-                            public void invoke(String value) throws Exception {
-                                testResults.add(value);
-                            }
-                        });
+                .sinkTo(new TestSink());
 
         env.execute("CoGroup Test");
 
@@ -161,11 +127,11 @@ public class CoGroupJoinITCase extends AbstractTestBase {
         Collections.sort(expectedResult);
         Collections.sort(testResults);
 
-        Assert.assertEquals(expectedResult, testResults);
+        assertThat(testResults).isEqualTo(expectedResult);
     }
 
     @Test
-    public void testJoin() throws Exception {
+    void testJoin() throws Exception {
 
         testResults = new ArrayList<>();
 
@@ -173,63 +139,31 @@ public class CoGroupJoinITCase extends AbstractTestBase {
         env.setParallelism(1);
 
         DataStream<Tuple3<String, String, Integer>> source1 =
-                env.addSource(
-                                new SourceFunction<Tuple3<String, String, Integer>>() {
-
-                                    @Override
-                                    public void run(
-                                            SourceContext<Tuple3<String, String, Integer>> ctx)
-                                            throws Exception {
-                                        ctx.collect(Tuple3.of("a", "x", 0));
-                                        ctx.collect(Tuple3.of("a", "y", 1));
-                                        ctx.collect(Tuple3.of("a", "z", 2));
-
-                                        ctx.collect(Tuple3.of("b", "u", 3));
-                                        ctx.collect(Tuple3.of("b", "w", 5));
-
-                                        ctx.collect(Tuple3.of("a", "i", 6));
-                                        ctx.collect(Tuple3.of("a", "j", 7));
-                                        ctx.collect(Tuple3.of("a", "k", 8));
-
-                                        // source is finite, so it will have an implicit MAX
-                                        // watermark when it finishes
-                                    }
-
-                                    @Override
-                                    public void cancel() {}
-                                })
+                env.fromData(
+                                Tuple3.of("a", "x", 0),
+                                Tuple3.of("a", "y", 1),
+                                Tuple3.of("a", "z", 2),
+                                Tuple3.of("b", "u", 3),
+                                Tuple3.of("b", "w", 5),
+                                Tuple3.of("a", "i", 6),
+                                Tuple3.of("a", "j", 7),
+                                Tuple3.of("a", "k", 8))
                         .assignTimestampsAndWatermarks(new Tuple3TimestampExtractor());
 
         DataStream<Tuple3<String, String, Integer>> source2 =
-                env.addSource(
-                                new SourceFunction<Tuple3<String, String, Integer>>() {
-
-                                    @Override
-                                    public void run(
-                                            SourceContext<Tuple3<String, String, Integer>> ctx)
-                                            throws Exception {
-                                        ctx.collect(Tuple3.of("a", "u", 0));
-                                        ctx.collect(Tuple3.of("a", "w", 1));
-
-                                        ctx.collect(Tuple3.of("b", "i", 3));
-                                        ctx.collect(Tuple3.of("b", "k", 5));
-
-                                        ctx.collect(Tuple3.of("a", "x", 6));
-                                        ctx.collect(Tuple3.of("a", "z", 8));
-
-                                        // source is finite, so it will have an implicit MAX
-                                        // watermark when it finishes
-                                    }
-
-                                    @Override
-                                    public void cancel() {}
-                                })
+                env.fromData(
+                                Tuple3.of("a", "u", 0),
+                                Tuple3.of("a", "w", 1),
+                                Tuple3.of("b", "i", 3),
+                                Tuple3.of("b", "k", 5),
+                                Tuple3.of("a", "x", 6),
+                                Tuple3.of("a", "z", 8))
                         .assignTimestampsAndWatermarks(new Tuple3TimestampExtractor());
 
         source1.join(source2)
                 .where(new Tuple3KeyExtractor())
                 .equalTo(new Tuple3KeyExtractor())
-                .window(TumblingEventTimeWindows.of(Time.of(3, TimeUnit.MILLISECONDS)))
+                .window(TumblingEventTimeWindows.of(Duration.ofMillis(3)))
                 .apply(
                         new JoinFunction<
                                 Tuple3<String, String, Integer>,
@@ -243,13 +177,7 @@ public class CoGroupJoinITCase extends AbstractTestBase {
                                 return first + ":" + second;
                             }
                         })
-                .addSink(
-                        new SinkFunction<String>() {
-                            @Override
-                            public void invoke(String value) throws Exception {
-                                testResults.add(value);
-                            }
-                        });
+                .sinkTo(new TestSink());
 
         env.execute("Join Test");
 
@@ -275,11 +203,11 @@ public class CoGroupJoinITCase extends AbstractTestBase {
         Collections.sort(expectedResult);
         Collections.sort(testResults);
 
-        Assert.assertEquals(expectedResult, testResults);
+        assertThat(testResults).isEqualTo(expectedResult);
     }
 
     @Test
-    public void testSelfJoin() throws Exception {
+    void testSelfJoin() throws Exception {
 
         testResults = new ArrayList<>();
 
@@ -287,38 +215,21 @@ public class CoGroupJoinITCase extends AbstractTestBase {
         env.setParallelism(1);
 
         DataStream<Tuple3<String, String, Integer>> source1 =
-                env.addSource(
-                                new SourceFunction<Tuple3<String, String, Integer>>() {
-                                    private static final long serialVersionUID = 1L;
-
-                                    @Override
-                                    public void run(
-                                            SourceContext<Tuple3<String, String, Integer>> ctx)
-                                            throws Exception {
-                                        ctx.collect(Tuple3.of("a", "x", 0));
-                                        ctx.collect(Tuple3.of("a", "y", 1));
-                                        ctx.collect(Tuple3.of("a", "z", 2));
-
-                                        ctx.collect(Tuple3.of("b", "u", 3));
-                                        ctx.collect(Tuple3.of("b", "w", 5));
-
-                                        ctx.collect(Tuple3.of("a", "i", 6));
-                                        ctx.collect(Tuple3.of("a", "j", 7));
-                                        ctx.collect(Tuple3.of("a", "k", 8));
-
-                                        // source is finite, so it will have an implicit MAX
-                                        // watermark when it finishes
-                                    }
-
-                                    @Override
-                                    public void cancel() {}
-                                })
+                env.fromData(
+                                Tuple3.of("a", "x", 0),
+                                Tuple3.of("a", "y", 1),
+                                Tuple3.of("a", "z", 2),
+                                Tuple3.of("b", "u", 3),
+                                Tuple3.of("b", "w", 5),
+                                Tuple3.of("a", "i", 6),
+                                Tuple3.of("a", "j", 7),
+                                Tuple3.of("a", "k", 8))
                         .assignTimestampsAndWatermarks(new Tuple3TimestampExtractor());
 
         source1.join(source1)
                 .where(new Tuple3KeyExtractor())
                 .equalTo(new Tuple3KeyExtractor())
-                .window(TumblingEventTimeWindows.of(Time.of(3, TimeUnit.MILLISECONDS)))
+                .window(TumblingEventTimeWindows.of(Duration.ofMillis(3)))
                 .apply(
                         new JoinFunction<
                                 Tuple3<String, String, Integer>,
@@ -332,13 +243,7 @@ public class CoGroupJoinITCase extends AbstractTestBase {
                                 return first + ":" + second;
                             }
                         })
-                .addSink(
-                        new SinkFunction<String>() {
-                            @Override
-                            public void invoke(String value) throws Exception {
-                                testResults.add(value);
-                            }
-                        });
+                .sinkTo(new TestSink());
 
         env.execute("Self-Join Test");
 
@@ -370,7 +275,7 @@ public class CoGroupJoinITCase extends AbstractTestBase {
         Collections.sort(expectedResult);
         Collections.sort(testResults);
 
-        Assert.assertEquals(expectedResult, testResults);
+        assertThat(testResults).isEqualTo(expectedResult);
     }
 
     /**
@@ -380,22 +285,22 @@ public class CoGroupJoinITCase extends AbstractTestBase {
      * @see <a href="https://issues.apache.org/jira/browse/FLINK-6808">FLINK-6808</a>
      */
     @Test
-    public void testCoGroupOperatorWithCheckpoint() throws Exception {
+    void testCoGroupOperatorWithCheckpoint() throws Exception {
 
         // generate an operator for the co-group operation
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
         env.setParallelism(1);
 
         DataStream<Tuple2<String, Integer>> source1 =
-                env.fromElements(Tuple2.of("a", 0), Tuple2.of("b", 3));
+                env.fromData(Tuple2.of("a", 0), Tuple2.of("b", 3));
         DataStream<Tuple2<String, Integer>> source2 =
-                env.fromElements(Tuple2.of("a", 1), Tuple2.of("b", 6));
+                env.fromData(Tuple2.of("a", 1), Tuple2.of("b", 6));
 
         DataStream<String> coGroupWindow =
                 source1.coGroup(source2)
                         .where(new Tuple2KeyExtractor())
                         .equalTo(new Tuple2KeyExtractor())
-                        .window(TumblingEventTimeWindows.of(Time.of(3, TimeUnit.MILLISECONDS)))
+                        .window(TumblingEventTimeWindows.of(Duration.ofMillis(3)))
                         .apply(
                                 new CoGroupFunction<
                                         Tuple2<String, Integer>,
@@ -426,7 +331,7 @@ public class CoGroupJoinITCase extends AbstractTestBase {
     }
 
     private static class Tuple2TimestampExtractor
-            implements AssignerWithPunctuatedWatermarks<Tuple2<String, Integer>> {
+            implements WatermarkStrategyWithPunctuatedWatermarks<Tuple2<String, Integer>> {
 
         @Override
         public long extractTimestamp(Tuple2<String, Integer> element, long previousTimestamp) {
@@ -441,7 +346,7 @@ public class CoGroupJoinITCase extends AbstractTestBase {
     }
 
     private static class Tuple3TimestampExtractor
-            implements AssignerWithPunctuatedWatermarks<Tuple3<String, String, Integer>> {
+            implements WatermarkStrategyWithPunctuatedWatermarks<Tuple3<String, String, Integer>> {
 
         @Override
         public long extractTimestamp(
@@ -471,6 +376,25 @@ public class CoGroupJoinITCase extends AbstractTestBase {
         @Override
         public String getKey(Tuple3<String, String, Integer> value) throws Exception {
             return value.f0;
+        }
+    }
+
+    private static class TestSink implements Sink<String> {
+
+        @Override
+        public SinkWriter<String> createWriter(WriterInitContext context) {
+            return new SinkWriter<>() {
+                @Override
+                public void write(String element, Context context) {
+                    testResults.add(element);
+                }
+
+                @Override
+                public void flush(boolean endOfInput) {}
+
+                @Override
+                public void close() {}
+            };
         }
     }
 }

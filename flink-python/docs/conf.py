@@ -63,6 +63,10 @@ extensions = [
     'sphinx.ext.mathjax',
     'sphinx.ext.inheritance_diagram',
     'sphinx.ext.doctest',
+    'sphinx.ext.autosummary',
+    'sphinx.ext.intersphinx',
+    'sphinx.ext.extlinks',
+    'sphinx_mdinclude'
 ]
 
 # Add any paths that contain templates here, relative to this directory.
@@ -82,31 +86,61 @@ master_doc = 'index'
 #
 # This is also used if you do content translation via gettext catalogs.
 # Usually you set "language" from the command line for these cases.
-language = None
+language = 'en'
+locale_dirs = ['locales/']
+gettext_compact = False
 
 # List of patterns, relative to source directory, that match files and
 # directories to ignore when looking for source files.
 # This pattern also affects html_static_path and html_extra_path.
-exclude_patterns = ['_build', 'Thumbs.db', '.DS_Store']
+exclude_patterns = ['_build', 'Thumbs.db', '.DS_Store', 'README.md', '.venv']
+
+# If true, the current module name will be prepended to all description
+# unit titles (such as .. function::).
+add_module_names = False
 
 # The name of the Pygments (syntax highlighting) style to use.
 pygments_style = 'sphinx'
 
 # Look at the first line of the docstring for function and method signatures.
+autosummary_generate = True
 autodoc_docstring_signature = True
+
+# Map to external docs for type annotations
+intersphinx_mapping = {
+    "pandas": ("https://pandas.pydata.org/docs/", None),
+}
+
+# External links to main Flink documentation
+# The base URL is configurable via FLINK_DOCS_BASE_URL for versioned builds
+# (e.g. flink-docs-release-2.2, flink-docs-stable, flink-docs-master)
+_flink_docs_base = os.environ.get(
+    'FLINK_DOCS_BASE_URL',
+    'https://nightlies.apache.org/flink/flink-docs-master')
+extlinks = {
+    'flinkdoc': (_flink_docs_base + '/%s', '%s'),
+}
 
 # -- Options for HTML output -------------------------------------------------
 
 # The theme to use for HTML and HTML Help pages.  See the documentation for
 # a list of builtin themes.
 #
-html_theme = 'nature'
+html_theme = 'pydata_sphinx_theme'
 
 # Theme options are theme-specific and customize the look and feel of a theme
 # further.  For a list of options available for each theme, see the
 # documentation.
 #
-# html_theme_options = {}
+html_theme_options = {
+    "collapse_navigation": False,
+    "navigation_depth": 4,
+    "show_nav_level": 1,
+    "navbar_end": ["lang-switcher.html", "theme-switcher.html", "navbar-icon-links.html"]
+}
+
+# Base URL for canonical links, pointing to stable docs version
+html_baseurl = "https://nightlies.apache.org/flink/flink-docs-stable/api/python/"
 
 # The name of an image file (relative to this directory) to place at the top
 # of the sidebar.
@@ -126,6 +160,7 @@ html_use_index = False
 # relative to this directory. They are copied after the builtin static files,
 # so a file named "default.css" will overwrite the builtin "default.css".
 html_static_path = ['_static']
+html_css_files = ['pyflink.css']
 
 # Custom sidebar templates, must be a dictionary that maps document names
 # to template names.
@@ -211,3 +246,13 @@ epub_copyright = u'2019, Author'
 epub_exclude_files = ['search.html']
 
 # -- Extension configuration -------------------------------------------------
+
+
+def _set_zh_baseurl(app, config):
+    # -D language=zh is applied after this file is read
+    if config.language == 'zh':
+        config.html_baseurl += 'zh/'
+
+
+def setup(app):
+    app.connect('config-inited', _set_zh_baseurl)

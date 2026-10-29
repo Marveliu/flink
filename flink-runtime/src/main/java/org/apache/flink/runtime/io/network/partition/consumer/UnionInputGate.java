@@ -24,7 +24,7 @@ import org.apache.flink.runtime.io.network.api.EndOfData;
 import org.apache.flink.runtime.io.network.api.EndOfPartitionEvent;
 import org.apache.flink.runtime.io.network.partition.PrioritizedDeque;
 
-import org.apache.flink.shaded.guava30.com.google.common.collect.Sets;
+import org.apache.flink.shaded.guava33.com.google.common.collect.Sets;
 
 import java.io.IOException;
 import java.util.Arrays;
@@ -77,6 +77,7 @@ public class UnionInputGate extends InputGate {
     private final Set<IndexedInputGate> inputGatesWithRemainingUserData;
 
     private boolean shouldDrainOnEndOfData = true;
+
     /**
      * Gates, which notified this input gate about available data. We are using it as a FIFO queue
      * of {@link InputGate}s to avoid starvation and provide some basic fairness.
@@ -173,6 +174,13 @@ public class UnionInputGate extends InputGate {
         return inputGatesByGateIndex
                 .get(gateIndex)
                 .getChannel(channelIndex - inputGateChannelIndexOffsets[gateIndex]);
+    }
+
+    @Override
+    public InputChannel getChannel(InputChannelInfo channelInfo) {
+        // The member gate's local channel index is carried directly in channelInfo, so resolve
+        // through the owning gate instead of the gate-global getChannel(int) addressing.
+        return inputGatesByGateIndex.get(channelInfo.getGateIdx()).getChannel(channelInfo);
     }
 
     @Override
@@ -319,6 +327,12 @@ public class UnionInputGate extends InputGate {
         }
     }
 
+    public void resumeGateConsumption() throws IOException {
+        for (Map.Entry<Integer, InputGate> entry : inputGatesByGateIndex.entrySet()) {
+            entry.getValue().resumeGateConsumption();
+        }
+    }
+
     @Override
     public void resumeConsumption(InputChannelInfo channelInfo) throws IOException {
         inputGatesByGateIndex.get(channelInfo.getGateIdx()).resumeConsumption(channelInfo);
@@ -345,8 +359,13 @@ public class UnionInputGate extends InputGate {
 
     @Override
     public void requestPartitions() throws IOException {
+        requestPartitions(false);
+    }
+
+    @Override
+    public void requestPartitions(boolean needsRecovery) throws IOException {
         for (InputGate inputGate : inputGatesByGateIndex.values()) {
-            inputGate.requestPartitions();
+            inputGate.requestPartitions(needsRecovery);
         }
     }
 

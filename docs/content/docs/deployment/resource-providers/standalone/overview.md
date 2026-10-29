@@ -96,13 +96,25 @@ Then, we can launch the JobManager:
 $ ./bin/standalone-job.sh start --job-classname org.apache.flink.streaming.examples.windowing.TopSpeedWindowing
 ```
 
-The web interface is now available at [localhost:8081](http://localhost:8081). However, the application won't be able to start, because there are no TaskManagers running yet:
+The web interface is now available at [localhost:8081](http://localhost:8081).
+
+{{< hint info >}}
+Another approach would be to use the artifact fetching mechanism via the `--jars` option:
+
+```bash
+$ ./bin/standalone-job.sh start -D user.artifacts.base-dir=/tmp/flink-artifacts --jars local:///path/to/TopSpeedWindowing.jar
+```
+
+Read more about this CLI option [here]({{< ref "docs/deployment/resource-providers/standalone/docker" >}}#jobmanager-additional-command-line-arguments).
+{{< /hint >}}
+
+However, the application won't be able to start, because there are no TaskManagers running yet:
 
 ```bash
 $ ./bin/taskmanager.sh start
 ```
 
-Note: You can start multiple TaskManagers, if your application needs more resources.
+<span class="label label-info">Note</span> You can start multiple TaskManagers, if your application needs more resources.
 
 Stopping the services is also supported via the scripts. Call them multiple times if you want to stop multiple instances, or use `stop-all`:
 
@@ -110,6 +122,55 @@ Stopping the services is also supported via the scripts. Call them multiple time
 $ ./bin/taskmanager.sh stop
 $ ./bin/standalone-job.sh stop
 ```
+
+### Application Mode in a MiniCluster
+
+An application can also be run with the JobManager and a TaskManager in a single process, using the `bin/minicluster.sh` script.
+This is useful for low-throughput jobs where running a separate TaskManager is not worth the additional resources.
+The process runs the same components as a distributed application cluster, so savepoints, checkpoints, state backends, metrics and the web interface all work in the same way.
+
+The script takes the same arguments as `bin/standalone-job.sh`, except that it always runs in the foreground (so there is no `start` or `stop`) and arguments for the application should be put after `--`:
+
+```bash
+$ ./bin/minicluster.sh --jars local://$(pwd)/examples/streaming/TopSpeedWindowing.jar
+```
+
+The web interface is now available at [localhost:8081](http://localhost:8081). No TaskManager needs to be started.
+
+The full set of arguments is:
+
+```bash
+$ ./bin/minicluster.sh \
+    [--jars <jar>[,<jar>...]] \
+    [--job-classname <class name>] \
+    [--job-id <job id>] \
+    [--fromSavepoint <path> [--allowNonRestoredState]] \
+    [-D <key>=<value> ...] \
+    [-- <application arguments>]
+```
+
+As with `standalone-job.sh`, if `--jars` is not given, the application is loaded from the `usrlib` folder or the classpath.
+
+The MiniCluster has one TaskManager instance within the JVM with `taskmanager.numberOfTaskSlots` slots, so the parallelism of the application cannot be greater than this.
+JobManager and TaskManager process memory options (such as `jobmanager.memory.process.size` and `taskmanager.memory.process.size`) do not apply, and the JVM heap size is set by the JVM defaults unless set using `env.java.opts.jobmanager` or `env.java.opts.all`.
+
+#### Restarting the process
+
+If [High Availability]({{< ref "docs/deployment/ha/overview" >}}) is configured, the process can be restarted after a failure and will resume the application from the latest checkpoint.
+The application is given a fixed job ID derived from the `high-availability.cluster-id` (or from `--job-id`, if given), so a restarted process recovers the existing job from the high availability metadata rather than starting a new one.
+Stopping the process with `SIGTERM` keeps the high availability metadata, so that it can be recovered in the same way.
+
+Task failures are handled by the application's restart strategy within the process, in the same way as in a distributed cluster.
+A fatal error in the JobManager or the TaskManager cannot be recovered within the process, because there is no other process to take over.
+Examples are an `OutOfMemoryError`, or a task that does not stop within [`task.cancellation.timeout`]({{< ref "docs/deployment/config" >}}#task-cancellation-timeout) after it is cancelled (unless that is set to `0`, which disables this check).
+In these cases the process exits with a non-zero exit code, keeping the high availability metadata, so it should be run under a supervisor that restarts it, such as Kubernetes or systemd.
+
+Without High Availability, a restarted process starts the application again from the beginning (or from `--fromSavepoint`, if given).
+
+#### When the application finishes
+
+By default, the process exits once the application reaches a terminal state, with an exit code of `0` if the application finished or was cancelled, and a non-zero exit code if it failed.
+If [`execution.shutdown-on-application-finish`]({{< ref "docs/deployment/config" >}}#execution-shutdown-on-application-finish) is set to `false`, the process keeps running after the application finishes, so that its final status can still be retrieved from the web interface and REST API.
 
 ### Session Mode
 
@@ -124,6 +185,20 @@ Local deployment in Session Mode has already been described in the [introduction
 ### Configuration
 
 All available configuration options are listed on the [configuration page]({{< ref "docs/deployment/config" >}}), in particular the [Basic Setup]({{< ref "docs/deployment/config" >}}#basic-setup) section contains good advise on configuring the ports, memory, parallelism etc.
+
+The following scripts also allow configuration parameters to be set via dynamic properties:
+* `jobmanager.sh`
+* `standalone-job.sh`
+* `minicluster.sh`
+* `taskmanager.sh`
+* `historyserver.sh`
+
+Example:
+```bash
+$ ./bin/jobmanager.sh start -D jobmanager.rpc.address=localhost -D rest.port=8081
+```
+
+Options set via dynamic properties overwrite the options from [Flink configuration file]({{< ref "docs/deployment/config#flink-configuration-file" >}}).
 
 ### Debugging
 
@@ -234,10 +309,10 @@ By default, the JobManager will pick a *random port* for inter process communica
 
 #### Example: Standalone HA Cluster with 2 JobManagers
 
-1. Configure high availability mode and ZooKeeper quorum in `conf/flink-conf.yaml`:
+1. Configure high availability mode and ZooKeeper quorum in [Flink configuration file]({{< ref "docs/deployment/config#flink-configuration-file" >}}):
 
 ```bash
-high-availability: zookeeper
+high-availability.type: zookeeper
 high-availability.zookeeper.quorum: localhost:2181
 high-availability.zookeeper.path.root: /flink
 high-availability.cluster-id: /cluster_one # important: customize per cluster

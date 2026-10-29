@@ -20,7 +20,10 @@ package org.apache.flink.runtime.operators.testutils;
 
 import org.apache.flink.api.common.ExecutionConfig;
 import org.apache.flink.api.common.JobID;
+import org.apache.flink.api.common.JobInfo;
+import org.apache.flink.api.common.JobInfoImpl;
 import org.apache.flink.api.common.TaskInfo;
+import org.apache.flink.api.common.TaskInfoImpl;
 import org.apache.flink.api.common.operators.MailboxExecutor;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.core.fs.Path;
@@ -29,6 +32,8 @@ import org.apache.flink.runtime.broadcast.BroadcastVariableManager;
 import org.apache.flink.runtime.checkpoint.CheckpointException;
 import org.apache.flink.runtime.checkpoint.CheckpointMetrics;
 import org.apache.flink.runtime.checkpoint.TaskStateSnapshot;
+import org.apache.flink.runtime.checkpoint.channel.ChannelStateWriteRequestExecutorFactory;
+import org.apache.flink.runtime.checkpoint.channel.ChannelStateWriter;
 import org.apache.flink.runtime.execution.Environment;
 import org.apache.flink.runtime.executiongraph.ExecutionAttemptID;
 import org.apache.flink.runtime.externalresource.ExternalResourceInfoProvider;
@@ -38,18 +43,22 @@ import org.apache.flink.runtime.io.network.api.writer.RecordCollectingResultPart
 import org.apache.flink.runtime.io.network.api.writer.ResultPartitionWriter;
 import org.apache.flink.runtime.io.network.partition.consumer.IndexedInputGate;
 import org.apache.flink.runtime.io.network.partition.consumer.IteratorWrappingTestSingleInputGate;
+import org.apache.flink.runtime.jobgraph.JobType;
 import org.apache.flink.runtime.jobgraph.JobVertexID;
 import org.apache.flink.runtime.jobgraph.tasks.InputSplitProvider;
 import org.apache.flink.runtime.jobgraph.tasks.TaskOperatorEventGateway;
 import org.apache.flink.runtime.mailbox.SyncMailboxExecutor;
 import org.apache.flink.runtime.memory.MemoryManager;
+import org.apache.flink.runtime.memory.SharedResources;
 import org.apache.flink.runtime.metrics.groups.TaskMetricGroup;
 import org.apache.flink.runtime.query.KvStateRegistry;
 import org.apache.flink.runtime.query.TaskKvStateRegistry;
 import org.apache.flink.runtime.state.CheckpointStorageAccess;
 import org.apache.flink.runtime.state.TaskStateManager;
 import org.apache.flink.runtime.taskexecutor.GlobalAggregateManager;
+import org.apache.flink.runtime.taskmanager.NoOpTaskManagerActions;
 import org.apache.flink.runtime.taskmanager.NoOpTaskOperatorEventGateway;
+import org.apache.flink.runtime.taskmanager.TaskManagerActions;
 import org.apache.flink.runtime.taskmanager.TaskManagerRuntimeInfo;
 import org.apache.flink.types.Record;
 import org.apache.flink.util.MutableObjectIterator;
@@ -57,7 +66,7 @@ import org.apache.flink.util.Preconditions;
 import org.apache.flink.util.UserCodeClassLoader;
 import org.apache.flink.util.concurrent.Executors;
 
-import com.sun.istack.NotNull;
+import javax.annotation.Nullable;
 
 import java.util.Collections;
 import java.util.LinkedList;
@@ -66,20 +75,28 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
+import java.util.function.Consumer;
 
+import static org.apache.flink.runtime.executiongraph.ExecutionGraphTestUtils.createExecutionAttemptId;
 import static org.apache.flink.util.Preconditions.checkArgument;
 import static org.apache.flink.util.Preconditions.checkNotNull;
 import static org.apache.flink.util.Preconditions.checkState;
-import static org.junit.Assert.fail;
+import static org.assertj.core.api.Assertions.fail;
 
 /** IMPORTANT! Remember to close environment after usage! */
 public class MockEnvironment implements Environment, AutoCloseable {
 
+    private final JobInfo jobInfo;
+
     private final TaskInfo taskInfo;
+
+    private final JobType jobType;
 
     private final ExecutionConfig executionConfig;
 
     private final MemoryManager memManager;
+
+    private final SharedResources sharedResources;
 
     private final IOManager ioManager;
 
@@ -96,8 +113,6 @@ public class MockEnvironment implements Environment, AutoCloseable {
     private final List<IndexedInputGate> inputs;
 
     private final List<ResultPartitionWriter> outputs;
-
-    private final JobID jobID;
 
     private final JobVertexID jobVertexID;
 
@@ -123,6 +138,8 @@ public class MockEnvironment implements Environment, AutoCloseable {
 
     private Optional<? extends Throwable> actualExternalFailureCause = Optional.empty();
 
+    private Optional<Consumer<Throwable>> externalFailureCauseConsumer = Optional.empty();
+
     private final TaskMetricGroup taskMetricGroup;
 
     private final ExternalResourceInfoProvider externalResourceInfoProvider;
@@ -133,13 +150,19 @@ public class MockEnvironment implements Environment, AutoCloseable {
 
     private CheckpointStorageAccess checkpointStorageAccess;
 
+    private final ChannelStateWriteRequestExecutorFactory channelStateExecutorFactory;
+
+    @Nullable private ChannelStateWriter channelStateWriter;
+
     public static MockEnvironmentBuilder builder() {
         return new MockEnvironmentBuilder();
     }
 
     protected MockEnvironment(
             JobID jobID,
+            String jobName,
             JobVertexID jobVertexID,
+            JobType jobType,
             String taskName,
             MockInputSplitProvider inputSplitProvider,
             int bufferSize,
@@ -155,19 +178,22 @@ public class MockEnvironment implements Environment, AutoCloseable {
             TaskMetricGroup taskMetricGroup,
             TaskManagerRuntimeInfo taskManagerRuntimeInfo,
             MemoryManager memManager,
-            ExternalResourceInfoProvider externalResourceInfoProvider) {
+            ExternalResourceInfoProvider externalResourceInfoProvider,
+            ChannelStateWriteRequestExecutorFactory channelStateExecutorFactory,
+            Configuration jobConfiguration) {
 
-        this.jobID = jobID;
+        this.jobInfo = new JobInfoImpl(jobID, jobName);
         this.jobVertexID = jobVertexID;
-
-        this.taskInfo = new TaskInfo(taskName, maxParallelism, subtaskIndex, parallelism, 0);
-        this.jobConfiguration = new Configuration();
+        this.jobType = jobType;
+        this.taskInfo = new TaskInfoImpl(taskName, maxParallelism, subtaskIndex, parallelism, 0);
+        this.jobConfiguration = jobConfiguration;
         this.taskConfiguration = taskConfiguration;
         this.inputs = new LinkedList<>();
         this.outputs = new LinkedList<ResultPartitionWriter>();
-        this.executionAttemptID = new ExecutionAttemptID();
+        this.executionAttemptID = createExecutionAttemptId(jobVertexID, subtaskIndex, 0);
 
         this.memManager = memManager;
+        this.sharedResources = new SharedResources();
         this.ioManager = ioManager;
         this.taskManagerRuntimeInfo = taskManagerRuntimeInfo;
 
@@ -192,6 +218,7 @@ public class MockEnvironment implements Environment, AutoCloseable {
         this.mainMailboxExecutor = new SyncMailboxExecutor();
 
         this.asyncOperationsThreadPool = Executors.newDirectExecutorService();
+        this.channelStateExecutorFactory = channelStateExecutorFactory;
     }
 
     public IteratorWrappingTestSingleInputGate<Record> addInput(
@@ -237,6 +264,11 @@ public class MockEnvironment implements Environment, AutoCloseable {
     }
 
     @Override
+    public SharedResources getSharedResources() {
+        return this.sharedResources;
+    }
+
+    @Override
     public IOManager getIOManager() {
         return this.ioManager;
     }
@@ -248,7 +280,12 @@ public class MockEnvironment implements Environment, AutoCloseable {
 
     @Override
     public JobID getJobID() {
-        return this.jobID;
+        return this.jobInfo.getJobId();
+    }
+
+    @Override
+    public JobType getJobType() {
+        return jobType;
     }
 
     @Override
@@ -295,6 +332,12 @@ public class MockEnvironment implements Environment, AutoCloseable {
         return outputs.get(index);
     }
 
+    /** Outputs are consumed with the same parallelism as this task. */
+    @Override
+    public int getWriterConsumerParallelism(int index) {
+        return taskInfo.getNumberOfParallelSubtasks();
+    }
+
     @Override
     public ResultPartitionWriter[] getAllWriters() {
         return outputs.toArray(new ResultPartitionWriter[outputs.size()]);
@@ -313,6 +356,11 @@ public class MockEnvironment implements Environment, AutoCloseable {
     @Override
     public TaskEventDispatcher getTaskEventDispatcher() {
         return taskEventDispatcher;
+    }
+
+    @Override
+    public TaskManagerActions getTaskManagerActions() {
+        return new NoOpTaskManagerActions();
     }
 
     @Override
@@ -380,6 +428,11 @@ public class MockEnvironment implements Environment, AutoCloseable {
 
     @Override
     public void failExternally(Throwable cause) {
+        if (externalFailureCauseConsumer.isPresent()) {
+            externalFailureCauseConsumer.get().accept(cause);
+            return;
+        }
+
         if (!expectedExternalFailureCause.isPresent()) {
             throw new UnsupportedOperationException(
                     "MockEnvironment does not support external task failure.");
@@ -404,7 +457,7 @@ public class MockEnvironment implements Environment, AutoCloseable {
     }
 
     @Override
-    public void setMainMailboxExecutor(@NotNull MailboxExecutor mainMailboxExecutor) {
+    public void setMainMailboxExecutor(MailboxExecutor mainMailboxExecutor) {
         this.mainMailboxExecutor = mainMailboxExecutor;
     }
 
@@ -414,7 +467,7 @@ public class MockEnvironment implements Environment, AutoCloseable {
     }
 
     @Override
-    public void setAsyncOperationsThreadPool(@NotNull ExecutorService executorService) {
+    public void setAsyncOperationsThreadPool(ExecutorService executorService) {
         this.asyncOperationsThreadPool = executorService;
     }
 
@@ -424,8 +477,7 @@ public class MockEnvironment implements Environment, AutoCloseable {
     }
 
     @Override
-    public void setCheckpointStorageAccess(
-            @NotNull CheckpointStorageAccess checkpointStorageAccess) {
+    public void setCheckpointStorageAccess(CheckpointStorageAccess checkpointStorageAccess) {
         this.checkpointStorageAccess = checkpointStorageAccess;
     }
 
@@ -434,11 +486,36 @@ public class MockEnvironment implements Environment, AutoCloseable {
         return checkNotNull(checkpointStorageAccess);
     }
 
+    @Override
+    public ChannelStateWriteRequestExecutorFactory getChannelStateExecutorFactory() {
+        return channelStateExecutorFactory;
+    }
+
+    @Override
+    public JobInfo getJobInfo() {
+        return jobInfo;
+    }
+
     public void setExpectedExternalFailureCause(Class<? extends Throwable> expectedThrowableClass) {
         this.expectedExternalFailureCause = Optional.of(expectedThrowableClass);
     }
 
     public Optional<? extends Throwable> getActualExternalFailureCause() {
         return actualExternalFailureCause;
+    }
+
+    public void setExternalFailureCauseConsumer(Consumer<Throwable> externalFailureCauseConsumer) {
+        this.externalFailureCauseConsumer = Optional.of(externalFailureCauseConsumer);
+    }
+
+    @Override
+    public void setChannelStateWriter(ChannelStateWriter channelStateWriter) {
+        this.channelStateWriter = channelStateWriter;
+    }
+
+    @Override
+    @Nullable
+    public ChannelStateWriter getChannelStateWriter() {
+        return this.channelStateWriter;
     }
 }

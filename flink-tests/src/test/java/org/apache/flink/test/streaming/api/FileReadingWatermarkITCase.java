@@ -21,16 +21,16 @@ import org.apache.flink.api.common.eventtime.TimestampAssigner;
 import org.apache.flink.api.common.eventtime.Watermark;
 import org.apache.flink.api.common.eventtime.WatermarkStrategy;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
-import org.apache.flink.streaming.api.functions.sink.RichSinkFunction;
-import org.apache.flink.streaming.api.functions.sink.SinkFunction;
+import org.apache.flink.streaming.api.functions.sink.legacy.RichSinkFunction;
+import org.apache.flink.streaming.api.functions.sink.legacy.SinkFunction;
 import org.apache.flink.test.util.InfiniteIntegerInputFormat;
-import org.apache.flink.testutils.junit.SharedObjects;
+import org.apache.flink.testutils.junit.SharedObjectsExtension;
 import org.apache.flink.testutils.junit.SharedReference;
-import org.apache.flink.util.TestLogger;
+import org.apache.flink.util.TestLoggerExtension;
 
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.TemporaryFolder;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.api.extension.RegisterExtension;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -43,15 +43,16 @@ import static org.apache.flink.util.Preconditions.checkState;
  *
  * @see <a href="https://issues.apache.org/jira/browse/FLINK-19109">FLINK-19109</a>
  */
-public class FileReadingWatermarkITCase extends TestLogger {
+@ExtendWith(TestLoggerExtension.class)
+class FileReadingWatermarkITCase {
     private static final Logger LOG = LoggerFactory.getLogger(FileReadingWatermarkITCase.class);
 
     private static final int WATERMARK_INTERVAL_MILLIS = 1_000;
     private static final int EXPECTED_WATERMARKS = 5;
 
-    @Rule public final TemporaryFolder temporaryFolder = new TemporaryFolder();
+    @RegisterExtension
+    private final SharedObjectsExtension sharedObjects = SharedObjectsExtension.create();
 
-    @Rule public final SharedObjects sharedObjects = SharedObjects.create();
     /**
      * Adds an infinite split that causes the input of {@link
      * org.apache.flink.streaming.api.functions.source.ContinuousFileReaderOperator} to instantly go
@@ -60,7 +61,7 @@ public class FileReadingWatermarkITCase extends TestLogger {
      * <p>Before FLINK-19109, watermarks would not be emitted at this point.
      */
     @Test
-    public void testWatermarkEmissionWithChaining() throws Exception {
+    void testWatermarkEmissionWithChaining() throws Exception {
         StreamExecutionEnvironment env = StreamExecutionEnvironment.createLocalEnvironment(1);
         env.getConfig().setAutoWatermarkInterval(WATERMARK_INTERVAL_MILLIS);
         SharedReference<CountDownLatch> latch =

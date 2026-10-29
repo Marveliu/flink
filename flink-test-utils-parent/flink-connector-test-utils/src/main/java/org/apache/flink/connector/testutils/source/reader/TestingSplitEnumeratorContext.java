@@ -18,6 +18,9 @@
 
 package org.apache.flink.connector.testutils.source.reader;
 
+import org.apache.flink.api.common.JobID;
+import org.apache.flink.api.common.JobInfo;
+import org.apache.flink.api.common.JobInfoImpl;
 import org.apache.flink.api.connector.source.ReaderInfo;
 import org.apache.flink.api.connector.source.SourceEvent;
 import org.apache.flink.api.connector.source.SourceSplit;
@@ -57,6 +60,8 @@ public class TestingSplitEnumeratorContext<SplitT extends SourceSplit>
 
     private final int parallelism;
 
+    private final JobInfo jobInfo = new JobInfoImpl(new JobID(), "test-job");
+
     public TestingSplitEnumeratorContext(int parallelism) {
         this.parallelism = parallelism;
     }
@@ -92,6 +97,11 @@ public class TestingSplitEnumeratorContext<SplitT extends SourceSplit>
     // ------------------------------------------------------------------------
 
     @Override
+    public JobInfo getJobInfo() {
+        return jobInfo;
+    }
+
+    @Override
     public SplitEnumeratorMetricGroup metricGroup() {
         return UnregisteredMetricsGroup.createSplitEnumeratorMetricGroup();
     }
@@ -101,6 +111,11 @@ public class TestingSplitEnumeratorContext<SplitT extends SourceSplit>
         final List<SourceEvent> eventsForSubTask =
                 events.computeIfAbsent(subtaskId, (key) -> new ArrayList<>());
         eventsForSubTask.add(event);
+    }
+
+    @Override
+    public void sendEventToSourceReader(int subtaskId, int attemptNumber, SourceEvent event) {
+        sendEventToSourceReader(subtaskId, event);
     }
 
     @Override
@@ -153,6 +168,11 @@ public class TestingSplitEnumeratorContext<SplitT extends SourceSplit>
     @Override
     public void runInCoordinatorThread(Runnable runnable) {
         executor.execute(runnable);
+    }
+
+    @Override
+    public void setIsProcessingBacklog(boolean isProcessingBacklog) {
+        throw new UnsupportedOperationException();
     }
 
     private static <T> Runnable callableWithResultHandler(

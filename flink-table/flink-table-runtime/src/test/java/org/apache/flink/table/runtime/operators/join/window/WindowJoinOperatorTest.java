@@ -19,8 +19,10 @@
 package org.apache.flink.table.runtime.operators.join.window;
 
 import org.apache.flink.api.common.typeinfo.TypeInformation;
+import org.apache.flink.streaming.api.operators.TwoInputStreamOperator;
 import org.apache.flink.streaming.api.watermark.Watermark;
 import org.apache.flink.streaming.util.KeyedTwoInputStreamOperatorTestHarness;
+import org.apache.flink.streaming.util.asyncprocessing.AsyncKeyedTwoInputStreamOperatorTestHarness;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.runtime.generated.GeneratedJoinCondition;
 import org.apache.flink.table.runtime.keyselector.RowDataKeySelector;
@@ -30,10 +32,11 @@ import org.apache.flink.table.runtime.util.RowDataHarnessAssertor;
 import org.apache.flink.table.types.logical.BigIntType;
 import org.apache.flink.table.types.logical.VarCharType;
 import org.apache.flink.table.utils.HandwrittenSelectorUtil;
+import org.apache.flink.testutils.junit.extensions.parameterized.ParameterizedTestExtension;
+import org.apache.flink.testutils.junit.extensions.parameterized.Parameters;
 
-import org.junit.Test;
-import org.junit.runner.RunWith;
-import org.junit.runners.Parameterized;
+import org.junit.jupiter.api.TestTemplate;
+import org.junit.jupiter.api.extension.ExtendWith;
 
 import java.time.ZoneId;
 import java.util.ArrayList;
@@ -46,8 +49,8 @@ import static org.apache.flink.table.runtime.util.TimeWindowUtil.toUtcTimestampM
 import static org.assertj.core.api.Assertions.assertThat;
 
 /** Tests for window join operators created by {@link WindowJoinOperatorBuilder}. */
-@RunWith(Parameterized.class)
-public class WindowJoinOperatorTest {
+@ExtendWith(ParameterizedTestExtension.class)
+class WindowJoinOperatorTest {
 
     private static final InternalTypeInfo<RowData> INPUT_ROW_TYPE =
             InternalTypeInfo.ofFields(new BigIntType(), VarCharType.STRING_TYPE);
@@ -71,17 +74,24 @@ public class WindowJoinOperatorTest {
 
     private final ZoneId shiftTimeZone;
 
-    public WindowJoinOperatorTest(ZoneId shiftTimeZone) {
+    private final boolean enableAsyncState;
+
+    WindowJoinOperatorTest(ZoneId shiftTimeZone, boolean enableAsyncState) {
         this.shiftTimeZone = shiftTimeZone;
+        this.enableAsyncState = enableAsyncState;
     }
 
-    @Parameterized.Parameters(name = "TimeZone = {0}")
-    public static Collection<Object[]> runMode() {
-        return Arrays.asList(new Object[] {UTC_ZONE_ID}, new Object[] {SHANGHAI_ZONE_ID});
+    @Parameters(name = "TimeZone = {0}, EnableAsyncState = {1}")
+    private static Collection<Object[]> runMode() {
+        return Arrays.asList(
+                new Object[] {UTC_ZONE_ID, false},
+                new Object[] {UTC_ZONE_ID, true},
+                new Object[] {SHANGHAI_ZONE_ID, false},
+                new Object[] {SHANGHAI_ZONE_ID, true});
     }
 
-    @Test
-    public void testSemiJoin() throws Exception {
+    @TestTemplate
+    void testSemiJoin() throws Exception {
         KeyedTwoInputStreamOperatorTestHarness<RowData, RowData, RowData, RowData> testHarness =
                 createTestHarness(FlinkJoinType.SEMI);
 
@@ -135,8 +145,8 @@ public class WindowJoinOperatorTest {
         testHarness.close();
     }
 
-    @Test
-    public void testAntiJoin() throws Exception {
+    @TestTemplate
+    void testAntiJoin() throws Exception {
         KeyedTwoInputStreamOperatorTestHarness<RowData, RowData, RowData, RowData> testHarness =
                 createTestHarness(FlinkJoinType.ANTI);
         testHarness.open();
@@ -188,8 +198,8 @@ public class WindowJoinOperatorTest {
         testHarness.close();
     }
 
-    @Test
-    public void testInnerJoin() throws Exception {
+    @TestTemplate
+    void testInnerJoin() throws Exception {
         KeyedTwoInputStreamOperatorTestHarness<RowData, RowData, RowData, RowData> testHarness =
                 createTestHarness(FlinkJoinType.INNER);
 
@@ -263,8 +273,8 @@ public class WindowJoinOperatorTest {
         testHarness.close();
     }
 
-    @Test
-    public void testLeftOuterJoin() throws Exception {
+    @TestTemplate
+    void testLeftOuterJoin() throws Exception {
         KeyedTwoInputStreamOperatorTestHarness<RowData, RowData, RowData, RowData> testHarness =
                 createTestHarness(FlinkJoinType.LEFT);
 
@@ -340,8 +350,8 @@ public class WindowJoinOperatorTest {
         testHarness.close();
     }
 
-    @Test
-    public void testRightOuterJoin() throws Exception {
+    @TestTemplate
+    void testRightOuterJoin() throws Exception {
         KeyedTwoInputStreamOperatorTestHarness<RowData, RowData, RowData, RowData> testHarness =
                 createTestHarness(FlinkJoinType.RIGHT);
 
@@ -416,8 +426,8 @@ public class WindowJoinOperatorTest {
         testHarness.close();
     }
 
-    @Test
-    public void testOuterJoin() throws Exception {
+    @TestTemplate
+    void testOuterJoin() throws Exception {
         KeyedTwoInputStreamOperatorTestHarness<RowData, RowData, RowData, RowData> testHarness =
                 createTestHarness(FlinkJoinType.FULL);
 
@@ -494,8 +504,91 @@ public class WindowJoinOperatorTest {
         testHarness.close();
     }
 
+    @TestTemplate
+    void testDoesNotStoreRecordsThatCanNeverMatch() throws Exception {
+        final long time = toUtcTimestampMills(3L, shiftTimeZone);
+        // Only records of an input whose unmatched records are emitted are stored
+        assertNullKeyRecords(FlinkJoinType.INNER, 0);
+        assertNullKeyRecords(FlinkJoinType.SEMI, 0);
+        assertNullKeyRecords(FlinkJoinType.ANTI, 1, insertRecord(time, null));
+        assertNullKeyRecords(FlinkJoinType.LEFT, 1, insertRecord(time, null, null, null));
+        assertNullKeyRecords(FlinkJoinType.RIGHT, 1, insertRecord(null, null, time, null));
+        assertNullKeyRecords(
+                FlinkJoinType.FULL,
+                2,
+                insertRecord(time, null, null, null),
+                insertRecord(null, null, time, null));
+    }
+
+    /**
+     * Processes a record with a null key on each input and checks the number of stored records and
+     * the output when the window fires.
+     */
+    private void assertNullKeyRecords(
+            FlinkJoinType joinType, int expectedStateEntries, Object... expectedRecords)
+            throws Exception {
+        KeyedTwoInputStreamOperatorTestHarness<RowData, RowData, RowData, RowData> testHarness =
+                createTestHarness(joinType);
+        testHarness.open();
+        testHarness.processWatermark1(new Watermark(1));
+        testHarness.processWatermark2(new Watermark(1));
+
+        final long time = toUtcTimestampMills(3L, shiftTimeZone);
+        testHarness.processElement1(insertRecord(time, null));
+        testHarness.processElement2(insertRecord(time, null));
+        assertThat(testHarness.numKeyedStateEntries())
+                .as("stored records for %s", joinType)
+                .isEqualTo(expectedStateEntries);
+
+        testHarness.processWatermark1(new Watermark(10));
+        testHarness.processWatermark2(new Watermark(10));
+
+        List<Object> expectedOutput = new ArrayList<>();
+        expectedOutput.add(new Watermark(1));
+        expectedOutput.addAll(Arrays.asList(expectedRecords));
+        expectedOutput.add(new Watermark(10));
+        RowDataHarnessAssertor assertor =
+                joinType == FlinkJoinType.SEMI || joinType == FlinkJoinType.ANTI
+                        ? SEMI_ANTI_JOIN_ASSERTER
+                        : ASSERTER;
+        assertor.assertOutputEqualsSorted(
+                "output wrong for " + joinType, expectedOutput, testHarness.getOutput());
+        assertThat(testHarness.numKeyedStateEntries()).isZero();
+        testHarness.close();
+    }
+
+    @TestTemplate
+    void testStoresRecordsWithNullSafeKeys() throws Exception {
+        // A null key can match if it is compared null-safely, as with IS NOT DISTINCT FROM
+        final long time = toUtcTimestampMills(3L, shiftTimeZone);
+        KeyedTwoInputStreamOperatorTestHarness<RowData, RowData, RowData, RowData> testHarness =
+                createTestHarness(FlinkJoinType.INNER, new boolean[] {false});
+        testHarness.open();
+        testHarness.processWatermark1(new Watermark(1));
+        testHarness.processWatermark2(new Watermark(1));
+
+        testHarness.processElement1(insertRecord(time, null));
+        testHarness.processElement2(insertRecord(time, null));
+        assertThat(testHarness.numKeyedStateEntries()).isEqualTo(2);
+
+        testHarness.processWatermark1(new Watermark(10));
+        testHarness.processWatermark2(new Watermark(10));
+
+        List<Object> expectedOutput = new ArrayList<>();
+        expectedOutput.add(new Watermark(1));
+        expectedOutput.add(insertRecord(time, null, time, null));
+        expectedOutput.add(new Watermark(10));
+        ASSERTER.assertOutputEqualsSorted("output wrong.", expectedOutput, testHarness.getOutput());
+        testHarness.close();
+    }
+
     private KeyedTwoInputStreamOperatorTestHarness<RowData, RowData, RowData, RowData>
             createTestHarness(FlinkJoinType joinType) throws Exception {
+        return createTestHarness(joinType, new boolean[] {true});
+    }
+
+    private KeyedTwoInputStreamOperatorTestHarness<RowData, RowData, RowData, RowData>
+            createTestHarness(FlinkJoinType joinType, boolean[] filterNullKeys) throws Exception {
         String funcCode =
                 "public class TestWindowJoinCondition extends org.apache.flink.api.common.functions.AbstractRichFunction "
                         + "implements org.apache.flink.table.runtime.generated.JoinCondition {\n"
@@ -515,20 +608,26 @@ public class WindowJoinOperatorTest {
                 HandwrittenSelectorUtil.getRowDataSelector(
                         new int[] {keyIdx}, INPUT_ROW_TYPE.toRowFieldTypes());
         TypeInformation<RowData> keyType = InternalTypeInfo.ofFields();
-        WindowJoinOperator operator =
+
+        WindowJoinOperatorBuilder operatorBuilder =
                 WindowJoinOperatorBuilder.builder()
                         .leftSerializer(INPUT_ROW_TYPE.toRowSerializer())
                         .rightSerializer(INPUT_ROW_TYPE.toRowSerializer())
                         .generatedJoinCondition(joinFunction)
                         .leftWindowEndIndex(0)
                         .rightWindowEndIndex(0)
-                        .filterNullKeys(new boolean[] {true})
+                        .filterNullKeys(filterNullKeys)
                         .joinType(joinType)
-                        .withShiftTimezone(shiftTimeZone)
-                        .build();
-        KeyedTwoInputStreamOperatorTestHarness<RowData, RowData, RowData, RowData> testHarness =
-                new KeyedTwoInputStreamOperatorTestHarness<>(
-                        operator, keySelector, keySelector, keyType);
-        return testHarness;
+                        .withShiftTimezone(shiftTimeZone);
+        if (enableAsyncState) {
+            operatorBuilder.enableAsyncState();
+            TwoInputStreamOperator<RowData, RowData, RowData> operator = operatorBuilder.build();
+            return AsyncKeyedTwoInputStreamOperatorTestHarness.create(
+                    operator, keySelector, keySelector, keyType, 1, 1, 0);
+        } else {
+            TwoInputStreamOperator<RowData, RowData, RowData> operator = operatorBuilder.build();
+            return new KeyedTwoInputStreamOperatorTestHarness<>(
+                    operator, keySelector, keySelector, keyType);
+        }
     }
 }

@@ -18,11 +18,17 @@
 
 package org.apache.flink.sql.parser.ddl;
 
-import org.apache.flink.sql.parser.SqlPartitionUtils;
+import org.apache.flink.sql.parser.SqlParseUtils;
+import org.apache.flink.sql.parser.ddl.table.SqlAlterTable;
 
+import org.apache.calcite.sql.SqlCall;
 import org.apache.calcite.sql.SqlIdentifier;
+import org.apache.calcite.sql.SqlKind;
+import org.apache.calcite.sql.SqlLiteral;
 import org.apache.calcite.sql.SqlNode;
 import org.apache.calcite.sql.SqlNodeList;
+import org.apache.calcite.sql.SqlOperator;
+import org.apache.calcite.sql.SqlSpecialOperator;
 import org.apache.calcite.sql.SqlWriter;
 import org.apache.calcite.sql.parser.SqlParserPos;
 
@@ -35,6 +41,23 @@ import java.util.List;
 /** ALTER TABLE DDL to drop partitions of a table. */
 public class SqlDropPartitions extends SqlAlterTable {
 
+    private static final SqlSpecialOperator DROP_PARTITION_OPERATOR =
+            new SqlSpecialOperator("ALTER TABLE DROP PARTITION", SqlKind.ALTER_TABLE) {
+                @Override
+                public SqlCall createCall(
+                        SqlLiteral functionQualifier, SqlParserPos pos, SqlNode... operands) {
+                    List<SqlNodeList> partSpecs = new ArrayList<>();
+                    for (SqlNode spec : (SqlNodeList) operands[2]) {
+                        partSpecs.add((SqlNodeList) spec);
+                    }
+                    return new SqlDropPartitions(
+                            pos,
+                            (SqlIdentifier) operands[0],
+                            ((SqlLiteral) operands[1]).booleanValue(),
+                            partSpecs);
+                }
+            };
+
     private final boolean ifExists;
     private final List<SqlNodeList> partSpecs;
 
@@ -43,7 +66,7 @@ public class SqlDropPartitions extends SqlAlterTable {
             SqlIdentifier tableName,
             boolean ifExists,
             List<SqlNodeList> partSpecs) {
-        super(pos, tableName);
+        super(pos, tableName, false);
         this.ifExists = ifExists;
         this.partSpecs = partSpecs;
     }
@@ -57,12 +80,12 @@ public class SqlDropPartitions extends SqlAlterTable {
     }
 
     public LinkedHashMap<String, String> getPartitionKVs(int i) {
-        return SqlPartitionUtils.getPartitionKVs(getPartSpecs().get(i));
+        return SqlParseUtils.getPartitionKVs(getPartSpecs().get(i));
     }
 
     @Override
-    public void unparse(SqlWriter writer, int leftPrec, int rightPrec) {
-        super.unparse(writer, leftPrec, rightPrec);
+    public void unparseAlterOperation(SqlWriter writer, int leftPrec, int rightPrec) {
+        super.unparseAlterOperation(writer, leftPrec, rightPrec);
         writer.newlineAndIndent();
         writer.keyword("DROP");
         if (ifExists) {
@@ -80,12 +103,23 @@ public class SqlDropPartitions extends SqlAlterTable {
         writer.endList(frame);
     }
 
+    @Override
+    public SqlOperator getOperator() {
+        return DROP_PARTITION_OPERATOR;
+    }
+
     @Nonnull
     @Override
     public List<SqlNode> getOperandList() {
-        List<SqlNode> operands = new ArrayList<>();
-        operands.add(tableIdentifier);
-        operands.addAll(partSpecs);
-        return operands;
+        return List.of(
+                tableIdentifier,
+                SqlLiteral.createBoolean(ifExists, SqlParserPos.ZERO),
+                new SqlNodeList(partSpecs, SqlParserPos.ZERO));
+    }
+
+    /** Alter table add partition context. */
+    public static class AlterTableDropPartitionsContext {
+        public boolean ifExists;
+        public List<SqlNodeList> partSpecs;
     }
 }

@@ -15,18 +15,23 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.planner.runtime.batch.table
 
 import org.apache.flink.table.planner.factories.TestValuesTableFactory
 import org.apache.flink.table.planner.runtime.utils.{BatchTestBase, TestData}
-import org.junit._
+import org.apache.flink.table.planner.runtime.utils.TestData.{data3, nullablesOfData3, type3}
 
-class LimitITCase extends LegacyLimitITCase {
+import org.assertj.core.api.Assertions.assertThat
+import org.junit.jupiter.api.{BeforeEach, Test}
 
-  @Before
+class LimitITCase extends BatchTestBase {
+
+  @BeforeEach
   override def before(): Unit = {
+    super.before()
     BatchTestBase.configForMiniCluster(tableConfig)
+
+    registerCollection("Table3", data3, type3, "a, b, c", nullablesOfData3)
 
     val myTableDataId = TestValuesTableFactory.registerData(TestData.data3)
     val ddl =
@@ -42,5 +47,20 @@ class LimitITCase extends LegacyLimitITCase {
          |)
        """.stripMargin
     tEnv.executeSql(ddl)
+  }
+
+  @Test
+  def testFetch(): Unit = {
+    assertThat(executeQuery(tEnv.from("LimitTable").fetch(5)).size).isEqualTo(5)
+  }
+
+  @Test
+  def testOffset(): Unit = {
+    assertThat(executeQuery(tEnv.from("LimitTable").offset(5)).size).isEqualTo(16)
+  }
+
+  @Test
+  def testOffsetAndFetch(): Unit = {
+    assertThat(executeQuery(tEnv.from("LimitTable").limit(5, 5)).size).isEqualTo(5)
   }
 }

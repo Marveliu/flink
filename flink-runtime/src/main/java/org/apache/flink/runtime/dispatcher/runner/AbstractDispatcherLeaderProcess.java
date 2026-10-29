@@ -21,15 +21,19 @@ package org.apache.flink.runtime.dispatcher.runner;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.JobID;
+import org.apache.flink.runtime.application.AbstractApplication;
 import org.apache.flink.runtime.clusterframework.ApplicationStatus;
 import org.apache.flink.runtime.dispatcher.DispatcherGateway;
 import org.apache.flink.runtime.dispatcher.DispatcherId;
+import org.apache.flink.runtime.highavailability.ApplicationResult;
+import org.apache.flink.runtime.highavailability.ApplicationResultStore;
 import org.apache.flink.runtime.highavailability.JobResultStore;
-import org.apache.flink.runtime.jobgraph.JobGraph;
-import org.apache.flink.runtime.jobmanager.JobGraphWriter;
+import org.apache.flink.runtime.jobmanager.ApplicationStore;
+import org.apache.flink.runtime.jobmanager.ExecutionPlanWriter;
 import org.apache.flink.runtime.jobmaster.JobResult;
 import org.apache.flink.runtime.rpc.FatalErrorHandler;
 import org.apache.flink.runtime.webmonitor.RestfulGateway;
+import org.apache.flink.streaming.api.graph.ExecutionPlan;
 import org.apache.flink.util.AutoCloseableAsync;
 import org.apache.flink.util.FlinkException;
 import org.apache.flink.util.Preconditions;
@@ -258,17 +262,21 @@ public abstract class AbstractDispatcherLeaderProcess implements DispatcherLeade
     public interface DispatcherGatewayServiceFactory {
         DispatcherGatewayService create(
                 DispatcherId dispatcherId,
-                Collection<JobGraph> recoveredJobs,
+                Collection<ExecutionPlan> recoveredJobs,
                 Collection<JobResult> recoveredDirtyJobResults,
-                JobGraphWriter jobGraphWriter,
-                JobResultStore jobResultStore);
+                Collection<AbstractApplication> recoveredApplications,
+                Collection<ApplicationResult> recoveredDirtyApplicationResults,
+                ExecutionPlanWriter executionPlanWriter,
+                JobResultStore jobResultStore,
+                ApplicationStore applicationStore,
+                ApplicationResultStore applicationResultStore);
     }
 
     /** An accessor of the {@link DispatcherGateway}. */
     public interface DispatcherGatewayService extends AutoCloseableAsync {
         DispatcherGateway getGateway();
 
-        CompletableFuture<Void> onRemovedJobGraph(JobID jobId);
+        CompletableFuture<Void> onRemovedExecutionPlan(JobID jobId);
 
         CompletableFuture<ApplicationStatus> getShutDownFuture();
 

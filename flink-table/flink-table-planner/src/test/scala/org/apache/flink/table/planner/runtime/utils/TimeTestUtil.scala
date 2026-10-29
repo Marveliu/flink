@@ -15,24 +15,25 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.planner.runtime.utils
 
 import org.apache.flink.api.common.state.{ListState, ListStateDescriptor}
 import org.apache.flink.api.common.typeinfo.Types
+import org.apache.flink.runtime.event.WatermarkEvent
 import org.apache.flink.runtime.state.{StateInitializationContext, StateSnapshotContext}
-import org.apache.flink.streaming.api.functions.AssignerWithPunctuatedWatermarks
-import org.apache.flink.streaming.api.functions.source.SourceFunction
-import org.apache.flink.streaming.api.functions.source.SourceFunction.SourceContext
+import org.apache.flink.streaming.api.functions.source.legacy.SourceFunction
 import org.apache.flink.streaming.api.operators.{AbstractStreamOperator, OneInputStreamOperator}
 import org.apache.flink.streaming.api.watermark.Watermark
-import org.apache.flink.streaming.runtime.streamrecord.StreamRecord
+import org.apache.flink.streaming.runtime.operators.util.WatermarkStrategyWithPunctuatedWatermarks
+import org.apache.flink.streaming.runtime.streamrecord.{RecordAttributes, StreamRecord}
 import org.apache.flink.table.planner.JLong
+
+import SourceFunction.SourceContext
 
 object TimeTestUtil {
 
-  class EventTimeSourceFunction[T](
-      dataWithTimestampList: Seq[Either[(Long, T), Long]]) extends SourceFunction[T] {
+  class EventTimeSourceFunction[T](dataWithTimestampList: Seq[Either[(Long, T), Long]])
+    extends SourceFunction[T] {
 
     override def run(ctx: SourceContext[T]): Unit = {
       dataWithTimestampList.foreach {
@@ -44,8 +45,8 @@ object TimeTestUtil {
     override def cancel(): Unit = ???
   }
 
-  class TimestampAndWatermarkWithOffset[T <: Product](
-      offset: Long) extends AssignerWithPunctuatedWatermarks[T] {
+  class TimestampAndWatermarkWithOffset[T <: Product](offset: Long)
+    extends WatermarkStrategyWithPunctuatedWatermarks[T] {
 
     override def checkAndGetNextWatermark(lastElement: T, extractedTimestamp: Long): Watermark = {
       new Watermark(extractedTimestamp - offset)
@@ -57,21 +58,20 @@ object TimeTestUtil {
   }
 
   /**
-   * A streaming operator to emit records and watermark depends on the input data.
-   * The last emitted watermark will be stored in state to emit it again on recovery.
-   * This is necessary for late arrival testing with [[FailingCollectionSource]].
+   * A streaming operator to emit records and watermark depends on the input data. The last emitted
+   * watermark will be stored in state to emit it again on recovery. This is necessary for late
+   * arrival testing with [[FailingCollectionSource]].
    */
   class EventTimeProcessOperator[T]
     extends AbstractStreamOperator[T]
-      with OneInputStreamOperator[Either[(Long, T), Long], T] {
+    with OneInputStreamOperator[Either[(Long, T), Long], T] {
 
     private var currentWatermark: Long = 0L
     private var watermarkState: ListState[JLong] = _
 
     override def snapshotState(context: StateSnapshotContext): Unit = {
       super.snapshotState(context)
-      watermarkState.clear()
-      watermarkState.add(currentWatermark)
+      watermarkState.update(java.util.Collections.singletonList(currentWatermark))
     }
 
     override def initializeState(context: StateInitializationContext): Unit = {
@@ -100,6 +100,11 @@ object TimeTestUtil {
       }
     }
 
+    override def processRecordAttributes(recordAttributes: RecordAttributes): Unit =
+      super.processRecordAttributes(recordAttributes)
+
+    override def processWatermark(event: WatermarkEvent): Unit =
+      super.processWatermark(event)
   }
 
 }

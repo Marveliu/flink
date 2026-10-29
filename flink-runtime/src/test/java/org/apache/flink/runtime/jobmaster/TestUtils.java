@@ -18,6 +18,7 @@
 
 package org.apache.flink.runtime.jobmaster;
 
+import org.apache.flink.api.common.ApplicationID;
 import org.apache.flink.runtime.checkpoint.CheckpointRetentionPolicy;
 import org.apache.flink.runtime.checkpoint.Checkpoints;
 import org.apache.flink.runtime.checkpoint.OperatorState;
@@ -58,7 +59,7 @@ public class TestUtils {
                 new CheckpointMetadata(savepointId, operatorStates, Collections.emptyList());
 
         try (FileOutputStream fileOutputStream = new FileOutputStream(savepointFile)) {
-            Checkpoints.storeCheckpointMetadata(savepoint, fileOutputStream);
+            Checkpoints.storeCheckpointMetadataWithoutExclusiveDir(savepoint, fileOutputStream);
         }
 
         return savepointFile;
@@ -69,7 +70,7 @@ public class TestUtils {
         Collection<OperatorState> operatorStates = new ArrayList<>(operatorIds.length);
 
         for (OperatorID operatorId : operatorIds) {
-            final OperatorState operatorState = new OperatorState(operatorId, 1, 42);
+            final OperatorState operatorState = new OperatorState(null, null, operatorId, 1, 42);
             final OperatorSubtaskState subtaskState =
                     OperatorSubtaskState.builder()
                             .setManagedOperatorState(
@@ -108,11 +109,15 @@ public class TestUtils {
         final JobCheckpointingSettings checkpointingSettings =
                 new JobCheckpointingSettings(checkpointCoordinatorConfiguration, null);
 
-        return JobGraphBuilder.newStreamingJobGraphBuilder()
-                .addJobVertices(Arrays.asList(jobVertices))
-                .setJobCheckpointingSettings(checkpointingSettings)
-                .setSavepointRestoreSettings(savepointRestoreSettings)
-                .build();
+        final JobGraph jobGraph =
+                JobGraphBuilder.newStreamingJobGraphBuilder()
+                        .addJobVertices(Arrays.asList(jobVertices))
+                        .setJobCheckpointingSettings(checkpointingSettings)
+                        .setSavepointRestoreSettings(savepointRestoreSettings)
+                        .build();
+        jobGraph.setApplicationId(new ApplicationID());
+
+        return jobGraph;
     }
 
     private TestUtils() {

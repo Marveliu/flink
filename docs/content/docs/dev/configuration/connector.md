@@ -43,7 +43,7 @@ The same applies for formats as well. Note that some connectors may not have a c
 `flink-sql-connector-<NAME>` artifact because they do not require third-party dependencies.
 
 {{< hint info >}}
-The uber/fat JARs are supported mostly for being used in conjunction with the [SQL client]({{< ref "docs/dev/table/sqlClient" >}}),
+The uber/fat JARs are supported mostly for being used in conjunction with the [SQL client]({{< ref "docs/sql/interfaces/sql-client" >}}),
 but you can also use them in any DataStream/Table application.
 {{< /hint >}}
 
@@ -57,7 +57,7 @@ In order to use a connector/format module, you can either:
 
 For shading dependencies, check out the specific [Maven]({{< ref "docs/dev/configuration/maven" >}}) 
 and [Gradle]({{< ref "docs/dev/configuration/gradle" >}}) guides. 
-For a reference about the Flink distribution, check [Anatomy of the Flink distribution]({{< ref "docs/dev/configuration/overview" >}}#anatomy-of-the-flink-distribution).
+For a reference about the Flink distribution, check [Anatomy of the Flink distribution]({{< ref "docs/dev/configuration/advanced" >}}#anatomy-of-the-flink-distribution).
 
 {{< hint info >}}
 Deciding whether to shade the uber JAR, the thin JAR or just include the dependency in the distribution is up to you and your use case.

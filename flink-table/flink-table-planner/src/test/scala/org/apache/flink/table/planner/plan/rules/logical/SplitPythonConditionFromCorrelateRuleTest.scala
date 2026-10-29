@@ -15,10 +15,8 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.planner.plan.rules.logical
 
-import org.apache.flink.api.scala._
 import org.apache.flink.table.api._
 import org.apache.flink.table.planner.plan.nodes.FlinkConventions
 import org.apache.flink.table.planner.plan.optimize.program._
@@ -27,16 +25,14 @@ import org.apache.flink.table.planner.runtime.utils.JavaUserDefinedScalarFunctio
 import org.apache.flink.table.planner.utils.{TableFunc2, TableTestBase}
 
 import org.apache.calcite.plan.hep.HepMatchOrder
-import org.junit.{Before, Test}
+import org.junit.jupiter.api.{BeforeEach, Test}
 
-/**
-  * Test for [[SplitPythonConditionFromCorrelateRule]].
-  */
+/** Test for [[SplitPythonConditionFromCorrelateRule]]. */
 class SplitPythonConditionFromCorrelateRuleTest extends TableTestBase {
 
   private val util = batchTestUtil()
 
-  @Before
+  @BeforeEach
   def setup(): Unit = {
     val programs = new FlinkChainedProgram[BatchOptimizeContext]()
     // query decorrelation
@@ -46,19 +42,21 @@ class SplitPythonConditionFromCorrelateRuleTest extends TableTestBase {
       FlinkVolcanoProgramBuilder.newBuilder
         .add(FlinkBatchRuleSets.LOGICAL_OPT_RULES)
         .setRequiredOutputTraits(Array(FlinkConventions.LOGICAL))
-        .build())
+        .build()
+    )
     programs.addLast(
       "logical_rewrite",
       FlinkHepRuleSetProgramBuilder.newBuilder
         .setHepRulesExecutionType(HEP_RULES_EXECUTION_TYPE.RULE_SEQUENCE)
         .setHepMatchOrder(HepMatchOrder.BOTTOM_UP)
         .add(FlinkBatchRuleSets.LOGICAL_REWRITE)
-        .build())
+        .build()
+    )
     util.replaceBatchProgram(programs)
 
     util.addTableSource[(Int, Int, String)]("MyTable", 'a, 'b, 'c)
-    util.addFunction("func", new TableFunc2)
-    util.addFunction("pyFunc", new PythonScalarFunction("pyFunc"))
+    util.addTemporarySystemFunction("func", new TableFunc2)
+    util.addTemporarySystemFunction("pyFunc", new PythonScalarFunction("pyFunc"))
   }
 
   @Test

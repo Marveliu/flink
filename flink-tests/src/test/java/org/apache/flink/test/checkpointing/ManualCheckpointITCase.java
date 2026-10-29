@@ -21,63 +21,62 @@ package org.apache.flink.test.checkpointing;
 import org.apache.flink.api.common.JobID;
 import org.apache.flink.api.common.JobStatus;
 import org.apache.flink.api.common.eventtime.WatermarkStrategy;
+import org.apache.flink.api.common.functions.OpenContext;
 import org.apache.flink.api.common.functions.RichFlatMapFunction;
 import org.apache.flink.api.common.state.ValueState;
 import org.apache.flink.api.common.state.ValueStateDescriptor;
-import org.apache.flink.api.common.time.Deadline;
 import org.apache.flink.api.common.typeinfo.BasicTypeInfo;
 import org.apache.flink.api.connector.source.mocks.MockSource;
-import org.apache.flink.configuration.Configuration;
 import org.apache.flink.core.execution.JobClient;
 import org.apache.flink.runtime.minicluster.MiniCluster;
-import org.apache.flink.runtime.state.CheckpointStorage;
-import org.apache.flink.runtime.state.storage.FileSystemCheckpointStorage;
-import org.apache.flink.runtime.state.storage.JobManagerCheckpointStorage;
 import org.apache.flink.runtime.testutils.CommonTestUtils;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
-import org.apache.flink.streaming.api.functions.sink.DiscardingSink;
+import org.apache.flink.streaming.api.functions.sink.v2.DiscardingSink;
+import org.apache.flink.streaming.util.CheckpointStorageUtils;
+import org.apache.flink.test.junit5.InjectMiniCluster;
 import org.apache.flink.test.util.AbstractTestBase;
+import org.apache.flink.testutils.junit.extensions.parameterized.Parameter;
+import org.apache.flink.testutils.junit.extensions.parameterized.ParameterizedTestExtension;
+import org.apache.flink.testutils.junit.extensions.parameterized.Parameters;
 import org.apache.flink.util.Collector;
 
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.TemporaryFolder;
-import org.junit.runner.RunWith;
-import org.junit.runners.Parameterized;
+import org.junit.jupiter.api.TestTemplate;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.api.io.TempDir;
 
-import java.io.IOException;
-import java.time.Duration;
+import java.io.File;
+import java.util.Arrays;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.Optional;
 import java.util.concurrent.ExecutionException;
-import java.util.function.Function;
+import java.util.function.BiConsumer;
 import java.util.function.Predicate;
 
 /** Tests for manually triggering checkpoints. */
-@RunWith(Parameterized.class)
-public class ManualCheckpointITCase extends AbstractTestBase {
+@ExtendWith(ParameterizedTestExtension.class)
+class ManualCheckpointITCase extends AbstractTestBase {
 
-    @Parameterized.Parameter public StorageSupplier storageSupplier;
+    @Parameter private StorageConfigurer storageConfigurer;
 
-    @Rule public TemporaryFolder temporaryFolder = new TemporaryFolder();
+    @TempDir private File tempDir;
 
-    private interface StorageSupplier extends Function<String, CheckpointStorage> {}
+    private interface StorageConfigurer extends BiConsumer<String, StreamExecutionEnvironment> {}
 
-    @Parameterized.Parameters
-    public static StorageSupplier[] parameters() throws IOException {
-        return new StorageSupplier[] {
-            path -> new JobManagerCheckpointStorage(), FileSystemCheckpointStorage::new
-        };
+    @Parameters
+    private static Collection<StorageConfigurer> parameters() {
+        return Arrays.asList(
+                (s, env) -> CheckpointStorageUtils.configureJobManagerCheckpointStorage(env),
+                (s, env) -> CheckpointStorageUtils.configureFileSystemCheckpointStorage(env, s));
     }
 
-    @Test
-    public void testTriggeringWhenPeriodicDisabled() throws Exception {
-        int parallelism = MINI_CLUSTER_RESOURCE.getNumberSlots();
+    @TestTemplate
+    void testTriggeringWhenPeriodicDisabled(@InjectMiniCluster MiniCluster miniCluster)
+            throws Exception {
+        int parallelism = MINI_CLUSTER_EXTENSION.getNumberSlots();
         final StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
         env.setParallelism(parallelism);
-        env.getCheckpointConfig()
-                .setCheckpointStorage(
-                        storageSupplier.apply(temporaryFolder.newFolder().toURI().toString()));
+        storageConfigurer.accept(tempDir.toURI().toString(), env);
 
         env.fromSource(
                         MockSource.continuous(parallelism).build(),
@@ -85,16 +84,12 @@ public class ManualCheckpointITCase extends AbstractTestBase {
                         "generator")
                 .keyBy(key -> key % parallelism)
                 .flatMap(new StatefulMapper())
-                .addSink(new DiscardingSink<>());
+                .sinkTo(new DiscardingSink<>());
 
         final JobClient jobClient = env.executeAsync();
         final JobID jobID = jobClient.getJobID();
-        final MiniCluster miniCluster = MINI_CLUSTER_RESOURCE.getMiniCluster();
 
-        CommonTestUtils.waitForJobStatus(
-                jobClient,
-                Collections.singletonList(JobStatus.RUNNING),
-                Deadline.fromNow(Duration.ofSeconds(30)));
+        CommonTestUtils.waitForJobStatus(jobClient, Collections.singletonList(JobStatus.RUNNING));
         CommonTestUtils.waitForAllTaskRunning(miniCluster, jobID, false);
 
         // wait for the checkpoint to be taken
@@ -103,16 +98,15 @@ public class ManualCheckpointITCase extends AbstractTestBase {
         queryCompletedCheckpointsUntil(miniCluster, jobID, count -> count == 1);
     }
 
-    @Test
-    public void testTriggeringWhenPeriodicEnabled() throws Exception {
-        int parallelism = MINI_CLUSTER_RESOURCE.getNumberSlots();
+    @TestTemplate
+    void testTriggeringWhenPeriodicEnabled(@InjectMiniCluster MiniCluster miniCluster)
+            throws Exception {
+        int parallelism = MINI_CLUSTER_EXTENSION.getNumberSlots();
         final int checkpointingInterval = 500;
         final StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
         env.setParallelism(parallelism);
         env.enableCheckpointing(checkpointingInterval);
-        env.getCheckpointConfig()
-                .setCheckpointStorage(
-                        storageSupplier.apply(temporaryFolder.newFolder().toURI().toString()));
+        storageConfigurer.accept(tempDir.toURI().toString(), env);
 
         env.fromSource(
                         MockSource.continuous(parallelism).build(),
@@ -120,20 +114,15 @@ public class ManualCheckpointITCase extends AbstractTestBase {
                         "generator")
                 .keyBy(key -> key % parallelism)
                 .flatMap(new StatefulMapper())
-                .addSink(new DiscardingSink<>());
+                .sinkTo(new DiscardingSink<>());
 
         final JobClient jobClient = env.executeAsync();
         final JobID jobID = jobClient.getJobID();
-        final MiniCluster miniCluster = MINI_CLUSTER_RESOURCE.getMiniCluster();
 
-        CommonTestUtils.waitForJobStatus(
-                jobClient,
-                Collections.singletonList(JobStatus.RUNNING),
-                Deadline.fromNow(Duration.ofSeconds(30)));
+        CommonTestUtils.waitForJobStatus(jobClient, Collections.singletonList(JobStatus.RUNNING));
         CommonTestUtils.waitForAllTaskRunning(miniCluster, jobID, false);
         CommonTestUtils.waitUntilCondition(
                 () -> queryCompletedCheckpoints(miniCluster, jobID) > 0L,
-                Deadline.fromNow(Duration.ofSeconds(30)),
                 checkpointingInterval / 2);
 
         final long numberOfPeriodicCheckpoints = queryCompletedCheckpoints(miniCluster, jobID);
@@ -167,7 +156,7 @@ public class ManualCheckpointITCase extends AbstractTestBase {
         private ValueState<Long> count;
 
         @Override
-        public void open(Configuration parameters) throws Exception {
+        public void open(OpenContext openContext) throws Exception {
             count =
                     getRuntimeContext()
                             .getState(

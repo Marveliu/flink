@@ -19,15 +19,21 @@ package org.apache.flink.client.program;
 
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.api.common.ApplicationID;
 import org.apache.flink.api.common.JobExecutionResult;
-import org.apache.flink.api.java.ExecutionEnvironment;
+import org.apache.flink.api.common.JobID;
+import org.apache.flink.api.common.JobInfo;
+import org.apache.flink.client.ClientUtils;
+import org.apache.flink.client.cli.ClientOptions;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.DeploymentOptions;
+import org.apache.flink.configuration.PipelineOptionsInternal;
 import org.apache.flink.core.execution.DetachedJobExecutionResult;
 import org.apache.flink.core.execution.JobClient;
 import org.apache.flink.core.execution.JobListener;
 import org.apache.flink.core.execution.PipelineExecutorServiceLoader;
 import org.apache.flink.runtime.dispatcher.ConfigurationNotAllowedMessage;
+import org.apache.flink.runtime.jobgraph.JobType;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironmentFactory;
 import org.apache.flink.streaming.api.graph.StreamGraph;
@@ -35,22 +41,21 @@ import org.apache.flink.util.ExceptionUtils;
 import org.apache.flink.util.FlinkRuntimeException;
 import org.apache.flink.util.ShutdownHookUtil;
 
-import org.apache.flink.shaded.guava30.com.google.common.collect.MapDifference;
-import org.apache.flink.shaded.guava30.com.google.common.collect.Maps;
+import org.apache.flink.shaded.guava33.com.google.common.collect.MapDifference;
+import org.apache.flink.shaded.guava33.com.google.common.collect.Maps;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.io.ByteArrayOutputStream;
-import java.io.IOException;
-import java.io.ObjectOutputStream;
-import java.io.Serializable;
+import javax.annotation.Nullable;
+
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
 import static org.apache.flink.util.Preconditions.checkNotNull;
@@ -63,20 +68,25 @@ import static org.apache.flink.util.Preconditions.checkNotNull;
 @PublicEvolving
 public class StreamContextEnvironment extends StreamExecutionEnvironment {
 
-    private static final Logger LOG = LoggerFactory.getLogger(ExecutionEnvironment.class);
+    private static final Logger LOG = LoggerFactory.getLogger(StreamContextEnvironment.class);
 
     private final boolean suppressSysout;
 
-    private final boolean enforceSingleJobExecution;
-    private final byte[] originalCheckpointConfigSerialized;
-    private final byte[] originalExecutionConfigSerialized;
-    private final Configuration originalConfiguration;
+    private final Configuration clusterConfiguration;
 
-    private int jobCounter;
+    private final int jobCountLimit;
+    private final int streamingJobCountLimit;
+    private int jobCount;
+    private int streamingJobCount;
 
-    private final Collection<String> errorMessages;
+    private final boolean programConfigEnabled;
+    private final Collection<String> programConfigWildcards;
 
-    private final boolean allowConfigurations;
+    @Nullable private final ApplicationID applicationId;
+
+    @Nullable private final JarInfo userJarInfo;
+
+    private final JobIdManager jobIdManager;
 
     public StreamContextEnvironment(
             final PipelineExecutorServiceLoader executorServiceLoader,
@@ -87,8 +97,10 @@ public class StreamContextEnvironment extends StreamExecutionEnvironment {
         this(
                 executorServiceLoader,
                 configuration,
+                configuration,
                 userCodeClassLoader,
-                enforceSingleJobExecution,
+                enforceSingleJobExecution ? 1 : Integer.MAX_VALUE,
+                enforceSingleJobExecution ? 1 : Integer.MAX_VALUE,
                 suppressSysout,
                 true,
                 Collections.emptyList());
@@ -97,21 +109,71 @@ public class StreamContextEnvironment extends StreamExecutionEnvironment {
     @Internal
     public StreamContextEnvironment(
             final PipelineExecutorServiceLoader executorServiceLoader,
+            final Configuration clusterConfiguration,
             final Configuration configuration,
             final ClassLoader userCodeClassLoader,
-            final boolean enforceSingleJobExecution,
+            final int jobCountLimit,
+            final int streamingJobCountLimit,
             final boolean suppressSysout,
-            final boolean allowConfigurations,
-            final Collection<String> errorMessages) {
+            final boolean programConfigEnabled,
+            final Collection<String> programConfigWildcards) {
+        this(
+                executorServiceLoader,
+                clusterConfiguration,
+                configuration,
+                userCodeClassLoader,
+                jobCountLimit,
+                streamingJobCountLimit,
+                suppressSysout,
+                programConfigEnabled,
+                programConfigWildcards,
+                null,
+                null,
+                Collections.emptyList());
+    }
+
+    @Internal
+    public StreamContextEnvironment(
+            final PipelineExecutorServiceLoader executorServiceLoader,
+            final Configuration clusterConfiguration,
+            final Configuration configuration,
+            final ClassLoader userCodeClassLoader,
+            final int jobCountLimit,
+            final int streamingJobCountLimit,
+            final boolean suppressSysout,
+            final boolean programConfigEnabled,
+            final Collection<String> programConfigWildcards,
+            @Nullable final ApplicationID applicationId,
+            @Nullable final JarInfo userJarInfo,
+            final Collection<JobInfo> allRecoveredJobInfos) {
         super(executorServiceLoader, configuration, userCodeClassLoader);
         this.suppressSysout = suppressSysout;
-        this.enforceSingleJobExecution = enforceSingleJobExecution;
-        this.allowConfigurations = allowConfigurations;
-        this.originalCheckpointConfigSerialized = serializeConfig(checkpointCfg);
-        this.originalExecutionConfigSerialized = serializeConfig(config);
-        this.originalConfiguration = new Configuration(configuration);
-        this.errorMessages = errorMessages;
-        this.jobCounter = 0;
+        this.clusterConfiguration = clusterConfiguration;
+        this.jobCountLimit = jobCountLimit;
+        this.streamingJobCountLimit = streamingJobCountLimit;
+        this.jobCount = 0;
+        this.streamingJobCount = 0;
+        this.programConfigEnabled = programConfigEnabled;
+        this.programConfigWildcards = programConfigWildcards;
+        this.applicationId = applicationId;
+        this.userJarInfo = userJarInfo;
+        this.jobIdManager = createJobIdManager(configuration, allRecoveredJobInfos);
+    }
+
+    private JobIdManager createJobIdManager(
+            Configuration configuration, Collection<JobInfo> allRecoveredJobInfos) {
+        Optional<String> optionalBaseJobId =
+                configuration.getOptional(PipelineOptionsInternal.PIPELINE_FIXED_JOB_ID);
+        // If optionalBaseJobId is empty, it means the user does not explicitly specify a job ID
+        // and HA mode is not enabled. In this case, deterministic job IDs are unnecessary since
+        // the user is not expecting a predefined job ID and no job matching is required for HA
+        // recovery. So we can use the NO_OP JobIdManager and keep the randomly generated job IDs.
+        if (optionalBaseJobId.isEmpty()) {
+            return JobIdManager.NO_OP;
+        }
+
+        JobID baseJobId = JobID.fromHexString(optionalBaseJobId.get());
+        return new JobNameBasedJobIdManager(baseJobId, allRecoveredJobInfos);
     }
 
     @Override
@@ -136,22 +198,16 @@ public class StreamContextEnvironment extends StreamExecutionEnvironment {
         }
     }
 
-    private void checkNotAllowedConfigurations() throws MutatedConfigurationException {
-        errorMessages.addAll(collectNotAllowedConfigurations());
-        if (!errorMessages.isEmpty()) {
-            throw new MutatedConfigurationException(errorMessages);
-        }
-    }
-
     private JobExecutionResult getJobExecutionResult(final JobClient jobClient) throws Exception {
         checkNotNull(jobClient);
 
         JobExecutionResult jobExecutionResult;
-        if (configuration.getBoolean(DeploymentOptions.ATTACHED)) {
+        if (configuration.get(DeploymentOptions.ATTACHED)) {
             CompletableFuture<JobExecutionResult> jobExecutionResultFuture =
                     jobClient.getJobExecutionResult();
 
-            if (configuration.getBoolean(DeploymentOptions.SHUTDOWN_IF_ATTACHED)) {
+            ScheduledExecutorService clientHeartbeatService = null;
+            if (configuration.get(DeploymentOptions.SHUTDOWN_IF_ATTACHED)) {
                 Thread shutdownHook =
                         ShutdownHookUtil.addShutdownHook(
                                 () -> {
@@ -168,9 +224,21 @@ public class StreamContextEnvironment extends StreamExecutionEnvironment {
                                         shutdownHook,
                                         StreamContextEnvironment.class.getSimpleName(),
                                         LOG));
+                clientHeartbeatService =
+                        ClientUtils.reportHeartbeatPeriodically(
+                                jobClient,
+                                configuration
+                                        .get(ClientOptions.CLIENT_HEARTBEAT_INTERVAL)
+                                        .toMillis(),
+                                configuration
+                                        .get(ClientOptions.CLIENT_HEARTBEAT_TIMEOUT)
+                                        .toMillis());
             }
 
             jobExecutionResult = jobExecutionResultFuture.get();
+            if (clientHeartbeatService != null) {
+                clientHeartbeatService.shutdown();
+            }
             if (!suppressSysout) {
                 System.out.println(jobExecutionResult);
             }
@@ -184,7 +252,15 @@ public class StreamContextEnvironment extends StreamExecutionEnvironment {
     @Override
     public JobClient executeAsync(StreamGraph streamGraph) throws Exception {
         checkNotAllowedConfigurations();
-        validateAllowedExecution();
+        validateAllowedExecution(streamGraph);
+        if (applicationId != null) {
+            streamGraph.setApplicationId(applicationId);
+        }
+        if (userJarInfo != null) {
+            streamGraph.addUserJarBlobKey(userJarInfo.getJarBlobKey());
+            streamGraph.addUserJarToSkip(userJarInfo.getJarName());
+        }
+        jobIdManager.updateJobId(streamGraph);
         final JobClient jobClient = super.executeAsync(streamGraph);
 
         if (!suppressSysout) {
@@ -194,47 +270,58 @@ public class StreamContextEnvironment extends StreamExecutionEnvironment {
         return jobClient;
     }
 
-    private void validateAllowedExecution() {
-        if (enforceSingleJobExecution && jobCounter > 0) {
-            throw new FlinkRuntimeException(
-                    "Cannot have more than one execute() or executeAsync() call in a single environment.");
+    private void validateAllowedExecution(StreamGraph streamGraph) {
+        if (streamGraph.getJobType() == JobType.STREAMING) {
+            streamingJobCount++;
         }
-        jobCounter++;
+        jobCount++;
+
+        if (streamingJobCount > streamingJobCountLimit) {
+            throw new FlinkRuntimeException(
+                    "Cannot have more than "
+                            + streamingJobCountLimit
+                            + " streaming jobs in a single environment.");
+        }
+        if (jobCount > jobCountLimit) {
+            throw new FlinkRuntimeException(
+                    "Cannot have more than " + jobCountLimit + " jobs in a single environment.");
+        }
     }
 
     // --------------------------------------------------------------------------------------------
 
     public static void setAsContext(
             final PipelineExecutorServiceLoader executorServiceLoader,
-            final Configuration configuration,
+            final Configuration clusterConfiguration,
             final ClassLoader userCodeClassLoader,
-            final boolean enforceSingleJobExecution,
-            final boolean suppressSysout) {
-        StreamExecutionEnvironmentFactory factory =
-                conf -> {
-                    final List<String> errors = new ArrayList<>();
-                    final boolean allowConfigurations =
-                            configuration.getBoolean(
-                                    DeploymentOptions.ALLOW_CLIENT_JOB_CONFIGURATIONS);
-                    if (!allowConfigurations && !conf.toMap().isEmpty()) {
-                        conf.toMap()
-                                .forEach(
-                                        (k, v) ->
-                                                errors.add(
-                                                        ConfigurationNotAllowedMessage
-                                                                .ofConfigurationKeyAndValue(k, v)));
-                    }
-                    Configuration mergedConfiguration = new Configuration();
-                    mergedConfiguration.addAll(configuration);
-                    mergedConfiguration.addAll(conf);
+            final int jobCountLimit,
+            final int streamingJobCountLimit,
+            final boolean suppressSysout,
+            @Nullable final ApplicationID applicationId,
+            @Nullable final JarInfo userJarInfo,
+            Collection<JobInfo> allRecoveredJobInfos) {
+        final StreamExecutionEnvironmentFactory factory =
+                envInitConfig -> {
+                    final boolean programConfigEnabled =
+                            clusterConfiguration.get(DeploymentOptions.PROGRAM_CONFIG_ENABLED);
+                    final List<String> programConfigWildcards =
+                            clusterConfiguration.get(DeploymentOptions.PROGRAM_CONFIG_WILDCARDS);
+                    final Configuration mergedEnvConfig = new Configuration();
+                    mergedEnvConfig.addAll(clusterConfiguration);
+                    mergedEnvConfig.addAll(envInitConfig);
                     return new StreamContextEnvironment(
                             executorServiceLoader,
-                            mergedConfiguration,
+                            clusterConfiguration,
+                            mergedEnvConfig,
                             userCodeClassLoader,
-                            enforceSingleJobExecution,
+                            jobCountLimit,
+                            streamingJobCountLimit,
                             suppressSysout,
-                            allowConfigurations,
-                            errors);
+                            programConfigEnabled,
+                            programConfigWildcards,
+                            applicationId,
+                            userJarInfo,
+                            allRecoveredJobInfos);
                 };
         initializeContextEnvironment(factory);
     }
@@ -243,19 +330,51 @@ public class StreamContextEnvironment extends StreamExecutionEnvironment {
         resetContextEnvironment();
     }
 
-    private List<String> collectNotAllowedConfigurations() {
-        final List<String> errors = new ArrayList<>();
-        if (allowConfigurations) {
-            return errors;
+    // --------------------------------------------------------------------------------------------
+    // Program Configuration Validation
+    // --------------------------------------------------------------------------------------------
+
+    private void checkNotAllowedConfigurations() throws MutatedConfigurationException {
+        final Collection<String> errorMessages = collectNotAllowedConfigurations();
+        if (!errorMessages.isEmpty()) {
+            throw new MutatedConfigurationException(errorMessages);
         }
+    }
+
+    /**
+     * Collects programmatic configuration changes.
+     *
+     * <p>For supporting wildcards, the first can be accomplished by simply removing keys, the
+     * latter by setting equal fields before comparison.
+     */
+    private Collection<String> collectNotAllowedConfigurations() {
+        if (programConfigEnabled) {
+            return Collections.emptyList();
+        }
+
+        final List<String> errors = new ArrayList<>();
+
+        final Configuration clusterConfigMap = new Configuration(clusterConfiguration);
+
+        // Removal must happen on Configuration objects (not instances of Map)
+        // to also ignore map-typed config options with prefix key notation
+        removeProgramConfigWildcards(clusterConfigMap);
+
+        checkMainConfiguration(clusterConfigMap, errors);
+        return errors;
+    }
+
+    private void checkMainConfiguration(Configuration clusterConfigMap, List<String> errors) {
+        final Configuration envConfigMap = new Configuration(configuration);
+        removeProgramConfigWildcards(envConfigMap);
+
         final MapDifference<String, String> diff =
-                Maps.difference(originalConfiguration.toMap(), configuration.toMap());
+                Maps.difference(clusterConfigMap.toMap(), envConfigMap.toMap());
         diff.entriesOnlyOnRight()
                 .forEach(
                         (k, v) ->
                                 errors.add(
-                                        ConfigurationNotAllowedMessage.ofConfigurationKeyAndValue(
-                                                k, v)));
+                                        ConfigurationNotAllowedMessage.ofConfigurationAdded(k, v)));
         diff.entriesOnlyOnLeft()
                 .forEach(
                         (k, v) ->
@@ -266,31 +385,43 @@ public class StreamContextEnvironment extends StreamExecutionEnvironment {
                 .forEach(
                         (k, v) ->
                                 errors.add(
-                                        ConfigurationNotAllowedMessage.ofConfigurationChange(
+                                        ConfigurationNotAllowedMessage.ofConfigurationChanged(
                                                 k, v)));
-
-        if (!Arrays.equals(originalCheckpointConfigSerialized, serializeConfig(checkpointCfg))) {
-            errors.add(
-                    ConfigurationNotAllowedMessage.ofConfigurationObject(
-                            checkpointCfg.getClass().getSimpleName()));
-        }
-
-        if (!Arrays.equals(originalExecutionConfigSerialized, serializeConfig(config))) {
-            errors.add(
-                    ConfigurationNotAllowedMessage.ofConfigurationObject(
-                            config.getClass().getSimpleName()));
-        }
-        return errors;
     }
 
-    private static byte[] serializeConfig(Serializable config) {
-        try (final ByteArrayOutputStream bos = new ByteArrayOutputStream();
-                final ObjectOutputStream oos = new ObjectOutputStream(bos)) {
-            oos.writeObject(config);
-            oos.flush();
-            return bos.toByteArray();
-        } catch (IOException e) {
-            throw new FlinkRuntimeException("Cannot serialize configuration.", e);
+    private void checkConfigurationObject(
+            Configuration expectedConfiguration,
+            Configuration actualConfiguration,
+            String configurationObjectName,
+            List<String> errors) {
+        removeProgramConfigWildcards(actualConfiguration);
+
+        final MapDifference<String, String> diff =
+                Maps.difference(expectedConfiguration.toMap(), actualConfiguration.toMap());
+        diff.entriesOnlyOnRight()
+                .forEach(
+                        (k, v) ->
+                                errors.add(
+                                        ConfigurationNotAllowedMessage.ofConfigurationObjectAdded(
+                                                configurationObjectName, k, v)));
+        diff.entriesDiffering()
+                .forEach(
+                        (k, v) ->
+                                errors.add(
+                                        ConfigurationNotAllowedMessage.ofConfigurationObjectChanged(
+                                                configurationObjectName, k, v)));
+
+        diff.entriesOnlyOnLeft()
+                .forEach(
+                        (k, v) ->
+                                errors.add(
+                                        ConfigurationNotAllowedMessage.ofConfigurationObjectRemoved(
+                                                configurationObjectName, k, v)));
+    }
+
+    private void removeProgramConfigWildcards(Configuration mutableConfig) {
+        for (String key : programConfigWildcards) {
+            mutableConfig.removeKey(key);
         }
     }
 }

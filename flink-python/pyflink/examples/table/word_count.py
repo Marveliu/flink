@@ -65,7 +65,7 @@ word_count_data = ["To be, or not to be,--that is the question:--",
 def word_count(input_path, output_path):
     t_env = TableEnvironment.create(EnvironmentSettings.in_streaming_mode())
     # write all the data to one file
-    t_env.get_config().get_configuration().set_string("parallelism.default", "1")
+    t_env.get_config().set("parallelism.default", "1")
 
     # define the source
     if input_path is not None:
@@ -121,7 +121,7 @@ def word_count(input_path, output_path):
        .execute_insert('sink') \
        .wait()
     # remove .wait if submitting to a remote cluster, refer to
-    # https://nightlies.apache.org/flink/flink-docs-stable/docs/dev/python/faq/#wait-for-jobs-to-finish-when-executing-jobs-in-mini-cluster
+    # https://nightlies.apache.org/flink/flink-docs-stable/api/python/user_guide/faq.html#wait-for-jobs-to-finish-when-executing-jobs-in-mini-cluster
     # for more details
 
 

@@ -19,8 +19,8 @@
 
 package org.apache.flink.runtime.scheduler;
 
-import org.apache.flink.api.common.time.Time;
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.configuration.TaskManagerOptions;
 import org.apache.flink.runtime.concurrent.ComponentMainThreadExecutor;
 import org.apache.flink.runtime.jobgraph.JobType;
 import org.apache.flink.runtime.jobmaster.slotpool.PhysicalSlotProvider;
@@ -34,8 +34,11 @@ import org.apache.flink.runtime.scheduler.strategy.SchedulingStrategyFactory;
 import org.apache.flink.runtime.util.SlotSelectionStrategyUtils;
 import org.apache.flink.util.clock.SystemClock;
 
+import java.time.Duration;
 import java.util.function.Consumer;
 
+import static org.apache.flink.configuration.TaskManagerOptions.TaskManagerLoadBalanceMode;
+import static org.apache.flink.runtime.jobmaster.slotpool.SlotSelectionStrategy.NoOpSlotSelectionStrategy;
 import static org.apache.flink.util.Preconditions.checkArgument;
 
 /**
@@ -75,7 +78,7 @@ public class DefaultSchedulerComponents {
             final boolean isApproximateLocalRecoveryEnabled,
             final Configuration jobMasterConfiguration,
             final SlotPool slotPool,
-            final Time slotRequestTimeout) {
+            final Duration slotRequestTimeout) {
 
         checkArgument(
                 !isApproximateLocalRecoveryEnabled,
@@ -88,11 +91,18 @@ public class DefaultSchedulerComponents {
             final JobType jobType,
             final Configuration jobMasterConfiguration,
             final SlotPool slotPool,
-            final Time slotRequestTimeout) {
+            final Duration slotRequestTimeout) {
 
+        final TaskManagerLoadBalanceMode taskManagerLoadBalanceMode =
+                jobMasterConfiguration.get(TaskManagerOptions.TASK_MANAGER_LOAD_BALANCE_MODE);
+        final boolean balancedAtStreamingMode =
+                jobType == JobType.STREAMING
+                        && taskManagerLoadBalanceMode == TaskManagerLoadBalanceMode.TASKS;
         final SlotSelectionStrategy slotSelectionStrategy =
-                SlotSelectionStrategyUtils.selectSlotSelectionStrategy(
-                        jobType, jobMasterConfiguration);
+                balancedAtStreamingMode
+                        ? NoOpSlotSelectionStrategy.INSTANCE
+                        : SlotSelectionStrategyUtils.selectSlotSelectionStrategy(
+                                jobType, jobMasterConfiguration);
         final PhysicalSlotRequestBulkChecker bulkChecker =
                 PhysicalSlotRequestBulkCheckerImpl.createFromSlotPool(
                         slotPool, SystemClock.getInstance());
@@ -103,7 +113,10 @@ public class DefaultSchedulerComponents {
                         physicalSlotProvider,
                         jobType == JobType.STREAMING,
                         bulkChecker,
-                        slotRequestTimeout);
+                        slotRequestTimeout,
+                        balancedAtStreamingMode
+                                ? new TaskBalancedPreferredSlotSharingStrategy.Factory()
+                                : new LocalInputPreferredSlotSharingStrategy.Factory());
         return new DefaultSchedulerComponents(
                 new PipelinedRegionSchedulingStrategy.Factory(),
                 bulkChecker::start,

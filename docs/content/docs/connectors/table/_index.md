@@ -1,7 +1,8 @@
 ---
-title: Table API Connectors
+title: SQL & Table API Connectors
 bookCollapseSection: true
-weight: 2
+bookSortByTitle: true
+weight: 3
 ---
 <!--
 Licensed to the Apache Software Foundation (ASF) under one

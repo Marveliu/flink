@@ -26,29 +26,32 @@ import org.apache.flink.api.common.state.ValueStateDescriptor;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.common.typeutils.base.IntSerializer;
 import org.apache.flink.api.java.functions.KeySelector;
-import org.apache.flink.contrib.streaming.state.RocksDBStateBackend;
 import org.apache.flink.core.memory.DataInputView;
 import org.apache.flink.core.memory.DataInputViewStreamWrapper;
 import org.apache.flink.core.memory.DataOutputView;
 import org.apache.flink.core.memory.DataOutputViewStreamWrapper;
 import org.apache.flink.runtime.checkpoint.OperatorSubtaskState;
 import org.apache.flink.runtime.jobgraph.JobVertexID;
+import org.apache.flink.runtime.metrics.groups.TaskIOMetricGroup;
 import org.apache.flink.runtime.operators.testutils.MockEnvironment;
 import org.apache.flink.runtime.operators.testutils.MockEnvironmentBuilder;
 import org.apache.flink.runtime.operators.testutils.MockInputSplitProvider;
-import org.apache.flink.runtime.state.CheckpointableKeyedStateBackend;
+import org.apache.flink.runtime.state.KeyGroupRange;
 import org.apache.flink.runtime.state.KeyGroupStatePartitionStreamProvider;
 import org.apache.flink.runtime.state.KeyedStateCheckpointOutputStream;
 import org.apache.flink.runtime.state.LocalRecoveryConfig;
-import org.apache.flink.runtime.state.LocalRecoveryDirectoryProvider;
-import org.apache.flink.runtime.state.LocalRecoveryDirectoryProviderImpl;
+import org.apache.flink.runtime.state.LocalSnapshotDirectoryProvider;
+import org.apache.flink.runtime.state.LocalSnapshotDirectoryProviderImpl;
 import org.apache.flink.runtime.state.OperatorStateCheckpointOutputStream;
+import org.apache.flink.runtime.state.PriorityQueueSetFactory;
 import org.apache.flink.runtime.state.StateBackend;
 import org.apache.flink.runtime.state.StateInitializationContext;
 import org.apache.flink.runtime.state.StatePartitionStreamProvider;
 import org.apache.flink.runtime.state.StateSnapshotContext;
 import org.apache.flink.runtime.state.TestTaskStateManager;
-import org.apache.flink.runtime.state.filesystem.FsStateBackend;
+import org.apache.flink.runtime.state.hashmap.HashMapStateBackend;
+import org.apache.flink.runtime.state.storage.JobManagerCheckpointStorage;
+import org.apache.flink.state.rocksdb.EmbeddedRocksDBStateBackend;
 import org.apache.flink.streaming.api.operators.AbstractStreamOperator;
 import org.apache.flink.streaming.api.operators.InternalTimeServiceManager;
 import org.apache.flink.streaming.api.operators.KeyContext;
@@ -58,28 +61,26 @@ import org.apache.flink.streaming.api.operators.StreamOperator;
 import org.apache.flink.streaming.api.watermark.Watermark;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
 import org.apache.flink.streaming.runtime.tasks.ProcessingTimeService;
+import org.apache.flink.streaming.runtime.tasks.StreamTaskCancellationContext;
 import org.apache.flink.streaming.util.KeyedOneInputStreamOperatorTestHarness;
 import org.apache.flink.util.TernaryBoolean;
-import org.apache.flink.util.TestLogger;
+import org.apache.flink.util.TestLoggerExtension;
 
-import org.junit.AfterClass;
-import org.junit.Assert;
-import org.junit.BeforeClass;
-import org.junit.Test;
-import org.junit.rules.TemporaryFolder;
-import org.junit.runner.RunWith;
-import org.junit.runners.Parameterized;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
-import java.util.Arrays;
 import java.util.BitSet;
-import java.util.Collection;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 /** Tests for {@link StreamOperator} snapshot restoration. */
-@RunWith(Parameterized.class)
-public class StreamOperatorSnapshotRestoreTest extends TestLogger {
+@ExtendWith(TestLoggerExtension.class)
+class StreamOperatorSnapshotRestoreTest {
 
     private static final int ONLY_JM_RECOVERY = 0;
     private static final int TM_AND_JM_RECOVERY = 1;
@@ -88,42 +89,27 @@ public class StreamOperatorSnapshotRestoreTest extends TestLogger {
 
     private static final int MAX_PARALLELISM = 10;
 
-    protected static TemporaryFolder temporaryFolder;
+    @TempDir private static File temporaryFolder;
 
-    @Parameterized.Parameter public StateBackendEnum stateBackendEnum;
-
-    enum StateBackendEnum {
+    private enum StateBackendEnum {
         FILE,
         ROCKSDB_FULLY_ASYNC,
         ROCKSDB_INCREMENTAL
     }
 
-    @Parameterized.Parameters(name = "statebackend type ={0}")
-    public static Collection<StateBackendEnum> parameter() {
-        return Arrays.asList(StateBackendEnum.values());
-    }
-
-    @BeforeClass
-    public static void beforeClass() throws IOException {
-        temporaryFolder = new TemporaryFolder();
-        temporaryFolder.create();
-    }
-
-    @AfterClass
-    public static void afterClass() {
-        temporaryFolder.delete();
-    }
-
     /** Test restoring an operator from a snapshot (local recovery deactivated). */
-    @Test
-    public void testOperatorStatesSnapshotRestore() throws Exception {
-        testOperatorStatesSnapshotRestoreInternal(ONLY_JM_RECOVERY);
+    @ParameterizedTest
+    @EnumSource(value = StateBackendEnum.class)
+    void testOperatorStatesSnapshotRestore(StateBackendEnum stateBackendEnum) throws Exception {
+        testOperatorStatesSnapshotRestoreInternal(ONLY_JM_RECOVERY, stateBackendEnum);
     }
 
     /** Test restoring an operator from a snapshot (local recovery activated). */
-    @Test
-    public void testOperatorStatesSnapshotRestoreWithLocalState() throws Exception {
-        testOperatorStatesSnapshotRestoreInternal(TM_AND_JM_RECOVERY);
+    @ParameterizedTest
+    @EnumSource(value = StateBackendEnum.class)
+    void testOperatorStatesSnapshotRestoreWithLocalState(StateBackendEnum stateBackendEnum)
+            throws Exception {
+        testOperatorStatesSnapshotRestoreInternal(TM_AND_JM_RECOVERY, stateBackendEnum);
     }
 
     /**
@@ -132,9 +118,11 @@ public class StreamOperatorSnapshotRestoreTest extends TestLogger {
      * <p>This case does not really simulate a practical scenario, but we make sure that restore
      * happens from the local state here because we discard the JM state.
      */
-    @Test
-    public void testOperatorStatesSnapshotRestoreWithLocalStateDeletedJM() throws Exception {
-        testOperatorStatesSnapshotRestoreInternal(TM_REMOVE_JM_RECOVERY);
+    @ParameterizedTest
+    @EnumSource(value = StateBackendEnum.class)
+    void testOperatorStatesSnapshotRestoreWithLocalStateDeletedJM(StateBackendEnum stateBackendEnum)
+            throws Exception {
+        testOperatorStatesSnapshotRestoreInternal(TM_REMOVE_JM_RECOVERY, stateBackendEnum);
     }
 
     /**
@@ -144,26 +132,29 @@ public class StreamOperatorSnapshotRestoreTest extends TestLogger {
      * <p>This tests discards the local state, to simulate corruption and checks that we still
      * recover from the fallback JM state.
      */
-    @Test
-    public void testOperatorStatesSnapshotRestoreWithLocalStateDeletedTM() throws Exception {
-        testOperatorStatesSnapshotRestoreInternal(JM_REMOVE_TM_RECOVERY);
+    @ParameterizedTest
+    @EnumSource(value = StateBackendEnum.class)
+    void testOperatorStatesSnapshotRestoreWithLocalStateDeletedTM(StateBackendEnum stateBackendEnum)
+            throws Exception {
+        testOperatorStatesSnapshotRestoreInternal(JM_REMOVE_TM_RECOVERY, stateBackendEnum);
     }
 
-    private void testOperatorStatesSnapshotRestoreInternal(final int mode) throws Exception {
+    private void testOperatorStatesSnapshotRestoreInternal(
+            final int mode, StateBackendEnum stateBackendEnum) throws Exception {
 
         // -------------------------------------------------------------------------- snapshot
 
         StateBackend stateBackend;
-        FsStateBackend fsstateBackend = createStateBackendInternal();
+        HashMapStateBackend hashMapStateBackend = createStateBackendInternal();
         switch (stateBackendEnum) {
             case FILE:
-                stateBackend = fsstateBackend;
+                stateBackend = hashMapStateBackend;
                 break;
             case ROCKSDB_FULLY_ASYNC:
-                stateBackend = new RocksDBStateBackend(fsstateBackend, TernaryBoolean.FALSE);
+                stateBackend = new EmbeddedRocksDBStateBackend(TernaryBoolean.FALSE);
                 break;
             case ROCKSDB_INCREMENTAL:
-                stateBackend = new RocksDBStateBackend(fsstateBackend, TernaryBoolean.TRUE);
+                stateBackend = new EmbeddedRocksDBStateBackend(TernaryBoolean.TRUE);
                 break;
             default:
                 throw new IllegalStateException(
@@ -176,13 +167,16 @@ public class StreamOperatorSnapshotRestoreTest extends TestLogger {
         JobVertexID jobVertexID = new JobVertexID();
         int subtaskIdx = 0;
 
-        LocalRecoveryDirectoryProvider directoryProvider =
+        LocalSnapshotDirectoryProvider directoryProvider =
                 mode == ONLY_JM_RECOVERY
                         ? null
-                        : new LocalRecoveryDirectoryProviderImpl(
-                                temporaryFolder.newFolder(), jobID, jobVertexID, subtaskIdx);
+                        : new LocalSnapshotDirectoryProviderImpl(
+                                temporaryFolder, jobID, jobVertexID, subtaskIdx);
 
-        LocalRecoveryConfig localRecoveryConfig = new LocalRecoveryConfig(directoryProvider);
+        LocalRecoveryConfig localRecoveryConfig =
+                (directoryProvider == null)
+                        ? LocalRecoveryConfig.BACKUP_AND_RECOVERY_DISABLED
+                        : LocalRecoveryConfig.backupAndRecoveryEnabled(directoryProvider);
 
         MockEnvironment mockEnvironment =
                 new MockEnvironmentBuilder()
@@ -206,6 +200,7 @@ public class StreamOperatorSnapshotRestoreTest extends TestLogger {
                         mockEnvironment);
 
         testHarness.setStateBackend(stateBackend);
+        testHarness.setCheckpointStorage(new JobManagerCheckpointStorage());
         testHarness.open();
 
         for (int i = 0; i < 10; ++i) {
@@ -232,11 +227,14 @@ public class StreamOperatorSnapshotRestoreTest extends TestLogger {
                 new InternalTimeServiceManager.Provider() {
                     @Override
                     public <K> InternalTimeServiceManager<K> create(
-                            CheckpointableKeyedStateBackend<K> keyedStatedBackend,
+                            TaskIOMetricGroup taskIOMetricGroup,
+                            PriorityQueueSetFactory factory,
+                            KeyGroupRange keyGroupRange,
                             ClassLoader userClassloader,
                             KeyContext keyContext,
                             ProcessingTimeService processingTimeService,
-                            Iterable<KeyGroupStatePartitionStreamProvider> rawKeyedStates)
+                            Iterable<KeyGroupStatePartitionStreamProvider> rawKeyedStates,
+                            StreamTaskCancellationContext cancellationContext)
                             throws IOException {
                         return null;
                     }
@@ -249,8 +247,8 @@ public class StreamOperatorSnapshotRestoreTest extends TestLogger {
         OperatorSubtaskState taskLocalState = snapshotWithLocalState.getTaskLocalState();
 
         // We check if local state was created when we enabled local recovery
-        Assert.assertTrue(
-                mode > ONLY_JM_RECOVERY == (taskLocalState != null && taskLocalState.hasState()));
+        assertThat(taskLocalState != null && taskLocalState.hasState())
+                .isEqualTo(mode > ONLY_JM_RECOVERY);
 
         if (mode == TM_REMOVE_JM_RECOVERY) {
             jobManagerOwnedState.getManagedKeyedState().discardState();
@@ -269,9 +267,8 @@ public class StreamOperatorSnapshotRestoreTest extends TestLogger {
         testHarness.close();
     }
 
-    private FsStateBackend createStateBackendInternal() throws IOException {
-        File checkpointDir = temporaryFolder.newFolder();
-        return new FsStateBackend(checkpointDir.toURI());
+    private HashMapStateBackend createStateBackendInternal() throws IOException {
+        return new HashMapStateBackend();
     }
 
     static class TestOneInputStreamOperator extends AbstractStreamOperator<Integer>
@@ -293,7 +290,7 @@ public class StreamOperatorSnapshotRestoreTest extends TestLogger {
                 // check restored managed keyed state
                 long exp = element.getValue() + 1;
                 long act = keyedState.value();
-                Assert.assertEquals(exp, act);
+                assertThat(act).isEqualTo(exp);
             } else {
                 // write managed keyed state that goes into snapshot
                 keyedState.update(element.getValue() + 1);
@@ -319,7 +316,7 @@ public class StreamOperatorSnapshotRestoreTest extends TestLogger {
                 ++count;
             }
 
-            Assert.assertEquals(MAX_PARALLELISM, count);
+            assertThat(count).isEqualTo(MAX_PARALLELISM);
 
             // write raw operator state that goes into snapshot
             OperatorStateCheckpointOutputStream outOp = context.getRawOperatorStateOutput();
@@ -333,7 +330,7 @@ public class StreamOperatorSnapshotRestoreTest extends TestLogger {
         @Override
         public void initializeState(StateInitializationContext context) throws Exception {
 
-            Assert.assertEquals(verifyRestore, context.isRestored());
+            assertThat(context.isRestored()).isEqualTo(verifyRestore);
 
             keyedState =
                     context.getKeyedStateStore()
@@ -353,11 +350,11 @@ public class StreamOperatorSnapshotRestoreTest extends TestLogger {
                         context.getRawKeyedStateInputs()) {
                     try (InputStream in = streamProvider.getStream()) {
                         DataInputView div = new DataInputViewStreamWrapper(in);
-                        Assert.assertEquals(streamProvider.getKeyGroupId() + 2, div.readInt());
+                        assertThat(div.readInt()).isEqualTo(streamProvider.getKeyGroupId() + 2);
                         ++count;
                     }
                 }
-                Assert.assertEquals(MAX_PARALLELISM, count);
+                assertThat(count).isEqualTo(MAX_PARALLELISM);
 
                 // check restored managed operator state
                 BitSet check = new BitSet(10);
@@ -365,7 +362,7 @@ public class StreamOperatorSnapshotRestoreTest extends TestLogger {
                     check.set(v);
                 }
 
-                Assert.assertEquals(10, check.cardinality());
+                assertThat(check.cardinality()).isEqualTo(10);
 
                 // check restored raw operator state
                 check = new BitSet(13);
@@ -376,7 +373,7 @@ public class StreamOperatorSnapshotRestoreTest extends TestLogger {
                         check.set(div.readInt() - 42);
                     }
                 }
-                Assert.assertEquals(13, check.cardinality());
+                assertThat(check.cardinality()).isEqualTo(13);
             }
         }
     }

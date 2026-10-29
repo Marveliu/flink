@@ -28,16 +28,12 @@ import org.apache.flink.cep.nfa.StateTransitionAction;
 import org.apache.flink.cep.nfa.aftermatch.AfterMatchSkipStrategy;
 import org.apache.flink.cep.pattern.MalformedPatternException;
 import org.apache.flink.cep.pattern.Pattern;
+import org.apache.flink.cep.pattern.WithinType;
 import org.apache.flink.cep.pattern.conditions.SimpleCondition;
-import org.apache.flink.streaming.api.windowing.time.Time;
-import org.apache.flink.util.TestLogger;
 
-import org.apache.flink.shaded.guava30.com.google.common.collect.Sets;
+import org.junit.jupiter.api.Test;
 
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.ExpectedException;
-
+import java.time.Duration;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -45,43 +41,21 @@ import java.util.Map;
 import java.util.Set;
 
 import static org.apache.flink.cep.utils.NFAUtils.compile;
-import static org.hamcrest.Matchers.is;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertThat;
-import static org.junit.Assert.assertTrue;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.entry;
 
 /** Tests for {@link NFACompiler}. */
-public class NFACompilerTest extends TestLogger {
+class NFACompilerTest {
 
     private static final SimpleCondition<Event> startFilter =
-            new SimpleCondition<Event>() {
-                private static final long serialVersionUID = 3314714776170474221L;
-
-                @Override
-                public boolean filter(Event value) throws Exception {
-                    return value.getPrice() > 2;
-                }
-            };
+            SimpleCondition.of(value -> value.getPrice() > 2);
 
     private static final SimpleCondition<Event> endFilter =
-            new SimpleCondition<Event>() {
-                private static final long serialVersionUID = 3990995859716364087L;
-
-                @Override
-                public boolean filter(Event value) throws Exception {
-                    return value.getName().equals("end");
-                }
-            };
-
-    @Rule public ExpectedException expectedException = ExpectedException.none();
+            SimpleCondition.of(value -> value.getName().equals("end"));
 
     @Test
-    public void testNFACompilerUniquePatternName() {
-
-        // adjust the rule
-        expectedException.expect(MalformedPatternException.class);
-        expectedException.expectMessage("Duplicate pattern name: start. Names must be unique.");
-
+    void testNFACompilerUniquePatternName() {
         Pattern<Event, ?> invalidPattern =
                 Pattern.<Event>begin("start")
                         .where(new TestFilter())
@@ -91,17 +65,13 @@ public class NFACompilerTest extends TestLogger {
                         .where(new TestFilter());
 
         // here we must have an exception because of the two "start" patterns with the same name.
-        compile(invalidPattern, false);
+        assertThatThrownBy(() -> compile(invalidPattern, false))
+                .isInstanceOf(MalformedPatternException.class)
+                .hasMessageContaining("Duplicate pattern name: start. Names must be unique.");
     }
 
     @Test
-    public void testNFACompilerPatternEndsWithNotFollowedBy() {
-
-        // adjust the rule
-        expectedException.expect(MalformedPatternException.class);
-        expectedException.expectMessage(
-                "NotFollowedBy is not supported as a last part of a Pattern!");
-
+    void testNFACompilerPatternEndsWithNotFollowedBy() {
         Pattern<Event, ?> invalidPattern =
                 Pattern.<Event>begin("start")
                         .where(new TestFilter())
@@ -111,7 +81,10 @@ public class NFACompilerTest extends TestLogger {
                         .where(new TestFilter());
 
         // here we must have an exception because the last pattern is notFollowedBy!
-        compile(invalidPattern, false);
+        assertThatThrownBy(() -> compile(invalidPattern, false))
+                .isInstanceOf(MalformedPatternException.class)
+                .hasMessageContaining(
+                        "NotFollowedBy is not supported without windowTime as a last part of a Pattern!");
     }
 
     /**
@@ -130,7 +103,7 @@ public class NFACompilerTest extends TestLogger {
 
     /** Tests that the NFACompiler generates the correct NFA from a given Pattern. */
     @Test
-    public void testNFACompilerWithSimplePattern() {
+    void testNFACompilerWithSimplePattern() {
         Pattern<Event, Event> pattern =
                 Pattern.<Event>begin("start")
                         .where(startFilter)
@@ -142,48 +115,97 @@ public class NFACompilerTest extends TestLogger {
         NFA<Event> nfa = compile(pattern, false);
 
         Collection<State<Event>> states = nfa.getStates();
-        assertEquals(4, states.size());
+        assertThat(states).hasSize(4);
 
         Map<String, State<Event>> stateMap = new HashMap<>();
         for (State<Event> state : states) {
             stateMap.put(state.getName(), state);
         }
 
-        assertTrue(stateMap.containsKey("start"));
+        assertThat(stateMap).containsKey("start");
         State<Event> startState = stateMap.get("start");
-        assertTrue(startState.isStart());
+        assertThat(startState.isStart()).isTrue();
         final Set<Tuple2<String, StateTransitionAction>> startTransitions =
                 unfoldTransitions(startState);
-        assertEquals(
-                Sets.newHashSet(Tuple2.of("middle", StateTransitionAction.TAKE)), startTransitions);
+        assertThat(startTransitions)
+                .containsExactlyInAnyOrder(Tuple2.of("middle", StateTransitionAction.TAKE));
 
-        assertTrue(stateMap.containsKey("middle"));
+        assertThat(stateMap).containsKey("middle");
         State<Event> middleState = stateMap.get("middle");
         final Set<Tuple2<String, StateTransitionAction>> middleTransitions =
                 unfoldTransitions(middleState);
-        assertEquals(
-                Sets.newHashSet(
+        assertThat(middleTransitions)
+                .containsExactlyInAnyOrder(
                         Tuple2.of("middle", StateTransitionAction.IGNORE),
-                        Tuple2.of("end", StateTransitionAction.TAKE)),
-                middleTransitions);
+                        Tuple2.of("end", StateTransitionAction.TAKE));
 
-        assertTrue(stateMap.containsKey("end"));
+        assertThat(stateMap).containsKey("end");
         State<Event> endState = stateMap.get("end");
         final Set<Tuple2<String, StateTransitionAction>> endTransitions =
                 unfoldTransitions(endState);
-        assertEquals(
-                Sets.newHashSet(
-                        Tuple2.of(NFACompiler.ENDING_STATE_NAME, StateTransitionAction.TAKE)),
-                endTransitions);
+        assertThat(endTransitions)
+                .containsExactlyInAnyOrder(
+                        Tuple2.of(NFACompiler.ENDING_STATE_NAME, StateTransitionAction.TAKE));
 
-        assertTrue(stateMap.containsKey(NFACompiler.ENDING_STATE_NAME));
+        assertThat(stateMap).containsKey(NFACompiler.ENDING_STATE_NAME);
         State<Event> endingState = stateMap.get(NFACompiler.ENDING_STATE_NAME);
-        assertTrue(endingState.isFinal());
-        assertEquals(0, endingState.getStateTransitions().size());
+        assertThat(endingState.isFinal()).isTrue();
+        assertThat(endingState.getStateTransitions()).isEmpty();
     }
 
     @Test
-    public void testNoUnnecessaryStateCopiesCreated() {
+    void testNFACompilerPatternNotFollowedByWithIn() {
+        Pattern<Event, Event> pattern =
+                Pattern.<Event>begin("start")
+                        .where(startFilter)
+                        .notFollowedBy("middle")
+                        .where(endFilter)
+                        .within(Duration.ofMillis(1));
+
+        NFA<Event> nfa = compile(pattern, false);
+
+        Collection<State<Event>> states = nfa.getStates();
+        assertThat(states).hasSize(4);
+
+        Map<String, State<Event>> stateMap = new HashMap<>();
+        for (State<Event> state : states) {
+            stateMap.put(state.getName(), state);
+        }
+
+        assertThat(stateMap).containsKey("start");
+        State<Event> startState = stateMap.get("start");
+        assertThat(startState.isStart()).isTrue();
+        final Set<Tuple2<String, StateTransitionAction>> startTransitions =
+                unfoldTransitions(startState);
+        assertThat(startTransitions)
+                .containsExactlyInAnyOrder(Tuple2.of("middle", StateTransitionAction.TAKE));
+
+        assertThat(stateMap).containsKey("middle");
+        State<Event> middleState = stateMap.get("middle");
+        assertThat(middleState.isPending()).isTrue();
+        final Set<Tuple2<String, StateTransitionAction>> middleTransitions =
+                unfoldTransitions(middleState);
+        assertThat(middleTransitions)
+                .containsExactlyInAnyOrder(
+                        Tuple2.of("middle", StateTransitionAction.IGNORE),
+                        Tuple2.of("middle:0", StateTransitionAction.PROCEED));
+
+        assertThat(stateMap).containsKey("middle:0");
+        State<Event> middle0State = stateMap.get("middle:0");
+        assertThat(middle0State.isStop()).isTrue();
+        final Set<Tuple2<String, StateTransitionAction>> middle0Transitions =
+                unfoldTransitions(middle0State);
+        assertThat(middle0Transitions)
+                .containsExactlyInAnyOrder(Tuple2.of("middle:0", StateTransitionAction.TAKE));
+
+        assertThat(stateMap).containsKey(NFACompiler.ENDING_STATE_NAME);
+        State<Event> endingState = stateMap.get(NFACompiler.ENDING_STATE_NAME);
+        assertThat(endingState.isFinal()).isTrue();
+        assertThat(endingState.getStateTransitions()).isEmpty();
+    }
+
+    @Test
+    void testNoUnnecessaryStateCopiesCreated() {
         final Pattern<Event, Event> pattern =
                 Pattern.<Event>begin("start")
                         .where(startFilter)
@@ -206,47 +228,25 @@ public class NFACompilerTest extends TestLogger {
             }
         }
 
-        assertEquals(1, endStateCount);
+        assertThat(endStateCount).isOne();
     }
 
     @Test
-    public void testSkipToNotExistsMatchingPattern() {
-        expectedException.expect(MalformedPatternException.class);
-        expectedException.expectMessage(
-                "The pattern name specified in AfterMatchSkipStrategy can not be found in the given Pattern");
-
+    void testSkipToNotExistsMatchingPattern() {
         Pattern<Event, ?> invalidPattern =
                 Pattern.<Event>begin("start", AfterMatchSkipStrategy.skipToLast("midd"))
-                        .where(
-                                new SimpleCondition<Event>() {
-
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getName().contains("a");
-                                    }
-                                })
+                        .where(SimpleCondition.of(value -> value.getName().contains("a")))
                         .next("middle")
-                        .where(
-                                new SimpleCondition<Event>() {
-
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getName().contains("d");
-                                    }
-                                })
+                        .where(SimpleCondition.of(value -> value.getName().contains("d")))
                         .oneOrMore()
                         .optional()
                         .next("end")
-                        .where(
-                                new SimpleCondition<Event>() {
+                        .where(SimpleCondition.of(value -> value.getName().contains("c")));
 
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getName().contains("c");
-                                    }
-                                });
-
-        compile(invalidPattern, false);
+        assertThatThrownBy(() -> compile(invalidPattern, false))
+                .isInstanceOf(MalformedPatternException.class)
+                .hasMessageContaining(
+                        "The pattern name specified in AfterMatchSkipStrategy can not be found in the given Pattern");
     }
 
     private <T> Set<Tuple2<String, StateTransitionAction>> unfoldTransitions(final State<T> state) {
@@ -259,53 +259,92 @@ public class NFACompilerTest extends TestLogger {
     }
 
     @Test
-    public void testCheckingEmptyMatches() {
-        assertThat(NFACompiler.canProduceEmptyMatches(Pattern.begin("a").optional()), is(true));
+    void testCheckingEmptyMatches() {
+        assertThat(NFACompiler.canProduceEmptyMatches(Pattern.begin("a").optional())).isTrue();
+        assertThat(NFACompiler.canProduceEmptyMatches(Pattern.begin("a").oneOrMore().optional()))
+                .isTrue();
         assertThat(
-                NFACompiler.canProduceEmptyMatches(Pattern.begin("a").oneOrMore().optional()),
-                is(true));
-        assertThat(
-                NFACompiler.canProduceEmptyMatches(
-                        Pattern.begin("a").oneOrMore().optional().next("b").optional()),
-                is(true));
+                        NFACompiler.canProduceEmptyMatches(
+                                Pattern.begin("a").oneOrMore().optional().next("b").optional()))
+                .isTrue();
 
-        assertThat(NFACompiler.canProduceEmptyMatches(Pattern.begin("a")), is(false));
-        assertThat(NFACompiler.canProduceEmptyMatches(Pattern.begin("a").oneOrMore()), is(false));
+        assertThat(NFACompiler.canProduceEmptyMatches(Pattern.begin("a"))).isFalse();
+        assertThat(NFACompiler.canProduceEmptyMatches(Pattern.begin("a").oneOrMore())).isFalse();
         assertThat(
-                NFACompiler.canProduceEmptyMatches(
-                        Pattern.begin("a").oneOrMore().next("b").optional()),
-                is(false));
+                        NFACompiler.canProduceEmptyMatches(
+                                Pattern.begin("a").oneOrMore().next("b").optional()))
+                .isFalse();
     }
 
     @Test
-    public void testWindowTimeCorrectlySet() {
+    void testWindowTimeCorrectlySet() {
         Pattern<Event, ?> pattern =
                 Pattern.<Event>begin("start")
                         .followedBy("middle")
-                        .within(Time.seconds(10))
+                        .within(Duration.ofSeconds(10))
                         .followedBy("then")
-                        .within(Time.seconds(20))
+                        .within(Duration.ofSeconds(20))
                         .followedBy("end");
 
         NFACompiler.NFAFactoryCompiler<Event> factory =
                 new NFACompiler.NFAFactoryCompiler<>(pattern);
         factory.compileFactory();
-        assertEquals(10000, factory.getWindowTime());
+        assertThat(factory.getWindowTime()).isEqualTo(10000);
     }
 
     @Test
-    public void testMultipleWindowTimeWithZeroLength() {
+    void testWindowTimesCorrectlySet() {
         Pattern<Event, ?> pattern =
                 Pattern.<Event>begin("start")
                         .followedBy("middle")
-                        .within(Time.seconds(10))
+                        .within(Duration.ofSeconds(10), WithinType.PREVIOUS_AND_CURRENT)
                         .followedBy("then")
-                        .within(Time.seconds(0))
+                        .within(Duration.ofSeconds(20), WithinType.PREVIOUS_AND_CURRENT)
                         .followedBy("end");
 
         NFACompiler.NFAFactoryCompiler<Event> factory =
                 new NFACompiler.NFAFactoryCompiler<>(pattern);
         factory.compileFactory();
-        assertEquals(0, factory.getWindowTime());
+
+        assertThat(factory.getWindowTimes())
+                .containsOnly(
+                        entry("middle", Duration.ofSeconds(10).toMillis()),
+                        entry("then", Duration.ofSeconds(20).toMillis()));
+    }
+
+    @Test
+    void testMultipleWindowTimeWithZeroLength() {
+        Pattern<Event, ?> pattern =
+                Pattern.<Event>begin("start")
+                        .followedBy("middle")
+                        .within(Duration.ofSeconds(10))
+                        .followedBy("then")
+                        .within(Duration.ofSeconds(0))
+                        .followedBy("end");
+
+        NFACompiler.NFAFactoryCompiler<Event> factory =
+                new NFACompiler.NFAFactoryCompiler<>(pattern);
+        factory.compileFactory();
+        assertThat(factory.getWindowTime()).isZero();
+    }
+
+    @Test
+    void testCheckPatternWindowTimes() {
+        Pattern<Event, ?> pattern =
+                Pattern.<Event>begin("start")
+                        .followedBy("middle")
+                        .within(Duration.ofSeconds(3), WithinType.PREVIOUS_AND_CURRENT)
+                        .followedBy("then")
+                        .within(Duration.ofSeconds(1), WithinType.PREVIOUS_AND_CURRENT)
+                        .followedBy("end")
+                        .within(Duration.ofMillis(2));
+
+        NFACompiler.NFAFactoryCompiler<Event> factory =
+                new NFACompiler.NFAFactoryCompiler<>(pattern);
+
+        assertThatThrownBy(factory::compileFactory)
+                .isInstanceOf(MalformedPatternException.class)
+                .hasMessageContaining(
+                        "The window length between the previous and current event cannot be larger than the window length between the first and last event for a Pattern.");
     }
 }

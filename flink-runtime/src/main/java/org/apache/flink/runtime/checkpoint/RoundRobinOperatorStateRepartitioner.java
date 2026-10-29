@@ -19,10 +19,12 @@
 package org.apache.flink.runtime.checkpoint;
 
 import org.apache.flink.annotation.Internal;
+import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.runtime.state.OperatorStateHandle;
 import org.apache.flink.runtime.state.OperatorStreamStateHandle;
 import org.apache.flink.runtime.state.StreamStateHandle;
+import org.apache.flink.util.CollectionUtil;
 import org.apache.flink.util.Preconditions;
 
 import java.util.ArrayList;
@@ -135,7 +137,8 @@ public class RoundRobinOperatorStateRepartitioner
 
     private Map<String, List<Tuple2<StreamStateHandle, OperatorStateHandle.StateMetaInfo>>>
             collectUnionStates(List<List<OperatorStateHandle>> parallelSubtaskStates) {
-        return collectStates(parallelSubtaskStates, OperatorStateHandle.Mode.UNION).entrySet()
+        return collectStates(parallelSubtaskStates, OperatorStateHandle.Mode.UNION)
+                .entrySet()
                 .stream()
                 .collect(Collectors.toMap(Map.Entry::getKey, e -> e.getValue().entries));
     }
@@ -143,7 +146,8 @@ public class RoundRobinOperatorStateRepartitioner
     private Map<String, List<Tuple2<StreamStateHandle, OperatorStateHandle.StateMetaInfo>>>
             collectPartlyFinishedBroadcastStates(
                     List<List<OperatorStateHandle>> parallelSubtaskStates) {
-        return collectStates(parallelSubtaskStates, OperatorStateHandle.Mode.BROADCAST).entrySet()
+        return collectStates(parallelSubtaskStates, OperatorStateHandle.Mode.BROADCAST)
+                .entrySet()
                 .stream()
                 .filter(e -> e.getValue().isPartiallyReported())
                 .collect(Collectors.toMap(Map.Entry::getKey, e -> e.getValue().entries));
@@ -153,7 +157,8 @@ public class RoundRobinOperatorStateRepartitioner
     private Map<String, StateEntry> collectStates(
             List<List<OperatorStateHandle>> parallelSubtaskStates, OperatorStateHandle.Mode mode) {
 
-        Map<String, StateEntry> states = new HashMap<>(parallelSubtaskStates.size());
+        Map<String, StateEntry> states =
+                CollectionUtil.newHashMapWithExpectedSize(parallelSubtaskStates.size());
 
         for (int i = 0; i < parallelSubtaskStates.size(); ++i) {
             final int subtaskIndex = i;
@@ -370,7 +375,8 @@ public class RoundRobinOperatorStateRepartitioner
                     if (operatorStateHandle == null) {
                         operatorStateHandle =
                                 new OperatorStreamStateHandle(
-                                        new HashMap<>(nameToDistributeState.size()),
+                                        CollectionUtil.newHashMapWithExpectedSize(
+                                                nameToDistributeState.size()),
                                         handleWithOffsets.f0);
                         mergeMap.put(handleWithOffsets.f0, operatorStateHandle);
                     }
@@ -405,7 +411,9 @@ public class RoundRobinOperatorStateRepartitioner
                     if (operatorStateHandle == null) {
                         operatorStateHandle =
                                 new OperatorStreamStateHandle(
-                                        new HashMap<>(unionState.size()), handleWithMetaInfo.f0);
+                                        CollectionUtil.newHashMapWithExpectedSize(
+                                                unionState.size()),
+                                        handleWithMetaInfo.f0);
                         mergeMap.put(handleWithMetaInfo.f0, operatorStateHandle);
                     }
                     operatorStateHandle
@@ -442,7 +450,9 @@ public class RoundRobinOperatorStateRepartitioner
                 if (operatorStateHandle == null) {
                     operatorStateHandle =
                             new OperatorStreamStateHandle(
-                                    new HashMap<>(broadcastState.size()), handleWithMetaInfo.f0);
+                                    CollectionUtil.newHashMapWithExpectedSize(
+                                            broadcastState.size()),
+                                    handleWithMetaInfo.f0);
                     mergeMap.put(handleWithMetaInfo.f0, operatorStateHandle);
                 }
                 operatorStateHandle
@@ -479,13 +489,16 @@ public class RoundRobinOperatorStateRepartitioner
         }
     }
 
-    private static final class StateEntry {
+    @VisibleForTesting
+    static final class StateEntry {
         final List<Tuple2<StreamStateHandle, OperatorStateHandle.StateMetaInfo>> entries;
         final BitSet reportedSubtaskIndices;
+        final int parallelism;
 
         public StateEntry(int estimatedEntrySize, int parallelism) {
             this.entries = new ArrayList<>(estimatedEntrySize);
             this.reportedSubtaskIndices = new BitSet(parallelism);
+            this.parallelism = parallelism;
         }
 
         void addEntry(
@@ -497,7 +510,7 @@ public class RoundRobinOperatorStateRepartitioner
 
         boolean isPartiallyReported() {
             return reportedSubtaskIndices.cardinality() > 0
-                    && reportedSubtaskIndices.cardinality() < reportedSubtaskIndices.size();
+                    && reportedSubtaskIndices.cardinality() < parallelism;
         }
     }
 }

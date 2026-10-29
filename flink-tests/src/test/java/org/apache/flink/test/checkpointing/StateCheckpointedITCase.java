@@ -18,17 +18,17 @@
 
 package org.apache.flink.test.checkpointing;
 
+import org.apache.flink.api.common.functions.OpenContext;
 import org.apache.flink.api.common.functions.RichFilterFunction;
 import org.apache.flink.api.common.functions.RichFlatMapFunction;
 import org.apache.flink.api.common.functions.RichMapFunction;
 import org.apache.flink.api.common.state.CheckpointListener;
 import org.apache.flink.api.common.state.ValueState;
-import org.apache.flink.configuration.Configuration;
 import org.apache.flink.streaming.api.checkpoint.ListCheckpointed;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
-import org.apache.flink.streaming.api.functions.sink.RichSinkFunction;
-import org.apache.flink.streaming.api.functions.source.RichParallelSourceFunction;
+import org.apache.flink.streaming.api.functions.sink.legacy.RichSinkFunction;
+import org.apache.flink.streaming.api.functions.source.legacy.RichParallelSourceFunction;
 import org.apache.flink.util.Collector;
 
 import org.slf4j.Logger;
@@ -41,8 +41,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Random;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * A simple test that runs a streaming topology with checkpointing enabled.
@@ -55,8 +54,7 @@ import static org.junit.Assert.assertTrue;
  * the recovery does not fall back to "square one" (which would naturally lead to correct results
  * without testing the checkpointing).
  */
-@SuppressWarnings("serial")
-public class StateCheckpointedITCase extends StreamFaultToleranceTestBase {
+class StateCheckpointedITCase extends StreamFaultToleranceTestBase {
 
     private static final Logger LOG = LoggerFactory.getLogger(StateCheckpointedITCase.class);
 
@@ -71,7 +69,7 @@ public class StateCheckpointedITCase extends StreamFaultToleranceTestBase {
      */
     @Override
     public void testProgram(StreamExecutionEnvironment env) {
-        assertTrue("Broken test setup", NUM_STRINGS % 40 == 0);
+        assertThat(NUM_STRINGS % 40).as("Broken test setup").isZero();
 
         final long failurePosMin = (long) (0.4 * NUM_STRINGS / PARALLELISM);
         final long failurePosMax = (long) (0.7 * NUM_STRINGS / PARALLELISM);
@@ -95,7 +93,7 @@ public class StateCheckpointedITCase extends StreamFaultToleranceTestBase {
                 .map(new StatefulCounterFunction())
 
                 // -------------- third vertex - reducer and the sink ----------------
-                .keyBy("prefix")
+                .keyBy(x -> x.prefix)
                 .flatMap(new OnceFailingAggregator(failurePos))
                 .addSink(new ValidatingSink());
     }
@@ -103,7 +101,9 @@ public class StateCheckpointedITCase extends StreamFaultToleranceTestBase {
     @Override
     public void postSubmit() {
 
-        // assertTrue("Test inconclusive: failure occurred before first checkpoint",
+        // assertThat(failureOccurredBeforeFirstCheckpoint)
+        //         .as("Test inconclusive: failure occurred before first checkpoint")
+        //         .isTrue();
         //		OnceFailingAggregator.wasCheckpointedBeforeFailure);
         if (!OnceFailingAggregator.wasCheckpointedBeforeFailure) {
             LOG.warn("Test inconclusive: failure occurred before first checkpoint");
@@ -125,13 +125,13 @@ public class StateCheckpointedITCase extends StreamFaultToleranceTestBase {
         }
 
         // verify that we counted exactly right
-        assertEquals(NUM_STRINGS, filterSum);
-        assertEquals(NUM_STRINGS, mapSum);
-        assertEquals(NUM_STRINGS, countSum);
+        assertThat(filterSum).isEqualTo(NUM_STRINGS);
+        assertThat(mapSum).isEqualTo(NUM_STRINGS);
+        assertThat(countSum).isEqualTo(NUM_STRINGS);
 
         for (Map<Character, Long> map : ValidatingSink.maps) {
             for (Long count : map.values()) {
-                assertEquals(NUM_STRINGS / 40, count.longValue());
+                assertThat(count).isEqualTo(NUM_STRINGS / 40L);
             }
         }
     }
@@ -159,10 +159,10 @@ public class StateCheckpointedITCase extends StreamFaultToleranceTestBase {
             final Random rnd = new Random();
             final StringBuilder stringBuilder = new StringBuilder();
 
-            final int step = getRuntimeContext().getNumberOfParallelSubtasks();
+            final int step = getRuntimeContext().getTaskInfo().getNumberOfParallelSubtasks();
 
             if (index == 0) {
-                index = getRuntimeContext().getIndexOfThisSubtask();
+                index = getRuntimeContext().getTaskInfo().getIndexOfThisSubtask();
             }
 
             while (isRunning && index < numElements) {
@@ -226,7 +226,7 @@ public class StateCheckpointedITCase extends StreamFaultToleranceTestBase {
 
         @Override
         public void close() {
-            counts[getRuntimeContext().getIndexOfThisSubtask()] = count;
+            counts[getRuntimeContext().getTaskInfo().getIndexOfThisSubtask()] = count;
         }
 
         @Override
@@ -259,7 +259,7 @@ public class StateCheckpointedITCase extends StreamFaultToleranceTestBase {
 
         @Override
         public void close() {
-            counts[getRuntimeContext().getIndexOfThisSubtask()] = count;
+            counts[getRuntimeContext().getTaskInfo().getIndexOfThisSubtask()] = count;
         }
 
         @Override
@@ -292,7 +292,7 @@ public class StateCheckpointedITCase extends StreamFaultToleranceTestBase {
 
         @Override
         public void close() throws IOException {
-            counts[getRuntimeContext().getIndexOfThisSubtask()] = count;
+            counts[getRuntimeContext().getTaskInfo().getIndexOfThisSubtask()] = count;
         }
 
         @Override
@@ -330,7 +330,7 @@ public class StateCheckpointedITCase extends StreamFaultToleranceTestBase {
         }
 
         @Override
-        public void open(Configuration parameters) {
+        public void open(OpenContext openContext) {
             count = 0;
         }
 
@@ -339,7 +339,7 @@ public class StateCheckpointedITCase extends StreamFaultToleranceTestBase {
             count++;
             if (!hasFailed
                     && count >= failurePos
-                    && getRuntimeContext().getIndexOfThisSubtask() == 1) {
+                    && getRuntimeContext().getTaskInfo().getIndexOfThisSubtask() == 1) {
                 wasCheckpointedBeforeFailure = wasCheckpointed;
                 hasFailed = true;
                 throw new Exception("Test Failure");
@@ -401,7 +401,7 @@ public class StateCheckpointedITCase extends StreamFaultToleranceTestBase {
 
         @Override
         public void close() throws Exception {
-            maps[getRuntimeContext().getIndexOfThisSubtask()] = counts;
+            maps[getRuntimeContext().getTaskInfo().getIndexOfThisSubtask()] = counts;
         }
 
         @Override

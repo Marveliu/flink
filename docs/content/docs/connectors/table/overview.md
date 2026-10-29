@@ -42,60 +42,146 @@ Flink natively support various connectors. The following tables list all availab
     <thead>
       <tr>
         <th class="text-left">Name</th>
-        <th class="text-center">Version</th>
         <th class="text-center">Source</th>
         <th class="text-center">Sink</th>
       </tr>
     </thead>
     <tbody>
     <tr>
-      <td><a href="{{< ref "docs/connectors/table/filesystem" >}}">Filesystem</a></td>
-      <td></td>
-      <td>Bounded and Unbounded Scan, Lookup</td>
-      <td>Streaming Sink, Batch Sink</td>
-    </tr>
-    <tr>
-      <td><a href="{{< ref "docs/connectors/table/elasticsearch" >}}">Elasticsearch</a></td>
-      <td>6.x & 7.x</td>
+      <td><a href="{{< ref "docs/connectors/table/blackhole" >}}">BlackHole</a></td>
       <td>Not supported</td>
       <td>Streaming Sink, Batch Sink</td>
     </tr>
     <tr>
-      <td><a href="{{< ref "docs/connectors/table/kafka" >}}">Apache Kafka</a></td>
-      <td>0.10+</td>
+      <td><a href="{{< ref "docs/connectors/table/datagen" >}}">DataGen</a></td>
+      <td>Bounded and Unbounded Scan</td>
+      <td>Not supported</td>
+    </tr>
+    <tr>
+      <td><a href="{{< ref "docs/connectors/table/dynamic-kafka" >}}">Dynamic Kafka</a></td>
       <td>Unbounded Scan</td>
+      <td>Not supported</td>
+    </tr>
+    <tr>
+      <td><a href="{{< ref "docs/connectors/table/dynamodb" >}}">DynamoDB</a></td>
+      <td>Not supported</td>
       <td>Streaming Sink, Batch Sink</td>
     </tr>
     <tr>
-      <td><a href="{{< ref "docs/connectors/table/kinesis" >}}">Amazon Kinesis Data Streams</a></td>
-      <td></td>
-      <td>Unbounded Scan</td>
-      <td>Streaming Sink</td>
+      <td><a href="{{< ref "docs/connectors/table/elasticsearch" >}}">Elasticsearch</a></td>
+      <td>Not supported</td>
+      <td>Streaming Sink, Batch Sink</td>
+    </tr>
+    <tr>
+      <td><a href="{{< ref "docs/connectors/table/filesystem" >}}">FileSystem</a></td>
+      <td>Bounded and Unbounded Scan</td>
+      <td>Streaming Sink, Batch Sink</td>
+    </tr>
+    <tr>
+      <td><a href="{{< ref "docs/connectors/table/firehose" >}}">Firehose</a></td>
+      <td>Not supported</td>
+      <td>Streaming Sink, Batch Sink</td>
+    </tr>
+    <tr>
+      <td><a href="{{< ref "docs/connectors/table/hbase" >}}">HBase</a></td>
+      <td>Bounded Scan, Lookup</td>
+      <td>Streaming Sink, Batch Sink</td>
+    </tr>
+    <tr>
+      <td><a href="{{< ref "docs/connectors/table/hive/overview" >}}">Hive</a></td>
+      <td>Unbounded Scan, Bounded Scan, Lookup</td>
+      <td>Streaming Sink, Batch Sink</td>
+    </tr>
+    <tr>
+      <td><a href="{{< ref "docs/connectors/table/http" >}}">HTTP</a></td>
+      <td>Lookup</td>
+      <td>Streaming Sink, Batch Sink</td>
     </tr>
     <tr>
       <td><a href="{{< ref "docs/connectors/table/jdbc" >}}">JDBC</a></td>
-      <td></td>
       <td>Bounded Scan, Lookup</td>
       <td>Streaming Sink, Batch Sink</td>
     </tr>
     <tr>
-      <td><a href="{{< ref "docs/connectors/table/hbase" >}}">Apache HBase</a></td>
-      <td>1.4.x & 2.2.x</td>
+      <td><a href="{{< ref "docs/connectors/table/kafka" >}}">Kafka</a></td>
+      <td>Bounded and Unbounded Scan</td>
+      <td>Streaming Sink, Batch Sink</td>
+    </tr>
+    <tr>
+      <td><a href="{{< ref "docs/connectors/table/kinesis" >}}">Kinesis</a></td>
+      <td>Unbounded Scan</td>
+      <td>Streaming Sink, Batch Sink</td>
+    </tr>
+    <tr>
+      <td><a href="{{< ref "docs/connectors/table/mongodb" >}}">MongoDB</a></td>
       <td>Bounded Scan, Lookup</td>
       <td>Streaming Sink, Batch Sink</td>
     </tr>
     <tr>
-      <td><a href="{{< ref "docs/connectors/table/hive/overview" >}}">Apache Hive</a></td>
-      <td><a href="{{< ref "docs/connectors/table/hive/overview" >}}#supported-hive-versions">Supported Versions</a></td>
-      <td>Unbounded Scan, Bounded Scan, Lookup</td>
+      <td><a href="{{< ref "docs/connectors/table/opensearch" >}}">Opensearch</a></td>
+      <td>Not supported</td>
       <td>Streaming Sink, Batch Sink</td>
+    </tr>
+    <tr>
+      <td><a href="{{< ref "docs/connectors/table/print" >}}">Print</a></td>
+      <td>Not supported</td>
+      <td>Streaming Sink, Batch Sink</td>
+    </tr>
+    <tr>
+      <td><a href="{{< ref "docs/connectors/table/pulsar" >}}">Pulsar</a></td>
+      <td>Bounded and Unbounded Scan</td>
+      <td>Streaming Sink</td>
+    </tr>
+    <tr>
+      <td><a href="{{< ref "docs/connectors/table/upsert-kafka" >}}">Upsert Kafka</a></td>
+      <td>Unbounded Scan</td>
+      <td>Streaming Sink</td>
     </tr>
     </tbody>
 </table>
 
+The following integrations are maintained by other projects, not by the Apache Flink community. See
+[Integrations Maintained by Other Projects]({{< ref "docs/connectors/other-projects/overview" >}}).
+
+ * [Apache Doris]({{< ref "docs/connectors/other-projects/doris" >}})
+ * [Apache Fluss]({{< ref "docs/connectors/other-projects/fluss" >}})
+ * [Apache Hudi]({{< ref "docs/connectors/other-projects/hudi" >}})
+ * [Apache Iceberg]({{< ref "docs/connectors/other-projects/iceberg" >}})
+ * [Apache Paimon]({{< ref "docs/connectors/other-projects/paimon" >}})
+
 {{< top >}}
 
 Please refer to the [configuration]({{< ref "docs/dev/configuration/connector" >}}) section on how to add connectors as a dependency. 
+
+Flink CDC
+------------
+
+[Flink CDC](https://nightlies.apache.org/flink/flink-cdc-docs-stable/) is an Apache Flink sub-project with its own releases. Its source connectors read
+changes directly from databases such as MySQL, PostgreSQL, Oracle, SQL Server, MongoDB and Db2, and
+it can run complete data integration pipelines defined in YAML. See the
+[Flink CDC sources](https://nightlies.apache.org/flink/flink-cdc-docs-stable/docs/connectors/flink-sources/overview/) for the supported databases and Flink versions.
+
+{{< top >}}
+
+Fault Tolerance Guarantees
+------------
+
+Flink recovers from failures by restarting from the last [checkpoint]({{< ref "docs/dev/datastream/fault-tolerance/checkpointing" >}}). Checkpointing is
+disabled by default. For exactly-once results, the source must be able to rewind to the position
+stored in the checkpoint, and the sink must take part in checkpointing, either by committing its
+writes transactionally or by writing idempotently. See
+[Stateful Stream Processing]({{< ref "docs/concepts/stateful-stream-processing" >}}#checkpointing) for how checkpoints work.
+
+Connectors that support more than one guarantee expose it as the `sink.delivery-guarantee` option,
+for example [Kafka]({{< ref "docs/connectors/table/kafka" >}}). Exactly-once on Kafka uses Kafka
+transactions and also requires `sink.transactional-id-prefix`. Sinks that write by primary key, such
+as [JDBC]({{< ref "docs/connectors/table/jdbc" >}}) with a primary key defined, overwrite the same
+rows when records are replayed after a failure; while the replay runs, readers can briefly see older
+values for those rows.
+
+Each connector's page documents the guarantees it provides.
+
+{{< top >}}
 
 How to use connectors
 --------
@@ -103,7 +189,7 @@ How to use connectors
 Flink supports using SQL `CREATE TABLE` statements to register tables. One can define the table name,
 the table schema, and the table options for connecting to an external system.
 
-See the [SQL section for more information about creating a table]({{< ref "docs/dev/table/sql/create" >}}#create-table).
+See the [SQL section for more information about creating a table]({{< ref "docs/sql/reference/ddl/create" >}}#create-table).
 
 The following code shows a full example of how to connect to Kafka for reading and writing JSON records.
 
@@ -144,7 +230,7 @@ Transform table connector/format resources
 
 Flink uses Java's [Service Provider Interfaces (SPI)](https://docs.oracle.com/javase/tutorial/sound/SPI-intro.html) to load the table connector/format factories by their identifiers. Since the SPI resource file named `org.apache.flink.table.factories.Factory` for every table connector/format is under the same directory `META-INF/services`, these resource files will override each other when build the uber-jar of the project which uses more than one table connector/format, which will cause Flink to fail to load table connector/format factories.
 
-In this situation, the recommended way is transforming these resource files under the directory `META-INF/services` by [ServicesResourceTransformer](https://maven.apache.org/plugins/maven-shade-plugin/examples/resource-transformers.html) of maven shade plugin. Given the pom.xml file content of example that contains connector `flink-sql-connector-hive-3.1.2` and format `flink-parquet` in a project.
+In this situation, the recommended way is transforming these resource files under the directory `META-INF/services` by [ServicesResourceTransformer](https://maven.apache.org/plugins/maven-shade-plugin/examples/resource-transformers.html) of maven shade plugin. Given the pom.xml file content of example that contains connector `flink-sql-connector-hive-3.1.3` and format `flink-parquet` in a project.
 
 ```xml
 
@@ -157,7 +243,7 @@ In this situation, the recommended way is transforming these resource files unde
         <!--  other project dependencies  ...-->
         <dependency>
             <groupId>org.apache.flink</groupId>
-            <artifactId>flink-sql-connector-hive-3.1.2{{< scala_version >}}</artifactId>
+            <artifactId>flink-sql-connector-hive-3.1.3{{< scala_version >}}</artifactId>
             <version>{{< version >}}</version>
         </dependency>
 
@@ -229,7 +315,7 @@ CREATE TABLE MyTable (
 ### Metadata
 
 Some connectors and formats expose additional metadata fields that can be accessed in metadata columns
-next to the physical payload columns. See the [`CREATE TABLE` section]({{< ref "docs/dev/table/sql/create" >}}#columns)
+next to the physical payload columns. See the [`CREATE TABLE` section]({{< ref "docs/sql/reference/ddl/create" >}}#columns)
 for more information about metadata columns.
 
 ### Primary Key
@@ -259,11 +345,11 @@ CREATE TABLE MyTable (
 
 Time attributes are essential when working with unbounded streaming tables. Therefore both proctime and rowtime attributes can be defined as part of the schema.
 
-For more information about time handling in Flink and especially event-time, we recommend the general [event-time section]({{< ref "docs/dev/table/concepts/time_attributes" >}}).
+For more information about time handling in Flink and especially event-time, we recommend the general [event-time section]({{< ref "docs/concepts/sql-table-concepts/time_attributes" >}}).
 
 #### Proctime Attributes
 
-In order to declare a proctime attribute in the schema, you can use [Computed Column syntax]({{< ref "docs/dev/table/sql/create" >}}#create-table) to declare a computed column which is generated from `PROCTIME()` builtin function.
+In order to declare a proctime attribute in the schema, you can use [Computed Column syntax]({{< ref "docs/sql/reference/ddl/create" >}}#create-table) to declare a computed column which is generated from `PROCTIME()` builtin function.
 The computed column is a virtual column which is not stored in the physical data.
 
 {{< tabs "5d1f475b-a002-4e85-84f4-00ab0a55a548" >}}
@@ -285,7 +371,7 @@ CREATE TABLE MyTable (
 
 In order to control the event-time behavior for tables, Flink provides predefined timestamp extractors and watermark strategies.
 
-Please refer to [CREATE TABLE statements]({{< ref "docs/dev/table/sql/create" >}}#create-table) for more information about defining time attributes in DDL.
+Please refer to [CREATE TABLE statements]({{< ref "docs/sql/reference/ddl/create" >}}#create-table) for more information about defining time attributes in DDL.
 
 The following timestamp extractors are supported:
 
@@ -353,6 +439,6 @@ Make sure to always declare both timestamps and watermarks. Watermarks are requi
 
 ### SQL Types
 
-Please see the [Data Types]({{< ref "docs/dev/table/types" >}}) page about how to declare a type in SQL.
+Please see the [Data Types]({{< ref "docs/sql/reference/data-types" >}}) page about how to declare a type in SQL.
 
 {{< top >}}

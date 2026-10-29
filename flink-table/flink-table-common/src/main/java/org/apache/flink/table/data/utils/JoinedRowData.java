@@ -27,6 +27,8 @@ import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.data.StringData;
 import org.apache.flink.table.data.TimestampData;
 import org.apache.flink.types.RowKind;
+import org.apache.flink.types.bitmap.Bitmap;
+import org.apache.flink.types.variant.Variant;
 
 import javax.annotation.Nullable;
 
@@ -246,6 +248,24 @@ public class JoinedRowData implements RowData {
             return row1.getRow(pos, numFields);
         } else {
             return row2.getRow(pos - row1.getArity(), numFields);
+        }
+    }
+
+    @Override
+    public Variant getVariant(int pos) {
+        if (pos < row1.getArity()) {
+            return row1.getVariant(pos);
+        } else {
+            return row2.getVariant(pos - row1.getArity());
+        }
+    }
+
+    @Override
+    public Bitmap getBitmap(int pos) {
+        if (pos < row1.getArity()) {
+            return row1.getBitmap(pos);
+        } else {
+            return row2.getBitmap(pos - row1.getArity());
         }
     }
 

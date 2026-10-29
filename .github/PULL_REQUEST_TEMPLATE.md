@@ -39,7 +39,7 @@
 
 ## Verifying this change
 
-Please make sure both new and modified tests in this PR follows the conventions defined in our code quality guide: https://flink.apache.org/contributing/code-style-and-quality-common.html#testing
+Please make sure both new and modified tests in this PR follow [the conventions for tests defined in our code quality guide](https://flink.apache.org/how-to-contribute/code-style-and-quality-common/#7-testing).
 
 *(Please pick either of the following options)*
 
@@ -72,3 +72,23 @@ This change added tests and can be verified as follows:
 
   - Does this pull request introduce a new feature? (yes / no)
   - If yes, how is the feature documented? (not applicable / docs / JavaDocs / not documented)
+
+---
+
+##### Was generative AI tooling used to co-author this PR?
+
+<!--
+If generative AI tooling has been used in the process of authoring this PR, please
+change the checkbox below to `[X]` and replace the placeholder in the "Generated-by"
+line with the tool name and version. Otherwise remove the "Generated-by" line.
+See the ASF Generative Tooling Guidance for details:
+https://www.apache.org/legal/generative-tooling.html
+
+You are responsible for the quality and correctness of every change in this PR
+regardless of the tooling used. Low-effort AI-generated PRs will be closed. See
+AGENTS.md for the full guidance.
+-->
+
+- [ ] Yes (please specify the tool below)
+
+Generated-by: [Tool Name and Version]

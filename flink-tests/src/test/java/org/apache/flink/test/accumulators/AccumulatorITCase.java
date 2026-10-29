@@ -25,22 +25,30 @@ import org.apache.flink.api.common.accumulators.DoubleCounter;
 import org.apache.flink.api.common.accumulators.Histogram;
 import org.apache.flink.api.common.accumulators.IntCounter;
 import org.apache.flink.api.common.functions.GroupCombineFunction;
+import org.apache.flink.api.common.functions.MapFunction;
+import org.apache.flink.api.common.functions.OpenContext;
+import org.apache.flink.api.common.functions.ReduceFunction;
 import org.apache.flink.api.common.functions.RichFlatMapFunction;
 import org.apache.flink.api.common.functions.RichGroupReduceFunction;
-import org.apache.flink.api.java.DataSet;
-import org.apache.flink.api.java.ExecutionEnvironment;
 import org.apache.flink.api.java.tuple.Tuple2;
-import org.apache.flink.configuration.Configuration;
+import org.apache.flink.core.fs.Path;
+import org.apache.flink.streaming.api.datastream.DataStreamSource;
+import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
+import org.apache.flink.streaming.api.functions.sink.legacy.OutputFormatSinkFunction;
+import org.apache.flink.streaming.api.legacy.io.TextInputFormat;
+import org.apache.flink.streaming.api.legacy.io.TextOutputFormat;
+import org.apache.flink.streaming.api.windowing.assigners.GlobalWindows;
 import org.apache.flink.test.util.JavaProgramTestBase;
 import org.apache.flink.types.StringValue;
 import org.apache.flink.util.Collector;
 
-import org.junit.Assert;
-
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
+
+import static org.apache.flink.test.util.TestBaseUtils.compareResultsByLinesInMemory;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Test for the basic functionality of accumulators. We cannot test all different kinds of plans
@@ -49,8 +57,7 @@ import java.util.Set;
  * <p>TODO Test conflict when different UDFs write to accumulator with same name but with different
  * type. The conflict will occur in JobManager while merging.
  */
-@SuppressWarnings("serial")
-public class AccumulatorITCase extends JavaProgramTestBase {
+class AccumulatorITCase extends JavaProgramTestBase {
 
     private static final String INPUT = "one\n" + "two two\n" + "three three three\n";
     private static final String EXPECTED = "one 1\ntwo 2\nthree 3\n";
@@ -75,39 +82,56 @@ public class AccumulatorITCase extends JavaProgramTestBase {
         JobExecutionResult res = this.result;
         System.out.println(AccumulatorHelper.getResultsFormatted(res.getAllAccumulatorResults()));
 
-        Assert.assertEquals(Integer.valueOf(3), res.getAccumulatorResult("num-lines"));
-        Assert.assertEquals(Integer.valueOf(3), res.getIntCounterResult("num-lines"));
+        assertThat(res.<Integer>getAccumulatorResult("num-lines")).isEqualTo(3);
 
-        Assert.assertEquals(
-                Double.valueOf(getParallelism()), res.getAccumulatorResult("open-close-counter"));
+        assertThat(res.<Double>getAccumulatorResult("open-close-counter"))
+                .isEqualTo(getParallelism());
 
         // Test histogram (words per line distribution)
-        Map<Integer, Integer> dist = new HashMap<>();
-        dist.put(1, 1);
-        dist.put(2, 1);
-        dist.put(3, 1);
-        Assert.assertEquals(dist, res.getAccumulatorResult("words-per-line"));
+        assertThat(res.<Map<Integer, Integer>>getAccumulatorResult("words-per-line"))
+                .containsExactlyInAnyOrderEntriesOf(
+                        Map.ofEntries(Map.entry(1, 1), Map.entry(2, 1), Map.entry(3, 1)));
 
         // Test distinct words (custom accumulator)
-        Set<StringValue> distinctWords = new HashSet<>();
-        distinctWords.add(new StringValue("one"));
-        distinctWords.add(new StringValue("two"));
-        distinctWords.add(new StringValue("three"));
-        Assert.assertEquals(distinctWords, res.getAccumulatorResult("distinct-words"));
+        assertThat(res.<Set<StringValue>>getAccumulatorResult("distinct-words"))
+                .containsExactlyInAnyOrder(
+                        new StringValue("one"), new StringValue("two"), new StringValue("three"));
     }
 
     @Override
-    protected void testProgram() throws Exception {
-        ExecutionEnvironment env = ExecutionEnvironment.getExecutionEnvironment();
+    protected JobExecutionResult testProgram() throws Exception {
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
 
-        DataSet<String> input = env.readTextFile(dataPath);
+        DataStreamSource<String> input =
+                env.createInput(new TextInputFormat(new Path(dataPath)))
+                        .setParallelism(getParallelism());
 
         input.flatMap(new TokenizeLine())
-                .groupBy(0)
-                .reduceGroup(new CountWords())
-                .writeAsCsv(resultPath, "\n", " ");
+                .keyBy(x -> x.f0)
+                .window(GlobalWindows.createWithEndOfStreamTrigger())
+                .reduce(
+                        new ReduceFunction<Tuple2<String, Integer>>() {
+                            @Override
+                            public Tuple2<String, Integer> reduce(
+                                    Tuple2<String, Integer> value1, Tuple2<String, Integer> value2)
+                                    throws Exception {
+                                return Tuple2.of(value2.f0, value1.f1 + value2.f1);
+                            }
+                        })
+                .map(
+                        new MapFunction<Tuple2<String, Integer>, String>() {
+
+                            @Override
+                            public String map(Tuple2<String, Integer> value) throws Exception {
+                                return value.f0 + " " + value.f1;
+                            }
+                        })
+                .addSink(
+                        new OutputFormatSinkFunction<>(
+                                new TextOutputFormat<>(new Path(resultPath))));
 
         this.result = env.execute();
+        return this.result;
     }
 
     private static class TokenizeLine extends RichFlatMapFunction<String, Tuple2<String, Integer>> {
@@ -122,7 +146,7 @@ public class AccumulatorITCase extends JavaProgramTestBase {
         private SetAccumulator<StringValue> distinctWords;
 
         @Override
-        public void open(Configuration parameters) {
+        public void open(OpenContext openContext) {
 
             // Add counters using convenience functions
             this.cntNumLines = getRuntimeContext().getIntCounter("num-lines");
@@ -138,25 +162,15 @@ public class AccumulatorITCase extends JavaProgramTestBase {
             // Create counter and test increment
             IntCounter simpleCounter = getRuntimeContext().getIntCounter("simple-counter");
             simpleCounter.add(1);
-            Assert.assertEquals(simpleCounter.getLocalValue().intValue(), 1);
+            assertThat(simpleCounter.getLocalValue().intValue()).isOne();
 
             // Test if we get the same counter
             IntCounter simpleCounter2 = getRuntimeContext().getIntCounter("simple-counter");
-            Assert.assertEquals(simpleCounter.getLocalValue(), simpleCounter2.getLocalValue());
+            assertThat(simpleCounter2.getLocalValue()).isEqualTo(simpleCounter.getLocalValue());
 
             // Should fail if we request it with different type
-            try {
-                @SuppressWarnings("unused")
-                DoubleCounter simpleCounter3 =
-                        getRuntimeContext().getDoubleCounter("simple-counter");
-                // DoubleSumAggregator longAggregator3 = (DoubleSumAggregator)
-                // getRuntimeContext().getAggregator("custom",
-                // DoubleSumAggregator.class);
-                Assert.fail(
-                        "Should not be able to obtain previously created counter with different type");
-            } catch (UnsupportedOperationException ex) {
-                // expected!
-            }
+            assertThatThrownBy(() -> getRuntimeContext().getDoubleCounter("simple-counter"))
+                    .isInstanceOf(UnsupportedOperationException.class);
 
             // Test counter used in open() and closed()
             this.openCloseCounter.add(0.5);
@@ -179,7 +193,7 @@ public class AccumulatorITCase extends JavaProgramTestBase {
         public void close() throws Exception {
             // Test counter used in open and close only
             this.openCloseCounter.add(0.5);
-            Assert.assertEquals(1, this.openCloseCounter.getLocalValue().intValue());
+            assertThat(this.openCloseCounter.getLocalValue().intValue()).isEqualTo(1);
         }
     }
 
@@ -191,7 +205,7 @@ public class AccumulatorITCase extends JavaProgramTestBase {
         private IntCounter combineCalls;
 
         @Override
-        public void open(Configuration parameters) {
+        public void open(OpenContext openContext) {
             this.reduceCalls = getRuntimeContext().getIntCounter("reduce-calls");
             this.combineCalls = getRuntimeContext().getIntCounter("combine-calls");
         }
@@ -224,7 +238,7 @@ public class AccumulatorITCase extends JavaProgramTestBase {
     }
 
     /** Custom accumulator. */
-    public static class SetAccumulator<T> implements Accumulator<T, HashSet<T>> {
+    private static class SetAccumulator<T> implements Accumulator<T, HashSet<T>> {
 
         private static final long serialVersionUID = 1L;
 

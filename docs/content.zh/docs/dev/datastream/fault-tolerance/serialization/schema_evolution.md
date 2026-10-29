@@ -85,26 +85,41 @@ Flink 基于下面的规则来支持 [POJO 类型]({{< ref "docs/dev/datastream/
  3. 不可以修改字段的声明类型。
  4. 不可以改变 POJO 类型的类名，包括类的命名空间。
 
+上述规则同样适用于 [Java records]({{< ref "docs/dev/datastream/fault-tolerance/serialization/types_serialization" >}}#pojos)，自 Flink 1.19 起 records 被作为 POJO 类型处理。
+
 需要注意，只有从 1.8.0 及以上版本的 Flink 生产的 savepoint 进行恢复时，POJO 类型的状态才可以进行升级。
 对 1.8.0 版本之前的 Flink 是没有办法进行 POJO 类型升级的。
 
 ### Avro 类型
 
 Flink 完全支持 Avro 状态类型的升级，只要数据结构的修改是被
-[Avro 的数据结构解析规则](http://avro.apache.org/docs/current/spec.html#Schema+Resolution)认为兼容的即可。
+[Avro 的数据结构解析规则](https://avro.apache.org/docs/current/specification/)认为兼容的即可。
 
 一个例外是如果新的 Avro 数据 schema 生成的类无法被重定位或者使用了不同的命名空间，在作业恢复时状态数据会被认为是不兼容的。
 
-{{< hint warning >}}
-Schema evolution of keys is not supported.
-{{< /hint >}}
+## Schema Migration Limitations
 
-Example: RocksDB state backend relies on binary objects identity, rather than `hashCode` method implementation. Any changes to the keys object structure could lead to non deterministic behaviour.
+Flink's schema migration has some limitations that are required to ensure correctness. For users that need to work
+around these limitations, and understand them to be safe in their specific use-case, consider using
+a [custom serializer]({{< ref "docs/dev/datastream/fault-tolerance/serialization/custom_serialization" >}}) or the
+[state processor api]({{< ref "docs/libs/state_processor_api" >}}).
 
-{{< hint warning >}}
-**Kryo** cannot be used for schema evolution.
-{{< /hint >}}
+### Schema evolution of keys is not supported.
+
+The structure of a key cannot be migrated as this may lead to non-deterministic behavior.
+For example, if a POJO is used as a key and one field is dropped then there may suddenly be
+multiple separate keys that are now identical. Flink has no way to merge the corresponding values.
+
+Additionally, the RocksDB state backend relies on binary object identity, rather than the `hashCode` method. Any change to the keys' object structure can lead to non-deterministic behavior.
+
+### **Kryo** cannot be used for schema evolution.
 
 When Kryo is used, there is no possibility for the framework to verify if any incompatible changes have been made.
+
+{{< hint warning >}}
+This means that if a data-structure containing a given type is serialized via Kryo, then that contained type can **not** undergo schema evolution.
+
+For example, if a POJO contains a `List<SomeOtherPojo>`, then the `List` _and_ its contents are serialized via Kryo and schema evolution is **not** supported for `SomeOtherPojo`.
+{{< /hint >}}
 
 {{< top >}}

@@ -34,8 +34,9 @@ public class BufferDebloater {
     private static final Logger LOG = LoggerFactory.getLogger(BufferDebloater.class);
     private static final long MILLIS_IN_SECOND = 1000;
 
+    private final String owningTaskName;
     private final int gateIndex;
-    private final long targetTotalBufferSize;
+    private final long targetTotalTime;
     private final int maxBufferSize;
     private final int minBufferSize;
     private final double bufferDebloatThresholdFactor;
@@ -45,25 +46,50 @@ public class BufferDebloater {
     private int lastBufferSize;
 
     public BufferDebloater(
+            String owningTaskName,
             int gateIndex,
-            long targetTotalBufferSize,
+            long targetTotalTime,
             int maxBufferSize,
             int minBufferSize,
             int bufferDebloatThresholdPercentages,
             long numberOfSamples) {
+        this(
+                owningTaskName,
+                gateIndex,
+                targetTotalTime,
+                maxBufferSize,
+                maxBufferSize,
+                minBufferSize,
+                bufferDebloatThresholdPercentages,
+                numberOfSamples);
+    }
+
+    public BufferDebloater(
+            String owningTaskName,
+            int gateIndex,
+            long targetTotalTime,
+            int startingBufferSize,
+            int maxBufferSize,
+            int minBufferSize,
+            int bufferDebloatThresholdPercentages,
+            long numberOfSamples) {
+        this.owningTaskName = owningTaskName;
         this.gateIndex = gateIndex;
-        this.targetTotalBufferSize = targetTotalBufferSize;
+        this.targetTotalTime = targetTotalTime;
         this.maxBufferSize = maxBufferSize;
         this.minBufferSize = minBufferSize;
         this.bufferDebloatThresholdFactor = bufferDebloatThresholdPercentages / 100.0;
 
-        this.lastBufferSize = maxBufferSize;
-        bufferSizeEMA = new BufferSizeEMA(maxBufferSize, minBufferSize, numberOfSamples);
+        this.lastBufferSize = startingBufferSize;
+        bufferSizeEMA =
+                new BufferSizeEMA(
+                        startingBufferSize, maxBufferSize, minBufferSize, numberOfSamples);
 
         LOG.debug(
-                "Buffer debloater init settings: gateIndex={}, targetTotalBufferSize={}, maxBufferSize={}, minBufferSize={}, bufferDebloatThresholdPercentages={}, numberOfSamples={}",
+                "{}: Buffer debloater init settings: gateIndex={}, targetTotalTime={}, maxBufferSize={}, minBufferSize={}, bufferDebloatThresholdPercentages={}, numberOfSamples={}",
+                owningTaskName,
                 gateIndex,
-                targetTotalBufferSize,
+                targetTotalTime,
                 maxBufferSize,
                 minBufferSize,
                 bufferDebloatThresholdPercentages,
@@ -73,7 +99,7 @@ public class BufferDebloater {
     public OptionalInt recalculateBufferSize(long currentThroughput, int buffersInUse) {
         int actualBuffersInUse = Math.max(1, buffersInUse);
         long desiredTotalBufferSizeInBytes =
-                (currentThroughput * targetTotalBufferSize) / MILLIS_IN_SECOND;
+                (currentThroughput * targetTotalTime) / MILLIS_IN_SECOND;
 
         int newSize =
                 bufferSizeEMA.calculateBufferSize(
@@ -89,7 +115,8 @@ public class BufferDebloater {
         boolean skipUpdate = skipUpdate(newSize);
 
         LOG.debug(
-                "Buffer size recalculation: gateIndex={}, currentSize={}, newSize={}, instantThroughput={}, desiredBufferSize={}, buffersInUse={}, estimatedTimeToConsumeBuffers={}, announceNewSize={}",
+                "{}: Buffer size recalculation: gateIndex={}, currentSize={}, newSize={}, instantThroughput={}, desiredBufferSize={}, buffersInUse={}, estimatedTimeToConsumeBuffers={}, announceNewSize={}",
+                owningTaskName,
                 gateIndex,
                 lastBufferSize,
                 newSize,

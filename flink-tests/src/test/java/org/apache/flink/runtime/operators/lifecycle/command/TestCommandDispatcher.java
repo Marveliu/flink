@@ -17,7 +17,7 @@
 
 package org.apache.flink.runtime.operators.lifecycle.command;
 
-import org.apache.flink.testutils.junit.SharedObjects;
+import org.apache.flink.testutils.junit.SharedObjectsExtension;
 
 import java.io.Serializable;
 
@@ -33,6 +33,8 @@ public interface TestCommandDispatcher extends Serializable {
 
     void broadcast(TestCommand command, TestCommandScope scope);
 
+    void unsubscribe(String operatorID, CommandExecutor commandExecutor);
+
     /** An executor of {@link TestCommand}s. */
     interface CommandExecutor {
         void execute(TestCommand testCommand);
@@ -44,7 +46,7 @@ public interface TestCommandDispatcher extends Serializable {
         ALL_SUBTASKS
     }
 
-    static TestCommandDispatcher createShared(SharedObjects shared) {
+    static TestCommandDispatcher createShared(SharedObjectsExtension shared) {
         return new SharedTestCommandDispatcher(shared, new TestCommandDispatcherImpl());
     }
 }

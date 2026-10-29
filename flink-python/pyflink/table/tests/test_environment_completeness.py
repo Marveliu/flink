@@ -16,8 +16,9 @@
 # limitations under the License.
 ################################################################################
 
-from pyflink.testing.test_case_utils import PythonAPICompletenessTestCase, PyFlinkTestCase
 from pyflink.table import TableEnvironment
+from pyflink.testing.test_case_utils import PythonAPICompletenessTestCase, \
+    PyFlinkTestCase
 
 
 class EnvironmentAPICompletenessTests(PythonAPICompletenessTestCase, PyFlinkTestCase):
@@ -39,12 +40,16 @@ class EnvironmentAPICompletenessTests(PythonAPICompletenessTestCase, PyFlinkTest
         return {
             'getCompletionHints',
             'fromValues',
-            'create',
+            'fromCall',
+            'fromModel',
             # See FLINK-25986
             'loadPlan',
             'compilePlanSql',
             'executePlan',
-            'explainPlan'}
+            'explainPlan',
+            'registerFunction',
+            'scan',
+            'registerTable'}
 
     @classmethod
     def java_method_name(cls, python_method_name):

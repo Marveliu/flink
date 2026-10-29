@@ -16,7 +16,7 @@
   ~ limitations under the License.
   -->
 
-<nz-tabset [nzSize]="'small'" [nzAnimated]="{ inkBar: true, tabPane: false }">
+<nz-tabs [nzSize]="'small'" [nzAnimated]="{ inkBar: true, tabPane: false }">
   <nz-tab nzTitle="Root Exception">
     <ng-template nz-tab>
       <nz-code-editor
@@ -35,14 +35,15 @@
         [nzData]="exceptionHistory"
         [nzShowPagination]="false"
         [nzFrontPagination]="false"
+        nzTableLayout="fixed"
       >
         <thead>
           <tr>
-            <th nzWidth="60px"></th>
-            <th>Time</th>
+            <th nzWidth="4%"></th>
+            <th nzWidth="12%">Time</th>
             <th>Exception</th>
-            <th>Task Name</th>
-            <th>Location</th>
+            <th nzWidth="18%">Task Name</th>
+            <th nzWidth="12%">Location</th>
           </tr>
         </thead>
         <tbody>
@@ -50,8 +51,14 @@
             <tr>
               <td nzShowExpand [(nzExpand)]="item.expand"></td>
               <td>{{ item.selected.timestamp | date: 'yyyy-MM-dd HH:mm:ss' }}</td>
-              <td>
+              <td class="exception-cell">
                 <div class="name">{{ item.selected.exceptionName }}</div>
+                <nz-tag
+                  *ngFor="let label of item.selected.failureLabels | keyvalue"
+                  [nzColor]="'#ff0000'"
+                >
+                  {{ label.key }}:{{ label.value }}
+                </nz-tag>
               </td>
               <td class="select-td">
                 <nz-select
@@ -78,7 +85,15 @@
                   </nz-option>
                 </nz-select>
               </td>
-              <td>{{ item.selected.location || '(unassigned)' }}</td>
+              <td class="clickable" (click)="navigateTo(item.selected.taskManagerId)">
+                <a>
+                  {{
+                    item.selected.endpoint
+                      ? item.selected.taskManagerId + '(' + item.selected.endpoint + ')'
+                      : '(unassigned)'
+                  }}
+                </a>
+              </td>
             </tr>
             <tr [nzExpand]="item.expand">
               <td colspan="5" class="expand-td">
@@ -123,4 +138,4 @@
       </nz-table>
     </ng-template>
   </nz-tab>
-</nz-tabset>
+</nz-tabs>

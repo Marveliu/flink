@@ -23,32 +23,30 @@ import org.apache.flink.api.common.eventtime.TimestampAssignerSupplier;
 import org.apache.flink.api.common.eventtime.WatermarkGenerator;
 import org.apache.flink.api.common.eventtime.WatermarkGeneratorSupplier;
 import org.apache.flink.api.common.eventtime.WatermarkStrategy;
+import org.apache.flink.api.common.functions.OpenContext;
 import org.apache.flink.api.common.functions.ReduceFunction;
-import org.apache.flink.api.common.restartstrategy.RestartStrategies;
 import org.apache.flink.api.common.state.CheckpointListener;
 import org.apache.flink.api.common.state.ListState;
 import org.apache.flink.api.common.state.ListStateDescriptor;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.java.functions.KeySelector;
 import org.apache.flink.api.java.tuple.Tuple2;
-import org.apache.flink.configuration.Configuration;
 import org.apache.flink.runtime.state.FunctionInitializationContext;
 import org.apache.flink.runtime.state.FunctionSnapshotContext;
 import org.apache.flink.streaming.api.checkpoint.CheckpointedFunction;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.datastream.DataStreamUtils;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
-import org.apache.flink.streaming.api.functions.sink.RichSinkFunction;
-import org.apache.flink.streaming.api.functions.source.ParallelSourceFunction;
-import org.apache.flink.streaming.api.functions.source.RichParallelSourceFunction;
+import org.apache.flink.streaming.api.functions.sink.legacy.RichSinkFunction;
+import org.apache.flink.streaming.api.functions.source.legacy.ParallelSourceFunction;
+import org.apache.flink.streaming.api.functions.source.legacy.RichParallelSourceFunction;
 import org.apache.flink.streaming.api.windowing.assigners.TumblingEventTimeWindows;
-import org.apache.flink.streaming.api.windowing.time.Time;
+import org.apache.flink.streaming.util.RestartStrategyUtils;
+import org.apache.flink.testutils.junit.utils.TempDirUtils;
 import org.apache.flink.util.Preconditions;
 
-import org.junit.Assert;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.TemporaryFolder;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
@@ -57,17 +55,22 @@ import java.io.DataOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
+import java.nio.file.Path;
+import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Random;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Integration test for {@link DataStreamUtils#reinterpretAsKeyedStream(DataStream, KeySelector,
  * TypeInformation)}.
  */
-public class ReinterpretDataStreamAsKeyedStreamITCase {
+class ReinterpretDataStreamAsKeyedStreamITCase {
 
-    @Rule public TemporaryFolder temporaryFolder = new TemporaryFolder();
+    @TempDir private Path temporaryFolder;
 
     /**
      * This test checks that reinterpreting a data stream to a keyed stream works as expected. This
@@ -77,7 +80,7 @@ public class ReinterpretDataStreamAsKeyedStreamITCase {
      * know they have been partitioned in a keyBy from the first job.
      */
     @Test
-    public void testReinterpretAsKeyedStream() throws Exception {
+    void testReinterpretAsKeyedStream() throws Exception {
 
         final int maxParallelism = 8;
         final int numEventsPerInstance = 100;
@@ -89,16 +92,16 @@ public class ReinterpretDataStreamAsKeyedStreamITCase {
         env.setMaxParallelism(maxParallelism);
         env.setParallelism(parallelism);
         env.enableCheckpointing(100);
-        env.setRestartStrategy(RestartStrategies.fixedDelayRestart(1, 0L));
+        RestartStrategyUtils.configureFixedDelayRestartStrategy(env, 1, 0L);
 
         final List<File> partitionFiles = new ArrayList<>(parallelism);
         for (int i = 0; i < parallelism; ++i) {
-            File partitionFile = temporaryFolder.newFile();
+            File partitionFile = TempDirUtils.newFile(temporaryFolder);
             partitionFiles.add(i, partitionFile);
         }
 
         env.addSource(new RandomTupleSource(numEventsPerInstance, numUniqueKeys))
-                .keyBy(0)
+                .keyBy(x -> x.f0)
                 .addSink(new ToPartitionFileSink(partitionFiles));
 
         env.execute();
@@ -113,7 +116,7 @@ public class ReinterpretDataStreamAsKeyedStreamITCase {
                         TypeInformation.of(Integer.class))
                 .window(
                         TumblingEventTimeWindows.of(
-                                Time.seconds(
+                                Duration.ofSeconds(
                                         1))) // test that also timers and aggregated state work as
                 // expected
                 .reduce(
@@ -166,9 +169,9 @@ public class ReinterpretDataStreamAsKeyedStreamITCase {
         }
 
         @Override
-        public void open(Configuration parameters) throws Exception {
-            super.open(parameters);
-            int subtaskIdx = getRuntimeContext().getIndexOfThisSubtask();
+        public void open(OpenContext openContext) throws Exception {
+            super.open(openContext);
+            int subtaskIdx = getRuntimeContext().getTaskInfo().getIndexOfThisSubtask();
             dos =
                     new DataOutputStream(
                             new BufferedOutputStream(
@@ -210,9 +213,9 @@ public class ReinterpretDataStreamAsKeyedStreamITCase {
         }
 
         @Override
-        public void open(Configuration parameters) throws Exception {
-            super.open(parameters);
-            int subtaskIdx = getRuntimeContext().getIndexOfThisSubtask();
+        public void open(OpenContext openContext) throws Exception {
+            super.open(openContext);
+            int subtaskIdx = getRuntimeContext().getTaskInfo().getIndexOfThisSubtask();
             File partitionFile = allPartitions.get(subtaskIdx);
             fileLength = partitionFile.length();
             waitForFailurePos = fileLength * 3 / 4;
@@ -278,8 +281,7 @@ public class ReinterpretDataStreamAsKeyedStreamITCase {
 
         @Override
         public void snapshotState(FunctionSnapshotContext context) throws Exception {
-            positionState.clear();
-            positionState.add(position);
+            positionState.update(Collections.singletonList(position));
         }
 
         @Override
@@ -313,9 +315,10 @@ public class ReinterpretDataStreamAsKeyedStreamITCase {
         }
 
         @Override
-        public void open(Configuration parameters) throws Exception {
-            super.open(parameters);
-            Preconditions.checkState(getRuntimeContext().getNumberOfParallelSubtasks() == 1);
+        public void open(OpenContext openContext) throws Exception {
+            super.open(openContext);
+            Preconditions.checkState(
+                    getRuntimeContext().getTaskInfo().getNumberOfParallelSubtasks() == 1);
         }
 
         @Override
@@ -324,15 +327,13 @@ public class ReinterpretDataStreamAsKeyedStreamITCase {
         }
 
         @Override
-        public void close() throws Exception {
-            Assert.assertEquals(expectedSum, runningSum);
-            super.close();
+        public void finish() {
+            assertThat(runningSum).isEqualTo(expectedSum);
         }
 
         @Override
         public void snapshotState(FunctionSnapshotContext context) throws Exception {
-            sumState.clear();
-            sumState.add(runningSum);
+            sumState.update(Collections.singletonList(runningSum));
         }
 
         @Override

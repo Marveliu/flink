@@ -24,11 +24,11 @@ import org.apache.flink.api.common.typeutils.TypeComparator;
 import org.apache.flink.api.common.typeutils.base.IntSerializer;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.api.java.typeutils.RowTypeInfo;
+import org.apache.flink.configuration.Configuration;
 import org.apache.flink.core.memory.MemorySegment;
 import org.apache.flink.core.memory.MemorySegmentFactory;
 import org.apache.flink.runtime.operators.sort.QuickSort;
 import org.apache.flink.table.api.DataTypes;
-import org.apache.flink.table.api.TableConfig;
 import org.apache.flink.table.data.DecimalData;
 import org.apache.flink.table.data.GenericRowData;
 import org.apache.flink.table.data.RawValueData;
@@ -41,6 +41,7 @@ import org.apache.flink.table.data.util.DataFormatConverters;
 import org.apache.flink.table.data.util.DataFormatTestUtil;
 import org.apache.flink.table.data.writer.BinaryRowWriter;
 import org.apache.flink.table.data.writer.BinaryWriter;
+import org.apache.flink.table.legacy.types.logical.TypeInformationRawType;
 import org.apache.flink.table.planner.codegen.sort.SortCodeGenerator;
 import org.apache.flink.table.planner.plan.nodes.exec.spec.SortSpec;
 import org.apache.flink.table.planner.plan.utils.SortUtil;
@@ -68,14 +69,14 @@ import org.apache.flink.table.types.logical.RowType;
 import org.apache.flink.table.types.logical.SmallIntType;
 import org.apache.flink.table.types.logical.TimestampType;
 import org.apache.flink.table.types.logical.TinyIntType;
-import org.apache.flink.table.types.logical.TypeInformationRawType;
+import org.apache.flink.table.types.logical.UuidType;
 import org.apache.flink.table.types.logical.VarBinaryType;
 import org.apache.flink.table.types.logical.VarCharType;
 import org.apache.flink.types.Row;
 import org.apache.flink.util.MutableObjectIterator;
 
 import org.apache.commons.lang3.RandomStringUtils;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
 import java.util.ArrayList;
@@ -92,7 +93,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.HamcrestCondition.matching;
 
 /** Random test for sort code generator. */
-public class SortCodeGeneratorTest {
+class SortCodeGeneratorTest {
 
     private static final int RECORD_NUM = 3000;
 
@@ -109,6 +110,7 @@ public class SortCodeGeneratorTest {
                 new DecimalType(18, 2),
                 new DecimalType(38, 18),
                 new VarBinaryType(VarBinaryType.MAX_LENGTH),
+                new UuidType(),
                 new ArrayType(new TinyIntType()),
                 RowType.of(new IntType()),
                 RowType.of(RowType.of(new IntType())),
@@ -137,7 +139,7 @@ public class SortCodeGeneratorTest {
                             new int[] {0}, new boolean[] {true}, 0, new ExecutionConfig());
 
     @Test
-    public void testMultiKeys() throws Exception {
+    void testMultiKeys() throws Exception {
         for (int i = 0; i < 100; i++) {
             randomKeysAndOrders();
             testInner();
@@ -145,7 +147,7 @@ public class SortCodeGeneratorTest {
     }
 
     @Test
-    public void testOneKey() throws Exception {
+    void testOneKey() throws Exception {
         for (int time = 0; time < 100; time++) {
             Random rnd = new Random();
             LogicalType[] fields = new LogicalType[rnd.nextInt(9) + 1];
@@ -282,6 +284,11 @@ public class SortCodeGeneratorTest {
                                 TimestampData.fromEpochMillis(rnd.nextLong(), rnd.nextInt(1000000));
                     }
                     break;
+                case UUID:
+                    byte[] uuidBytes = new byte[UuidType.BYTE_LENGTH];
+                    rnd.nextBytes(uuidBytes);
+                    seeds[i] = uuidBytes;
+                    break;
                 case ARRAY:
                 case VARBINARY:
                     byte[] bytes = new byte[rnd.nextInt(16) + 1];
@@ -353,6 +360,9 @@ public class SortCodeGeneratorTest {
                 byte[] bytes2 = new byte[rnd.nextInt(7) + 1];
                 rnd.nextBytes(bytes2);
                 return bytes2;
+            case UUID:
+                // all-zero: the smallest UUID under unsigned big-endian byte ordering
+                return new byte[UuidType.BYTE_LENGTH];
             case ROW:
                 return GenericRowData.of(new Object[] {null});
             case RAW:
@@ -393,6 +403,12 @@ public class SortCodeGeneratorTest {
                 return type instanceof VarBinaryType
                         ? bytes
                         : BinaryArrayData.fromPrimitiveArray(bytes);
+            case UUID:
+                // high bit set in the leading byte: greater than value1 but less than value3 only
+                // under unsigned ordering (signed byte ordering would rank it as the smallest)
+                byte[] uuidMid = new byte[UuidType.BYTE_LENGTH];
+                uuidMid[0] = (byte) 0x80;
+                return uuidMid;
             case ROW:
                 RowType rowType = (RowType) type;
                 if (rowType.getFields().get(0).getType().getTypeRoot() == INTEGER) {
@@ -440,6 +456,11 @@ public class SortCodeGeneratorTest {
                 return type instanceof VarBinaryType
                         ? bytes
                         : BinaryArrayData.fromPrimitiveArray(bytes);
+            case UUID:
+                // all-ones: the largest UUID under unsigned big-endian byte ordering
+                byte[] uuidMax = new byte[UuidType.BYTE_LENGTH];
+                Arrays.fill(uuidMax, (byte) 0xFF);
+                return uuidMax;
             case ROW:
                 RowType rowType = (RowType) type;
                 if (rowType.getFields().get(0).getType().getTypeRoot() == INTEGER) {
@@ -553,7 +574,8 @@ public class SortCodeGeneratorTest {
                                 } else if (leftArray.size() > rightArray.size()) {
                                     return order ? 1 : -1;
                                 }
-                            } else if (t.getTypeRoot() == LogicalTypeRoot.VARBINARY) {
+                            } else if (t.getTypeRoot() == LogicalTypeRoot.VARBINARY
+                                    || t.getTypeRoot() == LogicalTypeRoot.UUID) {
                                 int comp =
                                         org.apache.flink.table.runtime.operators.sort.SortUtil
                                                 .compareBinary((byte[]) first, (byte[]) second);
@@ -617,7 +639,7 @@ public class SortCodeGeneratorTest {
                             RowData.createFieldGetter(keyTypes[j], keys[j]);
                     Object o1 = fieldGetter.getFieldOrNull(data.get(i));
                     Object o2 = fieldGetter.getFieldOrNull(result.get(i));
-                    if (keyTypes[j] instanceof VarBinaryType) {
+                    if (keyTypes[j] instanceof VarBinaryType || keyTypes[j] instanceof UuidType) {
                         assertThat((byte[]) o2).as(msg).isEqualTo((byte[]) o1);
                     } else if (keyTypes[j] instanceof TypeInformationRawType) {
                         assertThat((RawValueData) o1)
@@ -638,7 +660,12 @@ public class SortCodeGeneratorTest {
 
     public static Tuple2<NormalizedKeyComputer, RecordComparator> getSortBaseWithNulls(
             String namePrefix, RowType inputType, SortSpec sortSpec) {
-        SortCodeGenerator generator = new SortCodeGenerator(new TableConfig(), inputType, sortSpec);
+        SortCodeGenerator generator =
+                new SortCodeGenerator(
+                        new Configuration(),
+                        Thread.currentThread().getContextClassLoader(),
+                        inputType,
+                        sortSpec);
         GeneratedNormalizedKeyComputer computer =
                 generator.generateNormalizedKeyComputer(namePrefix + "Computer");
         GeneratedRecordComparator comparator =

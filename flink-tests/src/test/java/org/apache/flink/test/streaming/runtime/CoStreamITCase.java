@@ -28,27 +28,26 @@ import org.apache.flink.test.streaming.runtime.util.TestListResultSink;
 import org.apache.flink.test.util.AbstractTestBase;
 import org.apache.flink.util.Collector;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 
-import static org.junit.Assert.assertEquals;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /** Integration tests for co-streams. */
-@SuppressWarnings("serial")
-public class CoStreamITCase extends AbstractTestBase {
+class CoStreamITCase extends AbstractTestBase {
 
     @Test
-    public void test() throws Exception {
+    void test() throws Exception {
 
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
         env.setParallelism(1);
 
         TestListResultSink<String> resultSink = new TestListResultSink<String>();
 
-        DataStream<Integer> src = env.fromElements(1, 3, 5);
+        DataStream<Integer> src = env.fromData(1, 3, 5);
 
         DataStream<Integer> filter1 =
                 src.filter(
@@ -123,6 +122,6 @@ public class CoStreamITCase extends AbstractTestBase {
         List<String> expected = Arrays.asList("(1,2)", "(3,4)", "(5,6)", "1", "3", "5");
         List<String> result = resultSink.getResult();
         Collections.sort(result);
-        assertEquals(expected, result);
+        assertThat(result).isEqualTo(expected);
     }
 }

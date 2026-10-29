@@ -15,19 +15,17 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.planner.plan.rules.logical
 
 import org.apache.flink.table.planner.plan.common.DistinctAggregateTestBase
 import org.apache.flink.table.planner.plan.optimize.program.FlinkBatchProgram
-import org.junit.{Before, Test}
 
-/**
-  * Test for [[FlinkAggregateExpandDistinctAggregatesRule]].
-  */
+import org.junit.jupiter.api.{BeforeEach, Test}
+
+/** Test for [[FlinkAggregateExpandDistinctAggregatesRule]]. */
 class FlinkAggregateExpandDistinctAggregatesRuleTest extends DistinctAggregateTestBase(false) {
 
-  @Before
+  @BeforeEach
   override def setup(): Unit = {
     util.buildBatchProgram(FlinkBatchProgram.PHYSICAL)
     super.setup()

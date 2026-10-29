@@ -22,11 +22,15 @@ import org.apache.flink.runtime.blob.BlobStore;
 import org.apache.flink.runtime.blob.VoidBlobStore;
 import org.apache.flink.runtime.checkpoint.CheckpointRecoveryFactory;
 import org.apache.flink.runtime.checkpoint.StandaloneCheckpointRecoveryFactory;
+import org.apache.flink.runtime.highavailability.ApplicationResultStore;
+import org.apache.flink.runtime.highavailability.EmbeddedApplicationResultStore;
 import org.apache.flink.runtime.highavailability.HighAvailabilityServices;
 import org.apache.flink.runtime.highavailability.JobResultStore;
 import org.apache.flink.runtime.highavailability.nonha.embedded.EmbeddedJobResultStore;
-import org.apache.flink.runtime.jobmanager.JobGraphStore;
-import org.apache.flink.runtime.jobmanager.StandaloneJobGraphStore;
+import org.apache.flink.runtime.jobmanager.ApplicationStore;
+import org.apache.flink.runtime.jobmanager.ExecutionPlanStore;
+import org.apache.flink.runtime.jobmanager.StandaloneApplicationStore;
+import org.apache.flink.runtime.jobmanager.StandaloneExecutionPlanStore;
 
 import javax.annotation.concurrent.GuardedBy;
 
@@ -38,12 +42,16 @@ import static org.apache.flink.util.Preconditions.checkState;
  * Abstract base class for non high-availability services.
  *
  * <p>This class returns the standalone variants for the checkpoint recovery factory, the submitted
- * job graph store, the running jobs registry and the blob store.
+ * execution plan store, the running jobs registry and the blob store.
  */
 public abstract class AbstractNonHaServices implements HighAvailabilityServices {
     protected final Object lock = new Object();
 
     private final JobResultStore jobResultStore;
+
+    private final ApplicationStore applicationStore;
+
+    private final ApplicationResultStore applicationResultStore;
 
     private final VoidBlobStore voidBlobStore;
 
@@ -51,6 +59,8 @@ public abstract class AbstractNonHaServices implements HighAvailabilityServices 
 
     public AbstractNonHaServices() {
         this.jobResultStore = new EmbeddedJobResultStore();
+        this.applicationStore = new StandaloneApplicationStore();
+        this.applicationResultStore = new EmbeddedApplicationResultStore();
         this.voidBlobStore = new VoidBlobStore();
 
         shutdown = false;
@@ -70,11 +80,11 @@ public abstract class AbstractNonHaServices implements HighAvailabilityServices 
     }
 
     @Override
-    public JobGraphStore getJobGraphStore() throws Exception {
+    public ExecutionPlanStore getExecutionPlanStore() throws Exception {
         synchronized (lock) {
             checkNotShutdown();
 
-            return new StandaloneJobGraphStore();
+            return new StandaloneExecutionPlanStore();
         }
     }
 
@@ -84,6 +94,24 @@ public abstract class AbstractNonHaServices implements HighAvailabilityServices 
             checkNotShutdown();
 
             return jobResultStore;
+        }
+    }
+
+    @Override
+    public ApplicationStore getApplicationStore() throws Exception {
+        synchronized (lock) {
+            checkNotShutdown();
+
+            return applicationStore;
+        }
+    }
+
+    @Override
+    public ApplicationResultStore getApplicationResultStore() throws Exception {
+        synchronized (lock) {
+            checkNotShutdown();
+
+            return applicationResultStore;
         }
     }
 
@@ -106,9 +134,8 @@ public abstract class AbstractNonHaServices implements HighAvailabilityServices 
     }
 
     @Override
-    public void closeAndCleanupAllData() throws Exception {
-        // this stores no data, so this method is the same as 'close()'
-        close();
+    public void cleanupAllData() throws Exception {
+        // this stores no data, do nothing here
     }
 
     // ----------------------------------------------------------------------

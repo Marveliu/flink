@@ -18,12 +18,19 @@
 
 package org.apache.flink.runtime.rest.messages.job;
 
+import org.apache.flink.api.common.ApplicationID;
 import org.apache.flink.api.common.JobID;
 import org.apache.flink.api.common.JobStatus;
 import org.apache.flink.runtime.execution.ExecutionState;
+import org.apache.flink.runtime.instance.SlotSharingGroupId;
+import org.apache.flink.runtime.jobgraph.JobType;
 import org.apache.flink.runtime.jobgraph.JobVertexID;
+import org.apache.flink.runtime.rest.messages.JobPlanInfo;
 import org.apache.flink.runtime.rest.messages.RestResponseMarshallingTestBase;
 import org.apache.flink.runtime.rest.messages.job.metrics.IOMetricsInfo;
+import org.apache.flink.testutils.junit.extensions.parameterized.NoOpTestExtension;
+
+import org.junit.jupiter.api.extension.ExtendWith;
 
 import java.util.ArrayList;
 import java.util.Collection;
@@ -32,7 +39,8 @@ import java.util.Map;
 import java.util.Random;
 
 /** Tests (un)marshalling of the {@link JobDetailsInfo}. */
-public class JobDetailsInfoTest extends RestResponseMarshallingTestBase<JobDetailsInfo> {
+@ExtendWith(NoOpTestExtension.class)
+class JobDetailsInfoTest extends RestResponseMarshallingTestBase<JobDetailsInfo> {
 
     @Override
     protected Class<JobDetailsInfo> getTestResponseClass() {
@@ -43,7 +51,7 @@ public class JobDetailsInfoTest extends RestResponseMarshallingTestBase<JobDetai
     protected JobDetailsInfo getTestResponseInstance() throws Exception {
         final Random random = new Random();
         final int numJobVertexDetailsInfos = 4;
-        final String jsonPlan = "{\"id\":\"1234\"}";
+        final JobPlanInfo.Plan plan = new JobPlanInfo.Plan("1234", "", "", new ArrayList<>());
 
         final Map<JobStatus, Long> timestamps = new HashMap<>(JobStatus.values().length);
         final Collection<JobDetailsInfo.JobVertexDetailsInfo> jobVertexInfos =
@@ -65,9 +73,12 @@ public class JobDetailsInfoTest extends RestResponseMarshallingTestBase<JobDetai
 
         return new JobDetailsInfo(
                 new JobID(),
+                new ApplicationID(),
                 "foobar",
                 true,
                 JobStatus.values()[random.nextInt(JobStatus.values().length)],
+                JobType.STREAMING,
+                null,
                 1L,
                 2L,
                 1L,
@@ -76,7 +87,9 @@ public class JobDetailsInfoTest extends RestResponseMarshallingTestBase<JobDetai
                 timestamps,
                 jobVertexInfos,
                 jobVerticesPerState,
-                jsonPlan);
+                plan,
+                null,
+                0);
     }
 
     private JobDetailsInfo.JobVertexDetailsInfo createJobVertexDetailsInfo(Random random) {
@@ -91,7 +104,10 @@ public class JobDetailsInfoTest extends RestResponseMarshallingTestBase<JobDetai
                         random.nextLong(),
                         random.nextBoolean(),
                         random.nextLong(),
-                        random.nextBoolean());
+                        random.nextBoolean(),
+                        Math.abs(random.nextLong()),
+                        Math.abs(random.nextLong()),
+                        Math.abs(random.nextDouble()));
 
         for (ExecutionState executionState : ExecutionState.values()) {
             tasksPerState.put(executionState, random.nextInt());
@@ -100,6 +116,7 @@ public class JobDetailsInfoTest extends RestResponseMarshallingTestBase<JobDetai
         int parallelism = 1 + (random.nextInt() / 3);
         return new JobDetailsInfo.JobVertexDetailsInfo(
                 new JobVertexID(),
+                new SlotSharingGroupId(),
                 "jobVertex" + random.nextLong(),
                 2 * parallelism,
                 parallelism,

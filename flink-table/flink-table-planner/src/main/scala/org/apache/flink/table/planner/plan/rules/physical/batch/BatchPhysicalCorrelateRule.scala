@@ -15,7 +15,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.planner.plan.rules.physical.batch
 
 import org.apache.flink.table.planner.plan.nodes.FlinkConventions
@@ -23,17 +22,14 @@ import org.apache.flink.table.planner.plan.nodes.logical.{FlinkLogicalCalc, Flin
 import org.apache.flink.table.planner.plan.nodes.physical.batch.BatchPhysicalCorrelate
 import org.apache.flink.table.planner.plan.utils.PythonUtil
 
-import org.apache.calcite.plan.volcano.RelSubset
 import org.apache.calcite.plan.{RelOptRule, RelOptRuleCall, RelTraitSet}
+import org.apache.calcite.plan.volcano.RelSubset
 import org.apache.calcite.rel.RelNode
 import org.apache.calcite.rel.convert.ConverterRule
+import org.apache.calcite.rel.convert.ConverterRule.Config
 import org.apache.calcite.rex.RexNode
 
-class BatchPhysicalCorrelateRule extends ConverterRule(
-  classOf[FlinkLogicalCorrelate],
-  FlinkConventions.LOGICAL,
-  FlinkConventions.BATCH_PHYSICAL,
-  "BatchPhysicalCorrelateRule") {
+class BatchPhysicalCorrelateRule(config: Config) extends ConverterRule(config) {
 
   override def matches(call: RelOptRuleCall): Boolean = {
     val join = call.rel(0).asInstanceOf[FlinkLogicalCorrelate]
@@ -68,7 +64,9 @@ class BatchPhysicalCorrelateRule extends ConverterRule(
         case calc: FlinkLogicalCalc =>
           convertToCorrelate(
             calc.getInput.asInstanceOf[RelSubset].getOriginal,
-            Some(calc.getProgram.expandLocalRef(calc.getProgram.getCondition)))
+            if (calc.getProgram.getCondition == null) None
+            else Some(calc.getProgram.expandLocalRef(calc.getProgram.getCondition))
+          )
 
         case scan: FlinkLogicalTableFunctionScan =>
           new BatchPhysicalCorrelate(
@@ -86,5 +84,10 @@ class BatchPhysicalCorrelateRule extends ConverterRule(
 }
 
 object BatchPhysicalCorrelateRule {
-  val INSTANCE: RelOptRule = new BatchPhysicalCorrelateRule
+  val INSTANCE: RelOptRule = new BatchPhysicalCorrelateRule(
+    Config.INSTANCE.withConversion(
+      classOf[FlinkLogicalCorrelate],
+      FlinkConventions.LOGICAL,
+      FlinkConventions.BATCH_PHYSICAL,
+      "BatchPhysicalCorrelateRule"))
 }

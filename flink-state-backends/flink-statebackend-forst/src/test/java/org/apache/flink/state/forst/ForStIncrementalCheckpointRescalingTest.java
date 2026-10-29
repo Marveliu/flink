@@ -1,0 +1,602 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.apache.flink.state.forst;
+
+import org.apache.flink.api.common.functions.OpenContext;
+import org.apache.flink.api.common.state.ValueState;
+import org.apache.flink.api.common.state.ValueStateDescriptor;
+import org.apache.flink.api.common.typeinfo.BasicTypeInfo;
+import org.apache.flink.api.java.functions.KeySelector;
+import org.apache.flink.configuration.Configuration;
+import org.apache.flink.core.testutils.CommonTestUtils;
+import org.apache.flink.runtime.checkpoint.OperatorSubtaskState;
+import org.apache.flink.runtime.checkpoint.StateAssignmentOperation;
+import org.apache.flink.runtime.state.KeyGroupRange;
+import org.apache.flink.runtime.state.KeyGroupRangeAssignment;
+import org.apache.flink.runtime.state.StateBackend;
+import org.apache.flink.runtime.state.storage.FileSystemCheckpointStorage;
+import org.apache.flink.streaming.api.functions.KeyedProcessFunction;
+import org.apache.flink.streaming.api.operators.KeyedProcessOperator;
+import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
+import org.apache.flink.streaming.util.AbstractStreamOperatorTestHarness;
+import org.apache.flink.streaming.util.KeyedOneInputStreamOperatorTestHarness;
+import org.apache.flink.testutils.junit.extensions.parameterized.Parameter;
+import org.apache.flink.testutils.junit.extensions.parameterized.ParameterizedTestExtension;
+import org.apache.flink.testutils.junit.extensions.parameterized.Parameters;
+import org.apache.flink.util.Collector;
+
+import org.forstdb.ColumnFamilyOptions;
+import org.forstdb.DBOptions;
+import org.forstdb.InfoLogLevel;
+import org.forstdb.Logger;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.TestTemplate;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.api.io.TempDir;
+
+import javax.annotation.Nullable;
+
+import java.lang.ref.WeakReference;
+import java.nio.file.Path;
+import java.time.Duration;
+import java.util.Collection;
+import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
+
+import static org.apache.flink.state.forst.ForStConfigurableOptions.USE_INGEST_DB_RESTORE_MODE;
+import static org.assertj.core.api.Assertions.assertThat;
+
+/** Tests to guard rescaling from checkpoint. */
+@ExtendWith(ParameterizedTestExtension.class)
+class ForStIncrementalCheckpointRescalingTest {
+
+    @TempDir Path rootFolder;
+
+    @Parameters(name = "useIngestDbRestoreMode: {0}")
+    public static List<Boolean> parameters() {
+        return List.of(false, true);
+    }
+
+    @Parameter public boolean useIngestDbRestoreMode;
+
+    private final int maxParallelism = 10;
+
+    private final KeySelector<String, String> keySelector = new TestKeySelector();
+
+    private String[] records;
+
+    @BeforeEach
+    void initRecords() throws Exception {
+        records = new String[10];
+        records[0] = "8";
+        assertThat(
+                        KeyGroupRangeAssignment.assignToKeyGroup(
+                                keySelector.getKey(records[0]), maxParallelism))
+                .isZero(); // group 0
+
+        records[1] = "5";
+        assertThat(
+                        KeyGroupRangeAssignment.assignToKeyGroup(
+                                keySelector.getKey(records[1]), maxParallelism))
+                .isOne(); // group 1
+
+        records[2] = "25";
+        assertThat(
+                        KeyGroupRangeAssignment.assignToKeyGroup(
+                                keySelector.getKey(records[2]), maxParallelism))
+                .isEqualTo(2); // group 2
+
+        records[3] = "13";
+        assertThat(
+                        KeyGroupRangeAssignment.assignToKeyGroup(
+                                keySelector.getKey(records[3]), maxParallelism))
+                .isEqualTo(3); // group 3
+
+        records[4] = "4";
+        assertThat(
+                        KeyGroupRangeAssignment.assignToKeyGroup(
+                                keySelector.getKey(records[4]), maxParallelism))
+                .isEqualTo(4); // group 4
+
+        records[5] = "7";
+        assertThat(
+                        KeyGroupRangeAssignment.assignToKeyGroup(
+                                keySelector.getKey(records[5]), maxParallelism))
+                .isEqualTo(5); // group 5
+
+        records[6] = "1";
+        assertThat(
+                        KeyGroupRangeAssignment.assignToKeyGroup(
+                                keySelector.getKey(records[6]), maxParallelism))
+                .isEqualTo(6); // group 6
+
+        records[7] = "6";
+        assertThat(
+                        KeyGroupRangeAssignment.assignToKeyGroup(
+                                keySelector.getKey(records[7]), maxParallelism))
+                .isEqualTo(7); // group 7
+
+        records[8] = "9";
+        assertThat(
+                        KeyGroupRangeAssignment.assignToKeyGroup(
+                                keySelector.getKey(records[8]), maxParallelism))
+                .isEqualTo(8); // group 8
+
+        records[9] = "3";
+        assertThat(
+                        KeyGroupRangeAssignment.assignToKeyGroup(
+                                keySelector.getKey(records[9]), maxParallelism))
+                .isEqualTo(9); // group 9
+    }
+
+    @TestTemplate
+    @SuppressWarnings("unchecked")
+    void testScalingUp() throws Exception {
+
+        // -----------------------------------------> test with initial parallelism 1
+        // <---------------------------------------
+
+        OperatorSubtaskState snapshot;
+
+        try (KeyedOneInputStreamOperatorTestHarness<String, String, Integer> harness =
+                getHarnessTest(keySelector, maxParallelism, 1, 0)) {
+            harness.setStateBackend(getStateBackend());
+            harness.setCheckpointStorage(
+                    new FileSystemCheckpointStorage("file://" + rootFolder.toAbsolutePath()));
+            harness.open();
+
+            validHarnessResult(harness, 1, records);
+
+            snapshot = harness.snapshot(0, 0);
+        }
+
+        // -----------------------------------------> test rescaling from 1 to 2
+        // <---------------------------------------
+
+        // init state for new subtask-0
+        OperatorSubtaskState initState1 =
+                AbstractStreamOperatorTestHarness.repartitionOperatorState(
+                        snapshot, maxParallelism, 1, 2, 0);
+
+        // init state for new subtask-1
+        OperatorSubtaskState initState2 =
+                AbstractStreamOperatorTestHarness.repartitionOperatorState(
+                        snapshot, maxParallelism, 1, 2, 1);
+
+        KeyedOneInputStreamOperatorTestHarness<String, String, Integer>[] harness2 =
+                new KeyedOneInputStreamOperatorTestHarness[3];
+
+        OperatorSubtaskState snapshot2;
+
+        try {
+            List<KeyGroupRange> keyGroupPartitions =
+                    StateAssignmentOperation.createKeyGroupPartitions(maxParallelism, 2);
+
+            // task's key-group [0, 4]
+            KeyGroupRange localKeyGroupRange20 = keyGroupPartitions.get(0);
+            assertThat(localKeyGroupRange20).isEqualTo(new KeyGroupRange(0, 4));
+            harness2[0] = getHarnessTest(keySelector, maxParallelism, 2, 0);
+            harness2[0].setStateBackend(getStateBackend());
+            harness2[0].setCheckpointStorage(
+                    new FileSystemCheckpointStorage("file://" + rootFolder.toAbsolutePath()));
+            harness2[0].setup();
+            harness2[0].initializeState(initState1);
+            harness2[0].open();
+
+            // task's key-group [5, 9]
+            KeyGroupRange localKeyGroupRange21 = keyGroupPartitions.get(1);
+            assertThat(localKeyGroupRange21).isEqualTo(new KeyGroupRange(5, 9));
+            harness2[1] = getHarnessTest(keySelector, maxParallelism, 2, 1);
+            harness2[1].setStateBackend(getStateBackend());
+            harness2[1].setCheckpointStorage(
+                    new FileSystemCheckpointStorage("file://" + rootFolder.toAbsolutePath()));
+            harness2[1].setup();
+            harness2[1].initializeState(initState2);
+            harness2[1].open();
+
+            validHarnessResult(
+                    harness2[0], 2, records[0], records[1], records[2], records[3], records[4]);
+
+            validHarnessResult(
+                    harness2[1], 2, records[5], records[6], records[7], records[8], records[9]);
+
+            snapshot2 =
+                    AbstractStreamOperatorTestHarness.repackageState(
+                            harness2[0].snapshot(0, 0), harness2[1].snapshot(0, 0));
+        } finally {
+            closeHarness(harness2);
+        }
+
+        // -----------------------------------------> test rescaling from 2 to 3
+        // <---------------------------------------
+
+        // init state for new subtask-0
+        initState1 =
+                AbstractStreamOperatorTestHarness.repartitionOperatorState(
+                        snapshot2, maxParallelism, 2, 3, 0);
+
+        // init state for new subtask-1
+        initState2 =
+                AbstractStreamOperatorTestHarness.repartitionOperatorState(
+                        snapshot2, maxParallelism, 2, 3, 1);
+
+        // init state for new subtask-2
+        OperatorSubtaskState initState3 =
+                AbstractStreamOperatorTestHarness.repartitionOperatorState(
+                        snapshot2, maxParallelism, 2, 3, 2);
+
+        KeyedOneInputStreamOperatorTestHarness<String, String, Integer>[] harness3 =
+                new KeyedOneInputStreamOperatorTestHarness[3];
+
+        try {
+            List<KeyGroupRange> keyGroupPartitions =
+                    StateAssignmentOperation.createKeyGroupPartitions(maxParallelism, 3);
+
+            // task's key-group [0, 3]
+            // this will choose the state handle to harness2[0] to init the target db with clipping.
+            KeyGroupRange localKeyGroupRange30 = keyGroupPartitions.get(0);
+            assertThat(localKeyGroupRange30).isEqualTo(new KeyGroupRange(0, 3));
+            harness3[0] = getHarnessTest(keySelector, maxParallelism, 3, 0);
+            harness3[0].setStateBackend(getStateBackend());
+            harness3[0].setCheckpointStorage(
+                    new FileSystemCheckpointStorage("file://" + rootFolder.toAbsolutePath()));
+            harness3[0].setup();
+            harness3[0].initializeState(initState1);
+            harness3[0].open();
+
+            // task's key-group [4, 6]
+            KeyGroupRange localKeyGroupRange31 = keyGroupPartitions.get(1);
+            assertThat(localKeyGroupRange31).isEqualTo(new KeyGroupRange(4, 6));
+            harness3[1] = getHarnessTest(keySelector, maxParallelism, 3, 1);
+            harness3[1].setStateBackend(getStateBackend());
+            harness3[1].setCheckpointStorage(
+                    new FileSystemCheckpointStorage("file://" + rootFolder.toAbsolutePath()));
+            harness3[1].setup();
+            harness3[1].initializeState(initState2);
+            harness3[1].open();
+
+            // task's key-group [7, 9]
+            KeyGroupRange localKeyGroupRange32 = keyGroupPartitions.get(2);
+            assertThat(localKeyGroupRange32).isEqualTo(new KeyGroupRange(7, 9));
+            harness3[2] = getHarnessTest(keySelector, maxParallelism, 3, 2);
+            harness3[2].setStateBackend(getStateBackend());
+            harness3[2].setCheckpointStorage(
+                    new FileSystemCheckpointStorage("file://" + rootFolder.toAbsolutePath()));
+            harness3[2].setup();
+            harness3[2].initializeState(initState3);
+            harness3[2].open();
+
+            validHarnessResult(harness3[0], 3, records[0], records[1], records[2], records[3]);
+            validHarnessResult(harness3[1], 3, records[4], records[5], records[6]);
+            validHarnessResult(harness3[2], 3, records[7], records[8], records[9]);
+        } finally {
+            closeHarness(harness3);
+        }
+    }
+
+    @TestTemplate
+    @SuppressWarnings("unchecked")
+    void testScalingDown() throws Exception {
+
+        // -----------------------------------------> test with initial parallelism 3
+        // <---------------------------------------
+
+        KeyedOneInputStreamOperatorTestHarness<String, String, Integer>[] harness3 =
+                new KeyedOneInputStreamOperatorTestHarness[3];
+        OperatorSubtaskState snapshot3;
+
+        try {
+            List<KeyGroupRange> keyGroupPartitions =
+                    StateAssignmentOperation.createKeyGroupPartitions(maxParallelism, 3);
+
+            // task's key-group [0, 3], this should trigger the condition to use clip
+            KeyGroupRange localKeyGroupRange30 = keyGroupPartitions.get(0);
+            assertThat(localKeyGroupRange30).isEqualTo(new KeyGroupRange(0, 3));
+            harness3[0] = getHarnessTest(keySelector, maxParallelism, 3, 0);
+            harness3[0].setStateBackend(getStateBackend());
+            harness3[0].setCheckpointStorage(
+                    new FileSystemCheckpointStorage("file://" + rootFolder.toAbsolutePath()));
+            harness3[0].open();
+
+            // task's key-group [4, 6]
+            KeyGroupRange localKeyGroupRange31 = keyGroupPartitions.get(1);
+            assertThat(localKeyGroupRange31).isEqualTo(new KeyGroupRange(4, 6));
+            harness3[1] = getHarnessTest(keySelector, maxParallelism, 3, 1);
+            harness3[1].setStateBackend(getStateBackend());
+            harness3[1].setCheckpointStorage(
+                    new FileSystemCheckpointStorage("file://" + rootFolder.toAbsolutePath()));
+            harness3[1].open();
+
+            // task's key-group [7, 9]
+            KeyGroupRange localKeyGroupRange32 = keyGroupPartitions.get(2);
+            assertThat(localKeyGroupRange32).isEqualTo(new KeyGroupRange(7, 9));
+            harness3[2] = getHarnessTest(keySelector, maxParallelism, 3, 2);
+            harness3[2].setStateBackend(getStateBackend());
+            harness3[2].setCheckpointStorage(
+                    new FileSystemCheckpointStorage("file://" + rootFolder.toAbsolutePath()));
+            harness3[2].open();
+
+            validHarnessResult(harness3[0], 1, records[0], records[1], records[2], records[3]);
+            validHarnessResult(harness3[1], 1, records[4], records[5], records[6]);
+            validHarnessResult(harness3[2], 1, records[7], records[8], records[9]);
+
+            snapshot3 =
+                    AbstractStreamOperatorTestHarness.repackageState(
+                            harness3[0].snapshot(0, 0),
+                            harness3[1].snapshot(0, 0),
+                            harness3[2].snapshot(0, 0));
+
+        } finally {
+            closeHarness(harness3);
+        }
+
+        // -----------------------------------------> test rescaling from 3 to 2
+        // <---------------------------------------
+
+        // init state for new subtask-0
+        OperatorSubtaskState initState1 =
+                AbstractStreamOperatorTestHarness.repartitionOperatorState(
+                        snapshot3, maxParallelism, 3, 2, 0);
+
+        // init state for new subtask-1
+        OperatorSubtaskState initState2 =
+                AbstractStreamOperatorTestHarness.repartitionOperatorState(
+                        snapshot3, maxParallelism, 3, 2, 1);
+
+        KeyedOneInputStreamOperatorTestHarness<String, String, Integer>[] harness2 =
+                new KeyedOneInputStreamOperatorTestHarness[3];
+
+        OperatorSubtaskState snapshot2;
+
+        try {
+            List<KeyGroupRange> keyGroupPartitions =
+                    StateAssignmentOperation.createKeyGroupPartitions(maxParallelism, 2);
+
+            // task's key-group [0, 4]
+            // this will choose the state handle generated by harness3[0] to init the target db
+            // without any clipping.
+            KeyGroupRange localKeyGroupRange20 = keyGroupPartitions.get(0);
+            assertThat(localKeyGroupRange20).isEqualTo(new KeyGroupRange(0, 4));
+            harness2[0] = getHarnessTest(keySelector, maxParallelism, 2, 0);
+            harness2[0].setStateBackend(getStateBackend());
+            harness2[0].setCheckpointStorage(
+                    new FileSystemCheckpointStorage("file://" + rootFolder.toAbsolutePath()));
+            harness2[0].setup();
+            harness2[0].initializeState(initState1);
+            harness2[0].open();
+
+            // task's key-group [5, 9], this will open a empty db, and insert records from two state
+            // handles.
+            KeyGroupRange localKeyGroupRange21 = keyGroupPartitions.get(1);
+            assertThat(localKeyGroupRange21).isEqualTo(new KeyGroupRange(5, 9));
+            harness2[1] = getHarnessTest(keySelector, maxParallelism, 2, 1);
+            harness2[1].setStateBackend(getStateBackend());
+            harness2[1].setCheckpointStorage(
+                    new FileSystemCheckpointStorage("file://" + rootFolder.toAbsolutePath()));
+            harness2[1].setup();
+            harness2[1].initializeState(initState2);
+            harness2[1].open();
+
+            validHarnessResult(
+                    harness2[0], 2, records[0], records[1], records[2], records[3], records[4]);
+
+            validHarnessResult(
+                    harness2[1], 2, records[5], records[6], records[7], records[8], records[9]);
+
+            snapshot2 =
+                    AbstractStreamOperatorTestHarness.repackageState(
+                            harness2[0].snapshot(0, 0), harness2[1].snapshot(0, 0));
+        } finally {
+            closeHarness(harness2);
+        }
+
+        // -----------------------------------------> test rescaling from 2 to 1
+        // <---------------------------------------
+
+        // init state for new subtask-0
+        initState1 =
+                AbstractStreamOperatorTestHarness.repartitionOperatorState(
+                        snapshot2, maxParallelism, 2, 1, 0);
+
+        try (KeyedOneInputStreamOperatorTestHarness<String, String, Integer> harness =
+                getHarnessTest(keySelector, maxParallelism, 1, 0)) {
+
+            // this will choose the state handle generated by harness2[0] to init the target db
+            // without any clipping.
+            harness.setStateBackend(getStateBackend());
+            harness.setCheckpointStorage(
+                    new FileSystemCheckpointStorage("file://" + rootFolder.toAbsolutePath()));
+            harness.setup();
+            harness.initializeState(initState1);
+            harness.open();
+
+            validHarnessResult(harness, 3, records);
+        }
+    }
+
+    /**
+     * A scale-in restore opens temporary DBs with copies of the backend's DB options. The native
+     * options keep everything set on them alive (here a logger; in production the shared write
+     * buffer manager and block cache), so every copy must be closed with its temporary DB.
+     */
+    @TestTemplate
+    void testScalingDownReleasesDBOptions() throws Exception {
+        TrackingLoggerOptionsFactory.LOGGERS.clear();
+
+        scaleDownFromTwoToOne();
+
+        assertThat(TrackingLoggerOptionsFactory.LOGGERS).hasSize(3);
+        CommonTestUtils.waitUtil(
+                () -> {
+                    System.gc();
+                    return TrackingLoggerOptionsFactory.LOGGERS.stream()
+                            .allMatch(logger -> logger.get() == null);
+                },
+                Duration.ofSeconds(30),
+                Duration.ofMillis(100),
+                "The logger of a disposed backend is still referenced by native DB options.");
+    }
+
+    /** Runs in its own frame so that no harness stays reachable from the caller. */
+    @SuppressWarnings("unchecked")
+    private void scaleDownFromTwoToOne() throws Exception {
+        KeyedOneInputStreamOperatorTestHarness<String, String, Integer>[] harness2 =
+                new KeyedOneInputStreamOperatorTestHarness[2];
+        OperatorSubtaskState snapshot2;
+        try {
+            for (int i = 0; i < 2; i++) {
+                harness2[i] = getHarnessTest(keySelector, maxParallelism, 2, i);
+                harness2[i].setStateBackend(getStateBackend(new TrackingLoggerOptionsFactory()));
+                harness2[i].setCheckpointStorage(
+                        new FileSystemCheckpointStorage("file://" + rootFolder.toAbsolutePath()));
+                harness2[i].open();
+            }
+            validHarnessResult(
+                    harness2[0], 1, records[0], records[1], records[2], records[3], records[4]);
+            validHarnessResult(
+                    harness2[1], 1, records[5], records[6], records[7], records[8], records[9]);
+            snapshot2 =
+                    AbstractStreamOperatorTestHarness.repackageState(
+                            harness2[0].snapshot(0, 0), harness2[1].snapshot(0, 0));
+        } finally {
+            closeHarness(harness2);
+        }
+
+        OperatorSubtaskState initState =
+                AbstractStreamOperatorTestHarness.repartitionOperatorState(
+                        snapshot2, maxParallelism, 2, 1, 0);
+        try (KeyedOneInputStreamOperatorTestHarness<String, String, Integer> harness =
+                getHarnessTest(keySelector, maxParallelism, 1, 0)) {
+            harness.setStateBackend(getStateBackend(new TrackingLoggerOptionsFactory()));
+            harness.setCheckpointStorage(
+                    new FileSystemCheckpointStorage("file://" + rootFolder.toAbsolutePath()));
+            harness.setup();
+            harness.initializeState(initState);
+            harness.open();
+
+            validHarnessResult(harness, 2, records);
+        }
+    }
+
+    private void closeHarness(KeyedOneInputStreamOperatorTestHarness<?, ?, ?>[] harnessArr)
+            throws Exception {
+        for (KeyedOneInputStreamOperatorTestHarness<?, ?, ?> harness : harnessArr) {
+            if (harness != null) {
+                harness.close();
+            }
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private void validHarnessResult(
+            KeyedOneInputStreamOperatorTestHarness<?, String, ?> harness,
+            Integer expectedValue,
+            String... records)
+            throws Exception {
+        for (String record : records) {
+            harness.processElement(new StreamRecord<>(record, 1));
+            StreamRecord<Integer> outputRecord = (StreamRecord<Integer>) harness.getOutput().poll();
+            assertThat(outputRecord).isNotNull();
+            assertThat(outputRecord.getValue()).isEqualTo(expectedValue);
+        }
+    }
+
+    private KeyedOneInputStreamOperatorTestHarness<String, String, Integer> getHarnessTest(
+            KeySelector<String, String> keySelector,
+            int maxParallelism,
+            int taskParallelism,
+            int subtaskIdx)
+            throws Exception {
+        return new KeyedOneInputStreamOperatorTestHarness<>(
+                new KeyedProcessOperator<>(new TestKeyedFunction()),
+                keySelector,
+                BasicTypeInfo.STRING_TYPE_INFO,
+                maxParallelism,
+                taskParallelism,
+                subtaskIdx);
+    }
+
+    private StateBackend getStateBackend() {
+        return getStateBackend(null);
+    }
+
+    private StateBackend getStateBackend(@Nullable ForStOptionsFactory optionsFactory) {
+        ForStStateBackend forStStateBackend = new ForStStateBackend();
+        forStStateBackend.setForStOptions(optionsFactory);
+        Configuration configuration = new Configuration();
+        configuration.set(USE_INGEST_DB_RESTORE_MODE, useIngestDbRestoreMode);
+        return forStStateBackend.configure(configuration, getClass().getClassLoader());
+    }
+
+    /** A simple keyed function for tests. */
+    private class TestKeyedFunction extends KeyedProcessFunction<String, String, Integer> {
+
+        private ValueState<Integer> counterState;
+
+        @Override
+        public void open(OpenContext openContext) throws Exception {
+            super.open(openContext);
+            counterState =
+                    this.getRuntimeContext()
+                            .getState(new ValueStateDescriptor<>("counter", Integer.class));
+        }
+
+        @Override
+        public void processElement(String value, Context ctx, Collector<Integer> out)
+                throws Exception {
+            Integer oldCount = counterState.value();
+            Integer newCount = oldCount != null ? oldCount + 1 : 1;
+            counterState.update(newCount);
+            out.collect(newCount);
+        }
+    }
+
+    /** Sets a tracked logger on the DB options of every backend. */
+    private static class TrackingLoggerOptionsFactory implements ForStOptionsFactory {
+
+        private static final List<WeakReference<Logger>> LOGGERS = new CopyOnWriteArrayList<>();
+
+        @Override
+        public DBOptions createDBOptions(
+                DBOptions currentOptions, Collection<AutoCloseable> handlesToClose) {
+            Logger logger =
+                    new Logger(currentOptions) {
+                        @Override
+                        protected void log(InfoLogLevel infoLogLevel, String logMsg) {}
+                    };
+            handlesToClose.add(logger);
+            LOGGERS.add(new WeakReference<>(logger));
+            return currentOptions.setLogger(logger);
+        }
+
+        @Override
+        public ColumnFamilyOptions createColumnOptions(
+                ColumnFamilyOptions currentOptions, Collection<AutoCloseable> handlesToClose) {
+            return currentOptions;
+        }
+    }
+
+    /** A simple key selector for tests. */
+    private class TestKeySelector implements KeySelector<String, String> {
+        @Override
+        public String getKey(String value) throws Exception {
+            return value;
+        }
+    }
+}

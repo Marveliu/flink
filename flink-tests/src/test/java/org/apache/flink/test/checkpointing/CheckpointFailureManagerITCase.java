@@ -18,17 +18,23 @@
 
 package org.apache.flink.test.checkpointing;
 
-import org.apache.flink.api.common.restartstrategy.RestartStrategies;
+import org.apache.flink.api.common.JobID;
 import org.apache.flink.api.common.state.ListState;
 import org.apache.flink.api.common.state.ListStateDescriptor;
+import org.apache.flink.client.program.ClusterClient;
+import org.apache.flink.configuration.IllegalConfigurationException;
 import org.apache.flink.configuration.ReadableConfig;
 import org.apache.flink.core.fs.CloseableRegistry;
 import org.apache.flink.runtime.checkpoint.CheckpointFailureManager;
 import org.apache.flink.runtime.checkpoint.CheckpointOptions;
-import org.apache.flink.runtime.client.JobExecutionException;
-import org.apache.flink.runtime.execution.Environment;
 import org.apache.flink.runtime.jobgraph.JobGraph;
+import org.apache.flink.runtime.state.CheckpointMetadataOutputStream;
+import org.apache.flink.runtime.state.CheckpointStorage;
+import org.apache.flink.runtime.state.CheckpointStorageAccess;
+import org.apache.flink.runtime.state.CheckpointStorageFactory;
+import org.apache.flink.runtime.state.CheckpointStorageLocation;
 import org.apache.flink.runtime.state.CheckpointStreamFactory;
+import org.apache.flink.runtime.state.CompletedCheckpointStorageLocation;
 import org.apache.flink.runtime.state.DefaultOperatorStateBackend;
 import org.apache.flink.runtime.state.DefaultOperatorStateBackendBuilder;
 import org.apache.flink.runtime.state.FunctionInitializationContext;
@@ -39,61 +45,97 @@ import org.apache.flink.runtime.state.SnapshotExecutionType;
 import org.apache.flink.runtime.state.SnapshotResources;
 import org.apache.flink.runtime.state.SnapshotStrategy;
 import org.apache.flink.runtime.state.SnapshotStrategyRunner;
-import org.apache.flink.runtime.state.memory.MemoryStateBackend;
+import org.apache.flink.runtime.state.StateBackendFactory;
+import org.apache.flink.runtime.state.TestingCheckpointStorageAccessCoordinatorView;
+import org.apache.flink.runtime.state.hashmap.HashMapStateBackend;
+import org.apache.flink.runtime.state.memory.NonPersistentMetadataCheckpointStorageLocation;
+import org.apache.flink.runtime.state.testutils.TestCompletedCheckpointStorageLocation;
 import org.apache.flink.runtime.testutils.MiniClusterResourceConfiguration;
 import org.apache.flink.streaming.api.checkpoint.CheckpointedFunction;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
-import org.apache.flink.streaming.api.functions.sink.DiscardingSink;
-import org.apache.flink.streaming.api.functions.source.RichParallelSourceFunction;
+import org.apache.flink.streaming.api.functions.sink.v2.DiscardingSink;
+import org.apache.flink.streaming.api.functions.source.legacy.RichParallelSourceFunction;
 import org.apache.flink.streaming.api.graph.StreamingJobGraphGenerator;
-import org.apache.flink.test.util.MiniClusterWithClientResource;
+import org.apache.flink.streaming.util.CheckpointStorageUtils;
+import org.apache.flink.streaming.util.RestartStrategyUtils;
+import org.apache.flink.streaming.util.StateBackendUtils;
+import org.apache.flink.test.junit5.InjectClusterClient;
+import org.apache.flink.test.junit5.MiniClusterExtension;
 import org.apache.flink.test.util.TestUtils;
 import org.apache.flink.util.ExceptionUtils;
 import org.apache.flink.util.FlinkRuntimeException;
-import org.apache.flink.util.TestLogger;
+import org.apache.flink.util.TestLoggerExtension;
 
-import org.junit.Assert;
-import org.junit.ClassRule;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.api.extension.RegisterExtension;
 
 import javax.annotation.Nonnull;
 
-import java.util.Collection;
+import java.util.Collections;
 import java.util.HashMap;
-import java.util.Optional;
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import static org.apache.flink.runtime.checkpoint.CheckpointFailureManager.EXCEEDED_CHECKPOINT_TOLERABLE_FAILURE_MESSAGE;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
 /** Tests to verify end-to-end logic of checkpoint failure manager. */
-public class CheckpointFailureManagerITCase extends TestLogger {
+@ExtendWith(TestLoggerExtension.class)
+class CheckpointFailureManagerITCase {
 
-    @ClassRule
-    public static MiniClusterWithClientResource cluster =
-            new MiniClusterWithClientResource(
-                    new MiniClusterResourceConfiguration.Builder().build());
+    @RegisterExtension
+    private static final MiniClusterExtension MINI_CLUSTER_EXTENSION =
+            new MiniClusterExtension(new MiniClusterResourceConfiguration.Builder().build());
 
-    @Test(timeout = 20_000)
-    public void testAsyncCheckpointFailureTriggerJobFailed() throws Exception {
+    /**
+     * Test that checkpoint finalization failure is counted by {@link CheckpointFailureManager} and
+     * eventually fails the job. In this test, finalization is failed by throwing an exception from
+     * {@link org.apache.flink.runtime.state.CheckpointStorageLocation#createMetadataOutputStream}
+     * which should fail the job.
+     */
+    @Test
+    void testFinalizationFailureCounted(@InjectClusterClient ClusterClient<?> clusterClient)
+            throws Exception {
+        final StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        env.enableCheckpointing(10);
+        CheckpointStorageUtils.configureCheckpointStorageWithFactory(
+                env,
+                "org.apache.flink.test.checkpointing.CheckpointFailureManagerITCase$FailingFinalizationCheckpointStorageFactory");
+        env.getCheckpointConfig().setTolerableCheckpointFailureNumber(0);
+        RestartStrategyUtils.configureNoRestartStrategy(env);
+        env.fromSequence(Long.MIN_VALUE, Long.MAX_VALUE).sinkTo(new DiscardingSink<>());
+        JobGraph jobGraph = StreamingJobGraphGenerator.createJobGraph(env.getStreamGraph());
+        assertThatThrownBy(
+                        () ->
+                                TestUtils.submitJobAndWaitForResult(
+                                        clusterClient, jobGraph, getClass().getClassLoader()))
+                .satisfies(throwable -> assertThat(isCheckpointFailure(throwable)).isTrue());
+    }
+
+    @Test
+    @Timeout(value = 20, unit = TimeUnit.SECONDS)
+    void testAsyncCheckpointFailureTriggerJobFailed(
+            @InjectClusterClient ClusterClient<?> clusterClient) throws Exception {
         final StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
         env.enableCheckpointing(500);
-        env.setRestartStrategy(RestartStrategies.noRestart());
-        env.setStateBackend(new AsyncFailureStateBackend());
-        env.addSource(new StringGeneratingSourceFunction()).addSink(new DiscardingSink<>());
+        RestartStrategyUtils.configureNoRestartStrategy(env);
+        StateBackendUtils.configureStateBackendWithFactory(
+                env,
+                "org.apache.flink.test.checkpointing.CheckpointFailureManagerITCase$AsyncFailureStateBackendFactory");
+        env.addSource(new StringGeneratingSourceFunction()).sinkTo(new DiscardingSink<>());
         JobGraph jobGraph = StreamingJobGraphGenerator.createJobGraph(env.getStreamGraph());
-        try {
-            // assert that the job only execute checkpoint once and only failed once.
-            TestUtils.submitJobAndWaitForResult(
-                    cluster.getClusterClient(), jobGraph, getClass().getClassLoader());
-        } catch (JobExecutionException jobException) {
-            Optional<FlinkRuntimeException> throwable =
-                    ExceptionUtils.findThrowable(jobException, FlinkRuntimeException.class);
-            Assert.assertTrue(throwable.isPresent());
-            Assert.assertEquals(
-                    CheckpointFailureManager.EXCEEDED_CHECKPOINT_TOLERABLE_FAILURE_MESSAGE,
-                    throwable.get().getMessage());
-        }
+        assertThatThrownBy(
+                        () ->
+                                TestUtils.submitJobAndWaitForResult(
+                                        clusterClient, jobGraph, getClass().getClassLoader()))
+                .satisfies(throwable -> assertThat(isCheckpointFailure(throwable)).isTrue());
+
         // assert that the job only failed once.
-        Assert.assertEquals(1, StringGeneratingSourceFunction.INITIALIZE_TIMES.get());
+        assertThat(StringGeneratingSourceFunction.INITIALIZE_TIMES.get()).isEqualTo(1);
     }
 
     private static class StringGeneratingSourceFunction extends RichParallelSourceFunction<String>
@@ -113,8 +155,7 @@ public class CheckpointFailureManagerITCase extends TestLogger {
 
         @Override
         public void snapshotState(FunctionSnapshotContext context) throws Exception {
-            listState.clear();
-            listState.add(emitted);
+            listState.update(Collections.singletonList(emitted));
         }
 
         @Override
@@ -141,7 +182,17 @@ public class CheckpointFailureManagerITCase extends TestLogger {
         }
     }
 
-    private static class AsyncFailureStateBackend extends MemoryStateBackend {
+    public static class AsyncFailureStateBackendFactory
+            implements StateBackendFactory<AsyncFailureStateBackend> {
+        @Override
+        public AsyncFailureStateBackend createFromConfig(
+                ReadableConfig config, ClassLoader classLoader)
+                throws IllegalConfigurationException {
+            return new AsyncFailureStateBackend();
+        }
+    }
+
+    private static class AsyncFailureStateBackend extends HashMapStateBackend {
         private static final long serialVersionUID = 1L;
         private static final SnapshotStrategy<OperatorStateHandle, SnapshotResources>
                 ASYNC_DECLINING_SNAPSHOT_STRATEGY =
@@ -167,16 +218,13 @@ public class CheckpointFailureManagerITCase extends TestLogger {
 
         @Override
         public OperatorStateBackend createOperatorStateBackend(
-                Environment env,
-                String operatorIdentifier,
-                @Nonnull Collection<OperatorStateHandle> stateHandles,
-                CloseableRegistry cancelStreamRegistry) {
+                OperatorStateBackendParameters parameters) {
             return new DefaultOperatorStateBackendBuilder(
-                    env.getUserCodeClassLoader().asClassLoader(),
-                    env.getExecutionConfig(),
+                    parameters.getEnv().getUserCodeClassLoader().asClassLoader(),
+                    parameters.getEnv().getExecutionConfig(),
                     true,
-                    stateHandles,
-                    cancelStreamRegistry) {
+                    parameters.getStateHandles(),
+                    parameters.getCancelStreamRegistry()) {
                 @Override
                 @SuppressWarnings("unchecked")
                 public DefaultOperatorStateBackend build() {
@@ -201,5 +249,49 @@ public class CheckpointFailureManagerITCase extends TestLogger {
         public AsyncFailureStateBackend configure(ReadableConfig config, ClassLoader classLoader) {
             return this;
         }
+    }
+
+    public static class FailingFinalizationCheckpointStorageFactory
+            implements CheckpointStorageFactory<FailingFinalizationCheckpointStorage> {
+        @Override
+        public FailingFinalizationCheckpointStorage createFromConfig(
+                ReadableConfig config, ClassLoader classLoader)
+                throws IllegalConfigurationException {
+            return new FailingFinalizationCheckpointStorage();
+        }
+    }
+
+    private static class FailingFinalizationCheckpointStorage implements CheckpointStorage {
+        private static final long serialVersionUID = 8134582566514272546L;
+
+        @Override
+        public CompletedCheckpointStorageLocation resolveCheckpoint(String externalPointer) {
+            return new TestCompletedCheckpointStorageLocation();
+        }
+
+        @Override
+        public CheckpointStorageAccess createCheckpointStorage(JobID jobId) {
+            return new TestingCheckpointStorageAccessCoordinatorView() {
+                @Override
+                public CheckpointStorageLocation initializeLocationForCheckpoint(
+                        long checkpointId) {
+                    return new NonPersistentMetadataCheckpointStorageLocation(Integer.MAX_VALUE) {
+                        @Override
+                        public CheckpointMetadataOutputStream createMetadataOutputStream() {
+                            throw new RuntimeException("finalization failure");
+                        }
+                    };
+                }
+            };
+        }
+    }
+
+    private boolean isCheckpointFailure(Throwable jobException) {
+        return ExceptionUtils.findThrowable(jobException, FlinkRuntimeException.class)
+                .filter(
+                        ex ->
+                                ex.getMessage()
+                                        .startsWith(EXCEEDED_CHECKPOINT_TOLERABLE_FAILURE_MESSAGE))
+                .isPresent();
     }
 }

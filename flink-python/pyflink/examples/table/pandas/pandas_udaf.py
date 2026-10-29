@@ -55,7 +55,7 @@ def pandas_udaf():
               .column("f2", DataTypes.FLOAT())
               .watermark("ts", "ts - INTERVAL '3' SECOND")
               .build()
-    ).alias("ts, name, price")
+    ).alias("ts", "name", "price")
 
     # define the sink
     t_env.create_temporary_table(
@@ -75,14 +75,14 @@ def pandas_udaf():
 
     # define the tumble window operation
     table = table.window(Tumble.over(lit(5).seconds).on(col("ts")).alias("w")) \
-                 .group_by(table.name, col('w')) \
-                 .select(table.name, mean_udaf(table.price), col("w").start, col("w").end)
+                 .group_by(col('name'), col('w')) \
+                 .select(col('name'), mean_udaf(col('price')), col("w").start, col("w").end)
 
     # submit for execution
     table.execute_insert('sink') \
          .wait()
     # remove .wait if submitting to a remote cluster, refer to
-    # https://nightlies.apache.org/flink/flink-docs-stable/docs/dev/python/faq/#wait-for-jobs-to-finish-when-executing-jobs-in-mini-cluster
+    # https://nightlies.apache.org/flink/flink-docs-stable/api/python/user_guide/faq.html#wait-for-jobs-to-finish-when-executing-jobs-in-mini-cluster
     # for more details
 
 

@@ -1,0 +1,180 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.apache.flink.table.runtime.operators.join.stream;
+
+import org.apache.flink.streaming.api.operators.TwoInputStreamOperator;
+import org.apache.flink.streaming.runtime.operators.asyncprocessing.AsyncKeyOrderedProcessingOperator;
+import org.apache.flink.streaming.util.KeyedTwoInputStreamOperatorTestHarness;
+import org.apache.flink.streaming.util.asyncprocessing.AsyncKeyedTwoInputStreamOperatorTestHarness;
+import org.apache.flink.table.connector.ChangelogMode;
+import org.apache.flink.table.data.RowData;
+import org.apache.flink.table.runtime.generated.GeneratedJoinCondition;
+import org.apache.flink.table.runtime.keyselector.RowDataKeySelector;
+import org.apache.flink.table.runtime.operators.join.stream.utils.JoinInputSideSpec;
+import org.apache.flink.table.runtime.typeutils.InternalTypeInfo;
+import org.apache.flink.table.runtime.util.RowDataHarnessAssertor;
+import org.apache.flink.table.runtime.util.RuntimeChangelogMode;
+import org.apache.flink.table.types.logical.CharType;
+import org.apache.flink.table.types.logical.LogicalType;
+import org.apache.flink.table.types.logical.RowType;
+import org.apache.flink.table.types.logical.VarCharType;
+import org.apache.flink.table.utils.HandwrittenSelectorUtil;
+
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.TestInfo;
+
+import java.util.Set;
+import java.util.function.Function;
+
+/** Base test class for {@link AbstractStreamingJoinOperator}. */
+public abstract class StreamingJoinOperatorTestBase {
+
+    protected InternalTypeInfo<RowData> leftTypeInfo =
+            InternalTypeInfo.of(
+                    RowType.of(
+                            new LogicalType[] {
+                                new CharType(false, 20),
+                                new CharType(true, 20),
+                                VarCharType.STRING_TYPE
+                            },
+                            new String[] {"order_id", "line_order_id", "shipping_address"}));
+
+    protected InternalTypeInfo<RowData> rightTypeInfo =
+            InternalTypeInfo.of(
+                    RowType.of(
+                            new LogicalType[] {new CharType(true, 20), new CharType(true, 10)},
+                            new String[] {"line_order_id0", "line_order_ship_mode"}));
+
+    protected RowDataKeySelector leftKeySelector =
+            HandwrittenSelectorUtil.getRowDataSelector(
+                    new int[] {1},
+                    leftTypeInfo.toRowType().getChildren().toArray(new LogicalType[0]));
+    protected RowDataKeySelector rightKeySelector =
+            HandwrittenSelectorUtil.getRowDataSelector(
+                    new int[] {0},
+                    rightTypeInfo.toRowType().getChildren().toArray(new LogicalType[0]));
+
+    protected final JoinInputSideSpec leftInputSpec =
+            JoinInputSideSpec.withUniqueKeyContainedByJoinKey(leftTypeInfo, leftKeySelector);
+    protected final JoinInputSideSpec rightInputSpec =
+            JoinInputSideSpec.withUniqueKeyContainedByJoinKey(rightTypeInfo, rightKeySelector);
+
+    protected final InternalTypeInfo<RowData> joinKeyTypeInfo =
+            InternalTypeInfo.of(new CharType(true, 20));
+
+    protected final String funcCode =
+            "public class ConditionFunction extends org.apache.flink.api.common.functions.AbstractRichFunction "
+                    + "implements org.apache.flink.table.runtime.generated.JoinCondition {\n"
+                    + "\n"
+                    + "    public ConditionFunction(Object[] reference) {\n"
+                    + "    }\n"
+                    + "\n"
+                    + "    @Override\n"
+                    + "    public boolean apply(org.apache.flink.table.data.RowData in1, org.apache.flink.table.data.RowData in2) {\n"
+                    + "        return true;\n"
+                    + "    }\n"
+                    + "\n"
+                    + "    @Override\n"
+                    + "    public void close() throws Exception {\n"
+                    + "        super.close();\n"
+                    + "    }"
+                    + "}\n";
+    protected final GeneratedJoinCondition joinCondition =
+            new GeneratedJoinCondition("ConditionFunction", funcCode, new Object[0]);
+
+    protected static final String UNKNOWN = "unknown";
+
+    protected static final RuntimeChangelogMode UPSERT_WITH_KEY_ONLY_DELETES =
+            RuntimeChangelogMode.serialize(ChangelogMode.upsert(true));
+
+    protected static final RuntimeChangelogMode UPSERT_WITH_FULL_DELETES =
+            RuntimeChangelogMode.serialize(ChangelogMode.upsert(false));
+
+    /** Only rows whose last field is neither null nor {@link #UNKNOWN} join. */
+    protected static GeneratedJoinCondition knownValuesNonEquiCondition() {
+        final String code =
+                "public class KnownValuesNonEquiCondition extends org.apache.flink.api.common.functions.AbstractRichFunction "
+                        + "implements org.apache.flink.table.runtime.generated.JoinCondition {\n"
+                        + "    public KnownValuesNonEquiCondition(Object[] reference) {}\n"
+                        + "    private boolean isKnown(org.apache.flink.table.data.RowData row) {\n"
+                        + "        final int last = row.getArity() - 1;\n"
+                        + "        return !row.isNullAt(last) && !row.getString(last).toString().equals(\""
+                        + UNKNOWN
+                        + "\");\n"
+                        + "    }\n"
+                        + "    @Override\n"
+                        + "    public boolean apply(org.apache.flink.table.data.RowData in1, org.apache.flink.table.data.RowData in2) {\n"
+                        + "        return isKnown(in1) && isKnown(in2);\n"
+                        + "    }\n"
+                        + "}\n";
+        return new GeneratedJoinCondition("KnownValuesNonEquiCondition", code, new Object[0]);
+    }
+
+    protected RowDataHarnessAssertor assertor;
+
+    protected KeyedTwoInputStreamOperatorTestHarness<RowData, RowData, RowData, RowData>
+            testHarness;
+
+    @BeforeEach
+    void beforeEach(TestInfo testInfo) throws Exception {
+        TwoInputStreamOperator<RowData, RowData, RowData> operator = createJoinOperator(testInfo);
+        testHarness =
+                operator instanceof AsyncKeyOrderedProcessingOperator
+                        ? AsyncKeyedTwoInputStreamOperatorTestHarness.create(
+                                operator, leftKeySelector, rightKeySelector, joinKeyTypeInfo)
+                        : new KeyedTwoInputStreamOperatorTestHarness<>(
+                                operator, leftKeySelector, rightKeySelector, joinKeyTypeInfo);
+        testHarness.open();
+        // extend for mini-batch join test
+        assertor =
+                new RowDataHarnessAssertor(
+                        getOutputType().getChildren().toArray(new LogicalType[0]));
+    }
+
+    @AfterEach
+    void afterEach() throws Exception {
+        testHarness.close();
+    }
+
+    protected static final Function<Set<String>, Long[]> STATE_RETENTION_TIME_EXTRACTOR =
+            (tags) -> {
+                if (tags.isEmpty()) {
+                    return new Long[] {0L, 0L};
+                }
+                Long[] ttl = new Long[] {0L, 0L};
+                for (String tag : tags) {
+                    String[] splits = tag.split("=");
+                    long value = Long.parseLong(splits[1].trim());
+                    if (splits[0].trim().startsWith("left")) {
+                        ttl[0] = value;
+                    } else {
+                        ttl[1] = value;
+                    }
+                }
+                return ttl;
+            };
+
+    /** Create streaming join operator according to {@link TestInfo}. */
+    protected abstract TwoInputStreamOperator<RowData, RowData, RowData> createJoinOperator(
+            TestInfo testInfo);
+
+    /** Get the output row type of join operator. */
+    protected abstract RowType getOutputType();
+}

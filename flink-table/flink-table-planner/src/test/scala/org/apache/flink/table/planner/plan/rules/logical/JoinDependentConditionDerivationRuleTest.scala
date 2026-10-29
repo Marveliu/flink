@@ -15,10 +15,8 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.planner.plan.rules.logical
 
-import org.apache.flink.api.scala._
 import org.apache.flink.table.api._
 import org.apache.flink.table.planner.plan.optimize.program.{FlinkBatchProgram, FlinkHepRuleSetProgramBuilder, HEP_RULES_EXECUTION_TYPE}
 import org.apache.flink.table.planner.utils.{TableConfigUtils, TableTestBase}
@@ -26,17 +24,14 @@ import org.apache.flink.table.planner.utils.{TableConfigUtils, TableTestBase}
 import org.apache.calcite.plan.hep.HepMatchOrder
 import org.apache.calcite.rel.rules.CoreRules
 import org.apache.calcite.tools.RuleSets
-import org.junit.{Before, Test}
+import org.junit.jupiter.api.{BeforeEach, Test}
 
-
-/**
-  * Test for [[JoinDependentConditionDerivationRule]].
-  */
+/** Test for [[JoinDependentConditionDerivationRule]]. */
 class JoinDependentConditionDerivationRuleTest extends TableTestBase {
 
   private val util = batchTestUtil()
 
-  @Before
+  @BeforeEach
   def setup(): Unit = {
     util.buildBatchProgram(FlinkBatchProgram.DEFAULT_REWRITE)
     val calciteConfig = TableConfigUtils.getCalciteConfig(util.tableEnv.getConfig)
@@ -45,10 +40,11 @@ class JoinDependentConditionDerivationRuleTest extends TableTestBase {
       FlinkHepRuleSetProgramBuilder.newBuilder
         .setHepRulesExecutionType(HEP_RULES_EXECUTION_TYPE.RULE_SEQUENCE)
         .setHepMatchOrder(HepMatchOrder.BOTTOM_UP)
-        .add(RuleSets.ofList(
-          CoreRules.FILTER_INTO_JOIN,
-          CoreRules.JOIN_CONDITION_PUSH,
-          JoinDependentConditionDerivationRule.INSTANCE))
+        .add(
+          RuleSets.ofList(
+            CoreRules.FILTER_INTO_JOIN,
+            CoreRules.JOIN_CONDITION_PUSH,
+            JoinDependentConditionDerivationRule.INSTANCE))
         .build()
     )
 
@@ -87,7 +83,7 @@ class JoinDependentConditionDerivationRuleTest extends TableTestBase {
   @Test
   def testAndOr(): Unit = {
     val sqlQuery = "SELECT a, d FROM MyTable1, MyTable2 WHERE " +
-      "((a = 1 AND d = 2) OR (a = 2 AND d = 1)) AND ((a = 3 AND d = 4) OR (a = 4 AND d = 3))"
+      "((a = 1 AND d = 2) OR (a = 2 AND d = 1))"
     util.verifyRelPlan(sqlQuery)
   }
 

@@ -33,6 +33,8 @@ import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.annotation.JsonIgn
 import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.annotation.JsonProperty;
 import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 
+import javax.annotation.Nullable;
+
 import java.util.Collection;
 import java.util.Objects;
 
@@ -42,6 +44,8 @@ public class TaskManagerDetailsInfo extends TaskManagerInfo {
     public static final String FIELD_NAME_METRICS = "metrics";
 
     public static final String FIELD_NAME_ALLOCATED_SLOTS = "allocatedSlots";
+
+    public static final String FIELD_NAME_ASSIGNED_TASKS = "assignedTasks";
 
     @JsonProperty(FIELD_NAME_METRICS)
     private final TaskManagerMetricsInfo taskManagerMetrics;
@@ -60,10 +64,12 @@ public class TaskManagerDetailsInfo extends TaskManagerInfo {
             @JsonProperty(FIELD_NAME_LAST_HEARTBEAT) long lastHeartbeat,
             @JsonProperty(FIELD_NAME_NUMBER_SLOTS) int numberSlots,
             @JsonProperty(FIELD_NAME_NUMBER_AVAILABLE_SLOTS) int numberAvailableSlots,
+            @JsonProperty(FIELD_NAME_ASSIGNED_TASKS) int assignedTasks,
             @JsonProperty(FIELD_NAME_TOTAL_RESOURCE) ResourceProfileInfo totalResource,
             @JsonProperty(FIELD_NAME_AVAILABLE_RESOURCE) ResourceProfileInfo freeResource,
             @JsonProperty(FIELD_NAME_HARDWARE) HardwareDescription hardwareDescription,
             @JsonProperty(FIELD_NAME_MEMORY) TaskExecutorMemoryConfiguration memoryConfiguration,
+            @JsonProperty(FIELD_NAME_BLOCKED) @Nullable Boolean blocked,
             @JsonProperty(FIELD_NAME_ALLOCATED_SLOTS) Collection<SlotInfo> allocatedSlots,
             @JsonProperty(FIELD_NAME_METRICS) TaskManagerMetricsInfo taskManagerMetrics) {
         super(
@@ -74,10 +80,12 @@ public class TaskManagerDetailsInfo extends TaskManagerInfo {
                 lastHeartbeat,
                 numberSlots,
                 numberAvailableSlots,
+                assignedTasks,
                 totalResource,
                 freeResource,
                 hardwareDescription,
-                memoryConfiguration);
+                memoryConfiguration,
+                blocked);
 
         this.taskManagerMetrics = Preconditions.checkNotNull(taskManagerMetrics);
         this.allocatedSlots = Preconditions.checkNotNull(allocatedSlots);
@@ -94,10 +102,12 @@ public class TaskManagerDetailsInfo extends TaskManagerInfo {
                 taskManagerInfoWithSlots.getTaskManagerInfo().getLastHeartbeat(),
                 taskManagerInfoWithSlots.getTaskManagerInfo().getNumberSlots(),
                 taskManagerInfoWithSlots.getTaskManagerInfo().getNumberAvailableSlots(),
+                taskManagerInfoWithSlots.getTaskManagerInfo().getAssignedTasks(),
                 taskManagerInfoWithSlots.getTaskManagerInfo().getTotalResource(),
                 taskManagerInfoWithSlots.getTaskManagerInfo().getFreeResource(),
                 taskManagerInfoWithSlots.getTaskManagerInfo().getHardwareDescription(),
                 taskManagerInfoWithSlots.getTaskManagerInfo().getMemoryConfiguration(),
+                taskManagerInfoWithSlots.getTaskManagerInfo().getBlocked(),
                 taskManagerInfoWithSlots.getAllocatedSlots(),
                 taskManagerMetrics);
     }

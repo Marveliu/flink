@@ -15,31 +15,24 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.planner.plan.batch.table
 
-import org.apache.flink.api.scala._
 import org.apache.flink.table.api._
 import org.apache.flink.table.functions.ScalarFunction
 import org.apache.flink.table.planner.utils.TableTestBase
 
-import org.junit.Test
+import org.junit.jupiter.api.Test
 
-/**
-  * Tests for column functions.
-  */
+/** Tests for column functions. */
 class ColumnFunctionsTest extends TableTestBase {
 
   private val util = batchTestUtil()
 
   @Test
   def testOrderBy(): Unit = {
-    val t = util.addTableSource[(Int, Long, String, Int, Long, String)](
-      'a, 'b, 'c, 'd, 'e, 'f)
+    val t = util.addTableSource[(Int, Long, String, Int, Long, String)]('a, 'b, 'c, 'd, 'e, 'f)
 
     val tab1 = t.orderBy(withColumns(1, 2 to 3))
-    val tab2 = t.orderBy("withColumns(1, 2 to 3)")
-    verifyTableEquals(tab1, tab2)
     util.verifyExecPlan(tab1)
   }
 }

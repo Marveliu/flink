@@ -15,55 +15,60 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.planner.plan.utils
 
 import org.apache.flink.api.common.typeinfo.Types
-import org.apache.flink.table.api.{DataTypes, TableConfig}
+import org.apache.flink.table.api._
 import org.apache.flink.table.catalog.{CatalogManager, FunctionCatalog}
 import org.apache.flink.table.expressions.ApiExpressionUtils.{unresolvedCall, unresolvedRef, valueLiteral}
 import org.apache.flink.table.expressions.Expression
-import org.apache.flink.table.functions.BuiltInFunctionDefinitions.{EQUALS, GREATER_THAN, LESS_THAN, LESS_THAN_OR_EQUAL}
 import org.apache.flink.table.functions.{AggregateFunctionDefinition, FunctionIdentifier}
+import org.apache.flink.table.functions.BuiltInFunctionDefinitions.{EQUALS, GREATER_THAN, LESS_THAN, LESS_THAN_OR_EQUAL}
 import org.apache.flink.table.module.ModuleManager
 import org.apache.flink.table.planner.calcite.FlinkRexBuilder
 import org.apache.flink.table.planner.expressions.utils.Func1
 import org.apache.flink.table.planner.functions.sql.FlinkSqlOperatorTable
 import org.apache.flink.table.planner.functions.utils.ScalarSqlFunction
 import org.apache.flink.table.planner.utils.{DateTimeTestUtil, IntSumAggFunction}
+import org.apache.flink.table.resource.ResourceManager
+import org.apache.flink.table.runtime.types.LogicalTypeDataTypeConverter
+import org.apache.flink.table.types.logical.IntType
 import org.apache.flink.table.utils.CatalogManagerMocks
+
+import org.apache.calcite.avatica.util.ByteString
 import org.apache.calcite.rel.`type`.RelDataType
 import org.apache.calcite.rex.{RexBuilder, RexNode}
-import org.apache.calcite.sql.SqlPostfixOperator
 import org.apache.calcite.sql.`type`.SqlTypeName
-import org.apache.calcite.sql.fun.{SqlStdOperatorTable, SqlTrimFunction}
-import org.apache.calcite.util.{DateString, TimeString, TimestampString}
-import org.apache.flink.table.delegation.ExpressionParser
-import org.hamcrest.CoreMatchers.is
-import org.junit.Assert.{assertArrayEquals, assertEquals, assertThat, assertTrue}
-import org.junit.Test
+import org.apache.calcite.sql.SqlPostfixOperator
+import org.apache.calcite.sql.fun.{SqlLibraryOperators, SqlStdOperatorTable, SqlTrimFunction}
+import org.apache.calcite.util.{DateString, TimestampString, TimeString}
+import org.assertj.core.api.Assertions.assertThat
+import org.junit.jupiter.api.Test
 
 import java.math.BigDecimal
-import java.time.ZoneId
-import java.util.{Arrays, TimeZone, List => JList}
+import java.net.URL
+import java.time.{ZoneId, ZoneOffset}
+import java.util.{Arrays, List => JList}
+
 import scala.collection.JavaConverters._
 
-/**
-  * Test for [[RexNodeExtractor]].
-  */
+/** Test for [[RexNodeExtractor]]. */
 class RexNodeExtractorTest extends RexNodeTestBase {
+  val tableConfig = TableConfig.getDefault
+  val resourceManager = ResourceManager.createResourceManager(
+    new Array[URL](0),
+    Thread.currentThread.getContextClassLoader,
+    tableConfig.getConfiguration)
   val catalogManager: CatalogManager = CatalogManagerMocks.createEmptyCatalogManager()
   val moduleManager = new ModuleManager
-  private val functionCatalog = new FunctionCatalog(
-    TableConfig.getDefault,
-    catalogManager,
-    moduleManager)
+  private val functionCatalog =
+    new FunctionCatalog(tableConfig, resourceManager, catalogManager, moduleManager)
 
   @Test
   def testExtractRefInputFields(): Unit = {
     val (exprs, _) = buildExprs()
     val usedFields = RexNodeExtractor.extractRefInputFields(exprs)
-    assertArrayEquals(usedFields, Array(2, 3, 1))
+    assertThat(usedFields).isEqualTo(Array(2, 3, 1))
   }
 
   @Test
@@ -74,7 +79,7 @@ class RexNodeExtractorTest extends RexNodeTestBase {
     val usedNestedFields = RexNodeExtractor.extractRefNestedInputFields(rexProgram, usedFields)
 
     val expected = Array(Array(Arrays.asList("amount")), Array(Arrays.asList("*")))
-    assertThat(usedNestedFields, is(expected))
+    assertThat(usedNestedFields).isEqualTo(expected)
   }
 
   @Test
@@ -84,9 +89,9 @@ class RexNodeExtractorTest extends RexNodeTestBase {
     val usedFields = RexNodeExtractor.extractRefInputFields(exprs)
     val usedNestedFields = RexNodeExtractor.extractRefNestedInputFields(exprs, usedFields)
 
-    val expected = Array(Array(Arrays.asList("*")),
-      Array(Arrays.asList("*")), Array(Arrays.asList("*")))
-    assertThat(usedNestedFields, is(expected))
+    val expected =
+      Array(Array(Arrays.asList("*")), Array(Arrays.asList("*")), Array(Arrays.asList("*")))
+    assertThat(usedNestedFields).isEqualTo(expected)
   }
 
   @Test
@@ -100,10 +105,11 @@ class RexNodeExtractorTest extends RexNodeTestBase {
       Array(Arrays.asList("amount")),
       Array(Arrays.asList("*")),
       Array(Arrays.asList("with", "deeper", "entry"), Arrays.asList("with", "deep", "entry")),
-      Array(Arrays.asList("outer"), Arrays.asList("inner", "deep_array")))
+      Array(Arrays.asList("outer"), Arrays.asList("inner", "deep_array"))
+    )
 
-    assertThat(usedFields, is(Array(1, 0, 2, 3)))
-    assertThat(usedNestedFields, is(expected))
+    assertThat(usedFields).isEqualTo(Array(1, 0, 2, 3))
+    assertThat(usedNestedFields).isEqualTo(expected)
   }
 
   @Test
@@ -111,20 +117,15 @@ class RexNodeExtractorTest extends RexNodeTestBase {
     val builder: RexBuilder = new FlinkRexBuilder(typeFactory)
     val expr = buildConditionExpr()
 
-    val firstExp = ExpressionParser.INSTANCE.parseExpression("id > 6")
-    val secondExp = ExpressionParser.INSTANCE.parseExpression("amount * price < 100")
+    val firstExp = $"id" > 6
+    val secondExp = $"amount" * $"price" < 100
     val expected: Array[Expression] = Array(firstExp, secondExp)
 
     val (convertedExpressions, unconvertedRexNodes) =
-      extractConjunctiveConditions(
-        expr,
-        -1,
-        allFieldNames,
-        builder,
-        functionCatalog)
+      extractConjunctiveConditions(expr, allFieldNames, builder, functionCatalog)
 
     assertExpressionArrayEquals(expected, convertedExpressions)
-    assertEquals(0, unconvertedRexNodes.length)
+    assertThat(unconvertedRexNodes).isEmpty()
   }
 
   @Test
@@ -139,17 +140,31 @@ class RexNodeExtractorTest extends RexNodeTestBase {
 
     val relBuilder: RexBuilder = new FlinkRexBuilder(typeFactory)
     val (convertedExpressions, unconvertedRexNodes) =
-      extractConjunctiveConditions(
-        a,
-        -1,
-        allFieldNames,
-        relBuilder,
-        functionCatalog)
+      extractConjunctiveConditions(a, allFieldNames, relBuilder, functionCatalog)
 
-    val expected: Array[Expression] = Array(
-      ExpressionParser.INSTANCE.parseExpression("amount >= id"))
+    val expected: Array[Expression] = Array($"amount" >= $"id")
     assertExpressionArrayEquals(expected, convertedExpressions)
-    assertEquals(0, unconvertedRexNodes.length)
+    assertThat(unconvertedRexNodes).isEmpty()
+  }
+
+  @Test
+  def testExtractConditionWithBinaryLiteral(): Unit = {
+    // blob
+    val t0 = rexBuilder.makeInputRef(allFieldTypes.get(5), 5)
+
+    // X'616263'
+    val t1 = rexBuilder.makeBinaryLiteral(ByteString.of("616263", 16))
+
+    // blob = X'616263'
+    val a = rexBuilder.makeCall(SqlStdOperatorTable.EQUALS, t0, t1)
+
+    val relBuilder: RexBuilder = new FlinkRexBuilder(typeFactory)
+    val (convertedExpressions, unconvertedRexNodes) =
+      extractConjunctiveConditions(a, allFieldNames, relBuilder, functionCatalog)
+
+    val expected: Array[Expression] = Array($"blob" === Array[Byte](97, 98, 99))
+    assertExpressionArrayEquals(expected, convertedExpressions)
+    assertThat(unconvertedRexNodes).isEmpty()
   }
 
   // ((a AND b) OR c) AND (NOT d) => (a OR c) AND (b OR c) AND (NOT d)
@@ -189,19 +204,15 @@ class RexNodeExtractorTest extends RexNodeTestBase {
 
     val relBuilder: RexBuilder = new FlinkRexBuilder(typeFactory)
     val (convertedExpressions, unconvertedRexNodes) =
-      extractConjunctiveConditions(
-        complexNode,
-        -1,
-        allFieldNames,
-        relBuilder,
-        functionCatalog)
+      extractConjunctiveConditions(complexNode, allFieldNames, relBuilder, functionCatalog)
 
     val expected: Array[Expression] = Array(
-      ExpressionParser.INSTANCE.parseExpression("amount < 100 || price == 100 || price === 200"),
-      ExpressionParser.INSTANCE.parseExpression("id > 100 || price == 100 || price === 200"),
-      ExpressionParser.INSTANCE.parseExpression("!(amount <= id)"))
+      $"amount" < 100 || $"price" === 100 || $"price" === 200,
+      $"id" > 100 || $"price" === 100 || $"price" === 200,
+      !($"amount" <= $"id")
+    )
     assertExpressionArrayEquals(expected, convertedExpressions)
-    assertEquals(0, unconvertedRexNodes.length)
+    assertThat(unconvertedRexNodes).isEmpty()
   }
 
   @Test
@@ -229,22 +240,17 @@ class RexNodeExtractorTest extends RexNodeTestBase {
 
     val relBuilder: RexBuilder = new FlinkRexBuilder(typeFactory)
     val (convertedExpressions, unconvertedRexNodes) =
-      extractConjunctiveConditions(
-        and,
-        -1,
-        allFieldNames,
-        relBuilder,
-        functionCatalog)
+      extractConjunctiveConditions(and, allFieldNames, relBuilder, functionCatalog)
 
     val expected: Array[Expression] = Array(
-      ExpressionParser.INSTANCE.parseExpression("amount < 100"),
-      ExpressionParser.INSTANCE.parseExpression("amount <= id"),
-      ExpressionParser.INSTANCE.parseExpression("id > 100"),
-      ExpressionParser.INSTANCE.parseExpression("price === 100")
+      $"amount" < 100,
+      $"amount" <= $"id",
+      $"id" > 100,
+      $"price" === 100
     )
 
     assertExpressionArrayEquals(expected, convertedExpressions)
-    assertEquals(0, unconvertedRexNodes.length)
+    assertThat(unconvertedRexNodes).isEmpty()
   }
 
   @Test
@@ -274,12 +280,7 @@ class RexNodeExtractorTest extends RexNodeTestBase {
 
     val relBuilder: RexBuilder = new FlinkRexBuilder(typeFactory)
     val (convertedExpressions, unconvertedRexNodes) =
-      extractConjunctiveConditions(
-        and,
-        -1,
-        allFieldNames,
-        relBuilder,
-        functionCatalog)
+      extractConjunctiveConditions(and, allFieldNames, relBuilder, functionCatalog)
 
     val expected: Array[Expression] = Array(
       // amount < 100
@@ -293,7 +294,7 @@ class RexNodeExtractorTest extends RexNodeTestBase {
     )
 
     assertExpressionArrayEquals(expected, convertedExpressions)
-    assertEquals(0, unconvertedRexNodes.length)
+    assertThat(unconvertedRexNodes).isEmpty()
   }
 
   @Test
@@ -317,12 +318,8 @@ class RexNodeExtractorTest extends RexNodeTestBase {
     val and = rexBuilder.makeCall(SqlStdOperatorTable.AND, condition)
 
     val relBuilder: RexBuilder = new FlinkRexBuilder(typeFactory)
-    val (converted, _) = extractConjunctiveConditions(
-      and,
-      -1,
-      fieldNames,
-      relBuilder,
-      functionCatalog)
+    val (converted, _) =
+      extractConjunctiveConditions(and, fieldNames, relBuilder, functionCatalog)
 
     val datetime = DateTimeTestUtil.localDateTime("2017-09-10 14:23:01")
     val date = DateTimeTestUtil.localDate("2017-09-12")
@@ -365,17 +362,25 @@ class RexNodeExtractorTest extends RexNodeTestBase {
       // amount > id
       rexBuilder.makeCall(SqlStdOperatorTable.GREATER_THAN, t0, t1),
       // amount + id == 100
-      rexBuilder.makeCall(SqlStdOperatorTable.EQUALS,
-        rexBuilder.makeCall(SqlStdOperatorTable.PLUS, t0, t1), t2),
+      rexBuilder.makeCall(
+        SqlStdOperatorTable.EQUALS,
+        rexBuilder.makeCall(SqlStdOperatorTable.PLUS, t0, t1),
+        t2),
       // amount - id == 100
-      rexBuilder.makeCall(SqlStdOperatorTable.EQUALS,
-        rexBuilder.makeCall(SqlStdOperatorTable.MINUS, t0, t1), t2),
+      rexBuilder.makeCall(
+        SqlStdOperatorTable.EQUALS,
+        rexBuilder.makeCall(SqlStdOperatorTable.MINUS, t0, t1),
+        t2),
       // amount * id == 100
-      rexBuilder.makeCall(SqlStdOperatorTable.EQUALS,
-        rexBuilder.makeCall(SqlStdOperatorTable.MULTIPLY, t0, t1), t2),
+      rexBuilder.makeCall(
+        SqlStdOperatorTable.EQUALS,
+        rexBuilder.makeCall(SqlStdOperatorTable.MULTIPLY, t0, t1),
+        t2),
       // amount / id == 100
-      rexBuilder.makeCall(SqlStdOperatorTable.EQUALS,
-        rexBuilder.makeCall(FlinkSqlOperatorTable.DIVIDE, t0, t1), t2)
+      rexBuilder.makeCall(
+        SqlStdOperatorTable.EQUALS,
+        rexBuilder.makeCall(FlinkSqlOperatorTable.DIVIDE, t0, t1),
+        t2)
       // TODO supports this case
       // -amount == 100
       // rexBuilder.makeCall(SqlStdOperatorTable.EQUALS,
@@ -385,27 +390,22 @@ class RexNodeExtractorTest extends RexNodeTestBase {
     val complexExpr = rexBuilder.makeCall(SqlStdOperatorTable.AND, condition)
     val relBuilder: RexBuilder = new FlinkRexBuilder(typeFactory)
     val (convertedExpressions, unconvertedRexNodes) =
-      extractConjunctiveConditions(
-        complexExpr,
-        -1,
-        allFieldNames,
-        relBuilder,
-        functionCatalog)
+      extractConjunctiveConditions(complexExpr, allFieldNames, relBuilder, functionCatalog)
 
     val expected: Array[Expression] = Array(
-      ExpressionParser.INSTANCE.parseExpression("amount < id"),
-      ExpressionParser.INSTANCE.parseExpression("amount <= id"),
-      ExpressionParser.INSTANCE.parseExpression("amount <> id"),
-      ExpressionParser.INSTANCE.parseExpression("amount == id"),
-      ExpressionParser.INSTANCE.parseExpression("amount >= id"),
-      ExpressionParser.INSTANCE.parseExpression("amount > id"),
-      ExpressionParser.INSTANCE.parseExpression("amount + id == 100"),
-      ExpressionParser.INSTANCE.parseExpression("amount - id == 100"),
-      ExpressionParser.INSTANCE.parseExpression("amount * id == 100"),
-      ExpressionParser.INSTANCE.parseExpression("amount / id == 100")
+      $"amount" < $"id",
+      $"amount" <= $"id",
+      $"amount" !== $"id",
+      $"amount" === $"id",
+      $"amount" >= $"id",
+      $"amount" > $"id",
+      $"amount" + $"id" === 100,
+      $"amount" - $"id" === 100,
+      $"amount" * $"id" === 100,
+      $"amount" / $"id" === 100
     )
     assertExpressionArrayEquals(expected, convertedExpressions)
-    assertEquals(0, unconvertedRexNodes.length)
+    assertThat(unconvertedRexNodes).isEmpty()
   }
 
   @Test
@@ -429,35 +429,35 @@ class RexNodeExtractorTest extends RexNodeTestBase {
     val t2 = rexBuilder.makeExactLiteral(BigDecimal.valueOf(100L))
 
     // sum(amount) > 100
-    val condition1 = rexBuilder.makeCall(SqlStdOperatorTable.GREATER_THAN,
-      rexBuilder.makeCall(SqlStdOperatorTable.SUM, t0), t2)
+    val condition1 = rexBuilder.makeCall(
+      SqlStdOperatorTable.GREATER_THAN,
+      rexBuilder.makeCall(SqlStdOperatorTable.SUM, t0),
+      t2)
 
     // first_value(id) == 100
-    val condition2 = rexBuilder.makeCall(SqlStdOperatorTable.EQUALS,
-      rexBuilder.makeCall(FlinkSqlOperatorTable.FIRST_VALUE, t1), t2)
+    val condition2 = rexBuilder.makeCall(
+      SqlStdOperatorTable.EQUALS,
+      rexBuilder.makeCall(FlinkSqlOperatorTable.FIRST_VALUE, t1),
+      t2)
 
     val complexExpr = rexBuilder.makeCall(SqlStdOperatorTable.AND, condition1, condition2)
 
     val relBuilder: RexBuilder = new FlinkRexBuilder(typeFactory)
-    val (convertedExpressions, unconvertedRexNodes) = extractConjunctiveConditions(
-      complexExpr,
-      -1,
-      allFieldNames,
-      relBuilder,
-      functionCatalog)
+    val (convertedExpressions, unconvertedRexNodes) =
+      extractConjunctiveConditions(complexExpr, allFieldNames, relBuilder, functionCatalog)
 
     {
       val expected: Array[Expression] = Array(
         // sum(amount) > 100
-        unresolvedCall(GREATER_THAN,
+        unresolvedCall(
+          GREATER_THAN,
           unresolvedCall(
             new AggregateFunctionDefinition("sum", new IntSumAggFunction, Types.INT, Types.INT),
             unresolvedRef("amount")),
-          valueLiteral(100)
-        )
+          valueLiteral(100))
       )
       assertExpressionArrayEquals(expected, convertedExpressions)
-      assertEquals(1, unconvertedRexNodes.length)
+      assertThat(unconvertedRexNodes).hasSize(1)
     }
   }
 
@@ -483,33 +483,85 @@ class RexNodeExtractorTest extends RexNodeTestBase {
     val condition3 = rexBuilder.makeCall(SqlStdOperatorTable.OR, condition1, condition2)
 
     // only condition2 can be translated
-    val conditionExpr = rexBuilder.makeCall(
-      SqlStdOperatorTable.AND,
-      condition1,
-      condition2,
-      condition3)
+    val conditionExpr =
+      rexBuilder.makeCall(SqlStdOperatorTable.AND, condition1, condition2, condition3)
 
     val relBuilder: RexBuilder = new FlinkRexBuilder(typeFactory)
     val (convertedExpressions, unconvertedRexNodes) =
-      extractConjunctiveConditions(
-        conditionExpr,
-        -1,
-        allFieldNames,
-        relBuilder,
-        functionCatalog)
+      extractConjunctiveConditions(conditionExpr, allFieldNames, relBuilder, functionCatalog)
 
-    assertEquals(3, convertedExpressions.length)
-    assertEquals(
-      "greaterThan(cast(amount, BIGINT), 100)",
-      convertedExpressions(0).toString)
-    assertEquals("lessThanOrEqual(amount, id)", convertedExpressions(1).toString)
-    assertEquals("or(greaterThan(cast(amount, BIGINT), 100), lessThanOrEqual(amount, id))",
-      convertedExpressions(2).toString)
-    assertEquals(0, unconvertedRexNodes.length)
+    assertThat(convertedExpressions).hasSize(3)
+    assertThat(convertedExpressions(0).toString).isEqualTo("greaterThan(cast(amount, BIGINT), 100)")
+    assertThat(convertedExpressions(1).toString).isEqualTo("lessThanOrEqual(amount, id)")
+    assertThat(convertedExpressions(2).toString)
+      .isEqualTo("or(greaterThan(cast(amount, BIGINT), 100), lessThanOrEqual(amount, id))")
+    assertThat(unconvertedRexNodes).isEmpty()
 
-    assertExpressionArrayEquals(
-      Array(ExpressionParser.INSTANCE.parseExpression("amount <= id")),
-      Array(convertedExpressions(1)))
+    assertExpressionArrayEquals(Array($"amount" <= $"id"), Array(convertedExpressions(1)))
+  }
+
+  @Test
+  def testExtractItem(): Unit = {
+    val fieldNames = List("arr", "map", "variant", "row").asJava
+    val fieldTypes = List(
+      DataTypes.ARRAY(DataTypes.INT()),
+      DataTypes.MAP(DataTypes.STRING(), DataTypes.INT()),
+      DataTypes.VARIANT(),
+      DataTypes.ROW(DataTypes.FIELD("f", DataTypes.INT()))
+    )
+      .map(LogicalTypeDataTypeConverter.fromDataTypeToLogicalType)
+      .map(typeFactory.createFieldTypeFromLogicalType)
+    val Seq(arr, map, variant, row) =
+      fieldTypes.zipWithIndex.map { case (t, i) => rexBuilder.makeInputRef(t, i) }
+    val three = rexBuilder.makeExactLiteral(BigDecimal.valueOf(3))
+    val intType = typeFactory.createFieldTypeFromLogicalType(new IntType())
+
+    // arr[1] = 3
+    val onArray = rexBuilder.makeCall(
+      SqlStdOperatorTable.EQUALS,
+      rexBuilder.makeCall(
+        SqlStdOperatorTable.ITEM,
+        arr,
+        rexBuilder.makeExactLiteral(BigDecimal.ONE)),
+      three)
+    // map['k'] = 3
+    val onMap = rexBuilder.makeCall(
+      SqlStdOperatorTable.EQUALS,
+      rexBuilder.makeCall(SqlStdOperatorTable.ITEM, map, rexBuilder.makeLiteral("k")),
+      three)
+    // CAST(variant['k'] AS INT) = 3
+    val onVariant = rexBuilder.makeCall(
+      SqlStdOperatorTable.EQUALS,
+      rexBuilder.makeCast(
+        intType,
+        rexBuilder.makeCall(SqlStdOperatorTable.ITEM, variant, rexBuilder.makeLiteral("k"))),
+      three)
+    // arr[OFFSET(0)] = 3, a 0-based variant of ITEM that AT does not cover
+    val onOffset = rexBuilder.makeCall(
+      SqlStdOperatorTable.EQUALS,
+      rexBuilder.makeCall(
+        SqlLibraryOperators.OFFSET,
+        arr,
+        rexBuilder.makeExactLiteral(BigDecimal.ZERO)),
+      three)
+    // row['f'] = 3, which AT does not support
+    val onRow = rexBuilder.makeCall(
+      SqlStdOperatorTable.EQUALS,
+      rexBuilder.makeCall(SqlStdOperatorTable.ITEM, row, rexBuilder.makeLiteral("f")),
+      three)
+
+    val (convertedExpressions, unconvertedRexNodes) = extractConjunctiveConditions(
+      rexBuilder.makeCall(SqlStdOperatorTable.AND, onArray, onMap, onVariant, onOffset, onRow),
+      fieldNames,
+      rexBuilder,
+      functionCatalog)
+
+    assertThat(convertedExpressions.map(_.toString))
+      .containsExactly(
+        "equals(at(arr, 1), 3)",
+        "equals(at(map, 'k'), 3)",
+        "equals(cast(at(variant, 'k'), INT), 3)")
+    assertThat(unconvertedRexNodes).containsExactly(onOffset, onRow)
   }
 
   @Test
@@ -521,41 +573,45 @@ class RexNodeExtractorTest extends RexNodeTestBase {
     // trim(BOTH, ' ', name) = 'He'
     val trimBoth = rexBuilder.makeCall(
       SqlStdOperatorTable.EQUALS,
-      rexBuilder.makeCall(SqlStdOperatorTable.TRIM,
+      rexBuilder.makeCall(
+        SqlStdOperatorTable.TRIM,
         rexBuilder.makeFlag(SqlTrimFunction.Flag.BOTH),
-        rexBuilder.makeLiteral(" "), t0),
-      t1)
+        rexBuilder.makeLiteral(" "),
+        t0),
+      t1
+    )
 
     // trim(LEADING, ' ', name) = 'He'
     val trimLeading = rexBuilder.makeCall(
       SqlStdOperatorTable.EQUALS,
-      rexBuilder.makeCall(SqlStdOperatorTable.TRIM,
+      rexBuilder.makeCall(
+        SqlStdOperatorTable.TRIM,
         rexBuilder.makeFlag(SqlTrimFunction.Flag.LEADING),
-        rexBuilder.makeLiteral(" "), t0),
-      t1)
+        rexBuilder.makeLiteral(" "),
+        t0),
+      t1
+    )
 
     // trim(TRAILING, ' ', name) = 'He'
     val trimTrailing = rexBuilder.makeCall(
       SqlStdOperatorTable.EQUALS,
-      rexBuilder.makeCall(SqlStdOperatorTable.TRIM,
+      rexBuilder.makeCall(
+        SqlStdOperatorTable.TRIM,
         rexBuilder.makeFlag(SqlTrimFunction.Flag.TRAILING),
-        rexBuilder.makeLiteral(" "), t0),
-      t1)
+        rexBuilder.makeLiteral(" "),
+        t0),
+      t1
+    )
 
-    val and = rexBuilder.makeCall(SqlStdOperatorTable.AND,
-      List(trimBoth, trimLeading, trimTrailing).asJava)
+    val and =
+      rexBuilder.makeCall(SqlStdOperatorTable.AND, List(trimBoth, trimLeading, trimTrailing).asJava)
 
     val relBuilder: RexBuilder = new FlinkRexBuilder(typeFactory)
     val (convertedExpressions, unconvertedRexNodes) =
-      extractConjunctiveConditions(
-        and,
-        -1,
-        allFieldNames,
-        relBuilder,
-        functionCatalog)
+      extractConjunctiveConditions(and, allFieldNames, relBuilder, functionCatalog)
 
-    assertEquals(0, convertedExpressions.length)
-    assertEquals(3, unconvertedRexNodes.length)
+    assertThat(convertedExpressions).isEmpty()
+    assertThat(unconvertedRexNodes).hasSize(3)
   }
 
   @Test
@@ -564,8 +620,9 @@ class RexNodeExtractorTest extends RexNodeTestBase {
     // amount
     val t0 = rexBuilder.makeInputRef(allFieldTypes.get(2), 2)
     // my_udf(amount)
-    val t1 = rexBuilder.makeCall(new ScalarSqlFunction(
-      FunctionIdentifier.of("MyUdf"), "myUdf", Func1, typeFactory), t0)
+    val t1 = rexBuilder.makeCall(
+      new ScalarSqlFunction(FunctionIdentifier.of("MyUdf"), "myUdf", Func1, typeFactory),
+      t0)
     // 100
     val t2 = rexBuilder.makeExactLiteral(BigDecimal.valueOf(100L))
     // my_udf(amount) >  100
@@ -573,17 +630,11 @@ class RexNodeExtractorTest extends RexNodeTestBase {
 
     val relBuilder: RexBuilder = new FlinkRexBuilder(typeFactory)
     val (convertedExpressions, unconvertedRexNodes) =
-      extractConjunctiveConditions(
-        condition,
-        -1,
-        allFieldNames,
-        relBuilder,
-        functionCatalog)
+      extractConjunctiveConditions(condition, allFieldNames, relBuilder, functionCatalog)
 
-    assertEquals(1, convertedExpressions.length)
-    assertEquals("greaterThan(MyUdf(amount), 100)",
-      convertedExpressions(0).toString)
-    assertEquals(0, unconvertedRexNodes.length)
+    assertThat(convertedExpressions).hasSize(1)
+    assertThat(convertedExpressions(0).toString).isEqualTo("greaterThan(MyUdf(amount), 100)")
+    assertThat(unconvertedRexNodes).isEmpty()
   }
 
   @Test
@@ -603,60 +654,55 @@ class RexNodeExtractorTest extends RexNodeTestBase {
 
     val (partitionPredicate1, nonPartitionPredicate1) =
       RexNodeExtractor.extractPartitionPredicates(
-      c3,
-      -1,
-      allFieldNames.asScala.toArray,
-      rexBuilder,
-      Array("amount", "name")
-    )
-    assertEquals(c3, partitionPredicate1)
-    assertTrue(nonPartitionPredicate1.isAlwaysTrue)
+        c3,
+        allFieldNames.asScala.toArray,
+        rexBuilder,
+        Array("amount", "name")
+      )
+    assertThat(partitionPredicate1).isEqualTo(c3)
+    assertThat(nonPartitionPredicate1.isAlwaysTrue).isTrue
 
     val (partitionPredicate2, nonPartitionPredicate2) =
       RexNodeExtractor.extractPartitionPredicates(
         c3,
-        -1,
         allFieldNames.asScala.toArray,
         rexBuilder,
         Array("amount")
       )
-    assertEquals(c1, partitionPredicate2)
-    assertEquals(c2, nonPartitionPredicate2)
+    assertThat(partitionPredicate2).isEqualTo(c1)
+    assertThat(nonPartitionPredicate2).isEqualTo(c2)
 
     val (partitionPredicate3, nonPartitionPredicate3) =
       RexNodeExtractor.extractPartitionPredicates(
         c3,
-        -1,
         allFieldNames.asScala.toArray,
         rexBuilder,
         Array("id")
       )
-    assertTrue(partitionPredicate3.isAlwaysTrue)
-    assertEquals(c3, nonPartitionPredicate3)
+    assertThat(partitionPredicate3.isAlwaysTrue).isTrue
+    assertThat(nonPartitionPredicate3).isEqualTo(c3)
 
     // amount > 100 or name like 'test%'
     val c4 = rexBuilder.makeCall(SqlStdOperatorTable.OR, c1, c2)
     val (partitionPredicate4, nonPartitionPredicate4) =
       RexNodeExtractor.extractPartitionPredicates(
         c4,
-        -1,
         allFieldNames.asScala.toArray,
         rexBuilder,
         Array("amount", "name")
       )
-    assertEquals(c4, partitionPredicate4)
-    assertTrue(nonPartitionPredicate4.isAlwaysTrue)
+    assertThat(partitionPredicate4).isEqualTo(c4)
+    assertThat(nonPartitionPredicate4.isAlwaysTrue).isTrue
 
     val (partitionPredicate5, nonPartitionPredicate5) =
       RexNodeExtractor.extractPartitionPredicates(
         c4,
-        -1,
         allFieldNames.asScala.toArray,
         rexBuilder,
         Array("amount")
       )
-    assertTrue(partitionPredicate5.isAlwaysTrue)
-    assertEquals(c4, nonPartitionPredicate5)
+    assertThat(partitionPredicate5.isAlwaysTrue).isTrue
+    assertThat(nonPartitionPredicate5).isEqualTo(c4)
   }
 
   @Test
@@ -668,7 +714,8 @@ class RexNodeExtractorTest extends RexNodeTestBase {
     val c1 = rexBuilder.makeCall(SqlStdOperatorTable.GREATER_THAN, t0, t1)
     // date
     val t2 = rexBuilder.makeInputRef(
-      typeFactory.createFieldTypeFromLogicalType(DataTypes.DATE().getLogicalType), 0)
+      typeFactory.createFieldTypeFromLogicalType(DataTypes.DATE().getLogicalType),
+      0)
     // 2019-04-14
     val t3 = rexBuilder.makeDateLiteral(DateString.fromDaysSinceEpoch(18000))
     val c2 = rexBuilder.makeCall(SqlStdOperatorTable.EQUALS, t2, t3)
@@ -677,35 +724,32 @@ class RexNodeExtractorTest extends RexNodeTestBase {
     val (partitionPredicate1, nonPartitionPredicate1) =
       RexNodeExtractor.extractPartitionPredicates(
         c3,
-        -1,
         Array("date", "amount", "id"),
         rexBuilder,
         Array("date")
       )
-    assertEquals(c2, partitionPredicate1)
-    assertEquals(c1, nonPartitionPredicate1)
+    assertThat(partitionPredicate1).isEqualTo(c2)
+    assertThat(nonPartitionPredicate1).isEqualTo(c1)
 
     val (partitionPredicate2, nonPartitionPredicate2) =
       RexNodeExtractor.extractPartitionPredicates(
         c3,
-        -1,
         Array("date", "amount", "id"),
         rexBuilder,
         Array("date", "amount")
       )
-    assertEquals(c3, partitionPredicate2)
-    assertTrue(nonPartitionPredicate2.isAlwaysTrue)
+    assertThat(partitionPredicate2).isEqualTo(c3)
+    assertThat(nonPartitionPredicate2.isAlwaysTrue).isTrue
 
     val (partitionPredicate3, nonPartitionPredicate3) =
       RexNodeExtractor.extractPartitionPredicates(
         c3,
-        -1,
         Array("date", "amount", "id"),
         rexBuilder,
         Array("id", "amount")
       )
-    assertEquals(c1, partitionPredicate3)
-    assertEquals(c2, nonPartitionPredicate3)
+    assertThat(partitionPredicate3).isEqualTo(c1)
+    assertThat(nonPartitionPredicate3).isEqualTo(c2)
   }
 
   @Test
@@ -730,17 +774,12 @@ class RexNodeExtractorTest extends RexNodeTestBase {
 
     val relBuilder: RexBuilder = new FlinkRexBuilder(typeFactory)
 
-    val shanghai = ZoneId.of("Asia/Shanghai")
-    val (converted, _) = extractConjunctiveConditions(
-      and,
-      -1,
-      fieldNames,
-      relBuilder,
-      functionCatalog,
-      TimeZone.getTimeZone(shanghai))
+    val (converted, _) =
+      extractConjunctiveConditions(and, fieldNames, relBuilder, functionCatalog)
 
     val datetime = DateTimeTestUtil.localDateTime("2017-09-10 14:23:01.123456")
-    val instant = datetime.toInstant(shanghai.getRules.getOffset(datetime))
+    val instant =
+      datetime.toInstant(ZoneId.of(ZoneOffset.UTC.getId).getRules.getOffset(datetime))
 
     {
       val expected = Array[Expression](
@@ -757,7 +796,7 @@ class RexNodeExtractorTest extends RexNodeTestBase {
   private def testExtractSinglePostfixCondition(
       fieldIndex: Integer,
       op: SqlPostfixOperator,
-      expr: String) : Unit = {
+      expr: String): Unit = {
     rexBuilder = new FlinkRexBuilder(typeFactory)
 
     // flag
@@ -765,16 +804,11 @@ class RexNodeExtractorTest extends RexNodeTestBase {
     val conditionExpr = rexBuilder.makeCall(op, t0)
     val relBuilder: RexBuilder = new FlinkRexBuilder(typeFactory)
     val (convertedExpressions, unconvertedRexNodes) =
-      extractConjunctiveConditions(
-        conditionExpr,
-        -1,
-        allFieldNames,
-        relBuilder,
-        functionCatalog)
+      extractConjunctiveConditions(conditionExpr, allFieldNames, relBuilder, functionCatalog)
 
-    assertEquals(1, convertedExpressions.length)
-    assertEquals(expr, convertedExpressions.head.toString)
-    assertEquals(0, unconvertedRexNodes.length)
+    assertThat(convertedExpressions).hasSize(1)
+    assertThat(convertedExpressions.head.toString).isEqualTo(expr)
+    assertThat(unconvertedRexNodes).isEmpty()
   }
 
   private def assertExpressionArrayEquals(
@@ -783,21 +817,23 @@ class RexNodeExtractorTest extends RexNodeTestBase {
     val sortedExpected = expected.sortBy(e => e.toString)
     val sortedActual = actual.sortBy(e => e.toString)
 
-    assertEquals(sortedExpected.length, sortedActual.length)
+    assertThat(sortedExpected).hasSameSizeAs(sortedActual)
     sortedExpected.zip(sortedActual).foreach {
-      case (l, r) => assertEquals(l.toString, r.toString)
+      case (l, r) => assertThat(l.toString).isEqualTo(r.toString)
     }
   }
 
   private def extractConjunctiveConditions(
       expr: RexNode,
-      maxCnfNodeCount: Int,
       inputFieldNames: JList[String],
       rexBuilder: RexBuilder,
-      catalog: FunctionCatalog,
-      tz: TimeZone = TimeZone.getDefault): (Array[Expression], Array[RexNode]) = {
-    RexNodeExtractor.extractConjunctiveConditions(expr, maxCnfNodeCount,
-      inputFieldNames, rexBuilder, catalog, catalogManager, tz)
+      catalog: FunctionCatalog): (Array[Expression], Array[RexNode]) = {
+    RexNodeExtractor.extractConjunctiveConditions(
+      expr,
+      inputFieldNames,
+      rexBuilder,
+      catalog,
+      catalogManager)
   }
 
 }

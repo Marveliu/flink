@@ -18,13 +18,14 @@
 
 package org.apache.flink.runtime.state;
 
+import org.apache.flink.annotation.Experimental;
 import org.apache.flink.api.common.state.State;
 import org.apache.flink.api.common.state.StateDescriptor;
 import org.apache.flink.api.common.typeutils.TypeSerializer;
 import org.apache.flink.api.java.tuple.Tuple2;
-import org.apache.flink.runtime.checkpoint.CheckpointType;
 import org.apache.flink.util.Disposable;
 
+import java.util.List;
 import java.util.stream.Stream;
 
 /**
@@ -42,10 +43,26 @@ public interface KeyedStateBackend<K>
      */
     void setCurrentKey(K newKey);
 
-    /** @return Current key. */
+    /**
+     * Restores the key context for a state request rather than selecting a key for another input
+     * record. Backends with record-triggered maintenance should override this method to avoid
+     * running that maintenance for the request.
+     */
+    default void setCurrentKeyForStateAccess(K newKey) {
+        setCurrentKey(newKey);
+    }
+
+    /**
+     * @return Current key.
+     */
     K getCurrentKey();
 
-    /** @return Serializer of the key. */
+    /** Act as a fast path for {@link #setCurrentKey} when the key group is known. */
+    void setCurrentKeyAndKeyGroup(K newKey, int newKeyGroupIndex);
+
+    /**
+     * @return Serializer of the key.
+     */
     TypeSerializer<K> getKeySerializer();
 
     /**
@@ -69,11 +86,35 @@ public interface KeyedStateBackend<K>
 
     /**
      * @return A stream of all keys for the given state and namespace. Modifications to the state
-     *     during iterating over it keys are not supported.
+     *     during iterating over its keys are not supported.
      * @param state State variable for which existing keys will be returned.
      * @param namespace Namespace for which existing keys will be returned.
      */
     <N> Stream<K> getKeys(String state, N namespace);
+
+    /**
+     * @return A stream of all keys for the multiple states and a given namespace. Modifications to
+     *     the states during iterating over its keys are not supported.
+     * @param states State variables for which existing keys will be returned.
+     * @param namespace Namespace for which existing keys will be returned.
+     */
+    <N> Stream<K> getKeys(List<String> states, N namespace);
+
+    /**
+     * @return A stream of all keys for the multiple states and a given namespace, paired with the
+     *     key-group each key is actually stored under. Modifications to the states during iterating
+     *     over its keys are not supported.
+     *     <p>Unlike {@link #getKeys(List, Object)}, the key-group in the returned pair reflects how
+     *     the key was physically partitioned when it was written, rather than being recomputed from
+     *     {@code key.hashCode()}. Use this method instead of {@link #getKeys(List, Object)}
+     *     whenever the returned key's {@code hashCode()} is not guaranteed to match the hash of the
+     *     key that originally wrote the data; callers that need to restore the reading context for
+     *     such a key (e.g. via {@link #setCurrentKeyAndKeyGroup}) must use the returned key-group
+     *     rather than recomputing it from the key.
+     * @param states State variables for which existing keys will be returned.
+     * @param namespace Namespace for which existing keys will be returned.
+     */
+    <N> Stream<Tuple2<K, Integer>> getKeysAndKeyGroups(List<String> states, N namespace);
 
     /**
      * @return A stream of all keys for the given state and namespace. Modifications to the state
@@ -137,11 +178,6 @@ public interface KeyedStateBackend<K>
      */
     boolean deregisterKeySelectionListener(KeySelectionListener<K> listener);
 
-    @Deprecated
-    default boolean isStateImmutableInStateBackend(CheckpointType checkpointOptions) {
-        return false;
-    }
-
     /**
      * Whether it's safe to reuse key-values from the state-backend, e.g for the purpose of
      * optimization.
@@ -155,6 +191,13 @@ public interface KeyedStateBackend<K>
     default boolean isSafeToReuseKVState() {
         return false;
     }
+
+    /**
+     * @return fixed lower-case string identifying the type of the underlying state backend, e.g.
+     *     rocksdb, hashmap, forst, batch.
+     */
+    @Experimental
+    String getBackendTypeIdentifier();
 
     /** Listener is given a callback when {@link #setCurrentKey} is called (key context changes). */
     @FunctionalInterface

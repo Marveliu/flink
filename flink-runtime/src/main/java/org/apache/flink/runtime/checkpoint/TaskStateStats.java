@@ -19,6 +19,7 @@
 package org.apache.flink.runtime.checkpoint;
 
 import org.apache.flink.runtime.jobgraph.JobVertexID;
+import org.apache.flink.runtime.util.stats.StatsSummary;
 
 import javax.annotation.Nullable;
 
@@ -77,7 +78,9 @@ public class TaskStateStats implements Serializable {
         }
     }
 
-    /** @return ID of the operator the statistics belong to. */
+    /**
+     * @return ID of the operator the statistics belong to.
+     */
     public JobVertexID getJobVertexId() {
         return jobVertexId;
     }
@@ -112,12 +115,16 @@ public class TaskStateStats implements Serializable {
         }
     }
 
-    /** @return Total persisted size over all subtasks of this checkpoint. */
+    /**
+     * @return Total persisted size over all subtasks of this checkpoint.
+     */
     public long getCheckpointedSize() {
         return summaryStats.getCheckpointedSize().getSum();
     }
 
-    /** @return Total checkpoint state size over all subtasks. */
+    /**
+     * @return Total checkpoint state size over all subtasks.
+     */
     public long getStateSize() {
         return summaryStats.getStateSizeStats().getSum();
     }
@@ -161,7 +168,9 @@ public class TaskStateStats implements Serializable {
         return subtaskStats;
     }
 
-    /** @return Summary of the subtask stats. */
+    /**
+     * @return Summary of the subtask stats.
+     */
     public TaskStateStatsSummary getSummaryStats() {
         return summaryStats;
     }

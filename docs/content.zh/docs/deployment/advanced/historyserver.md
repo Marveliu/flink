@@ -27,7 +27,7 @@ under the License.
 
 # History Server
 
-Flink 提供了 history server，可以在相应的 Flink 集群关闭之后查询已完成作业的统计信息。
+Flink 提供了 history server，可以在相应的 Flink 集群关闭之后查询已完成作业和应用程序的统计信息。
 
 此外，它暴露了一套 REST API，该 API 接受 HTTP 请求并返回 JSON 格式的数据。
 
@@ -37,7 +37,7 @@ Flink 提供了 history server，可以在相应的 Flink 集群关闭之后查�
 
 ## 概览
 
-HistoryServer 允许查询 JobManager 存档的已完成作业的状态和统计信息。
+HistoryServer 允许查询 JobManager 存档的已完成作业和应用程序的状态和统计信息。
 
 在配置 HistoryServer *和* JobManager 之后，你可以使用相应的脚本来启动和停止 HistoryServer：
 
@@ -58,20 +58,24 @@ bin/historyserver.sh (start|start-foreground|stop)
 
 **JobManager**
 
-已完成作业的存档在 JobManager 上进行，将已存档的作业信息上传到文件系统目录中。你可以在 `flink-conf.yaml` 文件中通过 `jobmanager.archive.fs.dir` 设置一个目录存档已完成的作业。
+已完成作业和应用程序的存档在 JobManager 上进行，将已存档的作业和应用程序信息上传到文件系统目录中。你可以在 [Flink 配置文件]({{< ref "docs/deployment/config#flink-配置文件" >}})中通过 `jobmanager.archive.fs.dir` 设置一个目录存档已完成的作业和应用程序。
 
 ```yaml
-# 上传已完成作业信息的目录
-jobmanager.archive.fs.dir: hdfs:///completed-jobs
+# 上传已完成作业和应用程序信息的目录
+jobmanager.archive.fs.dir: hdfs:///archives
 ```
+
+{{< hint info >}}
+如需了解具体的目录结构，请参阅 [FLIP-549: Support Application Management](https://cwiki.apache.org/confluence/display/FLINK/FLIP-549%3A+Support+Application+Management)。
+{{< /hint >}}
 
 **HistoryServer**
 
 可以通过 `historyserver.archive.fs.dir` 设置 HistoryServer 监视以逗号分隔的目录列表。定期轮询已配置的目录以查找新的存档；轮询间隔可以通过 `historyserver.archive.fs.refresh-interval` 来配置。
 
 ```yaml
-# 监视以下目录中已完成的作业
-historyserver.archive.fs.dir: hdfs:///completed-jobs
+# 监视以下目录中已完成的作业和应用程序
+historyserver.archive.fs.dir: hdfs:///archives
 
 # 每 10 秒刷新一次
 historyserver.archive.fs.refresh-interval: 10000
@@ -81,13 +85,72 @@ historyserver.archive.fs.refresh-interval: 10000
 
 请查看配置页面以获取[配置选项的完整列表]({{< ref "docs/deployment/config" >}}#history-server)。
 
+**存储后端**
+
+HistoryServer 支持通过 `historyserver.archive.storage.type` 选择本地存档存储后端：
+
+* `FILE`（默认）：每个存档解压为多个 JSON 文件，存放在 `historyserver.web.tmpdir` 下。
+* `ROCKSDB`：所有存档以 KV 形式存储在 `historyserver.web.tmpdir/rocksdb` 的单个 RocksDB 实例中，可避免"大量小文件"问题，适合存档数量较多的场景。
+
+启用 RocksDB 后端示例：
+
+```yaml
+historyserver.archive.storage.type: ROCKSDB
+```
+
+**加载模式**
+
+HistoryServer 支持两种加载模式，通过 `historyserver.archive.load.mode` 配置：
+
+* `EAGER`（默认）：通过周期性的后台刷新，自动、同步地将存档下载到本地存储。
+* `LAZY`：存档会立即展示在 Web 界面上，底层数据则在后台异步拉取。如果某个存档在其后台下载完成之前被访问，系统会优先按需拉取该存档。
+
+启用懒加载模式示例：
+
+```yaml
+historyserver.archive.load.mode: LAZY
+```
+
+在 `LAZY` 模式下，按需拉取使用两个线程池：
+
+* `historyserver.lazy.fetch.executor.common.pool-size` —— 用于常规后台存档拉取的共享线程池的大小。
+* `historyserver.lazy.fetch.executor.individual.pool-size` —— 专用于按需拉取单个存档（例如用户访问某个存档时）的高优先级线程池的大小。
+
+## 日志集成
+
+Flink 本身并不提供已完成作业的日志收集功能。
+但是，如果你已经有了日志收集与浏览服务，可以配置 HistoryServer 与其集成。
+（通过[`historyserver.log.jobmanager.url-pattern`]({{< ref "docs/deployment/config" >}}#historyserver-log-jobmanager-url-pattern)
+和 [`historyserver.log.taskmanager.url-pattern`]({{< ref "docs/deployment/config" >}}#historyserver-log-taskmanager-url-pattern)）。
+如此一来，你可以从 HistoryServer 的 WebUI 直接链接到相关 JobManager / TaskManager 的日志。
+
+```yaml
+# HistoryServer 会将 <jobid> 替换为对应作业的 ID
+historyserver.log.jobmanager.url-pattern: http://my.log-browsing.url/<jobid>
+
+# HistoryServer 会将 <jobid> 和 <tmid> 替换为对应作业和 TaskManager 的 ID
+historyserver.log.taskmanager.url-pattern: http://my.log-browsing.url/<jobid>/<tmid>
+```
+
 <a name="available-requests"></a>
 
 ## 可用的请求
 
-以下是可用且带有示例 JSON 响应的请求列表。所有请求格式样例均为 `http://hostname:8082/jobs`，下面我们仅列出了 URLs 的 *path* 部分。
+以下是可用的请求列表。所有请求格式样例均为 `http://hostname:8082/jobs`，下面我们仅列出了 URLs 的 *path* 部分。
+
 尖括号中的值为变量，例如作业 `7684be6004e4e955c2a558a9bc463f65` 的 
 `http://hostname:port/jobs/<jobid>/exceptions` 请求须写为 `http://hostname:port/jobs/7684be6004e4e955c2a558a9bc463f65/exceptions`。
+
+这些 REST 端点的响应格式与 [REST API]({{< ref "docs/ops/rest_api" >}}) 文档中的描述一致。
+
+**应用程序相关请求**
+
+  - `/applications/overview`
+  - `/applications/<applicationid>`
+  - `/applications/<applicationid>/jobmanager/config`
+  - `/applications/<applicationid>/exceptions`
+
+**作业相关请求**
 
   - `/config`
   - `/jobs/overview`
@@ -105,5 +168,9 @@ historyserver.archive.fs.refresh-interval: 10000
   - `/jobs/<jobid>/vertices/<vertexid>/subtasks/<subtasknum>/attempts/<attempt>`
   - `/jobs/<jobid>/vertices/<vertexid>/subtasks/<subtasknum>/attempts/<attempt>/accumulators`
   - `/jobs/<jobid>/plan`
+  - `/jobs/<jobid>/jobmanager/config`
+  - `/jobs/<jobid>/jobmanager/environment`
+  - `/jobs/<jobid>/jobmanager/log-url`
+  - `/jobs/<jobid>/taskmanagers/<taskmanagerid>/log-url`
 
 {{< top >}}

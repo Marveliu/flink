@@ -18,79 +18,146 @@
 
 package org.apache.flink.table.planner.plan.rules.logical;
 
-import org.apache.flink.table.api.Schema;
 import org.apache.flink.table.api.TableConfig;
-import org.apache.flink.table.api.TableDescriptor;
-import org.apache.flink.table.connector.ChangelogMode;
-import org.apache.flink.table.planner.factories.TableFactoryHarness;
-import org.apache.flink.table.planner.utils.StreamTableTestUtil;
 import org.apache.flink.table.planner.utils.TableTestBase;
+import org.apache.flink.table.planner.utils.TableTestUtil;
+import org.apache.flink.testutils.junit.extensions.parameterized.ParameterizedTestExtension;
+import org.apache.flink.testutils.junit.extensions.parameterized.Parameters;
 
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.Assumptions;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.TestTemplate;
+import org.junit.jupiter.api.extension.ExtendWith;
 
-import static org.apache.flink.table.api.DataTypes.INT;
-import static org.apache.flink.table.api.DataTypes.STRING;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
 
 /** Tests for {@link WrapJsonAggFunctionArgumentsRule}. */
-public class WrapJsonAggFunctionArgumentsRuleTest extends TableTestBase {
+@ExtendWith(ParameterizedTestExtension.class)
+class WrapJsonAggFunctionArgumentsRuleTest extends TableTestBase {
 
-    private StreamTableTestUtil util;
+    private final boolean batchMode;
+    private final boolean isGroupWindowAgg;
+    private TableTestUtil util;
 
-    @Before
-    public void before() {
-        util = streamTestUtil(TableConfig.getDefault());
+    @Parameters(name = "batchMode = {0}, isGroupWindowAgg = {1}")
+    private static List<Boolean[]> data() {
+        return Arrays.asList(
+                new Boolean[] {true, false},
+                new Boolean[] {true, true},
+                new Boolean[] {false, false},
+                new Boolean[] {false, true});
     }
 
-    @Test
-    public void testJsonObjectAgg() {
-        final TableDescriptor sourceDescriptor =
-                TableFactoryHarness.newBuilder()
-                        .schema(Schema.newBuilder().column("f0", STRING()).build())
-                        .unboundedScanSource(ChangelogMode.all())
-                        .build();
-
-        util.tableEnv().createTable("T", sourceDescriptor);
-        util.verifyRelPlan("SELECT JSON_OBJECTAGG(f0 VALUE f0) FROM T");
+    WrapJsonAggFunctionArgumentsRuleTest(boolean batchMode, boolean isGroupWindowAgg) {
+        this.batchMode = batchMode;
+        this.isGroupWindowAgg = isGroupWindowAgg;
     }
 
-    @Test
-    public void testJsonObjectAggInGroupWindow() {
-        final TableDescriptor sourceDescriptor =
-                TableFactoryHarness.newBuilder()
-                        .schema(
-                                Schema.newBuilder()
-                                        .column("f0", INT())
-                                        .column("f1", STRING())
-                                        .build())
-                        .unboundedScanSource()
-                        .build();
+    @BeforeEach
+    void setup() {
+        if (batchMode) {
+            util = batchTestUtil(TableConfig.getDefault());
+        } else {
+            util = streamTestUtil(TableConfig.getDefault());
+        }
 
-        util.tableEnv().createTable("T", sourceDescriptor);
-        util.verifyRelPlan("SELECT f0, JSON_OBJECTAGG(f1 VALUE f0) FROM T GROUP BY f0");
+        util.tableEnv()
+                .executeSql(
+                        "CREATE TABLE T(\n"
+                                + " f0 INTEGER,\n"
+                                + " f1 VARCHAR,\n"
+                                + " f2 BIGINT\n"
+                                + ") WITH (\n"
+                                + " 'connector' = 'values'\n"
+                                + " ,'bounded' = '"
+                                + batchMode
+                                + "'\n)");
+
+        if (isGroupWindowAgg) {
+            util.tableEnv()
+                    .executeSql(
+                            "ALTER TABLE T add (rt TIMESTAMP(3), WATERMARK FOR rt as rt - interval '1' second)");
+        }
     }
 
-    @Test
-    public void testJsonArrayAgg() {
-        final TableDescriptor sourceDescriptor =
-                TableFactoryHarness.newBuilder()
-                        .schema(Schema.newBuilder().column("f0", STRING()).build())
-                        .unboundedScanSource(ChangelogMode.all())
-                        .build();
-
-        util.tableEnv().createTable("T", sourceDescriptor);
-        util.verifyRelPlan("SELECT JSON_ARRAYAGG(f0) FROM T");
+    @TestTemplate
+    void testJsonObjectAgg() {
+        util.verifyRelPlan(renderAggregateSQL("JSON_OBJECTAGG(f1 VALUE f1)"));
     }
 
-    @Test
-    public void testJsonArrayAggInGroupWindow() {
-        final TableDescriptor sourceDescriptor =
-                TableFactoryHarness.newBuilder()
-                        .schema(Schema.newBuilder().column("f0", INT()).build())
-                        .unboundedScanSource()
-                        .build();
+    @TestTemplate
+    void testJsonObjectAggInGroupWindow() {
+        util.verifyRelPlan(renderAggregateSQL("f0, JSON_OBJECTAGG(f1 VALUE f0)", "f0"));
+    }
 
-        util.tableEnv().createTable("T", sourceDescriptor);
-        util.verifyRelPlan("SELECT f0, JSON_ARRAYAGG(f0) FROM T GROUP BY f0");
+    @TestTemplate
+    void testJsonArrayAgg() {
+        util.verifyRelPlan(renderAggregateSQL("JSON_ARRAYAGG(f0)"));
+    }
+
+    @TestTemplate
+    void testJsonArrayAggInGroupWindow() {
+        util.verifyRelPlan(renderAggregateSQL("f0, JSON_ARRAYAGG(f0)", "f0"));
+    }
+
+    @TestTemplate
+    void testJsonObjectAggWithOtherAggs() {
+        util.verifyRelPlan(renderAggregateSQL("COUNT(*), JSON_OBJECTAGG(f1 VALUE f1)"));
+    }
+
+    @TestTemplate
+    void testGroupJsonObjectAggWithOtherAggs() {
+        util.verifyRelPlan(
+                renderAggregateSQL("f0, COUNT(*), JSON_OBJECTAGG(f1 VALUE f0), SUM(f2)", "f0"));
+    }
+
+    @TestTemplate
+    void testJsonArrayAggWithOtherAggs() {
+        util.verifyRelPlan(renderAggregateSQL("COUNT(*), JSON_ARRAYAGG(f0)"));
+    }
+
+    @TestTemplate
+    void testGroupJsonArrayAggInWithOtherAggs() {
+        util.verifyRelPlan(renderAggregateSQL("f0, COUNT(*), JSON_ARRAYAGG(f0), SUM(f2)", "f0"));
+    }
+
+    @TestTemplate
+    void testJsonArrayAggAndJsonObjectAggWithOtherAggs() {
+        util.verifyRelPlan(
+                renderAggregateSQL(
+                        "MAX(f0), JSON_OBJECTAGG(f1 VALUE f0), JSON_ARRAYAGG(f1), JSON_ARRAYAGG(f0)"));
+    }
+
+    @TestTemplate
+    void testGroupJsonArrayAggAndJsonObjectAggWithOtherAggs() {
+        util.verifyRelPlan(
+                renderAggregateSQL(
+                        "f0, JSON_OBJECTAGG(f1 VALUE f2), JSON_ARRAYAGG(f1), JSON_ARRAYAGG(f2),"
+                                + " SUM(f2)",
+                        "f0"));
+    }
+
+    @TestTemplate
+    void testJsonObjectAggWithWindowTVF() {
+        Assumptions.assumeTrue(isGroupWindowAgg);
+        util.verifyRelPlan(
+                "SELECT JSON_OBJECTAGG(f1 VALUE f1) "
+                        + "FROM TABLE(TUMBLE(TABLE T, DESCRIPTOR(rt), INTERVAL '5' SECOND))");
+    }
+
+    private String renderAggregateSQL(String projects, String... groupKeys) {
+        List<String> newGroupKeys = new ArrayList<>(Arrays.asList(groupKeys));
+        if (isGroupWindowAgg) {
+            newGroupKeys.add("TUMBLE(rt, INTERVAL '5' SECOND)");
+        }
+        String groupKeyStr;
+        if (newGroupKeys.isEmpty()) {
+            groupKeyStr = "";
+        } else {
+            groupKeyStr = " GROUP BY " + String.join(",", newGroupKeys);
+        }
+        return String.format("SELECT %s FROM T%s", projects, groupKeyStr);
     }
 }

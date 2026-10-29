@@ -25,6 +25,7 @@ import org.apache.flink.core.io.SimpleVersionedSerializer;
 import org.apache.flink.runtime.jobgraph.OperatorID;
 import org.apache.flink.runtime.operators.coordination.OperatorCoordinator;
 import org.apache.flink.runtime.operators.coordination.RecreateOnResetOperatorCoordinator;
+import org.apache.flink.util.MdcUtils;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -35,6 +36,8 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.ThreadFactory;
 import java.util.function.BiConsumer;
 
+import static org.apache.flink.util.Preconditions.checkState;
+
 /** The provider of {@link SourceCoordinator}. */
 public class SourceCoordinatorProvider<SplitT extends SourceSplit>
         extends RecreateOnResetOperatorCoordinator.Provider {
@@ -43,6 +46,7 @@ public class SourceCoordinatorProvider<SplitT extends SourceSplit>
     private final Source<?, SplitT, ?> source;
     private final int numWorkerThreads;
     private final WatermarkAlignmentParams alignmentParams;
+    @Nullable private final String coordinatorListeningID;
 
     /**
      * Construct the {@link SourceCoordinatorProvider}.
@@ -60,33 +64,60 @@ public class SourceCoordinatorProvider<SplitT extends SourceSplit>
             OperatorID operatorID,
             Source<?, SplitT, ?> source,
             int numWorkerThreads,
-            WatermarkAlignmentParams alignmentParams) {
+            WatermarkAlignmentParams alignmentParams,
+            @Nullable String coordinatorListeningID) {
         super(operatorID);
         this.operatorName = operatorName;
         this.source = source;
         this.numWorkerThreads = numWorkerThreads;
         this.alignmentParams = alignmentParams;
+        this.coordinatorListeningID = coordinatorListeningID;
     }
 
     @Override
     public OperatorCoordinator getCoordinator(OperatorCoordinator.Context context) {
-        final String coordinatorThreadName = "SourceCoordinator-" + operatorName;
+        final String coordinatorThreadName = createCoordinatorThreadName(context);
         CoordinatorExecutorThreadFactory coordinatorThreadFactory =
                 new CoordinatorExecutorThreadFactory(coordinatorThreadName, context);
 
         SimpleVersionedSerializer<SplitT> splitSerializer = source.getSplitSerializer();
         SourceCoordinatorContext<SplitT> sourceCoordinatorContext =
                 new SourceCoordinatorContext<>(
-                        coordinatorThreadFactory, numWorkerThreads, context, splitSerializer);
+                        context.getJobID(),
+                        coordinatorThreadFactory,
+                        numWorkerThreads,
+                        context,
+                        splitSerializer,
+                        context.isConcurrentExecutionAttemptsSupported());
         return new SourceCoordinator<>(
+                context.getJobID(),
                 operatorName,
                 source,
                 sourceCoordinatorContext,
                 context.getCoordinatorStore(),
-                alignmentParams);
+                alignmentParams,
+                coordinatorListeningID);
     }
 
-    /** A thread factory class that provides some helper methods. */
+    /**
+     * Builds the coordinator thread name. The operator name alone is ambiguous on a shared cluster
+     * because two jobs may use identically named sources, so the job identity is appended to make
+     * the coordinator thread (and its derived {@code -worker} pool) attributable to a job.
+     */
+    private String createCoordinatorThreadName(OperatorCoordinator.Context context) {
+        final String base = "SourceCoordinator-" + operatorName;
+        try {
+            return base + MdcUtils.jobThreadNameSuffix(context.getJobInfo());
+        } catch (UnsupportedOperationException e) {
+            // A custom Context may not expose job identity - fall back to the operator-only name.
+            return base;
+        }
+    }
+
+    /**
+     * A thread factory class that provides some helper methods. Because it is used to check the
+     * current thread, it is a one-off, do not use this ThreadFactory to create multiple threads.
+     */
     public static class CoordinatorExecutorThreadFactory
             implements ThreadFactory, Thread.UncaughtExceptionHandler {
 
@@ -122,6 +153,10 @@ public class SourceCoordinatorProvider<SplitT extends SourceSplit>
 
         @Override
         public synchronized Thread newThread(Runnable r) {
+            checkState(
+                    t == null,
+                    "Please using the new CoordinatorExecutorThreadFactory,"
+                            + " this factory cannot new multiple threads.");
             t = new Thread(r, coordinatorThreadName);
             t.setContextClassLoader(cl);
             t.setUncaughtExceptionHandler(this);

@@ -20,28 +20,28 @@ package org.apache.flink.table.planner.runtime.utils
 import org.apache.flink.table.api.config.ExecutionConfigOptions.{TABLE_EXEC_MINIBATCH_ALLOW_LATENCY, TABLE_EXEC_MINIBATCH_ENABLED, TABLE_EXEC_MINIBATCH_SIZE}
 import org.apache.flink.table.planner.runtime.utils.StreamingWithMiniBatchTestBase.{MiniBatchMode, MiniBatchOff, MiniBatchOn}
 import org.apache.flink.table.planner.runtime.utils.StreamingWithStateTestBase.{HEAP_BACKEND, ROCKSDB_BACKEND, StateBackendMode}
+import org.apache.flink.testutils.junit.extensions.parameterized.Parameters
 
-import org.junit.runners.Parameterized
+import org.junit.jupiter.api.BeforeEach
 
 import java.time.Duration
 import java.util
 
 import scala.collection.JavaConversions._
 
-abstract class StreamingWithMiniBatchTestBase(
-    miniBatch: MiniBatchMode,
-    state: StateBackendMode)
+abstract class StreamingWithMiniBatchTestBase(miniBatch: MiniBatchMode, state: StateBackendMode)
   extends StreamingWithStateTestBase(state) {
 
+  @BeforeEach
   override def before(): Unit = {
     super.before()
     // set mini batch
     val tableConfig = tEnv.getConfig
     miniBatch match {
       case MiniBatchOn =>
-        tableConfig.getConfiguration.setBoolean(TABLE_EXEC_MINIBATCH_ENABLED, true)
-        tableConfig.getConfiguration.set(TABLE_EXEC_MINIBATCH_ALLOW_LATENCY, Duration.ofSeconds(1))
-        tableConfig.getConfiguration.setLong(TABLE_EXEC_MINIBATCH_SIZE, 3L)
+        tableConfig.set(TABLE_EXEC_MINIBATCH_ENABLED, Boolean.box(true))
+        tableConfig.set(TABLE_EXEC_MINIBATCH_ALLOW_LATENCY, Duration.ofSeconds(1))
+        tableConfig.set(TABLE_EXEC_MINIBATCH_SIZE, Long.box(3))
       case MiniBatchOff =>
         tableConfig.getConfiguration.removeConfig(TABLE_EXEC_MINIBATCH_ALLOW_LATENCY)
     }
@@ -63,7 +63,7 @@ object StreamingWithMiniBatchTestBase {
   val MiniBatchOff = MiniBatchMode(false)
   val MiniBatchOn = MiniBatchMode(true)
 
-  @Parameterized.Parameters(name = "{0}, StateBackend={1}")
+  @Parameters(name = "{0}, StateBackend={1}")
   def parameters(): util.Collection[Array[java.lang.Object]] = {
     Seq[Array[AnyRef]](
       Array(MiniBatchOff, HEAP_BACKEND),

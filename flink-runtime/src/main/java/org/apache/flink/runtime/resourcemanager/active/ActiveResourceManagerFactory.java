@@ -18,14 +18,13 @@
 
 package org.apache.flink.runtime.resourcemanager.active;
 
-import org.apache.flink.configuration.ClusterOptions;
 import org.apache.flink.configuration.ConfigOption;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.IllegalConfigurationException;
 import org.apache.flink.configuration.MemorySize;
 import org.apache.flink.configuration.ResourceManagerOptions;
 import org.apache.flink.configuration.TaskManagerOptions;
-import org.apache.flink.runtime.clusterframework.TaskExecutorProcessUtils;
+import org.apache.flink.runtime.blocklist.BlocklistUtils;
 import org.apache.flink.runtime.clusterframework.types.ResourceID;
 import org.apache.flink.runtime.clusterframework.types.ResourceIDRetrievable;
 import org.apache.flink.runtime.entrypoint.ClusterInformation;
@@ -38,6 +37,7 @@ import org.apache.flink.runtime.resourcemanager.ResourceManagerFactory;
 import org.apache.flink.runtime.resourcemanager.ResourceManagerRuntimeServices;
 import org.apache.flink.runtime.rpc.FatalErrorHandler;
 import org.apache.flink.runtime.rpc.RpcService;
+import org.apache.flink.runtime.security.token.DelegationTokenManager;
 
 import javax.annotation.Nullable;
 
@@ -53,30 +53,19 @@ public abstract class ActiveResourceManagerFactory<WorkerType extends ResourceID
         extends ResourceManagerFactory<WorkerType> {
 
     @Override
-    protected Configuration getEffectiveConfigurationForResourceManagerAndRuntimeServices(
-            Configuration configuration) {
-        return TaskExecutorProcessUtils.getConfigurationMapLegacyTaskManagerHeapSizeToConfigOption(
-                configuration, TaskManagerOptions.TOTAL_PROCESS_MEMORY);
-    }
-
-    @Override
     protected Configuration getEffectiveConfigurationForResourceManager(
             Configuration configuration) {
-        if (ClusterOptions.isFineGrainedResourceManagementEnabled(configuration)) {
-            final Configuration copiedConfig = new Configuration(configuration);
+        final Configuration copiedConfig = new Configuration(configuration);
 
-            if (copiedConfig.removeConfig(TaskManagerOptions.TOTAL_PROCESS_MEMORY)) {
-                logIgnoreTotalMemory(TaskManagerOptions.TOTAL_PROCESS_MEMORY);
-            }
-
-            if (copiedConfig.removeConfig(TaskManagerOptions.TOTAL_FLINK_MEMORY)) {
-                logIgnoreTotalMemory(TaskManagerOptions.TOTAL_FLINK_MEMORY);
-            }
-
-            return copiedConfig;
+        if (copiedConfig.removeConfig(TaskManagerOptions.TOTAL_PROCESS_MEMORY)) {
+            logIgnoreTotalMemory(TaskManagerOptions.TOTAL_PROCESS_MEMORY);
         }
 
-        return configuration;
+        if (copiedConfig.removeConfig(TaskManagerOptions.TOTAL_FLINK_MEMORY)) {
+            logIgnoreTotalMemory(TaskManagerOptions.TOTAL_FLINK_MEMORY);
+        }
+
+        return copiedConfig;
     }
 
     private void logIgnoreTotalMemory(ConfigOption<MemorySize> option) {
@@ -93,6 +82,7 @@ public abstract class ActiveResourceManagerFactory<WorkerType extends ResourceID
             RpcService rpcService,
             UUID leaderSessionId,
             HeartbeatServices heartbeatServices,
+            DelegationTokenManager delegationTokenManager,
             FatalErrorHandler fatalErrorHandler,
             ClusterInformation clusterInformation,
             @Nullable String webInterfaceUrl,
@@ -106,6 +96,10 @@ public abstract class ActiveResourceManagerFactory<WorkerType extends ResourceID
                 configuration.get(ResourceManagerOptions.START_WORKER_RETRY_INTERVAL);
         final Duration workerRegistrationTimeout =
                 configuration.get(ResourceManagerOptions.TASK_MANAGER_REGISTRATION_TIMEOUT);
+        final Duration previousWorkerRecoverTimeout =
+                configuration.get(
+                        ResourceManagerOptions.RESOURCE_MANAGER_PREVIOUS_WORKER_RECOVERY_TIMEOUT);
+
         return new ActiveResourceManager<>(
                 createResourceManagerDriver(
                         configuration, webInterfaceUrl, rpcService.getAddress()),
@@ -114,8 +108,10 @@ public abstract class ActiveResourceManagerFactory<WorkerType extends ResourceID
                 leaderSessionId,
                 resourceId,
                 heartbeatServices,
+                delegationTokenManager,
                 resourceManagerRuntimeServices.getSlotManager(),
                 ResourceManagerPartitionTrackerImpl::new,
+                BlocklistUtils.loadBlocklistHandlerFactory(configuration),
                 resourceManagerRuntimeServices.getJobLeaderIdService(),
                 clusterInformation,
                 fatalErrorHandler,
@@ -123,6 +119,7 @@ public abstract class ActiveResourceManagerFactory<WorkerType extends ResourceID
                 failureRater,
                 retryInterval,
                 workerRegistrationTimeout,
+                previousWorkerRecoverTimeout,
                 ioExecutor);
     }
 
@@ -131,7 +128,7 @@ public abstract class ActiveResourceManagerFactory<WorkerType extends ResourceID
             throws Exception;
 
     public static ThresholdMeter createStartWorkerFailureRater(Configuration configuration) {
-        double rate = configuration.getDouble(ResourceManagerOptions.START_WORKER_MAX_FAILURE_RATE);
+        double rate = configuration.get(ResourceManagerOptions.START_WORKER_MAX_FAILURE_RATE);
         if (rate <= 0) {
             throw new IllegalConfigurationException(
                     String.format(

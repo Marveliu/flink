@@ -25,8 +25,12 @@ import org.apache.flink.table.planner.calcite.FlinkRelBuilder;
 import org.apache.flink.table.planner.plan.schema.ExpandingPreparingTable;
 import org.apache.flink.table.planner.plan.stats.FlinkStatistic;
 
+import org.apache.calcite.plan.Context;
+import org.apache.calcite.plan.Contexts;
+import org.apache.calcite.plan.RelOptCluster;
 import org.apache.calcite.plan.RelOptSchema;
 import org.apache.calcite.plan.RelOptTable;
+import org.apache.calcite.plan.RelOptUtil;
 import org.apache.calcite.rel.RelNode;
 import org.apache.calcite.rel.type.RelDataType;
 
@@ -70,9 +74,11 @@ public class QueryOperationCatalogViewTable extends ExpandingPreparingTable {
 
     @Override
     public RelNode convertToRel(RelOptTable.ToRelContext context) {
-        FlinkRelBuilder relBuilder =
-                FlinkRelBuilder.of(context, context.getCluster(), this.getRelOptSchema());
+        final RelOptCluster cluster = context.getCluster();
+        final Context chain = Contexts.of(context, cluster.getPlanner().getContext());
+        final FlinkRelBuilder relBuilder = FlinkRelBuilder.of(chain, cluster, getRelOptSchema());
 
-        return relBuilder.queryOperation(catalogView.getQueryOperation()).build();
+        return RelOptUtil.createCastRel(
+                relBuilder.queryOperation(catalogView.getQueryOperation()).build(), rowType, true);
     }
 }

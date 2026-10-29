@@ -19,16 +19,17 @@
 package org.apache.flink.test.recovery;
 
 import org.apache.flink.api.common.JobID;
+import org.apache.flink.api.common.accumulators.ListAccumulator;
 import org.apache.flink.api.common.state.ListState;
 import org.apache.flink.api.common.state.ListStateDescriptor;
-import org.apache.flink.api.common.time.Deadline;
-import org.apache.flink.configuration.CheckpointingOptions;
 import org.apache.flink.configuration.ClusterOptions;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.HeartbeatManagerOptions;
 import org.apache.flink.configuration.JobManagerOptions;
 import org.apache.flink.configuration.RestOptions;
+import org.apache.flink.configuration.StateRecoveryOptions;
 import org.apache.flink.configuration.TaskManagerOptions;
+import org.apache.flink.core.execution.CheckpointingMode;
 import org.apache.flink.core.execution.JobClient;
 import org.apache.flink.runtime.entrypoint.StandaloneSessionClusterEntrypoint;
 import org.apache.flink.runtime.rest.RestClient;
@@ -39,11 +40,10 @@ import org.apache.flink.runtime.rest.messages.checkpoints.CheckpointingStatistic
 import org.apache.flink.runtime.state.FunctionInitializationContext;
 import org.apache.flink.runtime.state.FunctionSnapshotContext;
 import org.apache.flink.runtime.testutils.CommonTestUtils;
-import org.apache.flink.streaming.api.CheckpointingMode;
 import org.apache.flink.streaming.api.checkpoint.CheckpointedFunction;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
-import org.apache.flink.streaming.api.functions.sink.DiscardingSink;
-import org.apache.flink.streaming.api.functions.source.RichParallelSourceFunction;
+import org.apache.flink.streaming.api.functions.sink.v2.DiscardingSink;
+import org.apache.flink.streaming.api.functions.source.legacy.RichParallelSourceFunction;
 import org.apache.flink.streaming.api.operators.StreamingRuntimeContext;
 import org.apache.flink.test.recovery.utils.TaskExecutorProcessEntryPoint;
 import org.apache.flink.test.util.TestProcessBuilder;
@@ -74,19 +74,21 @@ import static org.assertj.core.api.Assertions.assertThat;
 @ExtendWith(TestLoggerExtension.class)
 class LocalRecoveryITCase {
 
+    private static final String ALLOCATION_FAILURES_ACCUMULATOR_NAME = "acc";
+
     @TempDir private File tmpDirectory;
 
     @Test
-    public void testRecoverLocallyFromProcessCrashWithWorkingDirectory() throws Exception {
+    void testRecoverLocallyFromProcessCrashWithWorkingDirectory() throws Exception {
         final Configuration configuration = new Configuration();
         configuration.set(JobManagerOptions.ADDRESS, "localhost");
         configuration.set(JobManagerOptions.PORT, 0);
         configuration.set(RestOptions.BIND_PORT, "0");
-        configuration.set(HeartbeatManagerOptions.HEARTBEAT_TIMEOUT, 10000L);
-        configuration.set(HeartbeatManagerOptions.HEARTBEAT_INTERVAL, 1000L);
+        configuration.set(HeartbeatManagerOptions.HEARTBEAT_TIMEOUT, Duration.ofMillis(10000L));
+        configuration.set(HeartbeatManagerOptions.HEARTBEAT_INTERVAL, Duration.ofMillis(1000L));
         configuration.set(HeartbeatManagerOptions.HEARTBEAT_RPC_FAILURE_THRESHOLD, 1);
         configuration.set(ClusterOptions.PROCESS_WORKING_DIR_BASE, tmpDirectory.getAbsolutePath());
-        configuration.set(CheckpointingOptions.LOCAL_RECOVERY, true);
+        configuration.set(StateRecoveryOptions.LOCAL_RECOVERY, true);
         configuration.set(TaskManagerOptions.SLOT_TIMEOUT, Duration.ofSeconds(30L));
 
         final int parallelism = 3;
@@ -105,14 +107,16 @@ class LocalRecoveryITCase {
 
             final long waitingTimeInSeconds = 45L;
             waitUntilCheckpointCompleted(
-                    configuration,
-                    clusterEntrypoint.getRestPort(),
-                    jobClient.getJobID(),
-                    Deadline.fromNow(Duration.ofSeconds(waitingTimeInSeconds)));
+                    configuration, clusterEntrypoint.getRestPort(), jobClient.getJobID());
 
             restartTaskManagerProcesses(taskManagerProcesses, parallelism - 1);
 
-            jobClient.getJobExecutionResult().get(waitingTimeInSeconds, TimeUnit.SECONDS);
+            List<String> allocFailures =
+                    jobClient
+                            .getJobExecutionResult()
+                            .get(waitingTimeInSeconds, TimeUnit.SECONDS)
+                            .getAccumulatorResult(ALLOCATION_FAILURES_ACCUMULATOR_NAME);
+            assertThat(allocFailures).withFailMessage(allocFailures.toString()).isEmpty();
 
             success = true;
         } finally {
@@ -219,8 +223,7 @@ class LocalRecoveryITCase {
     }
 
     private void waitUntilCheckpointCompleted(
-            Configuration configuration, int restPort, JobID jobId, Deadline deadline)
-            throws Exception {
+            Configuration configuration, int restPort, JobID jobId) throws Exception {
         final RestClient restClient = new RestClient(configuration, Executors.directExecutor());
         final JobMessageParameters messageParameters = new JobMessageParameters();
         messageParameters.jobPathParameter.resolve(jobId);
@@ -237,8 +240,7 @@ class LocalRecoveryITCase {
                                             EmptyRequestBody.getInstance())
                                     .join();
                     return checkpointingStatistics.getCounts().getNumberCompletedCheckpoints() > 0;
-                },
-                deadline);
+                });
     }
 
     private JobClient submitJob(
@@ -251,7 +253,7 @@ class LocalRecoveryITCase {
 
         env.enableCheckpointing(100, CheckpointingMode.EXACTLY_ONCE);
 
-        env.addSource(new LocalRecoverySource()).keyBy(x -> x).addSink(new DiscardingSink<>());
+        env.addSource(new LocalRecoverySource()).keyBy(x -> x).sinkTo(new DiscardingSink<>());
         final JobClient jobClient = env.executeAsync();
         return jobClient;
     }
@@ -286,7 +288,7 @@ class LocalRecoveryITCase {
             StreamingRuntimeContext runtimeContext = (StreamingRuntimeContext) getRuntimeContext();
             String allocationId = runtimeContext.getAllocationIDAsString();
             // Pattern of the name: "Flat Map -> Sink: Unnamed (4/4)#0". Remove "#0" part:
-            String myName = runtimeContext.getTaskNameWithSubtasks().split("#")[0];
+            String myName = runtimeContext.getTaskInfo().getTaskNameWithSubtasks().split("#")[0];
 
             ListStateDescriptor<TaskNameAllocationID> previousAllocationsStateDescriptor =
                     new ListStateDescriptor<>("sourceState", TaskNameAllocationID.class);
@@ -313,17 +315,23 @@ class LocalRecoveryITCase {
                                         new IllegalStateException(
                                                 "Could not find corresponding TaskNameAllocationID information."));
 
-                assertThat(myTaskNameAllocationId.getAllocationId())
-                        .withFailMessage(
-                                "The task was deployed to AllocationID(%s) but it should have been deployed to AllocationID(%s) for local recovery.",
-                                allocationId, myTaskNameAllocationId.getAllocationId())
-                        .isEqualTo(allocationId);
+                runtimeContext.addAccumulator(
+                        ALLOCATION_FAILURES_ACCUMULATOR_NAME, new ListAccumulator<String>());
+                if (!allocationId.equals(myTaskNameAllocationId.getAllocationId())) {
+                    runtimeContext
+                            .getAccumulator(ALLOCATION_FAILURES_ACCUMULATOR_NAME)
+                            .add(
+                                    String.format(
+                                            "The task was deployed to AllocationID(%s) but it should have been deployed to AllocationID(%s) for local recovery.",
+                                            allocationId,
+                                            myTaskNameAllocationId.getAllocationId()));
+                }
                 // terminate
                 running = false;
             }
 
-            previousAllocations.clear();
-            previousAllocations.add(new TaskNameAllocationID(myName, allocationId));
+            previousAllocations.update(
+                    Collections.singletonList(new TaskNameAllocationID(myName, allocationId)));
         }
     }
 

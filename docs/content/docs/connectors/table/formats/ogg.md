@@ -35,6 +35,9 @@ enabling real-time analysis. Customers can design, execute, and monitor their da
 stream data processing solutions without the need to allocate or manage compute environments. Ogg
 provides a format schema for changelog and supports to serialize messages using JSON.
 
+This format reads change events that Oracle GoldenGate has already written to a system such as Kafka. To
+read changes directly from a database instead, see [Flink CDC](https://nightlies.apache.org/flink/flink-cdc-docs-stable/docs/connectors/flink-sources/overview/).
+
 Flink supports to interpret Ogg JSON as INSERT/UPDATE/DELETE messages into Flink SQL system. This is
 useful in many cases to leverage this feature, such as
 
@@ -92,7 +95,7 @@ captured from an Oracle `PRODUCTS` table in JSON format:
 ```
 
 *Note: please refer
-to [Debezium documentation](https://debezium.io/documentation/reference/1.3/connectors/oracle.html#oracle-events)
+to [Debezium documentation](https://debezium.io/documentation/reference/stable/connectors/oracle.html#oracle-events)
 about the meaning of each field.*
 
 The Oracle `PRODUCTS` table has 4 columns (`id`, `name`, `description` and `weight`). The above JSON
@@ -259,6 +262,13 @@ Format Options
       <td style="word-wrap: break-word;">'null'</td>
       <td>String</td>
       <td>Specify string literal to replace null key when <code>'ogg-json.map-null-key.mode'</code> is LITERAL.</td>
+    </tr>
+    <tr>
+      <td><h5>ogg-json.encode.ignore-null-fields</h5></td>
+      <td>optional</td>
+      <td style="word-wrap: break-word;">false</td>
+      <td>Boolean</td>
+      <td>Encode only non-null fields. By default, all fields will be included.</td>
     </tr>
     </tbody>
 </table>

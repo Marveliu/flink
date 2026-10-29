@@ -21,8 +21,8 @@ package org.apache.flink.runtime.testutils;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.JobManagerOptions;
 import org.apache.flink.configuration.RestOptions;
-import org.apache.flink.runtime.dispatcher.ExecutionGraphInfoStore;
-import org.apache.flink.runtime.dispatcher.MemoryExecutionGraphInfoStore;
+import org.apache.flink.runtime.dispatcher.ArchivedApplicationStore;
+import org.apache.flink.runtime.dispatcher.MemoryArchivedApplicationStore;
 import org.apache.flink.runtime.entrypoint.ClusterEntrypoint;
 import org.apache.flink.runtime.entrypoint.component.DefaultDispatcherResourceManagerComponentFactory;
 import org.apache.flink.runtime.entrypoint.component.DispatcherResourceManagerComponentFactory;
@@ -55,7 +55,7 @@ public class TestingClusterEntrypointProcess extends TestJvmProcess {
     }
 
     @Override
-    public String[] getJvmArgs() {
+    public String[] getMainMethodArgs() {
         return new String[] {markerFile.getAbsolutePath()};
     }
 
@@ -80,8 +80,8 @@ public class TestingClusterEntrypointProcess extends TestJvmProcess {
                 final File markerFile = new File(args[0]);
 
                 final Configuration config = new Configuration();
-                config.setInteger(JobManagerOptions.PORT, 0);
-                config.setString(RestOptions.BIND_PORT, "0");
+                config.set(JobManagerOptions.PORT, 0);
+                config.set(RestOptions.BIND_PORT, "0");
 
                 final TestingClusterEntrypoint clusterEntrypoint =
                         new TestingClusterEntrypoint(config, markerFile);
@@ -117,10 +117,10 @@ public class TestingClusterEntrypointProcess extends TestJvmProcess {
         }
 
         @Override
-        protected ExecutionGraphInfoStore createSerializableExecutionGraphStore(
+        protected ArchivedApplicationStore createArchivedApplicationStore(
                 Configuration configuration, ScheduledExecutor scheduledExecutor)
                 throws IOException {
-            return new MemoryExecutionGraphInfoStore();
+            return new MemoryArchivedApplicationStore();
         }
 
         @Override

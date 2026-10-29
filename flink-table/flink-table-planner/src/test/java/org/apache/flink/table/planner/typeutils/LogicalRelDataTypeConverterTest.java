@@ -21,9 +21,11 @@ package org.apache.flink.table.planner.typeutils;
 import org.apache.flink.api.common.typeutils.base.LocalDateTimeSerializer;
 import org.apache.flink.table.catalog.ObjectIdentifier;
 import org.apache.flink.table.planner.calcite.FlinkTypeFactory;
+import org.apache.flink.table.planner.calcite.FlinkTypeSystem;
 import org.apache.flink.table.types.logical.ArrayType;
 import org.apache.flink.table.types.logical.BigIntType;
 import org.apache.flink.table.types.logical.BinaryType;
+import org.apache.flink.table.types.logical.BitmapType;
 import org.apache.flink.table.types.logical.BooleanType;
 import org.apache.flink.table.types.logical.CharType;
 import org.apache.flink.table.types.logical.DateType;
@@ -40,13 +42,16 @@ import org.apache.flink.table.types.logical.RawType;
 import org.apache.flink.table.types.logical.RowType;
 import org.apache.flink.table.types.logical.SmallIntType;
 import org.apache.flink.table.types.logical.StructuredType;
+import org.apache.flink.table.types.logical.StructuredType.StructuredAttribute;
 import org.apache.flink.table.types.logical.SymbolType;
 import org.apache.flink.table.types.logical.TimeType;
 import org.apache.flink.table.types.logical.TimestampKind;
 import org.apache.flink.table.types.logical.TimestampType;
 import org.apache.flink.table.types.logical.TinyIntType;
+import org.apache.flink.table.types.logical.UuidType;
 import org.apache.flink.table.types.logical.VarBinaryType;
 import org.apache.flink.table.types.logical.VarCharType;
+import org.apache.flink.table.types.logical.VariantType;
 import org.apache.flink.table.types.logical.YearMonthIntervalType;
 import org.apache.flink.table.types.utils.DataTypeFactoryMock;
 
@@ -55,7 +60,6 @@ import org.apache.calcite.rel.type.RelDataTypeFactory;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
 
-import java.io.IOException;
 import java.time.LocalDateTime;
 import java.util.Arrays;
 import java.util.Collections;
@@ -68,8 +72,11 @@ public class LogicalRelDataTypeConverterTest {
 
     @ParameterizedTest
     @MethodSource("testConversion")
-    public void testConversion(LogicalType logicalType) throws IOException {
-        final RelDataTypeFactory typeFactory = FlinkTypeFactory.INSTANCE();
+    public void testConversion(LogicalType logicalType) {
+        final RelDataTypeFactory typeFactory =
+                new FlinkTypeFactory(
+                        LogicalRelDataTypeConverterTest.class.getClassLoader(),
+                        FlinkTypeSystem.INSTANCE);
         final DataTypeFactoryMock dataTypeFactory = new DataTypeFactoryMock();
         final RelDataType relDataType =
                 LogicalRelDataTypeConverter.toRelDataType(logicalType, typeFactory);
@@ -146,7 +153,13 @@ public class LogicalRelDataTypeConverterTest {
                 new MultisetType(VarCharType.ofEmptyLiteral()),
                 new MultisetType(BinaryType.ofEmptyLiteral()),
                 new MultisetType(VarBinaryType.ofEmptyLiteral()),
+                new BitmapType(),
+                new UuidType(),
+                new VariantType(),
+                new ArrayType(new VariantType()),
+                new MapType(new VarCharType(5), new VariantType()),
                 RowType.of(new BigIntType(), new IntType(false), new VarCharType(200)),
+                RowType.of(new VariantType(), new VariantType(false)),
                 RowType.of(
                         new LogicalType[] {
                             new BigIntType(), new IntType(false), new VarCharType(200)
@@ -163,17 +176,24 @@ public class LogicalRelDataTypeConverterTest {
                         VarCharType.ofEmptyLiteral(),
                         BinaryType.ofEmptyLiteral(),
                         VarBinaryType.ofEmptyLiteral()),
-                // registered structured type
+                // catalog structured type
                 PojoClass.TYPE_WITH_IDENTIFIER,
-                // unregistered structured type
+                // inline structured type
+                StructuredType.newBuilder("MyPojo")
+                        .attributes(
+                                Arrays.asList(
+                                        new StructuredAttribute("f0", new IntType(true)),
+                                        new StructuredAttribute("f1", new BigIntType(true)),
+                                        new StructuredAttribute(
+                                                "f2", new VarCharType(200), "desc")))
+                        .build(),
+                // inline structured type with resolved class
                 StructuredType.newBuilder(PojoClass.class)
                         .attributes(
                                 Arrays.asList(
-                                        new StructuredType.StructuredAttribute(
-                                                "f0", new IntType(true)),
-                                        new StructuredType.StructuredAttribute(
-                                                "f1", new BigIntType(true)),
-                                        new StructuredType.StructuredAttribute(
+                                        new StructuredAttribute("f0", new IntType(true)),
+                                        new StructuredAttribute("f1", new BigIntType(true)),
+                                        new StructuredAttribute(
                                                 "f2", new VarCharType(200), "desc")))
                         .build(),
                 // custom RawType
@@ -192,11 +212,9 @@ public class LogicalRelDataTypeConverterTest {
                                 ObjectIdentifier.of("cat", "db", "structuredType"), PojoClass.class)
                         .attributes(
                                 Arrays.asList(
-                                        new StructuredType.StructuredAttribute(
-                                                "f0", new IntType(true)),
-                                        new StructuredType.StructuredAttribute(
-                                                "f1", new BigIntType(true)),
-                                        new StructuredType.StructuredAttribute(
+                                        new StructuredAttribute("f0", new IntType(true)),
+                                        new StructuredAttribute("f1", new BigIntType(true)),
+                                        new StructuredAttribute(
                                                 "f2", new VarCharType(200), "desc")))
                         .comparison(StructuredType.StructuredComparison.FULL)
                         .setFinal(false)
@@ -206,7 +224,7 @@ public class LogicalRelDataTypeConverterTest {
                                                 ObjectIdentifier.of("cat", "db", "structuredType2"))
                                         .attributes(
                                                 Collections.singletonList(
-                                                        new StructuredType.StructuredAttribute(
+                                                        new StructuredAttribute(
                                                                 "f0", new BigIntType(false))))
                                         .build())
                         .description("description for StructuredType")

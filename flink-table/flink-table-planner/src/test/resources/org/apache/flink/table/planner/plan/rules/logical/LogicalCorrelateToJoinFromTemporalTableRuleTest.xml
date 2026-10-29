@@ -70,34 +70,6 @@ LogicalProject(id=[$0], mount=[$1], proctime=[$2], rowtime=[$3], id0=[$4], rate=
 ]]>
     </Resource>
   </TestCase>
-  <TestCase name="testProcTimeTemporalJoinWithFilter">
-    <Resource name="sql">
-      <![CDATA[SELECT * FROM T1 JOIN T3 FOR SYSTEM_TIME AS OF T1.proctime AS dimTable ON T1.id = dimTable.id AND dimTable.rate > 10]]>
-    </Resource>
-    <Resource name="ast">
-      <![CDATA[
-LogicalProject(id=[$0], mount=[$1], proctime=[$2], rowtime=[$3], id0=[$4], rate=[$5], rowtime0=[$6])
-+- LogicalCorrelate(correlation=[$cor0], joinType=[inner], requiredColumns=[{0, 2}])
-   :- LogicalWatermarkAssigner(rowtime=[rowtime], watermark=[$3])
-   :  +- LogicalProject(id=[$0], mount=[$1], proctime=[PROCTIME()], rowtime=[$2])
-   :     +- LogicalTableScan(table=[[default_catalog, default_database, T1, source: [CollectionTableSource(id, mount, rowtime)]]])
-   +- LogicalFilter(condition=[AND(=($cor0.id, $0), >($1, 10))])
-      +- LogicalSnapshot(period=[$cor0.proctime])
-         +- LogicalTableScan(table=[[default_catalog, default_database, T3, source: [TestTableSource(id, rate, rowtime)]]])
-]]>
-    </Resource>
-    <Resource name="optimized rel plan">
-      <![CDATA[
-LogicalProject(id=[$0], mount=[$1], proctime=[$2], rowtime=[$3], id0=[$4], rate=[$5], rowtime0=[$6])
-+- LogicalJoin(condition=[AND(=($0, $4), >($5, 10), __INITIAL_TEMPORAL_JOIN_CONDITION($2, __TEMPORAL_JOIN_LEFT_KEY($0), __TEMPORAL_JOIN_RIGHT_KEY($4)))], joinType=[inner])
-   :- LogicalWatermarkAssigner(rowtime=[rowtime], watermark=[$3])
-   :  +- LogicalProject(id=[$0], mount=[$1], proctime=[PROCTIME()], rowtime=[$2])
-   :     +- LogicalTableScan(table=[[default_catalog, default_database, T1, source: [CollectionTableSource(id, mount, rowtime)]]])
-   +- LogicalSnapshot(period=[$cor0.proctime])
-      +- LogicalTableScan(table=[[default_catalog, default_database, T3, source: [TestTableSource(id, rate, rowtime)]]])
-]]>
-    </Resource>
-  </TestCase>
   <TestCase name="testLookupJoinWithFilter">
     <Resource name="sql">
       <![CDATA[SELECT * FROM T1 JOIN T2 FOR SYSTEM_TIME AS OF T1.proctime AS dimTable ON T1.id = dimTable.id AND dimTable.rate > 10]]>
@@ -126,6 +98,36 @@ LogicalProject(id=[$0], mount=[$1], proctime=[$2], rowtime=[$3], id0=[$4], rate=
 ]]>
     </Resource>
   </TestCase>
+  <TestCase name="testProcTimeTemporalJoinWithFilter">
+    <Resource name="sql">
+      <![CDATA[SELECT * FROM T1 JOIN T3 FOR SYSTEM_TIME AS OF T1.proctime AS dimTable ON T1.id = dimTable.id AND dimTable.rate > 10]]>
+    </Resource>
+    <Resource name="ast">
+      <![CDATA[
+LogicalProject(id=[$0], mount=[$1], proctime=[$2], rowtime=[$3], id0=[$4], rate=[$5], rowtime0=[$6])
++- LogicalCorrelate(correlation=[$cor0], joinType=[inner], requiredColumns=[{0, 2}])
+   :- LogicalWatermarkAssigner(rowtime=[rowtime], watermark=[$3])
+   :  +- LogicalProject(id=[$0], mount=[$1], proctime=[PROCTIME()], rowtime=[$2])
+   :     +- LogicalTableScan(table=[[default_catalog, default_database, T1, source: [CollectionTableSource(id, mount, rowtime)]]])
+   +- LogicalFilter(condition=[AND(=($cor0.id, $0), >($1, 10))])
+      +- LogicalSnapshot(period=[$cor0.proctime])
+         +- LogicalWatermarkAssigner(rowtime=[rowtime], watermark=[$2])
+            +- LogicalTableScan(table=[[default_catalog, default_database, T3]])
+]]>
+    </Resource>
+    <Resource name="optimized rel plan">
+      <![CDATA[
+LogicalProject(id=[$0], mount=[$1], proctime=[$2], rowtime=[$3], id0=[$4], rate=[$5], rowtime0=[$6])
++- LogicalJoin(condition=[AND(=($0, $4), >($5, 10), __INITIAL_TEMPORAL_JOIN_CONDITION($2, __TEMPORAL_JOIN_LEFT_KEY($0), __TEMPORAL_JOIN_RIGHT_KEY($4)))], joinType=[inner])
+   :- LogicalWatermarkAssigner(rowtime=[rowtime], watermark=[$3])
+   :  +- LogicalProject(id=[$0], mount=[$1], proctime=[PROCTIME()], rowtime=[$2])
+   :     +- LogicalTableScan(table=[[default_catalog, default_database, T1, source: [CollectionTableSource(id, mount, rowtime)]]])
+   +- LogicalSnapshot(period=[$cor0.proctime])
+      +- LogicalWatermarkAssigner(rowtime=[rowtime], watermark=[$2])
+         +- LogicalTableScan(table=[[default_catalog, default_database, T3]])
+]]>
+    </Resource>
+  </TestCase>
   <TestCase name="testRowTimeLeftTemporalJoinWithFilter">
     <Resource name="sql">
       <![CDATA[SELECT * FROM T1 LEFT JOIN T3 FOR SYSTEM_TIME AS OF T1.rowtime AS dimTable ON T1.id = dimTable.id AND dimTable.rate > 10]]>
@@ -139,7 +141,8 @@ LogicalProject(id=[$0], mount=[$1], proctime=[$2], rowtime=[$3], id0=[$4], rate=
    :     +- LogicalTableScan(table=[[default_catalog, default_database, T1, source: [CollectionTableSource(id, mount, rowtime)]]])
    +- LogicalFilter(condition=[AND(=($cor0.id, $0), >($1, 10))])
       +- LogicalSnapshot(period=[$cor0.rowtime])
-         +- LogicalTableScan(table=[[default_catalog, default_database, T3, source: [TestTableSource(id, rate, rowtime)]]])
+         +- LogicalWatermarkAssigner(rowtime=[rowtime], watermark=[$2])
+            +- LogicalTableScan(table=[[default_catalog, default_database, T3]])
 ]]>
     </Resource>
     <Resource name="optimized rel plan">
@@ -150,7 +153,8 @@ LogicalProject(id=[$0], mount=[$1], proctime=[$2], rowtime=[$3], id0=[$4], rate=
    :  +- LogicalProject(id=[$0], mount=[$1], proctime=[PROCTIME()], rowtime=[$2])
    :     +- LogicalTableScan(table=[[default_catalog, default_database, T1, source: [CollectionTableSource(id, mount, rowtime)]]])
    +- LogicalSnapshot(period=[$cor0.rowtime])
-      +- LogicalTableScan(table=[[default_catalog, default_database, T3, source: [TestTableSource(id, rate, rowtime)]]])
+      +- LogicalWatermarkAssigner(rowtime=[rowtime], watermark=[$2])
+         +- LogicalTableScan(table=[[default_catalog, default_database, T3]])
 ]]>
     </Resource>
   </TestCase>
@@ -167,7 +171,8 @@ LogicalProject(id=[$0], mount=[$1], proctime=[$2], rowtime=[$3], id0=[$4], rate=
    :     +- LogicalTableScan(table=[[default_catalog, default_database, T1, source: [CollectionTableSource(id, mount, rowtime)]]])
    +- LogicalFilter(condition=[AND(=($cor0.id, $0), >($1, 10))])
       +- LogicalSnapshot(period=[$cor0.rowtime])
-         +- LogicalTableScan(table=[[default_catalog, default_database, T3, source: [TestTableSource(id, rate, rowtime)]]])
+         +- LogicalWatermarkAssigner(rowtime=[rowtime], watermark=[$2])
+            +- LogicalTableScan(table=[[default_catalog, default_database, T3]])
 ]]>
     </Resource>
     <Resource name="optimized rel plan">
@@ -178,7 +183,8 @@ LogicalProject(id=[$0], mount=[$1], proctime=[$2], rowtime=[$3], id0=[$4], rate=
    :  +- LogicalProject(id=[$0], mount=[$1], proctime=[PROCTIME()], rowtime=[$2])
    :     +- LogicalTableScan(table=[[default_catalog, default_database, T1, source: [CollectionTableSource(id, mount, rowtime)]]])
    +- LogicalSnapshot(period=[$cor0.rowtime])
-      +- LogicalTableScan(table=[[default_catalog, default_database, T3, source: [TestTableSource(id, rate, rowtime)]]])
+      +- LogicalWatermarkAssigner(rowtime=[rowtime], watermark=[$2])
+         +- LogicalTableScan(table=[[default_catalog, default_database, T3]])
 ]]>
     </Resource>
   </TestCase>

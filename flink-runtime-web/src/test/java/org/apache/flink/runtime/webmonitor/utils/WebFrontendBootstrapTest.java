@@ -24,8 +24,9 @@ import org.apache.flink.runtime.io.network.netty.InboundChannelHandlerFactory;
 import org.apache.flink.runtime.io.network.netty.Prio0InboundChannelHandlerFactory;
 import org.apache.flink.runtime.io.network.netty.Prio1InboundChannelHandlerFactory;
 import org.apache.flink.runtime.rest.handler.router.Router;
+import org.apache.flink.runtime.webmonitor.history.FileArchiveStorage;
 import org.apache.flink.runtime.webmonitor.history.HistoryServerStaticFileServerHandler;
-import org.apache.flink.runtime.webmonitor.history.HistoryServerTest;
+import org.apache.flink.runtime.webmonitor.testutils.HttpUtils;
 import org.apache.flink.testutils.junit.extensions.ContextClassLoaderExtension;
 
 import org.junit.jupiter.api.Test;
@@ -34,14 +35,15 @@ import org.junit.jupiter.api.extension.RegisterExtension;
 import org.junit.jupiter.api.io.TempDir;
 import org.slf4j.LoggerFactory;
 
+import java.io.File;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /** Tests for the WebFrontendBootstrap. */
-public class WebFrontendBootstrapTest {
+class WebFrontendBootstrapTest {
 
     @RegisterExtension
     static final Extension CONTEXT_CLASS_LOADER_EXTENSION =
@@ -57,13 +59,16 @@ public class WebFrontendBootstrapTest {
     @Test
     void testHandlersMustBeLoaded() throws Exception {
         Path webDir = Files.createDirectories(tmp.resolve("webDir"));
+        File webDirFile = webDir.toFile();
         Configuration configuration = new Configuration();
-        configuration.setString(
-                Prio0InboundChannelHandlerFactory.REDIRECT_FROM_URL, "/nonExisting");
-        configuration.setString(Prio0InboundChannelHandlerFactory.REDIRECT_TO_URL, "/index.html");
+        configuration.set(Prio0InboundChannelHandlerFactory.REDIRECT_FROM_URL, "/nonExisting");
+        configuration.set(Prio0InboundChannelHandlerFactory.REDIRECT_TO_URL, "/index.html");
         Router<?> router =
                 new Router<>()
-                        .addGet("/:*", new HistoryServerStaticFileServerHandler(webDir.toFile()));
+                        .addGet(
+                                "/:*",
+                                new HistoryServerStaticFileServerHandler(
+                                        new FileArchiveStorage(webDirFile), webDirFile));
         WebFrontendBootstrap webUI =
                 new WebFrontendBootstrap(
                         router,
@@ -74,7 +79,7 @@ public class WebFrontendBootstrapTest {
                         0,
                         configuration);
 
-        assertEquals(webUI.inboundChannelHandlerFactories.size(), 2);
+        assertThat(webUI.inboundChannelHandlerFactories).hasSize(2);
         assertTrue(
                 webUI.inboundChannelHandlerFactories.get(0)
                         instanceof Prio1InboundChannelHandlerFactory);
@@ -85,14 +90,14 @@ public class WebFrontendBootstrapTest {
         int port = webUI.getServerPort();
         try {
             Tuple2<Integer, String> index =
-                    HistoryServerTest.getFromHTTP("http://localhost:" + port + "/index.html");
-            assertEquals(index.f0.intValue(), 200);
-            assertTrue(index.f1.contains("Apache Flink Web Dashboard"));
+                    HttpUtils.getFromHTTP("http://localhost:" + port + "/index.html");
+            assertThat(200).isEqualTo(index.f0.intValue());
+            assertThat(index.f1.contains("Apache Flink Web Dashboard")).isTrue();
 
             Tuple2<Integer, String> index2 =
-                    HistoryServerTest.getFromHTTP("http://localhost:" + port + "/nonExisting");
-            assertEquals(index2.f0.intValue(), 200);
-            assertEquals(index, index2);
+                    HttpUtils.getFromHTTP("http://localhost:" + port + "/nonExisting");
+            assertThat(200).isEqualTo(index2.f0.intValue());
+            assertThat(index2).isEqualTo(index);
         } finally {
             webUI.shutdown();
         }

@@ -15,16 +15,16 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.planner.plan.nodes.physical.common
 
+import org.apache.flink.table.catalog.{CatalogBaseTable, CatalogTable}
 import org.apache.flink.table.connector.source.ScanTableSource
 import org.apache.flink.table.planner.plan.schema.TableSourceTable
 import org.apache.flink.table.planner.plan.utils.RelExplainUtil
 
 import org.apache.calcite.plan.{RelOptCluster, RelTraitSet}
-import org.apache.calcite.rel.RelWriter
 import org.apache.calcite.rel.`type`.RelDataType
+import org.apache.calcite.rel.{RelNode, RelWriter}
 import org.apache.calcite.rel.core.TableScan
 import org.apache.calcite.rel.hint.RelHint
 
@@ -32,9 +32,7 @@ import java.util
 
 import scala.collection.JavaConverters._
 
-/**
-  * Base physical RelNode to read data from an external source defined by a [[ScanTableSource]].
-  */
+/** Base physical RelNode to read data from an external source defined by a [[ScanTableSource]]. */
 abstract class CommonPhysicalTableSourceScan(
     cluster: RelOptCluster,
     traitSet: RelTraitSet,
@@ -54,7 +52,27 @@ abstract class CommonPhysicalTableSourceScan(
   }
 
   override def explainTerms(pw: RelWriter): RelWriter = {
-    super.explainTerms(pw).item("fields", getRowType.getFieldNames.asScala.mkString(", "))
-      .itemIf("hints", RelExplainUtil.hintsToString(getHints), !getHints.isEmpty)
+    val version = extractSnapshotVersion()
+    super
+      .explainTerms(pw)
+      .item("fields", getRowType.getFieldNames.asScala.mkString(", "))
+      .itemIf("hints", hintsDigest, !getHints.isEmpty)
+      .itemIf("version", version.getOrElse(""), version.isDefined)
+  }
+
+  def copy(relOptTable: TableSourceTable): RelNode
+
+  def hintsDigest: String = {
+    RelExplainUtil.hintsToString(getHints)
+  }
+
+  def extractSnapshotVersion(): Option[String] = {
+    val originTable: CatalogBaseTable =
+      relOptTable.contextResolvedTable.getTable.asInstanceOf[CatalogBaseTable]
+    originTable match {
+      case catalogTable: CatalogTable if catalogTable.getSnapshot.isPresent =>
+        Option(catalogTable.getSnapshot.get().toString)
+      case _ => Option.empty
+    }
   }
 }

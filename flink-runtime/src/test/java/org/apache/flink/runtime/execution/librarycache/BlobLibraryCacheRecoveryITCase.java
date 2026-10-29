@@ -18,6 +18,7 @@
 
 package org.apache.flink.runtime.execution.librarycache;
 
+import org.apache.flink.api.common.ApplicationID;
 import org.apache.flink.api.common.JobID;
 import org.apache.flink.configuration.BlobServerOptions;
 import org.apache.flink.configuration.Configuration;
@@ -28,12 +29,15 @@ import org.apache.flink.runtime.blob.BlobUtils;
 import org.apache.flink.runtime.blob.PermanentBlobCache;
 import org.apache.flink.runtime.blob.PermanentBlobKey;
 import org.apache.flink.runtime.jobmanager.HighAvailabilityMode;
+import org.apache.flink.util.FlinkUserCodeClassLoaders;
 import org.apache.flink.util.TestLogger;
 
 import org.hamcrest.collection.IsEmptyCollection;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
+import org.junit.runner.RunWith;
+import org.junit.runners.Parameterized;
 
 import java.io.File;
 import java.io.FileInputStream;
@@ -41,6 +45,7 @@ import java.net.InetSocketAddress;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.List;
 import java.util.Random;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -50,9 +55,18 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 
 /** Integration test for {@link BlobLibraryCacheManager}. */
+@RunWith(Parameterized.class)
 public class BlobLibraryCacheRecoveryITCase extends TestLogger {
 
     @Rule public TemporaryFolder temporaryFolder = new TemporaryFolder();
+
+    @Parameterized.Parameters(name = "Use system class loader: {0}")
+    public static List<Boolean> useSystemClassLoader() {
+        return Arrays.asList(true, false);
+    }
+
+    @Parameterized.Parameter public boolean wrapsSystemClassLoader;
+
     /**
      * Tests that with {@link HighAvailabilityMode#ZOOKEEPER} distributed JARs are recoverable from
      * any participating BlobLibraryCacheManager.
@@ -68,11 +82,11 @@ public class BlobLibraryCacheRecoveryITCase extends TestLogger {
         BlobStoreService blobStoreService = null;
 
         Configuration config = new Configuration();
-        config.setString(HighAvailabilityOptions.HA_MODE, "ZOOKEEPER");
-        config.setString(
+        config.set(HighAvailabilityOptions.HA_MODE, "ZOOKEEPER");
+        config.set(
                 HighAvailabilityOptions.HA_STORAGE_PATH,
                 temporaryFolder.newFolder().getAbsolutePath());
-        config.setLong(BlobServerOptions.CLEANUP_INTERVAL, 3_600L);
+        config.set(BlobServerOptions.CLEANUP_INTERVAL, 3_600L);
 
         final ExecutorService executorService = Executors.newSingleThreadExecutor();
         try {
@@ -89,7 +103,9 @@ public class BlobLibraryCacheRecoveryITCase extends TestLogger {
                 server[i] = new BlobServer(config, temporaryFolder.newFolder(), blobStoreService);
                 server[i].start();
                 serverAddress[i] = new InetSocketAddress("localhost", server[i].getPort());
-                libServer[i] = new BlobLibraryCacheManager(server[i], classLoaderFactory);
+                libServer[i] =
+                        new BlobLibraryCacheManager(
+                                server[i], classLoaderFactory, wrapsSystemClassLoader);
             }
 
             // Random data
@@ -99,6 +115,7 @@ public class BlobLibraryCacheRecoveryITCase extends TestLogger {
             ArrayList<PermanentBlobKey> keys = new ArrayList<>(2);
 
             JobID jobId = new JobID();
+            ApplicationID applicationId = new ApplicationID();
 
             // Upload some data (libraries)
             keys.add(server[0].putPermanent(jobId, expected)); // Request 1
@@ -115,7 +132,7 @@ public class BlobLibraryCacheRecoveryITCase extends TestLogger {
 
             // Register uploaded libraries
             final LibraryCacheManager.ClassLoaderLease classLoaderLease =
-                    libServer[0].registerClassLoaderLease(jobId);
+                    libServer[0].registerClassLoaderLease(jobId, applicationId);
             classLoaderLease.getOrResolveClassLoader(keys, Collections.emptyList());
 
             // Verify key 1
@@ -168,8 +185,8 @@ public class BlobLibraryCacheRecoveryITCase extends TestLogger {
             server[1].globalCleanupAsync(jobId, executorService).join();
 
             // Verify everything is clean below recoveryDir/<cluster_id>
-            final String clusterId = config.getString(HighAvailabilityOptions.HA_CLUSTER_ID);
-            String haBlobStorePath = config.getString(HighAvailabilityOptions.HA_STORAGE_PATH);
+            final String clusterId = config.get(HighAvailabilityOptions.HA_CLUSTER_ID);
+            String haBlobStorePath = config.get(HighAvailabilityOptions.HA_STORAGE_PATH);
             File haBlobStoreDir = new File(haBlobStorePath, clusterId);
             File[] recoveryFiles = haBlobStoreDir.listFiles();
             assertNotNull("HA storage directory does not exist", recoveryFiles);
@@ -196,7 +213,154 @@ public class BlobLibraryCacheRecoveryITCase extends TestLogger {
             }
 
             if (blobStoreService != null) {
-                blobStoreService.closeAndCleanupAllData();
+                blobStoreService.cleanupAllData();
+                blobStoreService.close();
+            }
+        }
+    }
+
+    /**
+     * Integration test for application-level jar sharing across multiple jobs with the same
+     * ApplicationID.
+     */
+    @Test
+    public void testRecoveryWithApplicationLevelBlob() throws Exception {
+        Random rand = new Random();
+
+        BlobServer[] server = new BlobServer[2];
+        InetSocketAddress[] serverAddress = new InetSocketAddress[2];
+        BlobLibraryCacheManager[] libServer = new BlobLibraryCacheManager[2];
+        PermanentBlobCache cache = null;
+        BlobStoreService blobStoreService = null;
+
+        Configuration config = new Configuration();
+        config.set(HighAvailabilityOptions.HA_MODE, "ZOOKEEPER");
+        config.set(
+                HighAvailabilityOptions.HA_STORAGE_PATH,
+                temporaryFolder.newFolder().getAbsolutePath());
+        config.set(BlobServerOptions.CLEANUP_INTERVAL, 3_600L);
+
+        final ExecutorService executorService = Executors.newSingleThreadExecutor();
+        try {
+            blobStoreService = BlobUtils.createBlobStoreFromConfig(config);
+
+            final BlobLibraryCacheManager.ClassLoaderFactory classLoaderFactory =
+                    BlobLibraryCacheManager.defaultClassLoaderFactory(
+                            FlinkUserCodeClassLoaders.ResolveOrder.CHILD_FIRST,
+                            new String[0],
+                            null,
+                            true);
+
+            for (int i = 0; i < 2; i++) {
+                server[i] = new BlobServer(config, temporaryFolder.newFolder(), blobStoreService);
+                server[i].start();
+                serverAddress[i] = new InetSocketAddress("localhost", server[i].getPort());
+
+                PermanentBlobCache blobCache =
+                        new PermanentBlobCache(
+                                config,
+                                temporaryFolder.newFolder(),
+                                blobStoreService,
+                                serverAddress[i]);
+
+                libServer[i] =
+                        new BlobLibraryCacheManager(
+                                blobCache, classLoaderFactory, wrapsSystemClassLoader);
+            }
+
+            // Random data
+            byte[] expected = new byte[1024];
+            rand.nextBytes(expected);
+
+            ArrayList<PermanentBlobKey> keys = new ArrayList<>(2);
+
+            JobID jobId = new JobID();
+            ApplicationID applicationId = new ApplicationID();
+
+            // Upload some data (libraries)
+            keys.add(server[0].putPermanent(applicationId, expected));
+
+            // The cache
+            cache =
+                    new PermanentBlobCache(
+                            config,
+                            temporaryFolder.newFolder(),
+                            blobStoreService,
+                            serverAddress[0]);
+
+            // Register uploaded libraries
+            final LibraryCacheManager.ClassLoaderLease classLoaderLease =
+                    libServer[0].registerClassLoaderLease(jobId, applicationId);
+            classLoaderLease.getOrResolveClassLoader(keys, Collections.emptyList());
+
+            // Verify file
+            File f = cache.getFile(applicationId, keys.get(0));
+            assertEquals(expected.length, f.length());
+
+            try (FileInputStream fis = new FileInputStream(f)) {
+                for (int i = 0; i < expected.length && fis.available() > 0; i++) {
+                    assertEquals(expected[i], (byte) fis.read());
+                }
+
+                assertEquals(0, fis.available());
+            }
+
+            // Shutdown cache and start with other server
+            cache.close();
+
+            cache =
+                    new PermanentBlobCache(
+                            config,
+                            temporaryFolder.newFolder(),
+                            blobStoreService,
+                            serverAddress[1]);
+
+            // Verify file
+            f = cache.getFile(applicationId, keys.get(0));
+            assertEquals(expected.length, f.length());
+
+            try (FileInputStream fis = new FileInputStream(f)) {
+                for (int i = 0; i < expected.length && fis.available() > 0; i++) {
+                    assertEquals(expected[i], (byte) fis.read());
+                }
+
+                assertEquals(0, fis.available());
+            }
+
+            // Remove blobs again
+            server[1].globalCleanupAsync(applicationId, executorService).join();
+
+            // Verify everything is clean below recoveryDir/<cluster_id>
+            final String clusterId = config.get(HighAvailabilityOptions.HA_CLUSTER_ID);
+            String haBlobStorePath = config.get(HighAvailabilityOptions.HA_STORAGE_PATH);
+            File haBlobStoreDir = new File(haBlobStorePath, clusterId);
+            File[] recoveryFiles = haBlobStoreDir.listFiles();
+            assertNotNull("HA storage directory does not exist", recoveryFiles);
+            assertEquals(
+                    "Unclean state backend: " + Arrays.toString(recoveryFiles),
+                    0,
+                    recoveryFiles.length);
+        } finally {
+            assertThat(executorService.shutdownNow(), IsEmptyCollection.empty());
+
+            for (BlobLibraryCacheManager s : libServer) {
+                if (s != null) {
+                    s.shutdown();
+                }
+            }
+            for (BlobServer s : server) {
+                if (s != null) {
+                    s.close();
+                }
+            }
+
+            if (cache != null) {
+                cache.close();
+            }
+
+            if (blobStoreService != null) {
+                blobStoreService.cleanupAllData();
+                blobStoreService.close();
             }
         }
     }

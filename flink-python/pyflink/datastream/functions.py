@@ -15,15 +15,15 @@
 #  See the License for the specific language governing permissions and
 # limitations under the License.
 ################################################################################
-
 from abc import ABC, abstractmethod
-from typing import Union, Any, Generic, TypeVar, Iterable
+from enum import Enum
 
 from py4j.java_gateway import JavaObject
+from typing import Union, Any, Generic, TypeVar, Iterable, List, Callable, Optional
 
 from pyflink.datastream.state import ValueState, ValueStateDescriptor, ListStateDescriptor, \
     ListState, MapStateDescriptor, MapState, ReducingStateDescriptor, ReducingState, \
-    AggregatingStateDescriptor, AggregatingState
+    AggregatingStateDescriptor, AggregatingState, BroadcastState, ReadOnlyBroadcastState
 from pyflink.datastream.time_domain import TimeDomain
 from pyflink.datastream.timerservice import TimerService
 from pyflink.java_gateway import get_gateway
@@ -48,12 +48,24 @@ __all__ = [
     'KeyedCoProcessFunction',
     'TimerService',
     'WindowFunction',
-    'ProcessWindowFunction']
+    'AllWindowFunction',
+    'ProcessWindowFunction',
+    'ProcessAllWindowFunction',
+    'BaseBroadcastProcessFunction',
+    'BroadcastProcessFunction',
+    'KeyedBroadcastProcessFunction',
+    'AsyncFunction',
+    'AsyncFunctionDescriptor',
+    'AsyncRetryPredicate',
+    'AsyncRetryStrategy',
+]
 
 
 W = TypeVar('W')
 W2 = TypeVar('W2')
 IN = TypeVar('IN')
+IN1 = TypeVar('IN1')
+IN2 = TypeVar('IN2')
 OUT = TypeVar('OUT')
 KEY = TypeVar('KEY')
 
@@ -467,6 +479,16 @@ class KeySelector(Function):
         pass
 
 
+class NullByteKeySelector(KeySelector):
+    """
+    Used as a dummy KeySelector to allow using keyed operators for non-keyed use cases. Essentially,
+    it gives all incoming records the same key, which is a (byte) 0 value.
+    """
+
+    def get_key(self, value):
+        return 0
+
+
 class FilterFunction(Function):
     """
     A filter function is a predicate applied individually to each record. The predicate decides
@@ -628,8 +650,7 @@ class ProcessFunction(Function):
             """
             Timestamp of the element currently being processed or timestamp of a firing timer.
 
-            This might be None, for example if the time characteristic of your program is set to
-            TimeCharacteristic.ProcessTime.
+            This might be None, depending on the stream's watermark strategy.
             """
             pass
 
@@ -638,8 +659,8 @@ class ProcessFunction(Function):
         """
         Process one element from the input stream.
 
-        This function can output zero or more elements using the Collector parameter and also update
-        internal state or set timers using the Context parameter.
+        This function can output zero or more elements using the :code:`yield` statement. It can
+        read and update the internal state as well as set timers using the Context parameter.
 
         :param value: The input value.
         :param ctx:  A Context that allows querying the timestamp of the element and getting a
@@ -680,8 +701,7 @@ class KeyedProcessFunction(Function):
             """
             Timestamp of the element currently being processed or timestamp of a firing timer.
 
-            This might be None, for example if the time characteristic of your program is set to
-            TimeCharacteristic.ProcessTime.
+            This might be None, depending on the stream's watermark strategy.
             """
             pass
 
@@ -755,8 +775,7 @@ class CoProcessFunction(Function):
             """
             Timestamp of the element currently being processed or timestamp of a firing timer.
 
-            This might be None, for example if the time characteristic of your program is set to
-            TimeCharacteristic.ProcessTime.
+            This might be None, depending on the stream's watermark strategy.
             """
             pass
 
@@ -765,8 +784,8 @@ class CoProcessFunction(Function):
         """
         This method is called for each element in the first of the connected streams.
 
-        This function can output zero or more elements using the Collector parameter and also update
-        internal state or set timers using the Context parameter.
+        This function can output zero or more elements using the :code:`yield` statement. It can
+        read and update the internal state as well as set timers using the Context parameter.
 
         :param value: The input value.
         :param ctx:  A Context that allows querying the timestamp of the element and getting a
@@ -780,8 +799,8 @@ class CoProcessFunction(Function):
         """
         This method is called for each element in the second of the connected streams.
 
-        This function can output zero or more elements using the Collector parameter and also update
-        internal state or set timers using the Context parameter.
+        This function can output zero or more elements using the :code:`yield` statement. It can
+        read and update the internal state as well as set timers using the Context parameter.
 
         :param value: The input value.
         :param ctx:  A Context that allows querying the timestamp of the element and getting a
@@ -826,8 +845,7 @@ register a timer that will trigger an action in the future.
             """
             Timestamp of the element currently being processed or timestamp of a firing timer.
 
-            This might be None, for example if the time characteristic of your program is set to
-            TimeCharacteristic.ProcessTime.
+            This might be None, depending on the stream's watermark strategy.
             """
             pass
 
@@ -846,8 +864,8 @@ register a timer that will trigger an action in the future.
         """
         Process one element from the input stream.
 
-        This function can output zero or more elements using the Collector parameter and also update
-        internal state or set timers using the Context parameter.
+        This function can output zero or more elements using the :code:`yield` statement. It can
+        read and update the internal state as well as set timers using the Context parameter.
 
         :param value: The input value.
         :param ctx:  A Context that allows querying the timestamp of the element and getting a
@@ -861,8 +879,8 @@ register a timer that will trigger an action in the future.
         """
         Process one element from the input stream.
 
-        This function can output zero or more elements using the Collector parameter and also update
-        internal state or set timers using the Context parameter.
+        This function can output zero or more elements using the :code:`yield` statement. It can
+        read and update the internal state as well as set timers using the Context parameter.
 
         :param value: The input value.
         :param ctx:  A Context that allows querying the timestamp of the element and getting a
@@ -884,6 +902,129 @@ register a timer that will trigger an action in the future.
         pass
 
 
+class AsyncRetryPredicate(ABC, Generic[OUT]):
+    """
+    Interface encapsulates an asynchronous retry predicate.
+    """
+
+    @abstractmethod
+    def result_predicate(self) -> Optional[Callable[[List[OUT]], bool]]:
+        """
+        An optional Python predicate function that defines a condition on asyncFunction's future
+        result which will trigger a later reattempt operation, will be called before user's
+        ResultFuture#complete.
+        """
+        pass
+
+    @abstractmethod
+    def exception_predicate(self) -> Optional[Callable[[Exception], bool]]:
+        """
+        An optional Python predicate function that defines a condition on asyncFunction's exception
+        which will trigger a later reattempt operation, will be called before user's
+        ResultFuture#complete_exceptionally.
+        """
+        pass
+
+
+class AsyncRetryStrategy(ABC, Generic[OUT]):
+    """
+    Interface encapsulates an asynchronous retry strategy.
+    """
+
+    @abstractmethod
+    def can_retry(self, current_attempts: int) -> bool:
+        """
+        Whether the next attempt can happen.
+        """
+        pass
+
+    @abstractmethod
+    def get_backoff_time_millis(self, current_attempts: int) -> int:
+        """
+        The delay time of next attempt.
+        """
+        pass
+
+    @abstractmethod
+    def get_retry_predicate(self) -> AsyncRetryPredicate[OUT]:
+        """
+        Returns the defined retry predicate.
+        """
+        pass
+
+    @staticmethod
+    def no_restart():
+        from pyflink.datastream import async_retry_strategies
+        return async_retry_strategies.NO_RETRY_STRATEGY
+
+    @staticmethod
+    def fixed_delay(
+        max_attempts: int,
+        backoff_time_millis: int,
+        result_predicate: Optional[Callable[[List[OUT]], bool]],
+        exception_predicate: Optional[Callable[[Exception], bool]]
+    ):
+        from pyflink.datastream.async_retry_strategies import FixedDelayRetryStrategy
+        return FixedDelayRetryStrategy(
+            max_attempts, backoff_time_millis, result_predicate, exception_predicate)
+
+    @staticmethod
+    def exponential_backoff(
+        max_attempts: int,
+        initial_delay: int,
+        max_retry_delay: int,
+        multiplier: float,
+        result_predicate: Optional[Callable[[List[OUT]], bool]],
+        exception_predicate: Optional[Callable[[Exception], bool]]
+    ):
+        from pyflink.datastream.async_retry_strategies import ExponentialBackoffDelayRetryStrategy
+        return ExponentialBackoffDelayRetryStrategy(
+            max_attempts, initial_delay, max_retry_delay, multiplier,
+            result_predicate, exception_predicate)
+
+
+class AsyncFunction(Function, Generic[IN, OUT]):
+    """
+    A function to trigger Async I/O operation.
+
+    For each #async_invoke, an async io operation can be triggered. For each async operation, its
+    context is stored in the operator immediately after invoking #async_invoke, avoiding blocking
+    for each stream input as long as the internal buffer is not full.
+    """
+
+    @abstractmethod
+    async def async_invoke(self, value: IN) -> List[OUT]:
+        """
+        Trigger async operation for each stream input.
+        In case of a user code error. You can raise an exception to make the task fail and
+        trigger fail-over process.
+
+        :param value: Input element coming from an upstream task.
+        """
+        pass
+
+    def timeout(self, value: IN) -> List[OUT]:
+        """
+        In case :func:`~ResultFuture.async_invoke` timeout occurred. By default, it raises
+        a timeout exception.
+        """
+        raise TimeoutError("Async function call has timed out for input: " + str(value))
+
+
+class AsyncFunctionDescriptor(object):
+
+    class OutputMode(Enum):
+        ORDERED = 0
+        UNORDERED = 1
+
+    def __init__(self, async_function, timeout, capacity, async_retry_strategy, output_mode):
+        self.async_function = async_function
+        self.timeout = timeout
+        self.capacity = capacity
+        self.async_retry_strategy = async_retry_strategy
+        self.output_mode = output_mode
+
+
 class WindowFunction(Function, Generic[IN, OUT, KEY, W]):
     """
     Base interface for functions that are evaluated over keyed (grouped) windows.
@@ -895,6 +1036,22 @@ class WindowFunction(Function, Generic[IN, OUT, KEY, W]):
         Evaluates the window and outputs none or several elements.
 
         :param key: The key for which this window is evaluated.
+        :param window: The window that is being evaluated.
+        :param inputs: The elements in the window being evaluated.
+        """
+        pass
+
+
+class AllWindowFunction(Function, Generic[IN, OUT, W]):
+    """
+    Base interface for functions that are evaluated over non-keyed windows.
+    """
+
+    @abstractmethod
+    def apply(self, window: W, inputs: Iterable[IN]) -> Iterable[OUT]:
+        """
+        Evaluates the window and outputs none or several elements.
+
         :param window: The window that is being evaluated.
         :param inputs: The elements in the window being evaluated.
         """
@@ -956,19 +1113,18 @@ class ProcessWindowFunction(Function, Generic[IN, OUT, KEY, W]):
     @abstractmethod
     def process(self,
                 key: KEY,
-                content: 'ProcessWindowFunction.Context',
+                context: 'ProcessWindowFunction.Context',
                 elements: Iterable[IN]) -> Iterable[OUT]:
         """
         Evaluates the window and outputs none or several elements.
 
         :param key: The key for which this window is evaluated.
-        :param content: The context in which the window is being evaluated.
+        :param context: The context in which the window is being evaluated.
         :param elements: The elements in the window being evaluated.
         :return: The iterable object which produces the elements to emit.
         """
         pass
 
-    @abstractmethod
     def clear(self, context: 'ProcessWindowFunction.Context') -> None:
         """
         Deletes any state in the :class:`Context` when the Window expires (the watermark passes its
@@ -979,7 +1135,80 @@ class ProcessWindowFunction(Function, Generic[IN, OUT, KEY, W]):
         pass
 
 
-class InternalWindowFunction(Function, Generic[IN, KEY, W]):
+class ProcessAllWindowFunction(Function, Generic[IN, OUT, W]):
+    """
+    Base interface for functions that are evaluated over non-keyed windows using a context
+    for retrieving extra information.
+    """
+
+    class Context(ABC, Generic[W2]):
+        """
+        The context holding window metadata.
+        """
+
+        @abstractmethod
+        def window(self) -> W2:
+            """
+            :return: The window that is being evaluated.
+            """
+            pass
+
+        @abstractmethod
+        def window_state(self) -> KeyedStateStore:
+            """
+            State accessor for per-key and per-window state.
+
+            .. note::
+                If you use per-window state you have to ensure that you clean it up by implementing
+                :func:`~ProcessAllWindowFunction.clear`.
+
+            :return: The :class:`KeyedStateStore` used to access per-key and per-window states.
+            """
+            pass
+
+        @abstractmethod
+        def global_state(self) -> KeyedStateStore:
+            """
+            State accessor for per-key global state.
+            """
+            pass
+
+    @abstractmethod
+    def process(self,
+                context: 'ProcessAllWindowFunction.Context',
+                elements: Iterable[IN]) -> Iterable[OUT]:
+        """
+        Evaluates the window and outputs none or several elements.
+
+        :param context: The context in which the window is being evaluated.
+        :param elements: The elements in the window being evaluated.
+        :return: The iterable object which produces the elements to emit.
+        """
+        pass
+
+    def clear(self, context: 'ProcessAllWindowFunction.Context') -> None:
+        """
+        Deletes any state in the :class:`Context` when the Window expires (the watermark passes its
+        max_timestamp + allowed_lateness).
+
+        :param context: The context to which the window is being evaluated.
+        """
+        pass
+
+
+class PassThroughWindowFunction(WindowFunction[IN, IN, KEY, W]):
+
+    def apply(self, key: KEY, window: W, inputs: Iterable[IN]) -> Iterable[IN]:
+        yield from inputs
+
+
+class PassThroughAllWindowFunction(AllWindowFunction[IN, IN, W]):
+
+    def apply(self, window: W, inputs: Iterable[IN]) -> Iterable[IN]:
+        yield from inputs
+
+
+class InternalWindowFunction(Function, Generic[IN, OUT, KEY, W]):
 
     class InternalWindowContext(ABC):
 
@@ -1004,7 +1233,7 @@ class InternalWindowFunction(Function, Generic[IN, KEY, W]):
                 key: KEY,
                 window: W,
                 context: InternalWindowContext,
-                input_data: Iterable[IN]) -> Iterable[OUT]:
+                input_data: IN) -> Iterable[OUT]:
         pass
 
     @abstractmethod
@@ -1012,7 +1241,51 @@ class InternalWindowFunction(Function, Generic[IN, KEY, W]):
         pass
 
 
-class InternalIterableWindowFunction(InternalWindowFunction[IN, KEY, W]):
+class InternalSingleValueWindowFunction(InternalWindowFunction[IN, OUT, KEY, W]):
+
+    def __init__(self, wrapped_function: WindowFunction):
+        self._wrapped_function = wrapped_function
+
+    def open(self, runtime_context: RuntimeContext):
+        self._wrapped_function.open(runtime_context)
+
+    def close(self):
+        self._wrapped_function.close()
+
+    def process(self,
+                key: KEY,
+                window: W,
+                context: InternalWindowFunction.InternalWindowContext,
+                input_data: IN) -> Iterable[OUT]:
+        return self._wrapped_function.apply(key, window, [input_data])
+
+    def clear(self, window: W, context: InternalWindowFunction.InternalWindowContext):
+        pass
+
+
+class InternalSingleValueAllWindowFunction(InternalWindowFunction[IN, OUT, int, W]):
+
+    def __init__(self, wrapped_function: AllWindowFunction):
+        self._wrapped_function = wrapped_function
+
+    def open(self, runtime_context: RuntimeContext):
+        self._wrapped_function.open(runtime_context)
+
+    def close(self):
+        self._wrapped_function.close()
+
+    def process(self,
+                key: int,
+                window: W,
+                context: InternalWindowFunction.InternalWindowContext,
+                input_data: IN) -> Iterable[OUT]:
+        return self._wrapped_function.apply(window, [input_data])
+
+    def clear(self, window: W, context: InternalWindowFunction.InternalWindowContext):
+        pass
+
+
+class InternalIterableWindowFunction(InternalWindowFunction[Iterable[IN], OUT, KEY, W]):
 
     def __init__(self, wrapped_function: WindowFunction):
         self._wrapped_function = wrapped_function
@@ -1029,6 +1302,30 @@ class InternalIterableWindowFunction(InternalWindowFunction[IN, KEY, W]):
                 context: InternalWindowFunction.InternalWindowContext,
                 input_data: Iterable[IN]) -> Iterable[OUT]:
         return self._wrapped_function.apply(key, window, input_data)
+
+    def clear(self,
+              window: W,
+              context: InternalWindowFunction.InternalWindowContext):
+        pass
+
+
+class InternalIterableAllWindowFunction(InternalWindowFunction[Iterable[IN], OUT, int, W]):
+
+    def __init__(self, wrapped_function: AllWindowFunction):
+        self._wrapped_function = wrapped_function
+
+    def open(self, runtime_context: RuntimeContext):
+        self._wrapped_function.open(runtime_context)
+
+    def close(self):
+        self._wrapped_function.close()
+
+    def process(self,
+                key: int,
+                window: W,
+                context: InternalWindowFunction.InternalWindowContext,
+                input_data: Iterable[IN]) -> Iterable[OUT]:
+        return self._wrapped_function.apply(window, input_data)
 
     def clear(self,
               window: W,
@@ -1058,12 +1355,84 @@ class InternalProcessWindowContext(ProcessWindowFunction.Context[W]):
         return self._underlying.global_state()
 
 
-class InternalIterableProcessWindowFunction(InternalWindowFunction[IN, KEY, W]):
+class InternalProcessAllWindowContext(ProcessAllWindowFunction.Context[W]):
+
+    def __init__(self):
+        self._underlying = None
+        self._window = None
+
+    def window(self) -> W:
+        return self._window
+
+    def window_state(self) -> KeyedStateStore:
+        return self._underlying.window_state()
+
+    def global_state(self) -> KeyedStateStore:
+        return self._underlying.global_state()
+
+
+class InternalSingleValueProcessWindowFunction(InternalWindowFunction[IN, OUT, KEY, W]):
 
     def __init__(self, wrapped_function: ProcessWindowFunction):
         self._wrapped_function = wrapped_function
-        self._internal_context = \
-            InternalProcessWindowContext()  # type: InternalProcessWindowContext
+        self._internal_context: InternalProcessWindowContext = \
+            InternalProcessWindowContext()
+
+    def open(self, runtime_context: RuntimeContext):
+        self._wrapped_function.open(runtime_context)
+
+    def close(self):
+        self._wrapped_function.close()
+
+    def process(self,
+                key: KEY,
+                window: W,
+                context: InternalWindowFunction.InternalWindowContext,
+                input_data: IN) -> Iterable[OUT]:
+        self._internal_context._window = window
+        self._internal_context._underlying = context
+        return self._wrapped_function.process(key, self._internal_context, [input_data])
+
+    def clear(self, window: W, context: InternalWindowFunction.InternalWindowContext):
+        self._internal_context._window = window
+        self._internal_context._underlying = context
+        self._wrapped_function.clear(self._internal_context)
+
+
+class InternalSingleValueProcessAllWindowFunction(InternalWindowFunction[IN, OUT, int, W]):
+
+    def __init__(self, wrapped_function: ProcessAllWindowFunction):
+        self._wrapped_function = wrapped_function
+        self._internal_context: InternalProcessAllWindowContext = \
+            InternalProcessAllWindowContext()
+
+    def open(self, runtime_context: RuntimeContext):
+        self._wrapped_function.open(runtime_context)
+
+    def close(self):
+        self._wrapped_function.close()
+
+    def process(self,
+                key: int,
+                window: W,
+                context: InternalWindowFunction.InternalWindowContext,
+                input_data: IN) -> Iterable[OUT]:
+        self._internal_context._window = window
+        self._internal_context._underlying = context
+        return self._wrapped_function.process(self._internal_context, [input_data])
+
+    def clear(self, window: W, context: InternalWindowFunction.InternalWindowContext):
+        self._internal_context._window = window
+        self._internal_context._underlying = context
+        self._wrapped_function.clear(self._internal_context)
+
+
+class InternalIterableProcessWindowFunction(InternalWindowFunction[Iterable[IN], OUT, KEY, W]):
+
+    def __init__(self, wrapped_function: ProcessWindowFunction):
+        self._wrapped_function = wrapped_function
+        self._internal_context: InternalProcessWindowContext = \
+            InternalProcessWindowContext()
 
     def open(self, runtime_context: RuntimeContext):
         self._wrapped_function.open(runtime_context)
@@ -1079,6 +1448,303 @@ class InternalIterableProcessWindowFunction(InternalWindowFunction[IN, KEY, W]):
         self._internal_context._window = window
         self._internal_context._underlying = context
         return self._wrapped_function.process(key, self._internal_context, input_data)
+
+    def clear(self, window: W, context: InternalWindowFunction.InternalWindowContext):
+        self._internal_context._window = window
+        self._internal_context._underlying = context
+        self._wrapped_function.clear(self._internal_context)
+
+
+class BaseBroadcastProcessFunction(Function):
+    """
+    The base class containing the functionality available to all broadcast process functions. These
+    include :class:`BroadcastProcessFunction` and :class:`KeyedBroadcastProcessFunction`.
+    """
+
+    class BaseContext(ABC):
+        """
+        The base context available to all methods in a broadcast process function. This includes
+        :class:`BroadcastProcessFunction` and :class:`KeyedBroadcastProcessFunction`.
+        """
+
+        @abstractmethod
+        def timestamp(self) -> int:
+            """
+            Timestamp of the element currently being processed or timestamp of a firing timer.
+            This might be None, depending on the stream's watermark strategy.
+            """
+            pass
+
+        @abstractmethod
+        def current_processing_time(self) -> int:
+            """Returns the current processing time."""
+            pass
+
+        @abstractmethod
+        def current_watermark(self) -> int:
+            """Returns the current watermark."""
+            pass
+
+    class Context(BaseContext):
+        """
+        A :class:`BaseContext` available to the broadcasted stream side of a
+        :class:`BroadcastConnectedStream`.
+
+        Apart from the basic functionality of a :class:`BaseContext`, this also allows to get and
+        update the elements stored in the :class:`BroadcastState`. In other words, it gives read/
+        write access to the broadcast state.
+        """
+
+        @abstractmethod
+        def get_broadcast_state(self, state_descriptor: MapStateDescriptor) -> BroadcastState:
+            """
+            Fetches the :class:`BroadcastState` with the specified name.
+
+            :param state_descriptor: the :class:`MapStateDescriptor` of the state to be fetched.
+            :return: The required :class:`BroadcastState`.
+            """
+            pass
+
+    class ReadOnlyContext(BaseContext):
+        """
+        A :class:`BaseContext` available to the non-broadcasted stream side of a
+        :class:`BroadcastConnectedStream`.
+
+        Apart from the basic functionality of a :class:`BaseContext`, this also allows to get
+        read-only access to the elements stored in the broadcast state.
+        """
+
+        @abstractmethod
+        def get_broadcast_state(
+            self, state_descriptor: MapStateDescriptor
+        ) -> ReadOnlyBroadcastState:
+            """
+            Fetches a read-only view of the broadcast state with the specified name.
+
+            :param state_descriptor: the :class:`MapStateDescriptor` of the state to be fetched.
+            :return: The required read-only view of the broadcast state.
+            """
+            pass
+
+
+class BroadcastProcessFunction(BaseBroadcastProcessFunction, Generic[IN1, IN2, OUT]):
+    """
+    A function to be applied to a :class:`BroadcastConnectedStream` that connects
+    :class:`BroadcastStream`, i.e. a stream with broadcast state, with a non-keyed
+    :class:`DataStream`.
+
+    The stream with the broadcast state can be created using the :meth:`DataStream.broadcast`
+    method.
+
+    The user has to implement two methods:
+
+    * the :meth:`process_broadcast_element` which will be applied to each element in the broadcast
+      side
+    * the :meth:`process_element` which will be applied to the non-broadcasted side.
+
+    The :meth:`process_broadcast_element` takes a context as an argument (among others), which
+    allows it to read/write to the broadcast state, while the :meth:`process_element` has read-only
+    access to the broadcast state.
+
+    .. versionadded:: 1.16.0
+    """
+
+    class Context(BaseBroadcastProcessFunction.Context, ABC):
+        """
+        A :class:`BaseBroadcastProcessFunction.Context` available to the broadcast side of a
+        :class:`BroadcastConnectedStream`.
+        """
+        pass
+
+    class ReadOnlyContext(BaseBroadcastProcessFunction.ReadOnlyContext, ABC):
+        """
+        A :class:`BaseBroadcastProcessFunction.ReadOnlyContext` available to the non-keyed side of a
+        :class:`BroadcastConnectedStream` (if any).
+        """
+        pass
+
+    @abstractmethod
+    def process_element(self, value: IN1, ctx: ReadOnlyContext):
+        """
+        This method is called for each element in the (non-broadcast) :class:`DataStream`.
+
+        This function can output zero or more elements via :code:`yield` statement, and query the
+        current processing/event time. Finally, it has read-only access to the broadcast state. The
+        context is only valid during the invocation of this method, do not store it.
+
+        :param value: The stream element.
+        :param ctx: A :class:`BroadcastProcessFunction.ReadOnlyContext` that allows querying the
+            timestamp of the element, querying the current processing/event time and reading the
+            broadcast state. The context is only valid during the invocation of this method, do not
+            store it.
+        """
+        pass
+
+    @abstractmethod
+    def process_broadcast_element(self, value: IN2, ctx: Context):
+        """
+        This method is called for each element in the :class:`BroadcastStream`.
+
+        This function can output zero or more elements via :code:`yield` statement, query the
+        current processing/event time, and also query and update the internal
+        :class:`state.BroadcastState`. These can be done through the provided
+        :class:`BroadcastProcessFunction.Context`. The context is only valid during the invocation
+        of this method, do not store it.
+
+        :param value: The stream element.
+        :param ctx: A :class:`BroadcastProcessFunction.Context` that allows querying the timestamp
+            of the element, querying the current processing/event time and updating the broadcast
+            state. The context is only valid during the invocation of this method, do not store it.
+        """
+        pass
+
+
+class KeyedBroadcastProcessFunction(BaseBroadcastProcessFunction, Generic[KEY, IN1, IN2, OUT]):
+    """
+    A function to be applied to a :class:`BroadcastConnectedStream` that connects
+    :class:`BroadcastStream`, i.e. a stream with broadcast state, with a :class:`KeyedStream`.
+
+    The stream with the broadcast state can be created using the :meth:`DataStream.broadcast`
+    method.
+
+    The user has to implement two methods:
+
+    * the :meth:`process_broadcast_element` which will be applied to each element in the broadcast
+      side
+    * the :meth:`process_element` which will be applied to the non-broadcasted/keyed side.
+
+    The :meth:`process_broadcast_element` takes a context as an argument (among others), which
+    allows it to read/write to the broadcast state, while the :meth:`process_element` has read-only
+    access to the broadcast state, but can read/write to the keyed state and register timers.
+
+    .. versionadded:: 1.16.0
+    """
+
+    class Context(BaseBroadcastProcessFunction.Context, ABC):
+        """
+        A :class:`BaseBroadcastProcessFunction.Context` available to the broadcast side of a
+        :class:`BroadcastConnectedStream`.
+
+        Currently, the function ``applyToKeyedState`` in Java is not supported in PyFlink.
+        """
+        pass
+
+    class ReadOnlyContext(BaseBroadcastProcessFunction.ReadOnlyContext, ABC):
+        """
+        A :class:`BaseBroadcastProcessFunction.ReadOnlyContext` available to the non-keyed side of a
+        :class:`BroadcastConnectedStream` (if any).
+
+        Apart from the basic functionality of a :class:`BaseBroadcastProcessFunction.Context`, this
+        also allows to get a read-only iterator over the elements stored in the broadcast state and
+        a :class:`TimerService` for querying time and registering timers.
+        """
+
+        @abstractmethod
+        def timer_service(self) -> TimerService:
+            """
+            A :class:`TimerService` for querying time and registering timers.
+            """
+            pass
+
+        @abstractmethod
+        def get_current_key(self) -> KEY:  # type: ignore[type-var]
+            """
+            Get key of the element being processed.
+            """
+            pass
+
+    class OnTimerContext(ReadOnlyContext, ABC):
+        """
+        Information available in an invocation of :meth:`KeyedBroadcastProcessFunction.on_timer`.
+        """
+
+        @abstractmethod
+        def time_domain(self) -> TimeDomain:
+            """
+            The :class:`TimeDomain` of the firing timer, i.e. if it is event or processing time
+            timer.
+            """
+            pass
+
+        @abstractmethod
+        def get_current_key(self) -> KEY:  # type: ignore[type-var]
+            """
+            Get the key of the firing timer.
+            """
+            pass
+
+    @abstractmethod
+    def process_element(self, value: IN1, ctx: ReadOnlyContext):
+        """
+        This method is called for each element in the (non-broadcast) :class:`KeyedStream`.
+
+        It can output zero or more elements via ``yield`` statement, query the current
+        processing/event time, and also query and update the local keyed state. In addition,
+        it can get a :class:`TimerService` for registering timers and querying the time. Finally, it
+        has read-only access to the broadcast state. The context is only valid during the invocation
+        of this method, do not store it.
+
+        :param value: The stream element.
+        :param ctx: A :class:`KeyedBroadcastProcessFunction.ReadOnlyContext` that allows querying
+            the timestamp of the element, querying the current processing/event time and iterating
+            the broadcast state with read-only access. The context is only valid during the
+            invocation of this method, do not store it.
+        """
+        pass
+
+    @abstractmethod
+    def process_broadcast_element(self, value: IN2, ctx: Context):
+        """
+        This method is called for each element in the :class:`BroadcastStream`.
+
+        It can output zero or more elements via ``yield`` statement, query the current
+        processing/event time, and also query and update the internal :class:`state.BroadcastState`.
+        Currently, ``applyToKeyedState`` is not supported in PyFlink. The context is only valid
+        during the invocation of this method, do not store it.
+
+        :param value: The stream element.
+        :param ctx: A :class:`KeyedBroadcastProcessFunction.Context` that allows querying the
+            timestamp of the element, querying the current processing/event time and updating the
+            broadcast state. The context is only valid during the invocation of this method, do not
+            store it.
+        """
+        pass
+
+    def on_timer(self, timestamp: int, ctx: OnTimerContext):
+        """
+        Called when a timer set using :class:`TimerService` fires.
+
+        :param timestamp: The timestamp of the firing timer.
+        :param ctx: An :class:`KeyedBroadcastProcessFunction.OnTimerContext` that allows querying
+            the timestamp of the firing timer, querying the current processing/event time, iterating
+            the broadcast state with read-only access, querying the :class:`TimeDomain` of the
+            firing timer and getting a :class:`TimerService` for registering timers and querying the
+            time. The context is only valid during the invocation of this method, do not store it.
+        """
+        pass
+
+
+class InternalIterableProcessAllWindowFunction(InternalWindowFunction[Iterable[IN], OUT, int, W]):
+
+    def __init__(self, wrapped_function: ProcessAllWindowFunction):
+        self._wrapped_function = wrapped_function
+        self._internal_context: InternalProcessAllWindowContext = \
+            InternalProcessAllWindowContext()
+
+    def open(self, runtime_context: RuntimeContext):
+        self._wrapped_function.open(runtime_context)
+
+    def close(self):
+        self._wrapped_function.close()
+
+    def process(self,
+                key: int,
+                window: W,
+                context: InternalWindowFunction.InternalWindowContext,
+                input_data: Iterable[IN]) -> Iterable[OUT]:
+        self._internal_context._window = window
+        self._internal_context._underlying = context
+        return self._wrapped_function.process(self._internal_context, input_data)
 
     def clear(self, window: W, context: InternalWindowFunction.InternalWindowContext):
         self._internal_context._window = window

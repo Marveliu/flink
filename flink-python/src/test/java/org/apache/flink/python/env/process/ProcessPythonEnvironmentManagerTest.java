@@ -25,9 +25,9 @@ import org.apache.flink.util.OperatingSystem;
 
 import org.apache.commons.compress.archivers.zip.ZipArchiveEntry;
 import org.apache.commons.compress.archivers.zip.ZipArchiveOutputStream;
-import org.junit.AfterClass;
-import org.junit.BeforeClass;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
 
 import java.io.DataInputStream;
 import java.io.File;
@@ -36,6 +36,7 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Paths;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.PosixFilePermission;
 import java.security.NoSuchAlgorithmException;
 import java.util.HashMap;
@@ -52,19 +53,17 @@ import static org.apache.flink.python.env.process.ProcessPythonEnvironmentManage
 import static org.apache.flink.python.env.process.ProcessPythonEnvironmentManager.PYTHON_REQUIREMENTS_FILE;
 import static org.apache.flink.python.env.process.ProcessPythonEnvironmentManager.PYTHON_REQUIREMENTS_INSTALL_DIR;
 import static org.apache.flink.python.env.process.ProcessPythonEnvironmentManager.PYTHON_WORKING_DIR;
-import static org.junit.Assert.assertArrayEquals;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
+import static org.apache.flink.python.util.PythonEnvironmentManagerUtils.PYFLINK_UDF_RUNNER_DIR;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /** Tests for the {@link ProcessPythonEnvironmentManager}. */
-public class ProcessPythonEnvironmentManagerTest {
+class ProcessPythonEnvironmentManagerTest {
 
     private static String tmpDir;
     private static boolean isUnix;
 
-    @BeforeClass
-    public static void prepareTempDirectory() throws IOException {
+    @BeforeAll
+    static void prepareTempDirectory() throws IOException {
         File tmpFile = File.createTempFile("process_environment_manager_test", "");
         if (tmpFile.delete() && tmpFile.mkdirs()) {
             tmpDir = tmpFile.getAbsolutePath();
@@ -152,8 +151,8 @@ public class ProcessPythonEnvironmentManagerTest {
         }
     }
 
-    @AfterClass
-    public static void cleanTempDirectory() {
+    @AfterAll
+    static void cleanTempDirectory() {
         if (tmpDir != null) {
             FileUtils.deleteDirectoryQuietly(new File(tmpDir));
             tmpDir = null;
@@ -161,7 +160,7 @@ public class ProcessPythonEnvironmentManagerTest {
     }
 
     @Test
-    public void testPythonFiles() throws Exception {
+    void testPythonFiles() throws Exception {
         // use LinkedHashMap to preserve the path order in environment variable
         Map<String, String> pythonFiles = new LinkedHashMap<>();
         pythonFiles.put(String.join(File.separator, tmpDir, "zip0"), "test_zip.zip");
@@ -191,7 +190,7 @@ public class ProcessPythonEnvironmentManagerTest {
                     };
             String expectedPythonPath = String.join(File.pathSeparator, expectedUserPythonPaths);
 
-            assertEquals(expectedPythonPath, environmentVariable.get("PYTHONPATH"));
+            assertThat(environmentVariable.get("PYTHONPATH")).isEqualTo(expectedPythonPath);
             assertFileEquals(
                     new File(String.join(File.separator, tmpDir, "file1")),
                     new File(
@@ -232,7 +231,45 @@ public class ProcessPythonEnvironmentManagerTest {
     }
 
     @Test
-    public void testRequirements() throws Exception {
+    void testProcessEnvironmentOnlyContainsManagedVariables() throws Exception {
+        Map<String, String> pythonFiles = new HashMap<>();
+        pythonFiles.put(String.join(File.separator, tmpDir, "file1"), "test_file1.py");
+        PythonDependencyInfo dependencyInfo =
+                new PythonDependencyInfo(pythonFiles, null, null, new HashMap<>(), "python");
+        // what the TaskManager process would pass on
+        Map<String, String> systemEnv = new HashMap<>();
+        systemEnv.put(PYFLINK_UDF_RUNNER_DIR, "");
+        systemEnv.put("PYTHONPATH", "/inherited/pythonpath");
+        systemEnv.put("INHERITED_SECRET", "must-not-be-passed-on");
+
+        try (ProcessPythonEnvironmentManager environmentManager =
+                new ProcessPythonEnvironmentManager(
+                        dependencyInfo, new String[] {tmpDir}, systemEnv, new JobID())) {
+            environmentManager.open();
+            String baseDir = environmentManager.getBaseDirectory();
+
+            ProcessPythonEnvironment environment =
+                    (ProcessPythonEnvironment) environmentManager.createEnvironment();
+
+            // the worker inherits the process environment; only what the manager set is passed on
+            assertThat(environment.getEnv())
+                    .doesNotContainKeys("INHERITED_SECRET", PYFLINK_UDF_RUNNER_DIR)
+                    .containsEntry(
+                            "PYTHONPATH",
+                            String.join(
+                                    File.pathSeparator,
+                                    String.join(File.separator, baseDir, PYTHON_FILES_DIR, "file1"),
+                                    "/inherited/pythonpath"))
+                    .containsEntry("python", "python")
+                    .containsEntry("BOOT_LOG_DIR", baseDir)
+                    .containsEntry(PYFLINK_GATEWAY_DISABLED, "true");
+            // the derivation itself still sees the whole environment
+            assertThat(environmentManager.getPythonEnv()).containsKey("INHERITED_SECRET");
+        }
+    }
+
+    @Test
+    void testRequirements() throws Exception {
         PythonDependencyInfo dependencyInfo =
                 new PythonDependencyInfo(
                         new HashMap<>(),
@@ -263,12 +300,12 @@ public class ProcessPythonEnvironmentManagerTest {
             expected.put(
                     PYTHON_REQUIREMENTS_INSTALL_DIR,
                     String.join(File.separator, tmpBase, PYTHON_REQUIREMENTS_DIR));
-            assertEquals(expected, environmentVariable);
+            assertThat(environmentVariable).isEqualTo(expected);
         }
     }
 
     @Test
-    public void testArchives() throws Exception {
+    void testArchives() throws Exception {
         // use LinkedHashMap to preserve the file order in python working directory
         Map<String, String> archives = new LinkedHashMap<>();
         archives.put(String.join(File.separator, tmpDir, "zip0"), "py27.zip");
@@ -285,7 +322,7 @@ public class ProcessPythonEnvironmentManagerTest {
             Map<String, String> expected = getBasicExpectedEnv(environmentManager);
             expected.put(
                     PYTHON_WORKING_DIR, String.join(File.separator, tmpBase, PYTHON_ARCHIVES_DIR));
-            assertEquals(expected, environmentVariable);
+            assertThat(environmentVariable).isEqualTo(expected);
             assertFileEquals(
                     new File(String.join(File.separator, tmpDir, "zipExpected0")),
                     new File(String.join(File.separator, tmpBase, PYTHON_ARCHIVES_DIR, "py27.zip")),
@@ -298,7 +335,7 @@ public class ProcessPythonEnvironmentManagerTest {
     }
 
     @Test
-    public void testPythonExecutable() throws Exception {
+    void testPythonExecutable() throws Exception {
         PythonDependencyInfo dependencyInfo =
                 new PythonDependencyInfo(
                         new HashMap<>(), null, null, new HashMap<>(), "/usr/local/bin/python");
@@ -310,12 +347,12 @@ public class ProcessPythonEnvironmentManagerTest {
 
             Map<String, String> expected = getBasicExpectedEnv(environmentManager);
             expected.put("python", "/usr/local/bin/python");
-            assertEquals(expected, environmentVariable);
+            assertThat(environmentVariable).isEqualTo(expected);
         }
     }
 
     @Test
-    public void testCreateRetrievalToken() throws Exception {
+    void testCreateRetrievalToken() throws Exception {
         PythonDependencyInfo dependencyInfo =
                 new PythonDependencyInfo(new HashMap<>(), null, null, new HashMap<>(), "python");
         Map<String, String> sysEnv = new HashMap<>();
@@ -332,12 +369,12 @@ public class ProcessPythonEnvironmentManagerTest {
             try (DataInputStream input = new DataInputStream(new FileInputStream(retrievalToken))) {
                 input.readFully(content);
             }
-            assertEquals("{\"manifest\": {}}", new String(content));
+            assertThat(new String(content)).isEqualTo("{\"manifest\": {}}");
         }
     }
 
     @Test
-    public void testSetLogDirectory() throws Exception {
+    void testSetLogDirectory() throws Exception {
         PythonDependencyInfo dependencyInfo =
                 new PythonDependencyInfo(new HashMap<>(), null, null, new HashMap<>(), "python");
 
@@ -350,12 +387,12 @@ public class ProcessPythonEnvironmentManagerTest {
                             environmentManager.getBaseDirectory());
             Map<String, String> expected = getBasicExpectedEnv(environmentManager);
             expected.put("BOOT_LOG_DIR", environmentManager.getBaseDirectory());
-            assertEquals(expected, env);
+            assertThat(env).isEqualTo(expected);
         }
     }
 
     @Test
-    public void testOpenClose() throws Exception {
+    void testOpenClose() throws Exception {
         PythonDependencyInfo dependencyInfo =
                 new PythonDependencyInfo(new HashMap<>(), null, null, new HashMap<>(), "python");
 
@@ -365,9 +402,9 @@ public class ProcessPythonEnvironmentManagerTest {
             environmentManager.createRetrievalToken();
 
             String tmpBase = environmentManager.getBaseDirectory();
-            assertTrue(new File(tmpBase).isDirectory());
+            assertThat(new File(tmpBase)).isDirectory();
             environmentManager.close();
-            assertFalse(new File(tmpBase).exists());
+            assertThat(new File(tmpBase)).doesNotExist();
         }
     }
 
@@ -378,8 +415,8 @@ public class ProcessPythonEnvironmentManagerTest {
 
     private static void assertFileEquals(File expectedFile, File actualFile, boolean checkUnixMode)
             throws IOException, NoSuchAlgorithmException {
-        assertTrue(actualFile.exists());
-        assertTrue(expectedFile.exists());
+        assertThat(actualFile).exists();
+        assertThat(expectedFile).exists();
         if (expectedFile.getAbsolutePath().equals(actualFile.getAbsolutePath())) {
             return;
         }
@@ -389,13 +426,15 @@ public class ProcessPythonEnvironmentManagerTest {
                     Files.getPosixFilePermissions(Paths.get(expectedFile.toURI()));
             Set<PosixFilePermission> actualPerm =
                     Files.getPosixFilePermissions(Paths.get(actualFile.toURI()));
-            assertEquals(expectedPerm, actualPerm);
+            assertThat(actualPerm).isEqualTo(expectedPerm);
         }
 
-        if (expectedFile.isDirectory()) {
-            assertTrue(actualFile.isDirectory());
+        final BasicFileAttributes expectedFileAttributes =
+                Files.readAttributes(expectedFile.toPath(), BasicFileAttributes.class);
+        if (expectedFileAttributes.isDirectory()) {
+            assertThat(actualFile).isDirectory();
             String[] expectedSubFiles = expectedFile.list();
-            assertArrayEquals(expectedSubFiles, actualFile.list());
+            assertThat(actualFile.list()).isEqualTo(expectedSubFiles);
             if (expectedSubFiles != null) {
                 for (String fileName : expectedSubFiles) {
                     assertFileEquals(
@@ -404,9 +443,10 @@ public class ProcessPythonEnvironmentManagerTest {
                 }
             }
         } else {
-            assertEquals(expectedFile.length(), actualFile.length());
-            if (expectedFile.length() > 0) {
-                assertTrue(org.apache.commons.io.FileUtils.contentEquals(expectedFile, actualFile));
+            assertThat(actualFile).hasSize(expectedFileAttributes.size());
+            if (expectedFileAttributes.size() > 0) {
+                assertThat(org.apache.commons.io.FileUtils.contentEquals(expectedFile, actualFile))
+                        .isTrue();
             }
         }
     }

@@ -18,7 +18,7 @@
 
 package org.apache.flink.table.types;
 
-import org.apache.flink.api.common.ExecutionConfig;
+import org.apache.flink.api.common.serialization.SerializerConfigImpl;
 import org.apache.flink.api.common.typeinfo.Types;
 import org.apache.flink.api.java.tuple.Tuple;
 import org.apache.flink.api.java.tuple.Tuple2;
@@ -27,9 +27,11 @@ import org.apache.flink.table.api.ValidationException;
 import org.apache.flink.table.catalog.ObjectIdentifier;
 import org.apache.flink.table.catalog.UnresolvedIdentifier;
 import org.apache.flink.table.expressions.TimeIntervalUnit;
+import org.apache.flink.table.legacy.types.logical.TypeInformationRawType;
 import org.apache.flink.table.types.logical.ArrayType;
 import org.apache.flink.table.types.logical.BigIntType;
 import org.apache.flink.table.types.logical.BinaryType;
+import org.apache.flink.table.types.logical.BitmapType;
 import org.apache.flink.table.types.logical.BooleanType;
 import org.apache.flink.table.types.logical.CharType;
 import org.apache.flink.table.types.logical.DateType;
@@ -48,21 +50,26 @@ import org.apache.flink.table.types.logical.RawType;
 import org.apache.flink.table.types.logical.RowType;
 import org.apache.flink.table.types.logical.SmallIntType;
 import org.apache.flink.table.types.logical.StructuredType;
+import org.apache.flink.table.types.logical.StructuredType.StructuredAttribute;
 import org.apache.flink.table.types.logical.SymbolType;
 import org.apache.flink.table.types.logical.TimeType;
 import org.apache.flink.table.types.logical.TimestampKind;
 import org.apache.flink.table.types.logical.TimestampType;
 import org.apache.flink.table.types.logical.TinyIntType;
-import org.apache.flink.table.types.logical.TypeInformationRawType;
 import org.apache.flink.table.types.logical.UnresolvedUserDefinedType;
+import org.apache.flink.table.types.logical.UuidType;
 import org.apache.flink.table.types.logical.VarBinaryType;
 import org.apache.flink.table.types.logical.VarCharType;
+import org.apache.flink.table.types.logical.VariantType;
 import org.apache.flink.table.types.logical.YearMonthIntervalType;
 import org.apache.flink.table.types.logical.ZonedTimestampType;
 import org.apache.flink.types.Row;
+import org.apache.flink.types.bitmap.Bitmap;
+import org.apache.flink.types.bitmap.RoaringBitmapData;
+import org.apache.flink.types.variant.Variant;
 
 import org.assertj.core.api.ThrowingConsumer;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
@@ -73,6 +80,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
+import java.util.UUID;
 
 import static org.apache.flink.table.test.TableAssertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -82,7 +90,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 public class LogicalTypesTest {
 
     @Test
-    public void testCharType() {
+    void testCharType() {
         assertThat(new CharType(33))
                 .satisfies(
                         baseAssertions(
@@ -95,7 +103,7 @@ public class LogicalTypesTest {
     }
 
     @Test
-    public void testVarCharType() {
+    void testVarCharType() {
         assertThat(new VarCharType(33))
                 .satisfies(
                         baseAssertions(
@@ -108,7 +116,7 @@ public class LogicalTypesTest {
     }
 
     @Test
-    public void testVarCharTypeWithMaximumLength() {
+    void testVarCharTypeWithMaximumLength() {
         assertThat(new VarCharType(Integer.MAX_VALUE))
                 .satisfies(
                         baseAssertions(
@@ -121,7 +129,7 @@ public class LogicalTypesTest {
     }
 
     @Test
-    public void testBooleanType() {
+    void testBooleanType() {
         assertThat(new BooleanType())
                 .satisfies(
                         baseAssertions(
@@ -134,7 +142,7 @@ public class LogicalTypesTest {
     }
 
     @Test
-    public void testBinaryType() {
+    void testBinaryType() {
         assertThat(new BinaryType(22))
                 .satisfies(
                         baseAssertions(
@@ -147,7 +155,7 @@ public class LogicalTypesTest {
     }
 
     @Test
-    public void testVarBinaryType() {
+    void testVarBinaryType() {
         assertThat(new VarBinaryType(22))
                 .satisfies(
                         baseAssertions(
@@ -160,7 +168,7 @@ public class LogicalTypesTest {
     }
 
     @Test
-    public void testVarBinaryTypeWithMaximumLength() {
+    void testVarBinaryTypeWithMaximumLength() {
         assertThat(new VarBinaryType(Integer.MAX_VALUE))
                 .satisfies(
                         baseAssertions(
@@ -173,7 +181,7 @@ public class LogicalTypesTest {
     }
 
     @Test
-    public void testDecimalType() {
+    void testDecimalType() {
         assertThat(new DecimalType(10, 2))
                 .satisfies(
                         baseAssertions(
@@ -186,7 +194,7 @@ public class LogicalTypesTest {
     }
 
     @Test
-    public void testTinyIntType() {
+    void testTinyIntType() {
         assertThat(new TinyIntType())
                 .satisfies(
                         baseAssertions(
@@ -199,7 +207,7 @@ public class LogicalTypesTest {
     }
 
     @Test
-    public void testSmallIntType() {
+    void testSmallIntType() {
         assertThat(new SmallIntType())
                 .satisfies(
                         baseAssertions(
@@ -212,7 +220,7 @@ public class LogicalTypesTest {
     }
 
     @Test
-    public void testIntType() {
+    void testIntType() {
         assertThat(new IntType())
                 .satisfies(
                         baseAssertions(
@@ -225,7 +233,7 @@ public class LogicalTypesTest {
     }
 
     @Test
-    public void testBigIntType() {
+    void testBigIntType() {
         assertThat(new BigIntType())
                 .satisfies(
                         baseAssertions(
@@ -238,7 +246,7 @@ public class LogicalTypesTest {
     }
 
     @Test
-    public void testFloatType() {
+    void testFloatType() {
         assertThat(new FloatType())
                 .satisfies(
                         baseAssertions(
@@ -251,7 +259,7 @@ public class LogicalTypesTest {
     }
 
     @Test
-    public void testDoubleType() {
+    void testDoubleType() {
         assertThat(new DoubleType())
                 .satisfies(
                         baseAssertions(
@@ -264,7 +272,7 @@ public class LogicalTypesTest {
     }
 
     @Test
-    public void testDateType() {
+    void testDateType() {
         assertThat(new DateType())
                 .satisfies(
                         baseAssertions(
@@ -279,7 +287,7 @@ public class LogicalTypesTest {
     }
 
     @Test
-    public void testTimeType() {
+    void testTimeType() {
         assertThat(new TimeType(9))
                 .satisfies(
                         baseAssertions(
@@ -294,7 +302,7 @@ public class LogicalTypesTest {
     }
 
     @Test
-    public void testTimestampType() {
+    void testTimestampType() {
         assertThat(new TimestampType(9))
                 .satisfies(
                         baseAssertions(
@@ -309,7 +317,7 @@ public class LogicalTypesTest {
     }
 
     @Test
-    public void testTimestampTypeWithTimeAttribute() {
+    void testTimestampTypeWithTimeAttribute() {
         assertThat(new TimestampType(true, TimestampKind.ROWTIME, 9))
                 .satisfies(
                         baseAssertions(
@@ -324,7 +332,7 @@ public class LogicalTypesTest {
     }
 
     @Test
-    public void testZonedTimestampType() {
+    void testZonedTimestampType() {
         assertThat(new ZonedTimestampType(9))
                 .satisfies(
                         baseAssertions(
@@ -339,7 +347,7 @@ public class LogicalTypesTest {
     }
 
     @Test
-    public void testZonedTimestampTypeWithTimeAttribute() {
+    void testZonedTimestampTypeWithTimeAttribute() {
         assertThat(new ZonedTimestampType(true, TimestampKind.ROWTIME, 9))
                 .satisfies(
                         baseAssertions(
@@ -354,7 +362,7 @@ public class LogicalTypesTest {
     }
 
     @Test
-    public void testLocalZonedTimestampType() {
+    void testLocalZonedTimestampType() {
         assertThat(new LocalZonedTimestampType(9))
                 .satisfies(
                         baseAssertions(
@@ -367,7 +375,7 @@ public class LogicalTypesTest {
     }
 
     @Test
-    public void testLocalZonedTimestampTypeWithTimeAttribute() {
+    void testLocalZonedTimestampTypeWithTimeAttribute() {
         assertThat(new LocalZonedTimestampType(true, TimestampKind.ROWTIME, 9))
                 .satisfies(
                         baseAssertions(
@@ -380,7 +388,7 @@ public class LogicalTypesTest {
     }
 
     @Test
-    public void testYearMonthIntervalType() {
+    void testYearMonthIntervalType() {
         assertThat(
                         new YearMonthIntervalType(
                                 YearMonthIntervalType.YearMonthResolution.YEAR_TO_MONTH, 2))
@@ -396,7 +404,7 @@ public class LogicalTypesTest {
     }
 
     @Test
-    public void testDayTimeIntervalType() {
+    void testDayTimeIntervalType() {
         assertThat(
                         new DayTimeIntervalType(
                                 DayTimeIntervalType.DayTimeResolution.DAY_TO_SECOND, 2, 6))
@@ -414,7 +422,7 @@ public class LogicalTypesTest {
     }
 
     @Test
-    public void testArrayType() {
+    void testArrayType() {
         assertThat(new ArrayType(new TimestampType()))
                 .satisfies(
                         baseAssertions(
@@ -455,7 +463,7 @@ public class LogicalTypesTest {
     }
 
     @Test
-    public void testMultisetType() {
+    void testMultisetType() {
         assertThat(new MultisetType(new TimestampType()))
                 .satisfies(
                         baseAssertions(
@@ -478,7 +486,7 @@ public class LogicalTypesTest {
     }
 
     @Test
-    public void testMapType() {
+    void testMapType() {
         assertThat(new MapType(new VarCharType(20), new TimestampType()))
                 .satisfies(
                         baseAssertions(
@@ -491,7 +499,7 @@ public class LogicalTypesTest {
     }
 
     @Test
-    public void testRowType() {
+    void testRowType() {
         assertThat(
                         new RowType(
                                 Arrays.asList(
@@ -530,7 +538,7 @@ public class LogicalTypesTest {
     }
 
     @Test
-    public void testDistinctType() {
+    void testDistinctType() {
         assertThat(createDistinctType("Money"))
                 .satisfies(
                         baseAssertions(
@@ -543,8 +551,12 @@ public class LogicalTypesTest {
     }
 
     @Test
-    public void testStructuredType() {
-        assertThat(createUserType(true, true))
+    void testStructuredType() {
+        assertThat(
+                        createUserType(
+                                StructuredRegistered.YES,
+                                StructuredFinal.YES,
+                                StructuredClassResolved.YES))
                 .satisfies(
                         baseAssertions(
                                 "`cat`.`db`.`User`",
@@ -554,7 +566,10 @@ public class LogicalTypesTest {
                                 new LogicalType[] {
                                     UDT_NAME_TYPE, UDT_SETTING_TYPE, UDT_TIMESTAMP_TYPE
                                 },
-                                createUserType(true, false)));
+                                createUserType(
+                                        StructuredRegistered.YES,
+                                        StructuredFinal.NO,
+                                        StructuredClassResolved.YES)));
 
         assertThat(createHumanType(false))
                 .satisfies(
@@ -565,14 +580,19 @@ public class LogicalTypesTest {
                                 new Class[] {Row.class, Human.class}));
 
         // not every Human is User
-        assertThat(createUserType(true, true)).doesNotSupportInputConversion(Human.class);
+        assertThat(
+                        createUserType(
+                                StructuredRegistered.YES,
+                                StructuredFinal.YES,
+                                StructuredClassResolved.YES))
+                .doesNotSupportInputConversion(Human.class);
 
         // User is not implementing SpecialHuman
         assertThat(createHumanType(true)).doesNotSupportInputConversion(User.class);
     }
 
     @Test
-    public void testNullType() {
+    void testNullType() {
         assertThat(new NullType())
                 .isJavaSerializable()
                 .satisfies(nonEqualityCheckWithOtherType(new TimeType()))
@@ -585,7 +605,45 @@ public class LogicalTypesTest {
     }
 
     @Test
-    public void testTypeInformationRawType() throws Exception {
+    void testVariantType() {
+        assertThat(new VariantType())
+                .isJavaSerializable()
+                .hasSerializableString("VARIANT")
+                .hasSummaryString("VARIANT")
+                .supportsOutputConversion(Variant.class)
+                .supportsInputConversion(Variant.class);
+    }
+
+    @Test
+    void testBitmapType() {
+        assertThat(new BitmapType())
+                .isJavaSerializable()
+                .satisfies(
+                        baseAssertions(
+                                "BITMAP",
+                                "BITMAP",
+                                new Class[] {Bitmap.class, RoaringBitmapData.class},
+                                new Class[] {Bitmap.class, RoaringBitmapData.class},
+                                new LogicalType[] {},
+                                new BitmapType(false)));
+    }
+
+    @Test
+    void testUuidType() {
+        assertThat(new UuidType())
+                .isJavaSerializable()
+                .satisfies(
+                        baseAssertions(
+                                "UUID",
+                                "UUID",
+                                new Class[] {UUID.class, byte[].class},
+                                new Class[] {UUID.class, byte[].class},
+                                new LogicalType[] {},
+                                new UuidType(false)));
+    }
+
+    @Test
+    void testTypeInformationRawType() {
         final TypeInformationRawType<?> rawType =
                 new TypeInformationRawType<>(Types.TUPLE(Types.STRING, Types.INT));
 
@@ -602,10 +660,10 @@ public class LogicalTypesTest {
     }
 
     @Test
-    public void testRawType() {
+    void testRawType() {
         final RawType<Human> rawType =
                 new RawType<>(
-                        Human.class, new KryoSerializer<>(Human.class, new ExecutionConfig()));
+                        Human.class, new KryoSerializer<>(Human.class, new SerializerConfigImpl()));
         final String className = "org.apache.flink.table.types.LogicalTypesTest$Human";
         // use rawType.getSerializerString() to regenerate the following string
         final String serializerString =
@@ -631,7 +689,8 @@ public class LogicalTypesTest {
                                 new LogicalType[] {},
                                 new RawType<>(
                                         User.class,
-                                        new KryoSerializer<>(User.class, new ExecutionConfig()))));
+                                        new KryoSerializer<>(
+                                                User.class, new SerializerConfigImpl()))));
 
         assertThat(
                         RawType.restore(
@@ -642,7 +701,7 @@ public class LogicalTypesTest {
     }
 
     @Test
-    public void testSymbolType() {
+    void testSymbolType() {
         final SymbolType<?> symbolType = new SymbolType<>();
 
         assertThat(symbolType)
@@ -657,7 +716,7 @@ public class LogicalTypesTest {
     }
 
     @Test
-    public void testUnresolvedUserDefinedType() {
+    void testUnresolvedUserDefinedType() {
         final UnresolvedUserDefinedType unresolvedType =
                 new UnresolvedUserDefinedType(
                         UnresolvedIdentifier.of("catalog", "database", "Type"));
@@ -671,7 +730,7 @@ public class LogicalTypesTest {
     }
 
     @Test
-    public void testEmptyStringLiterals() {
+    void testEmptyStringLiterals() {
         final CharType charType = CharType.ofEmptyLiteral();
         final VarCharType varcharType = VarCharType.ofEmptyLiteral();
         final BinaryType binaryType = BinaryType.ofEmptyLiteral();
@@ -698,23 +757,75 @@ public class LogicalTypesTest {
     }
 
     @Test
-    public void testUnregisteredStructuredType() {
-        final StructuredType structuredType = createUserType(false, true);
+    void testInlineStructuredTypeWithResolvedClass() {
+        final StructuredType structuredType =
+                createUserType(
+                        StructuredRegistered.NO, StructuredFinal.YES, StructuredClassResolved.YES);
 
         assertThat(structuredType)
-                .satisfies(nonEqualityCheckWithOtherType(createUserType(false, false)))
+                .satisfies(
+                        nonEqualityCheckWithOtherType(
+                                createUserType(
+                                        StructuredRegistered.NO,
+                                        StructuredFinal.NO,
+                                        StructuredClassResolved.YES)))
                 .satisfies(LogicalTypesTest::nullability)
                 .isJavaSerializable()
-                .hasNoSerializableString()
+                .hasSerializableString(
+                        String.format(
+                                "STRUCTURED<'%s', `name` VARCHAR(1) 'Description.', `setting` INT, `timestamp` TIMESTAMP(6)>",
+                                User.class.getName()))
                 .hasSummaryString(
                         String.format(
-                                "*%s<`name` VARCHAR(1) '...', `setting` INT, `timestamp` TIMESTAMP(6)>*",
+                                "STRUCTURED<'%s', `name` VARCHAR(1) '...', `setting` INT, `timestamp` TIMESTAMP(6)>",
                                 User.class.getName()))
                 .satisfies(
                         conversions(
                                 new Class[] {Row.class, User.class},
                                 new Class[] {Row.class, Human.class, User.class}))
                 .hasExactlyChildren(UDT_NAME_TYPE, UDT_SETTING_TYPE, UDT_TIMESTAMP_TYPE);
+    }
+
+    @Test
+    void testInlineStructuredTypeWithUnresolvedClass() {
+        final StructuredType structuredType =
+                createUserType(
+                        StructuredRegistered.NO, StructuredFinal.YES, StructuredClassResolved.NO);
+
+        // Conversions are limited to Row.class only
+        assertThat(structuredType)
+                .satisfies(
+                        nonEqualityCheckWithOtherType(
+                                createUserType(
+                                        StructuredRegistered.NO,
+                                        StructuredFinal.NO,
+                                        StructuredClassResolved.NO)))
+                .satisfies(LogicalTypesTest::nullability)
+                .isJavaSerializable()
+                .hasSerializableString(
+                        String.format(
+                                "STRUCTURED<'%s', `name` VARCHAR(1) 'Description.', `setting` INT, `timestamp` TIMESTAMP(6)>",
+                                User.class.getName()))
+                .hasSummaryString(
+                        String.format(
+                                "STRUCTURED<'%s', `name` VARCHAR(1) '...', `setting` INT, `timestamp` TIMESTAMP(6)>",
+                                User.class.getName()))
+                .satisfies(conversions(new Class[] {Row.class}, new Class[] {Row.class}))
+                .hasExactlyChildren(UDT_NAME_TYPE, UDT_SETTING_TYPE, UDT_TIMESTAMP_TYPE);
+
+        // Invalid class name
+        assertThatThrownBy(() -> StructuredType.newBuilder("@#$%^&*").build())
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining(
+                        "Invalid class name '@#$%^&*'. The class name must comply with JVM identifier rules.");
+
+        // Right side has resolved class, left side is unresolved.
+        assertThat(structuredType)
+                .isEqualTo(
+                        createUserType(
+                                StructuredRegistered.NO,
+                                StructuredFinal.YES,
+                                StructuredClassResolved.YES));
     }
 
     // --------------------------------------------------------------------------------------------
@@ -796,42 +907,63 @@ public class LogicalTypesTest {
                         useDifferentImplementation ? SpecialHuman.class : Human.class)
                 .attributes(
                         Collections.singletonList(
-                                new StructuredType.StructuredAttribute(
-                                        "name", UDT_NAME_TYPE, "Description.")))
+                                new StructuredAttribute("name", UDT_NAME_TYPE, "Description.")))
                 .description("Human type desc.")
                 .setFinal(false)
                 .setInstantiable(false)
                 .build();
     }
 
-    private StructuredType createUserType(boolean isRegistered, boolean isFinal) {
+    private enum StructuredRegistered {
+        YES,
+        NO
+    }
+
+    private enum StructuredFinal {
+        YES,
+        NO
+    }
+
+    private enum StructuredClassResolved {
+        YES,
+        NO
+    }
+
+    private StructuredType createUserType(
+            StructuredRegistered registered,
+            StructuredFinal isFinal,
+            StructuredClassResolved resolvedClass) {
         final StructuredType.Builder builder;
-        if (isRegistered) {
+        if (registered == StructuredRegistered.YES) {
             builder =
                     StructuredType.newBuilder(ObjectIdentifier.of("cat", "db", "User"), User.class);
-        } else {
+        } else if (resolvedClass == StructuredClassResolved.YES) {
             builder = StructuredType.newBuilder(User.class);
+        } else {
+            builder = StructuredType.newBuilder(User.class.getName());
         }
         return builder.attributes(
                         Arrays.asList(
-                                new StructuredType.StructuredAttribute("setting", UDT_SETTING_TYPE),
-                                new StructuredType.StructuredAttribute(
-                                        "timestamp", UDT_TIMESTAMP_TYPE)))
+                                new StructuredAttribute("setting", UDT_SETTING_TYPE),
+                                new StructuredAttribute("timestamp", UDT_TIMESTAMP_TYPE)))
                 .description("User type desc.")
-                .setFinal(isFinal)
+                .setFinal(isFinal == StructuredFinal.YES)
                 .setInstantiable(true)
                 .superType(createHumanType(false))
                 .build();
     }
 
+    @SuppressWarnings("unused")
     private abstract static class SpecialHuman {
         public String name;
     }
 
+    @SuppressWarnings("unused")
     private abstract static class Human {
         public String name;
     }
 
+    @SuppressWarnings("unused")
     private static final class User extends Human {
         public int setting;
         public LocalDateTime timestamp;

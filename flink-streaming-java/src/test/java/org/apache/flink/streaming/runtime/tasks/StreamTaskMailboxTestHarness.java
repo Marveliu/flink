@@ -29,7 +29,7 @@ import java.util.Queue;
 import java.util.function.Supplier;
 
 import static org.apache.flink.util.Preconditions.checkNotNull;
-import static org.junit.Assert.assertTrue;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Test harness for testing a {@link StreamTask}.
@@ -67,6 +67,10 @@ public class StreamTaskMailboxTestHarness<OUT> implements AutoCloseable {
 
     public StreamTask<OUT, ?> getStreamTask() {
         return streamTask;
+    }
+
+    public OperatorChain<OUT, ?> getOperatorChain() {
+        return streamTask.operatorChain;
     }
 
     public TimerService getTimerService() {
@@ -136,6 +140,16 @@ public class StreamTaskMailboxTestHarness<OUT> implements AutoCloseable {
         return false;
     }
 
+    /**
+     * Runs the production mailbox loop until it is suspended or all actions are completed. Unlike
+     * {@link #processAll()}, this preserves the production interleaving of mails and the default
+     * action: the default action can process input at a mail-batch boundary while mails enqueued
+     * during the batch are still pending.
+     */
+    public void runMailboxLoop() throws Exception {
+        streamTask.mailboxProcessor.runMailboxLoop();
+    }
+
     public MailboxExecutor getExecutor(int priority) {
         return streamTask.getMailboxExecutorFactory().createExecutor(priority);
     }
@@ -164,7 +178,15 @@ public class StreamTaskMailboxTestHarness<OUT> implements AutoCloseable {
 
     public void finishProcessing() throws Exception {
         streamTask.afterInvoke();
+        cleanUp();
+    }
+
+    public void cleanUp() throws Exception {
         streamTask.cleanUp(null);
+    }
+
+    public void cancel() throws Exception {
+        streamTask.cancel();
     }
 
     @Override
@@ -177,9 +199,9 @@ public class StreamTaskMailboxTestHarness<OUT> implements AutoCloseable {
         streamMockEnvironment.getIOManager().close();
         MemoryManager memMan = this.streamMockEnvironment.getMemoryManager();
         if (memMan != null) {
-            assertTrue(
-                    "Memory Manager managed memory was not completely freed.",
-                    memMan.verifyEmpty());
+            assertThat(memMan.verifyEmpty())
+                    .as("Memory Manager managed memory was not completely freed.")
+                    .isTrue();
             memMan.shutdown();
         }
     }
@@ -190,5 +212,9 @@ public class StreamTaskMailboxTestHarness<OUT> implements AutoCloseable {
 
     public TestCheckpointResponder getCheckpointResponder() {
         return (TestCheckpointResponder) taskStateManager.getCheckpointResponder();
+    }
+
+    public StreamMockEnvironment getStreamMockEnvironment() {
+        return streamMockEnvironment;
     }
 }

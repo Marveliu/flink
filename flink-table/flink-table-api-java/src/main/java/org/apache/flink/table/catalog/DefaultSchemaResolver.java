@@ -21,6 +21,8 @@ package org.apache.flink.table.catalog;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.table.api.Schema;
 import org.apache.flink.table.api.Schema.UnresolvedComputedColumn;
+import org.apache.flink.table.api.Schema.UnresolvedImmutableColumns;
+import org.apache.flink.table.api.Schema.UnresolvedIndex;
 import org.apache.flink.table.api.Schema.UnresolvedMetadataColumn;
 import org.apache.flink.table.api.Schema.UnresolvedPhysicalColumn;
 import org.apache.flink.table.api.Schema.UnresolvedPrimaryKey;
@@ -43,6 +45,8 @@ import javax.annotation.Nullable;
 
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -87,7 +91,14 @@ class DefaultSchemaResolver implements SchemaResolver {
         final UniqueConstraint primaryKey =
                 resolvePrimaryKey(schema.getPrimaryKey().orElse(null), columnsWithRowtime);
 
-        return new ResolvedSchema(columnsWithRowtime, watermarkSpecs, primaryKey);
+        final List<Index> indexes = resolveIndexes(schema.getIndexes(), columnsWithRowtime);
+
+        final ImmutableColumnsConstraint immutableColumns =
+                resolveImmutableColumns(
+                        schema.getImmutableColumns().orElse(null), primaryKey, columnsWithRowtime);
+
+        return new ResolvedSchema(
+                columnsWithRowtime, watermarkSpecs, primaryKey, indexes, immutableColumns);
     }
 
     // --------------------------------------------------------------------------------------------
@@ -95,6 +106,7 @@ class DefaultSchemaResolver implements SchemaResolver {
     private List<Column> resolveColumns(List<Schema.UnresolvedColumn> unresolvedColumns) {
 
         validateDuplicateColumns(unresolvedColumns);
+        validateDuplicateMetadataKeys(unresolvedColumns);
 
         final Column[] resolvedColumns = new Column[unresolvedColumns.size()];
         // process source columns first before computed columns
@@ -172,6 +184,32 @@ class DefaultSchemaResolver implements SchemaResolver {
                     String.format(
                             "Schema must not contain duplicate column names. Found duplicates: %s",
                             duplicates));
+        }
+    }
+
+    private void validateDuplicateMetadataKeys(List<Schema.UnresolvedColumn> columns) {
+        Map<String, String> metadataKeyToColumnNames = new HashMap<>();
+        for (Schema.UnresolvedColumn column : columns) {
+            if (!(column instanceof UnresolvedMetadataColumn)) {
+                continue;
+            }
+
+            UnresolvedMetadataColumn metadataColumn = (UnresolvedMetadataColumn) column;
+            String metadataKey =
+                    metadataColumn.getMetadataKey() == null
+                            ? metadataColumn.getName()
+                            : metadataColumn.getMetadataKey();
+            if (metadataKeyToColumnNames.containsKey(metadataKey)) {
+                throw new ValidationException(
+                        String.format(
+                                "The column `%s` and `%s` in the table are both from the same metadata key '%s'. "
+                                        + "Please specify one of the columns as the metadata column and use the "
+                                        + "computed column syntax to specify the others.",
+                                metadataKeyToColumnNames.get(metadataKey),
+                                metadataColumn.getName(),
+                                metadataKey));
+            }
+            metadataKeyToColumnNames.put(metadataKey, metadataColumn.getName());
         }
     }
 
@@ -352,6 +390,145 @@ class DefaultSchemaResolver implements SchemaResolver {
                         String.format(
                                 "Invalid primary key '%s'. Column '%s' is nullable.",
                                 primaryKey.getName(), columnName));
+            }
+        }
+    }
+
+    private List<Index> resolveIndexes(
+            List<UnresolvedIndex> unresolvedIndexes, List<Column> columns) {
+        List<Index> resolvedIndexes =
+                unresolvedIndexes.stream()
+                        .map(
+                                unresolvedIndex ->
+                                        DefaultIndex.newIndex(
+                                                unresolvedIndex.getIndexName(),
+                                                unresolvedIndex.getColumnNames()))
+                        .collect(Collectors.toList());
+
+        validateIndexes(resolvedIndexes, columns);
+
+        return resolvedIndexes;
+    }
+
+    private void validateIndexes(List<Index> indexes, List<Column> columns) {
+        final Map<String, Column> columnsByNameLookup =
+                columns.stream().collect(Collectors.toMap(Column::getName, Function.identity()));
+
+        Set<List<String>> deduplicatedIndexes = new HashSet<>();
+        for (Index index : indexes) {
+
+            validateSingleIndex(index, columnsByNameLookup);
+
+            final List<String> indexColumns = index.getColumns();
+            if (deduplicatedIndexes.contains(indexColumns)) {
+                throw new ValidationException(
+                        String.format(
+                                "Invalid index '%s'. There is a duplicated index composed of the same columns: %s",
+                                index.getName(),
+                                indexColumns.stream()
+                                        .map(col -> columnsByNameLookup.get(col).getName())
+                                        .collect(Collectors.joining(", ", "[", "]"))));
+            }
+
+            deduplicatedIndexes.add(index.getColumns());
+        }
+    }
+
+    private void validateSingleIndex(Index index, Map<String, Column> columnsByNameLookup) {
+        final Set<String> duplicateColumns =
+                index.getColumns().stream()
+                        .filter(name -> Collections.frequency(index.getColumns(), name) > 1)
+                        .collect(Collectors.toSet());
+
+        if (!duplicateColumns.isEmpty()) {
+            throw new ValidationException(
+                    String.format(
+                            "Invalid index '%s'. An index must not contain duplicate columns. Found: %s",
+                            index.getName(), duplicateColumns));
+        }
+
+        for (String columnName : index.getColumns()) {
+            Column column = columnsByNameLookup.get(columnName);
+            if (column == null) {
+                throw new ValidationException(
+                        String.format(
+                                "Invalid index '%s'. Column '%s' does not exist.",
+                                index.getName(), columnName));
+            }
+
+            if (!column.isPhysical() && !(column instanceof MetadataColumn)) {
+                throw new ValidationException(
+                        String.format(
+                                "Invalid index '%s'. Column '%s' is not a physical column or a metadata column.",
+                                index.getName(), columnName));
+            }
+        }
+    }
+
+    private @Nullable ImmutableColumnsConstraint resolveImmutableColumns(
+            @Nullable UnresolvedImmutableColumns unresolvedImmutableColumns,
+            @Nullable UniqueConstraint primaryKey,
+            List<Column> columns) {
+        if (unresolvedImmutableColumns == null) {
+            return null;
+        }
+
+        final ImmutableColumnsConstraint immutableColumns =
+                ImmutableColumnsConstraint.immutableColumns(
+                        unresolvedImmutableColumns.getConstraintName(),
+                        unresolvedImmutableColumns.getColumnNames());
+
+        validateImmutableColumns(immutableColumns, primaryKey, columns);
+
+        return immutableColumns;
+    }
+
+    private void validateImmutableColumns(
+            ImmutableColumnsConstraint immutableColumns,
+            @Nullable UniqueConstraint primaryKey,
+            List<Column> columns) {
+        if (primaryKey == null) {
+            throw new ValidationException(
+                    String.format(
+                            "Invalid immutable constraint '%s'. "
+                                    + "An immutable constraint must be defined on the table that contains primary key.",
+                            immutableColumns.getName()));
+        }
+
+        final Map<String, Column> columnsByNameLookup =
+                columns.stream().collect(Collectors.toMap(Column::getName, Function.identity()));
+
+        final Set<String> duplicateColumns =
+                immutableColumns.getColumns().stream()
+                        .filter(
+                                name ->
+                                        Collections.frequency(immutableColumns.getColumns(), name)
+                                                > 1)
+                        .collect(Collectors.toSet());
+
+        if (!duplicateColumns.isEmpty()) {
+            throw new ValidationException(
+                    String.format(
+                            "Invalid immutable constraint '%s'. "
+                                    + "An immutable constraint must not contain duplicate columns. "
+                                    + "Found: %s",
+                            immutableColumns.getName(), duplicateColumns));
+        }
+
+        for (String columnName : immutableColumns.getColumns()) {
+            Column column = columnsByNameLookup.get(columnName);
+            if (column == null) {
+                throw new ValidationException(
+                        String.format(
+                                "Invalid immutable constraint '%s'. Column '%s' does not exist.",
+                                immutableColumns.getName(), columnName));
+            }
+
+            if (!column.isPhysical()) {
+                throw new ValidationException(
+                        String.format(
+                                "Invalid immutable constraint '%s'. Column '%s' is not a physical column.",
+                                immutableColumns.getName(), columnName));
             }
         }
     }

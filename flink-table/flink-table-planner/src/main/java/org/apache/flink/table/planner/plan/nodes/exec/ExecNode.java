@@ -19,6 +19,7 @@
 package org.apache.flink.table.planner.plan.nodes.exec;
 
 import org.apache.flink.annotation.Internal;
+import org.apache.flink.table.api.CompiledPlan;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.planner.plan.nodes.exec.visitor.ExecNodeVisitor;
 import org.apache.flink.table.planner.plan.nodes.physical.FlinkPhysicalRel;
@@ -26,6 +27,7 @@ import org.apache.flink.table.types.logical.LogicalType;
 import org.apache.flink.table.types.logical.RowType;
 
 import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.annotation.JsonIgnore;
+import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.annotation.JsonInclude;
 import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.annotation.JsonProperty;
 import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.annotation.JsonTypeInfo;
 import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.databind.annotation.JsonTypeIdResolver;
@@ -37,6 +39,9 @@ import static org.apache.flink.table.planner.plan.nodes.exec.ExecNode.FIELD_NAME
 /**
  * The representation of execution information for a {@link FlinkPhysicalRel}.
  *
+ * <p>Note: Every new node should be annotated with {@link ExecNodeMetadata}. It enables bookkeeping
+ * and affects how a {@link CompiledPlan} is derived from Java objects.
+ *
  * @param <T> The type of the elements that result from this node.
  */
 @JsonTypeInfo(
@@ -46,17 +51,43 @@ import static org.apache.flink.table.planner.plan.nodes.exec.ExecNode.FIELD_NAME
         visible = true)
 @JsonTypeIdResolver(ExecNodeTypeIdResolver.class)
 @Internal
-public interface ExecNode<T> extends ExecNodeTranslator<T> {
+public interface ExecNode<T> extends ExecNodeTranslator<T>, FusionCodegenExecNode {
 
     String FIELD_NAME_ID = "id";
     String FIELD_NAME_TYPE = "type";
+    String FIELD_NAME_CONFIGURATION = "configuration";
     String FIELD_NAME_DESCRIPTION = "description";
     String FIELD_NAME_INPUT_PROPERTIES = "inputProperties";
     String FIELD_NAME_OUTPUT_TYPE = "outputType";
+    String FIELD_NAME_STATE = "state";
 
     /** The unique ID of the node. */
     @JsonProperty(value = FIELD_NAME_ID, index = 0)
     int getId();
+
+    /**
+     * The node's type as contained in {@link CompiledPlan} (e.g. "stream-exec-table-source-scan_2"
+     * consisting of name and version).
+     *
+     * <p>A new type including its version can be added by declaring a {@link ExecNodeMetadata}
+     * annotation.
+     *
+     * @see ExecNodeContext#getTypeAsString()
+     */
+    @JsonIgnore
+    String getTypeAsString();
+
+    /**
+     * The version of the node.
+     *
+     * <p>A new version can be added by declaring a {@link ExecNodeMetadata} annotation, potentially
+     * by copying the old annotation. You can use this method to get the current compiled version
+     * and execute version-specific logic accordingly.
+     *
+     * @see ExecNodeContext#getVersion()
+     */
+    @JsonIgnore
+    int getVersion();
 
     /** Returns a string which describes this node. */
     @JsonProperty(value = FIELD_NAME_DESCRIPTION)
@@ -80,6 +111,7 @@ public interface ExecNode<T> extends ExecNodeTranslator<T> {
      *
      * @return List of this node's input properties.
      */
+    @JsonInclude(JsonInclude.Include.NON_EMPTY)
     @JsonProperty(value = FIELD_NAME_INPUT_PROPERTIES)
     List<InputProperty> getInputProperties();
 
@@ -92,7 +124,7 @@ public interface ExecNode<T> extends ExecNodeTranslator<T> {
     List<ExecEdge> getInputEdges();
 
     /**
-     * Sets the input {@link ExecEdge}s which connect this nodes and its input nodes.
+     * Sets the input {@link ExecEdge}s which connect these nodes and its input nodes.
      *
      * <p>NOTE: If there are no inputs, the given inputEdges should be empty, not null.
      *
@@ -115,4 +147,10 @@ public interface ExecNode<T> extends ExecNodeTranslator<T> {
      * @param visitor ExecNodeVisitor.
      */
     void accept(ExecNodeVisitor visitor);
+
+    /**
+     * Declares whether the node has been created as part of a plan compilation. Some translation
+     * properties might be impacted by this (e.g. UID generation for transformations).
+     */
+    void setCompiled(boolean isCompiled);
 }

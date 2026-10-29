@@ -16,30 +16,64 @@
  * limitations under the License.
  */
 
-import { ChangeDetectorRef, Component, OnInit, ChangeDetectionStrategy, OnDestroy } from '@angular/core';
-import { Subject } from 'rxjs';
-import { takeUntil } from 'rxjs/operators';
+import { ChangeDetectorRef, Component, OnInit, ChangeDetectionStrategy, OnDestroy, Inject } from '@angular/core';
+import { FormsModule } from '@angular/forms';
+import { of, Subject } from 'rxjs';
+import { catchError, takeUntil } from 'rxjs/operators';
 
-import { EditorOptions } from 'ng-zorro-antd/code-editor/typings';
-import { flinkEditorOptions } from 'share/common/editor/editor-config';
+import { AddonCompactComponent } from '@flink-runtime-web/components/addon-compact/addon-compact.component';
+import { AutoResizeDirective } from '@flink-runtime-web/components/editor/auto-resize.directive';
+import {
+  JOB_MANAGER_MODULE_CONFIG,
+  JOB_MANAGER_MODULE_DEFAULT_CONFIG,
+  JobManagerModuleConfig
+} from '@flink-runtime-web/pages/job-manager/job-manager.config';
+import { ConfigService, JobManagerService } from '@flink-runtime-web/services';
+import { NzButtonModule } from 'ng-zorro-antd/button';
+import { NzCodeEditorModule, EditorOptions } from 'ng-zorro-antd/code-editor';
+import { NzIconModule } from 'ng-zorro-antd/icon';
+import { NzSpaceModule } from 'ng-zorro-antd/space';
+import { NzTooltipModule } from 'ng-zorro-antd/tooltip';
 
-import { JobManagerService } from 'services';
+/** See ThreadDumpMode in task-manager-thread-dump.component.ts for semantics. */
+type ThreadDumpMode = 'lite' | 'full' | undefined;
 
 @Component({
   selector: 'flink-job-manager-thread-dump',
   templateUrl: './job-manager-thread-dump.component.html',
   styleUrls: ['./job-manager-thread-dump.component.less'],
-  changeDetection: ChangeDetectionStrategy.OnPush
+  changeDetection: ChangeDetectionStrategy.OnPush,
+  imports: [
+    NzCodeEditorModule,
+    AutoResizeDirective,
+    FormsModule,
+    AddonCompactComponent,
+    NzButtonModule,
+    NzIconModule,
+    NzSpaceModule,
+    NzTooltipModule
+  ]
 })
 export class JobManagerThreadDumpComponent implements OnInit, OnDestroy {
-  public readonly editorOptions: EditorOptions = flinkEditorOptions;
-
+  public readonly downloadName = `jobmanager_thread_dump`;
+  public downloadUrl: string;
+  public editorOptions: EditorOptions;
   public dump = '';
   public loading = true;
+  /** See TaskManagerThreadDumpComponent#mode. */
+  public mode: ThreadDumpMode = undefined;
 
   private readonly destroy$ = new Subject<void>();
 
-  constructor(private readonly jobManagerService: JobManagerService, private readonly cdr: ChangeDetectorRef) {}
+  constructor(
+    private readonly jobManagerService: JobManagerService,
+    private readonly configService: ConfigService,
+    private readonly cdr: ChangeDetectorRef,
+    @Inject(JOB_MANAGER_MODULE_CONFIG) readonly moduleConfig: JobManagerModuleConfig
+  ) {
+    this.editorOptions = moduleConfig.editorOptions || JOB_MANAGER_MODULE_DEFAULT_CONFIG.editorOptions;
+    this.downloadUrl = `${this.configService.BASE_URL}/jobmanager/thread-dump`;
+  }
 
   public ngOnInit(): void {
     this.reload();
@@ -50,24 +84,37 @@ export class JobManagerThreadDumpComponent implements OnInit, OnDestroy {
     this.destroy$.complete();
   }
 
+  /**
+   * Switch dump mode. Does NOT auto-reload; user must press the refresh button.
+   * Download link is updated immediately so a download matches the user's selection.
+   */
+  public selectMode(mode: 'lite' | 'full'): void {
+    if (this.mode === mode) {
+      return;
+    }
+    this.mode = mode;
+    this.updateDownloadUrl();
+    this.cdr.markForCheck();
+  }
+
   public reload(): void {
     this.loading = true;
     this.cdr.markForCheck();
-    if (this.jobManagerService) {
-      this.jobManagerService
-        .loadThreadDump()
-        .pipe(takeUntil(this.destroy$))
-        .subscribe(
-          data => {
-            this.loading = false;
-            this.dump = data;
-            this.cdr.markForCheck();
-          },
-          () => {
-            this.loading = false;
-            this.cdr.markForCheck();
-          }
-        );
-    }
+    this.jobManagerService
+      .loadThreadDump(this.mode)
+      .pipe(
+        catchError(() => of('')),
+        takeUntil(this.destroy$)
+      )
+      .subscribe(data => {
+        this.loading = false;
+        this.dump = data;
+        this.cdr.markForCheck();
+      });
+  }
+
+  private updateDownloadUrl(): void {
+    const base = `${this.configService.BASE_URL}/jobmanager/thread-dump`;
+    this.downloadUrl = this.mode ? `${base}?mode=${this.mode}` : base;
   }
 }

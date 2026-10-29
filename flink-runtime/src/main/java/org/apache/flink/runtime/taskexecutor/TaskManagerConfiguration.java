@@ -18,11 +18,9 @@
 
 package org.apache.flink.runtime.taskexecutor;
 
-import org.apache.flink.api.common.time.Time;
-import org.apache.flink.configuration.AkkaOptions;
-import org.apache.flink.configuration.ConfigConstants;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.ConfigurationUtils;
+import org.apache.flink.configuration.RpcOptions;
 import org.apache.flink.configuration.TaskManagerOptions;
 import org.apache.flink.configuration.UnmodifiableConfiguration;
 import org.apache.flink.runtime.clusterframework.types.ResourceProfile;
@@ -51,12 +49,12 @@ public class TaskManagerConfiguration implements TaskManagerRuntimeInfo {
 
     private final String[] tmpDirectories;
 
-    private final Time rpcTimeout;
+    private final Duration rpcTimeout;
 
-    private final Time slotTimeout;
+    private final Duration slotTimeout;
 
     // null indicates an infinite duration
-    @Nullable private final Time maxRegistrationDuration;
+    @Nullable private final Duration maxRegistrationDuration;
 
     private final UnmodifiableConfiguration configuration;
 
@@ -79,9 +77,9 @@ public class TaskManagerConfiguration implements TaskManagerRuntimeInfo {
             ResourceProfile defaultSlotResourceProfile,
             ResourceProfile totalResourceProfile,
             String[] tmpDirectories,
-            Time rpcTimeout,
-            Time slotTimeout,
-            @Nullable Time maxRegistrationDuration,
+            Duration rpcTimeout,
+            Duration slotTimeout,
+            @Nullable Duration maxRegistrationDuration,
             Configuration configuration,
             boolean exitJvmOnOutOfMemory,
             @Nullable String taskManagerLogPath,
@@ -121,16 +119,16 @@ public class TaskManagerConfiguration implements TaskManagerRuntimeInfo {
         return totalResourceProfile;
     }
 
-    public Time getRpcTimeout() {
+    public Duration getRpcTimeout() {
         return rpcTimeout;
     }
 
-    public Time getSlotTimeout() {
+    public Duration getSlotTimeout() {
         return slotTimeout;
     }
 
     @Nullable
-    public Time getMaxRegistrationDuration() {
+    public Duration getMaxRegistrationDuration() {
         return maxRegistrationDuration;
     }
 
@@ -187,7 +185,7 @@ public class TaskManagerConfiguration implements TaskManagerRuntimeInfo {
             TaskExecutorResourceSpec taskExecutorResourceSpec,
             String externalAddress,
             File tmpWorkingDirectory) {
-        int numberSlots = configuration.getInteger(TaskManagerOptions.NUM_TASK_SLOTS, 1);
+        int numberSlots = configuration.get(TaskManagerOptions.NUM_TASK_SLOTS, 1);
 
         if (numberSlots == -1) {
             numberSlots = 1;
@@ -195,19 +193,15 @@ public class TaskManagerConfiguration implements TaskManagerRuntimeInfo {
 
         final String[] tmpDirPaths = ConfigurationUtils.parseTempDirectories(configuration);
 
-        final Time rpcTimeout =
-                Time.fromDuration(configuration.get(AkkaOptions.ASK_TIMEOUT_DURATION));
+        final Duration rpcTimeout = configuration.get(RpcOptions.ASK_TIMEOUT_DURATION);
 
         LOG.debug("Messages have a max timeout of " + rpcTimeout);
 
-        final Time slotTimeout =
-                Time.milliseconds(configuration.get(TaskManagerOptions.SLOT_TIMEOUT).toMillis());
+        final Duration slotTimeout = configuration.get(TaskManagerOptions.SLOT_TIMEOUT);
 
-        Time finiteRegistrationDuration;
+        Duration finiteRegistrationDuration;
         try {
-            Duration maxRegistrationDuration =
-                    configuration.get(TaskManagerOptions.REGISTRATION_TIMEOUT);
-            finiteRegistrationDuration = Time.milliseconds(maxRegistrationDuration.toMillis());
+            finiteRegistrationDuration = configuration.get(TaskManagerOptions.REGISTRATION_TIMEOUT);
         } catch (IllegalArgumentException e) {
             LOG.warn(
                     "Invalid format for parameter {}. Set the timeout to be infinite.",
@@ -215,12 +209,10 @@ public class TaskManagerConfiguration implements TaskManagerRuntimeInfo {
             finiteRegistrationDuration = null;
         }
 
-        final boolean exitOnOom =
-                configuration.getBoolean(TaskManagerOptions.KILL_ON_OUT_OF_MEMORY);
+        final boolean exitOnOom = configuration.get(TaskManagerOptions.KILL_ON_OUT_OF_MEMORY);
 
         final String taskManagerLogPath =
-                configuration.getString(
-                        ConfigConstants.TASK_MANAGER_LOG_PATH_KEY, System.getProperty("log.file"));
+                configuration.get(TaskManagerOptions.TASK_MANAGER_LOG_PATH);
         final String taskManagerStdoutPath;
         final String taskManagerLogDir;
 

@@ -23,8 +23,7 @@ under the License.
 	<parent>
 		<groupId>org.apache.flink</groupId>
 		<artifactId>flink-filesystems</artifactId>
-		<version>1.16-SNAPSHOT</version>
-		<relativePath>..</relativePath>
+		<version>2.5-SNAPSHOT</version>
 	</parent>
 
 	<artifactId>flink-fs-hadoop-shaded</artifactId>
@@ -32,13 +31,17 @@ under the License.
 
 	<packaging>jar</packaging>
 
+	<properties>
+		<japicmp.skip>true</japicmp.skip>
+	</properties>
+
 	<dependencyManagement>
 		<dependencies>
 			<dependency>
 				<!-- Bumped for security purposes -->
 				<groupId>commons-beanutils</groupId>
 				<artifactId>commons-beanutils</artifactId>
-				<version>1.9.4</version>
+				<version>1.11.0</version>
 			</dependency>
 		</dependencies>
 	</dependencyManagement>
@@ -49,6 +52,7 @@ under the License.
 			<groupId>org.apache.hadoop</groupId>
 			<artifactId>hadoop-common</artifactId>
 			<version>${fs.hadoopshaded.version}</version>
+			<optional>${flink.markBundledAsOptional}</optional>
 			<exclusions>
 				<exclusion>
 					<groupId>jdk.tools</groupId>
@@ -156,10 +160,6 @@ under the License.
 				</exclusion>
 				<exclusion>
 					<groupId>org.apache.commons</groupId>
-					<artifactId>commons-compress</artifactId>
-				</exclusion>
-				<exclusion>
-					<groupId>org.apache.commons</groupId>
 					<artifactId>commons-math3</artifactId>
 				</exclusion>
 				<exclusion>
@@ -169,6 +169,14 @@ under the License.
 				<exclusion>
 					<groupId>net.minidev</groupId>
 					<artifactId>json-smart</artifactId>
+				</exclusion>
+				<exclusion>
+					<groupId>ch.qos.reload4j</groupId>
+					<artifactId>reload4j</artifactId>
+				</exclusion>
+				<exclusion>
+					<groupId>org.slf4j</groupId>
+					<artifactId>slf4j-reload4j</artifactId>
 				</exclusion>
 			</exclusions>
 		</dependency>
@@ -231,6 +239,41 @@ under the License.
 									<pattern>com.fasterxml</pattern>
 									<shadedPattern>org.apache.flink.fs.shaded.hadoop3.com.fasterxml</shadedPattern>
 								</relocation>
+								<!--
+								Manually relocate multi-release classes to the correct shaded package. This is needed
+								due to a bug in the Maven Shade plugin, which only relocates the content but not
+								the package structure itself, see https://github.com/apache/maven-shade-plugin/issues/652
+								-->
+								<relocation>
+									<pattern>META-INF/versions/(\d+)/com/fasterxml/</pattern>
+									<shadedPattern>META-INF/versions/$1/org/apache/flink/fs/shaded/hadoop3/com/fasterxml/</shadedPattern>
+									<rawString>true</rawString>
+								</relocation>
+								<!--
+								Same maven-shade-plugin#652 workaround as the jackson relocation above, extended to every
+								relocated package: keep each dependency's multi-release (META-INF/versions/N) classes aligned
+								with its relocated base classes. No-op for non-multi-release jars.
+								-->
+								<relocation>
+									<pattern>META-INF/versions/(\d+)/com/google/re2j/</pattern>
+									<shadedPattern>META-INF/versions/$1/org/apache/flink/fs/shaded/hadoop3/com/google/re2j/</shadedPattern>
+									<rawString>true</rawString>
+								</relocation>
+								<relocation>
+									<pattern>META-INF/versions/(\d+)/org/apache/htrace/</pattern>
+									<shadedPattern>META-INF/versions/$1/org/apache/flink/fs/shaded/hadoop3/org/apache/htrace/</shadedPattern>
+									<rawString>true</rawString>
+								</relocation>
+								<relocation>
+									<pattern>META-INF/versions/(\d+)/org/codehaus/</pattern>
+									<shadedPattern>META-INF/versions/$1/org/apache/flink/fs/shaded/hadoop3/org/codehaus/</shadedPattern>
+									<rawString>true</rawString>
+								</relocation>
+								<relocation>
+									<pattern>META-INF/versions/(\d+)/com/ctc/</pattern>
+									<shadedPattern>META-INF/versions/$1/org/apache/flink/fs/shaded/hadoop3/com/ctc/</shadedPattern>
+									<rawString>true</rawString>
+								</relocation>
 								<relocation>
 									<pattern>org.codehaus</pattern>
 									<shadedPattern>org.apache.flink.fs.shaded.hadoop3.org.codehaus</shadedPattern>
@@ -241,18 +284,6 @@ under the License.
 								</relocation>
 							</relocations>
 							<filters>
-								<!-- remove the classes from Hadoop that we replace with our overwritten implementation -->
-								<filter>
-									<artifact>org.apache.hadoop:hadoop-common</artifact>
-									<excludes>
-										<exclude>org/apache/hadoop/conf/Configuration**</exclude>
-										<exclude>org/apache/hadoop/util/NativeCodeLoader**</exclude>
-										<exclude>org/apache/hadoop/util/VersionInfo**</exclude>
-										<exclude>core-default.xml</exclude>
-										<exclude>common-version-info.properties</exclude>
-										<exclude>org.apache.hadoop.application-classloader.properties</exclude>
-									</excludes>
-								</filter>
 								<filter>
 									<artifact>*</artifact>
 									<excludes>
@@ -260,9 +291,18 @@ under the License.
 										<exclude>PropertyList-1.0.dtd</exclude>
 										<exclude>META-INF/services/javax.xml.stream.*</exclude>
 										<exclude>META-INF/LICENSE.txt</exclude>
+										<!-- Drop stale JPMS descriptor; after relocation it points at packages that no longer exist. -->
+										<exclude>META-INF/**/module-info.class</exclude>
 									</excludes>
 								</filter>
 							</filters>
+							<transformers combine.children="append">
+								<transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+									<manifestEntries>
+										<Multi-Release>true</Multi-Release>
+									</manifestEntries>
+								</transformer>
+							</transformers>
 						</configuration>
 					</execution>
 				</executions>

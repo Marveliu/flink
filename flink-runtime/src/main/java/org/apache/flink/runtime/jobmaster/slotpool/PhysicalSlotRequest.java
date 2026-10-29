@@ -18,25 +18,34 @@
 
 package org.apache.flink.runtime.jobmaster.slotpool;
 
+import org.apache.flink.runtime.clusterframework.types.ResourceProfile;
 import org.apache.flink.runtime.clusterframework.types.SlotProfile;
 import org.apache.flink.runtime.jobmaster.SlotRequestId;
+import org.apache.flink.runtime.scheduler.taskexecload.HasTaskExecutionLoad;
+import org.apache.flink.runtime.scheduler.taskexecload.TaskExecutionLoad;
+
+import javax.annotation.Nonnull;
 
 /** Represents a request for a physical slot. */
-public class PhysicalSlotRequest {
+public class PhysicalSlotRequest implements HasTaskExecutionLoad {
 
     private final SlotRequestId slotRequestId;
 
     private final SlotProfile slotProfile;
+
+    private final TaskExecutionLoad taskExecutionLoad;
 
     private final boolean slotWillBeOccupiedIndefinitely;
 
     public PhysicalSlotRequest(
             final SlotRequestId slotRequestId,
             final SlotProfile slotProfile,
+            final TaskExecutionLoad taskExecutionLoad,
             final boolean slotWillBeOccupiedIndefinitely) {
 
         this.slotRequestId = slotRequestId;
         this.slotProfile = slotProfile;
+        this.taskExecutionLoad = taskExecutionLoad;
         this.slotWillBeOccupiedIndefinitely = slotWillBeOccupiedIndefinitely;
     }
 
@@ -48,8 +57,31 @@ public class PhysicalSlotRequest {
         return slotProfile;
     }
 
+    public ResourceProfile getPhysicalSlotResourceProfile() {
+        return slotProfile.getPhysicalSlotResourceProfile();
+    }
+
     public boolean willSlotBeOccupiedIndefinitely() {
         return slotWillBeOccupiedIndefinitely;
+    }
+
+    public PendingRequest toPendingRequest() {
+        return slotWillBeOccupiedIndefinitely
+                ? PendingRequest.createNormalRequest(
+                        slotRequestId,
+                        slotProfile.getPhysicalSlotResourceProfile(),
+                        taskExecutionLoad,
+                        slotProfile.getPreferredAllocations())
+                : PendingRequest.createBatchRequest(
+                        slotRequestId,
+                        slotProfile.getPhysicalSlotResourceProfile(),
+                        taskExecutionLoad,
+                        slotProfile.getPreferredAllocations());
+    }
+
+    @Override
+    public @Nonnull TaskExecutionLoad getTaskExecutionLoad() {
+        return taskExecutionLoad;
     }
 
     /** Result of a {@link PhysicalSlotRequest}. */

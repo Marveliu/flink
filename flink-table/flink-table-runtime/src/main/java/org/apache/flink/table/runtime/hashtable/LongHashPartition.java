@@ -18,6 +18,8 @@
 
 package org.apache.flink.table.runtime.hashtable;
 
+import org.apache.flink.core.memory.AbstractPagedInputView;
+import org.apache.flink.core.memory.AbstractPagedOutputView;
 import org.apache.flink.core.memory.MemorySegment;
 import org.apache.flink.core.memory.MemorySegmentFactory;
 import org.apache.flink.core.memory.SeekableDataInputView;
@@ -27,8 +29,6 @@ import org.apache.flink.runtime.io.disk.iomanager.BulkBlockChannelReader;
 import org.apache.flink.runtime.io.disk.iomanager.ChannelReaderInputView;
 import org.apache.flink.runtime.io.disk.iomanager.FileIOChannel;
 import org.apache.flink.runtime.io.disk.iomanager.IOManager;
-import org.apache.flink.runtime.memory.AbstractPagedInputView;
-import org.apache.flink.runtime.memory.AbstractPagedOutputView;
 import org.apache.flink.table.data.binary.BinaryRowData;
 import org.apache.flink.table.runtime.typeutils.BinaryRowDataSerializer;
 import org.apache.flink.table.runtime.util.FileChannelUtil;
@@ -461,7 +461,7 @@ public class LongHashPartition extends AbstractPagedInputView implements Seekabl
                         ioAccess,
                         targetChannel,
                         bufferReturnQueue,
-                        longTable.compressionEnable(),
+                        longTable.compressionEnabled(),
                         longTable.compressionCodecFactory(),
                         longTable.compressionBlockSize(),
                         segmentSize);
@@ -487,7 +487,7 @@ public class LongHashPartition extends AbstractPagedInputView implements Seekabl
                     FileChannelUtil.createOutputView(
                             ioAccess,
                             probeChannelEnumerator.next(),
-                            longTable.compressionEnable(),
+                            longTable.compressionEnabled(),
                             longTable.compressionCodecFactory(),
                             longTable.compressionBlockSize(),
                             segmentSize);
@@ -849,7 +849,7 @@ public class LongHashPartition extends AbstractPagedInputView implements Seekabl
             }
         }
 
-        final long getPointer() {
+        long getPointer() {
             return this.currentPointer;
         }
 
@@ -879,7 +879,7 @@ public class LongHashPartition extends AbstractPagedInputView implements Seekabl
         return available < 8 + serializer.getFixedLengthPartSize();
     }
 
-    static void deserializeFromPages(
+    public static void deserializeFromPages(
             BinaryRowData reuse,
             ChannelReaderInputView inView,
             BinaryRowDataSerializer buildSideSerializer)

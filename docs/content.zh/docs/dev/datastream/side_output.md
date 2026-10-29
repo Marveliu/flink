@@ -41,9 +41,9 @@ under the License.
 OutputTag<String> outputTag = new OutputTag<String>("side-output") {};
 ```
 {{< /tab >}}
-{{< tab "Scala" >}}
-```scala
-val outputTag = OutputTag[String]("side-output")
+{{< tab "Python" >}}
+```python
+output_tag = OutputTag("side-output", Types.STRING())
 ```
 {{< /tab >}}
 {{< /tabs >}}
@@ -87,25 +87,23 @@ SingleOutputStreamOperator<Integer> mainDataStream = input
 ```
 
 {{< /tab >}}
-{{< tab "Scala" >}}
-```scala
+{{< tab "Python" >}}
+```python
+input = ...  # type: DataStream
+output_tag = OutputTag("side-output", Types.STRING())
 
-val input: DataStream[Int] = ...
-val outputTag = OutputTag[String]("side-output")
+class MyProcessFunction(ProcessFunction):
 
-val mainDataStream = input
-  .process(new ProcessFunction[Int, Int] {
-    override def processElement(
-        value: Int,
-        ctx: ProcessFunction[Int, Int]#Context,
-        out: Collector[Int]): Unit = {
-      // 发送数据到主要的输出
-      out.collect(value)
+    def process_element(self, value: int, ctx: ProcessFunction.Context):
+        # emit data to regular output
+        yield value
 
-      // 发送数据到旁路输出
-      ctx.output(outputTag, "sideout-" + String.valueOf(value))
-    }
-  })
+        # emit data to side output
+        yield output_tag, "sideout-" + str(value)
+
+
+main_data_stream = input \
+    .process(MyProcessFunction(), Types.INT())
 ```
 {{< /tab >}}
 {{< /tabs >}}
@@ -124,15 +122,19 @@ DataStream<String> sideOutputStream = mainDataStream.getSideOutput(outputTag);
 ```
 
 {{< /tab >}}
-{{< tab "Scala" >}}
-```scala
-val outputTag = OutputTag[String]("side-output")
+{{< tab "Python" >}}
+```python
+output_tag = OutputTag("side-output", Types.STRING())
 
-val mainDataStream = ...
+main_data_stream = ...  # type: DataStream
 
-val sideOutputStream: DataStream[String] = mainDataStream.getSideOutput(outputTag)
+side_output_stream = main_data_stream.get_side_output(output_tag)  # type: DataStream
 ```
 {{< /tab >}}
 {{< /tabs >}}
+
+<span class="label label-info">Note</span> If it produces side output, `get_side_output(OutputTag)`
+must be called in Python API. Otherwise, the result of side output stream will be output into the
+main stream which is unexpected and may fail the job when the data types are different.
 
 {{< top >}}

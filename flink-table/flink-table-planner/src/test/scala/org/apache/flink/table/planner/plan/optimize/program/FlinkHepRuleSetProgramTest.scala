@@ -15,60 +15,64 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.planner.plan.optimize.program
-
 
 import org.apache.calcite.plan.hep.HepMatchOrder
 import org.apache.calcite.rel.rules._
 import org.apache.calcite.tools.RuleSets
-import org.junit.Assert.{assertFalse, assertTrue}
-import org.junit.Test
+import org.assertj.core.api.Assertions.assertThatThrownBy
+import org.junit.jupiter.api.Assertions.{assertFalse, assertTrue}
+import org.junit.jupiter.api.Test
 
-/**
-  * Tests for [[FlinkHepRuleSetProgram]].
-  */
+/** Tests for [[FlinkHepRuleSetProgram]]. */
 class FlinkHepRuleSetProgramTest {
 
   @Test
   def testBuildFlinkHepRuleSetProgram(): Unit = {
     FlinkHepRuleSetProgramBuilder.newBuilder
-      .add(RuleSets.ofList(
-        CoreRules.FILTER_REDUCE_EXPRESSIONS,
-        CoreRules.PROJECT_REDUCE_EXPRESSIONS,
-        CoreRules.CALC_REDUCE_EXPRESSIONS,
-        CoreRules.JOIN_REDUCE_EXPRESSIONS
-      ))
+      .add(
+        RuleSets.ofList(
+          CoreRules.FILTER_REDUCE_EXPRESSIONS,
+          CoreRules.PROJECT_REDUCE_EXPRESSIONS,
+          CoreRules.CALC_REDUCE_EXPRESSIONS,
+          CoreRules.JOIN_REDUCE_EXPRESSIONS
+        ))
       .setHepRulesExecutionType(HEP_RULES_EXECUTION_TYPE.RULE_SEQUENCE)
       .setMatchLimit(10)
       .setHepMatchOrder(HepMatchOrder.BOTTOM_UP)
       .build()
   }
 
-  @Test(expected = classOf[IllegalArgumentException])
+  @Test
   def testMatchLimitLessThan1(): Unit = {
-    FlinkHepRuleSetProgramBuilder.newBuilder.setMatchLimit(0)
+    assertThatThrownBy(() => FlinkHepRuleSetProgramBuilder.newBuilder.setMatchLimit(0))
+      .isInstanceOf(classOf[IllegalArgumentException])
   }
 
-  @Test(expected = classOf[NullPointerException])
+  @Test
   def testNullHepMatchOrder(): Unit = {
-    FlinkHepRuleSetProgramBuilder.newBuilder.setHepMatchOrder(null)
+    assertThatThrownBy(() => FlinkHepRuleSetProgramBuilder.newBuilder.setHepMatchOrder(null))
+      .isInstanceOf(classOf[NullPointerException])
   }
 
-  @Test(expected = classOf[NullPointerException])
+  @Test
   def testNullHepRulesExecutionType(): Unit = {
-    FlinkHepRuleSetProgramBuilder.newBuilder.setHepRulesExecutionType(null)
+    assertThatThrownBy(
+      () => FlinkHepRuleSetProgramBuilder.newBuilder.setHepRulesExecutionType(null))
+      .isInstanceOf(classOf[NullPointerException])
   }
 
   @Test
   def testRuleOperations(): Unit = {
     val program = FlinkHepRuleSetProgramBuilder.newBuilder
-      .add(RuleSets.ofList(
-        CoreRules.FILTER_REDUCE_EXPRESSIONS,
-        CoreRules.PROJECT_REDUCE_EXPRESSIONS,
-        CoreRules.CALC_REDUCE_EXPRESSIONS,
-        CoreRules.JOIN_REDUCE_EXPRESSIONS
-      )).build()
+      .add(
+        RuleSets.ofList(
+          CoreRules.FILTER_REDUCE_EXPRESSIONS,
+          CoreRules.PROJECT_REDUCE_EXPRESSIONS,
+          CoreRules.CALC_REDUCE_EXPRESSIONS,
+          CoreRules.JOIN_REDUCE_EXPRESSIONS
+        ))
+      .build()
 
     assertTrue(program.contains(CoreRules.FILTER_REDUCE_EXPRESSIONS))
     assertTrue(program.contains(CoreRules.PROJECT_REDUCE_EXPRESSIONS))
@@ -76,9 +80,8 @@ class FlinkHepRuleSetProgramTest {
     assertTrue(program.contains(CoreRules.JOIN_REDUCE_EXPRESSIONS))
     assertFalse(program.contains(CoreRules.FILTER_SUB_QUERY_TO_CORRELATE))
 
-    program.remove(RuleSets.ofList(
-      CoreRules.FILTER_REDUCE_EXPRESSIONS,
-      CoreRules.PROJECT_REDUCE_EXPRESSIONS))
+    program.remove(
+      RuleSets.ofList(CoreRules.FILTER_REDUCE_EXPRESSIONS, CoreRules.PROJECT_REDUCE_EXPRESSIONS))
     assertFalse(program.contains(CoreRules.FILTER_REDUCE_EXPRESSIONS))
     assertFalse(program.contains(CoreRules.PROJECT_REDUCE_EXPRESSIONS))
     assertTrue(program.contains(CoreRules.CALC_REDUCE_EXPRESSIONS))
@@ -89,16 +92,17 @@ class FlinkHepRuleSetProgramTest {
     assertFalse(program.contains(CoreRules.JOIN_REDUCE_EXPRESSIONS))
     assertTrue(program.contains(CoreRules.FILTER_SUB_QUERY_TO_CORRELATE))
 
-    program.add(RuleSets.ofList(
-      CoreRules.PROJECT_SUB_QUERY_TO_CORRELATE,
-      CoreRules.JOIN_SUB_QUERY_TO_CORRELATE))
+    program.add(
+      RuleSets
+        .ofList(CoreRules.PROJECT_SUB_QUERY_TO_CORRELATE, CoreRules.JOIN_SUB_QUERY_TO_CORRELATE))
     assertTrue(program.contains(CoreRules.FILTER_SUB_QUERY_TO_CORRELATE))
     assertTrue(program.contains(CoreRules.PROJECT_SUB_QUERY_TO_CORRELATE))
     assertTrue(program.contains(CoreRules.JOIN_SUB_QUERY_TO_CORRELATE))
   }
 
-  @Test(expected = classOf[NullPointerException])
+  @Test
   def testNullRuleSets(): Unit = {
-    FlinkHepRuleSetProgramBuilder.newBuilder.add(null)
+    assertThatThrownBy(() => FlinkHepRuleSetProgramBuilder.newBuilder.add(null))
+      .isInstanceOf(classOf[NullPointerException])
   }
 }

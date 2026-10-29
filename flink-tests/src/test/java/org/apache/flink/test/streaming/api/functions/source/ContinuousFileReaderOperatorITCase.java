@@ -17,19 +17,22 @@
 
 package org.apache.flink.test.streaming.api.functions.source;
 
+import org.apache.flink.api.common.eventtime.WatermarkStrategy;
 import org.apache.flink.api.common.serialization.SimpleStringEncoder;
 import org.apache.flink.configuration.MemorySize;
 import org.apache.flink.connector.file.sink.FileSink;
+import org.apache.flink.connector.file.src.FileSource;
+import org.apache.flink.connector.file.src.reader.TextLineInputFormat;
 import org.apache.flink.core.fs.Path;
-import org.apache.flink.streaming.api.datastream.DataStream;
+import org.apache.flink.streaming.api.datastream.DataStreamSource;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.functions.sink.filesystem.OutputFileConfig;
 import org.apache.flink.streaming.api.functions.sink.filesystem.rollingpolicies.DefaultRollingPolicy;
+import org.apache.flink.testutils.junit.utils.TempDirUtils;
 
 import org.apache.commons.io.FileUtils;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.TemporaryFolder;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 import java.io.File;
 import java.nio.charset.StandardCharsets;
@@ -37,20 +40,26 @@ import java.nio.charset.StandardCharsets;
 /**
  * ITCases for {@link org.apache.flink.streaming.api.functions.source.ContinuousFileReaderOperator}.
  */
-public class ContinuousFileReaderOperatorITCase {
-    @Rule public TemporaryFolder temp = new TemporaryFolder();
+class ContinuousFileReaderOperatorITCase {
+    @TempDir private java.nio.file.Path tempDir;
 
     /** Tests https://issues.apache.org/jira/browse/FLINK-20888. */
     @Test
-    public void testChainedOperatorsAreNotPrematurelyClosed() throws Exception {
+    void testChainedOperatorsAreNotPrematurelyClosed() throws Exception {
         final StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
         env.setParallelism(1);
-        File input = temp.newFile("input");
+        File input = TempDirUtils.newFile(tempDir);
         FileUtils.write(input, "test", StandardCharsets.UTF_8);
-        DataStream<String> stream = env.readTextFile(input.getAbsolutePath());
+
+        FileSource<String> source =
+                FileSource.forRecordStreamFormat(
+                                new TextLineInputFormat(), new Path(input.getAbsolutePath()))
+                        .build();
+        DataStreamSource<String> stream =
+                env.fromSource(source, WatermarkStrategy.noWatermarks(), "file-source");
         final FileSink<String> sink =
                 FileSink.forRowFormat(
-                                new Path(temp.newFolder("output").getAbsolutePath()),
+                                new Path(TempDirUtils.newFolder(tempDir).getAbsolutePath()),
                                 new SimpleStringEncoder<String>())
                         .withOutputFileConfig(OutputFileConfig.builder().build())
                         .withRollingPolicy(

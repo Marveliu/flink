@@ -18,8 +18,9 @@
 
 package org.apache.flink.runtime.scheduler.benchmark;
 
-import org.apache.flink.testutils.TestingUtils;
+import org.apache.flink.util.concurrent.ExecutorThreadFactory;
 
+import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 
 /** Base class of all scheduler benchmarks. */
@@ -27,7 +28,12 @@ public class SchedulerBenchmarkBase {
     public ScheduledExecutorService scheduledExecutorService;
 
     public void setup() {
-        scheduledExecutorService = TestingUtils.defaultExecutor();
+        // This may have been set in subclass for special purposes.
+        if (scheduledExecutorService == null) {
+            scheduledExecutorService =
+                    Executors.newSingleThreadScheduledExecutor(
+                            new ExecutorThreadFactory("flink-benchmarks"));
+        }
     }
 
     public void teardown() {

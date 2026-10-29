@@ -15,15 +15,17 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.planner.codegen
 
 import org.apache.flink.api.common.ExecutionConfig
+import org.apache.flink.api.common.serialization.SerializerConfigImpl
 import org.apache.flink.api.common.typeinfo.{AtomicType => AtomicTypeInfo}
+import org.apache.flink.table.api.ValidationException
 import org.apache.flink.table.data._
 import org.apache.flink.table.data.binary.{BinaryRowData, BinaryStringData}
 import org.apache.flink.table.data.utils.JoinedRowData
 import org.apache.flink.table.data.writer.BinaryRowWriter
+import org.apache.flink.table.legacy.types.logical.TypeInformationRawType
 import org.apache.flink.table.planner.codegen.CodeGenUtils._
 import org.apache.flink.table.planner.codegen.GeneratedExpression.{ALWAYS_NULL, NEVER_NULL, NO_CODE}
 import org.apache.flink.table.planner.codegen.calls.CurrentTimePointCallGen
@@ -39,40 +41,32 @@ import org.apache.flink.table.utils.EncodingUtils
 import scala.annotation.tailrec
 import scala.collection.mutable
 
-/**
-  * Utilities to generate code for general purpose.
-  */
+/** Utilities to generate code for general purpose. */
 object GenerateUtils {
 
   // ----------------------------------------------------------------------------------------
   // basic call generate utils
   // ----------------------------------------------------------------------------------------
 
-  /**
-    * Generates a call with a single result statement.
-    */
+  /** Generates a call with a single result statement. */
   def generateCallIfArgsNotNull(
       ctx: CodeGeneratorContext,
       returnType: LogicalType,
       operands: Seq[GeneratedExpression],
       resultNullable: Boolean = false,
-      wrapTryCatch: Boolean = false)
-      (call: Seq[String] => String): GeneratedExpression = {
+      wrapTryCatch: Boolean = false)(call: Seq[String] => String): GeneratedExpression = {
     generateCallWithStmtIfArgsNotNull(ctx, returnType, operands, resultNullable, wrapTryCatch) {
       args => ("", call(args))
     }
   }
 
-  /**
-    * Generates a call with auxiliary statements and result expression.
-    */
+  /** Generates a call with auxiliary statements and result expression. */
   def generateCallWithStmtIfArgsNotNull(
       ctx: CodeGeneratorContext,
       returnType: LogicalType,
       operands: Seq[GeneratedExpression],
       resultNullable: Boolean = false,
-      wrapTryCatch: Boolean = false)
-      (call: Seq[String] => (String, String)): GeneratedExpression = {
+      wrapTryCatch: Boolean = false)(call: Seq[String] => (String, String)): GeneratedExpression = {
     val resultTypeTerm = if (resultNullable) {
       boxedTypeTermForType(returnType)
     } else {
@@ -82,7 +76,7 @@ object GenerateUtils {
     val resultTerm = ctx.addReusableLocalVariable(resultTypeTerm, "result")
     val defaultValue = primitiveDefaultValue(returnType)
     val isResultNullable = resultNullable || (isReference(returnType) && !isTemporal(returnType))
-    val nullTermCode = if (ctx.nullCheck && isResultNullable) {
+    val nullTermCode = if (isResultNullable) {
       s"$nullTerm = ($resultTerm == null);"
     } else {
       ""
@@ -95,7 +89,7 @@ object GenerateUtils {
          |try {
          |  $stmt
          |  $resultTerm = $result;
-         |} catch (Throwable ${newName("ignored")}) {
+         |} catch (Throwable ${newName(ctx, "ignored")}) {
          |  $nullTerm = true;
          |  $resultTerm = $defaultValue;
          |}
@@ -107,7 +101,7 @@ object GenerateUtils {
          |""".stripMargin
     }
 
-    val resultCode = if (ctx.nullCheck && operands.nonEmpty) {
+    val resultCode = if (operands.nonEmpty) {
       s"""
          |${operands.map(_.code).mkString("\n")}
          |$nullTerm = ${operands.map(_.nullTerm).mkString(" || ")};
@@ -117,18 +111,12 @@ object GenerateUtils {
          |  $nullTermCode
          |}
          |""".stripMargin
-    } else if (ctx.nullCheck && operands.isEmpty) {
+    } else {
       s"""
          |${operands.map(_.code).mkString("\n")}
          |$nullTerm = false;
          |$wrappedResultAssignment
          |$nullTermCode
-         |""".stripMargin
-    } else {
-      s"""
-         |$nullTerm = false;
-         |${operands.map(_.code).mkString("\n")}
-         |$wrappedResultAssignment
          |""".stripMargin
     }
 
@@ -136,30 +124,25 @@ object GenerateUtils {
   }
 
   /**
-    * Generates a string result call with a single result statement.
-    * This will convert the String result to BinaryStringData.
-    */
+   * Generates a string result call with a single result statement. This will convert the String
+   * result to BinaryStringData.
+   */
   def generateStringResultCallIfArgsNotNull(
       ctx: CodeGeneratorContext,
       operands: Seq[GeneratedExpression],
-      returnType: LogicalType)
-      (call: Seq[String] => String): GeneratedExpression = {
+      returnType: LogicalType)(call: Seq[String] => String): GeneratedExpression = {
     generateCallIfArgsNotNull(ctx, returnType, operands) {
       args => s"$BINARY_STRING.fromString(${call(args)})"
     }
   }
 
-
-  /**
-    * Generates a call with the nullable args.
-    */
+  /** Generates a call with the nullable args. */
   def generateCallIfArgsNullable(
       ctx: CodeGeneratorContext,
       returnType: LogicalType,
       operands: Seq[GeneratedExpression],
       resultNullable: Boolean = false,
-      wrapTryCatch: Boolean = false)
-      (call: Seq[String] => String): GeneratedExpression = {
+      wrapTryCatch: Boolean = false)(call: Seq[String] => String): GeneratedExpression = {
     val resultTypeTerm = if (resultNullable) {
       boxedTypeTermForType(returnType)
     } else {
@@ -169,26 +152,26 @@ object GenerateUtils {
     val nullTerm = ctx.addReusableLocalVariable("boolean", "isNull")
     val resultTerm = ctx.addReusableLocalVariable(resultTypeTerm, "result")
     val isResultNullable = resultNullable || (isReference(returnType) && !isTemporal(returnType))
-    val nullTermCode = if (ctx.nullCheck && isResultNullable) {
+    val nullTermCode = if (isResultNullable) {
       s"$nullTerm = ($resultTerm == null);"
     } else {
       s"$nullTerm = false;"
     }
 
     // TODO: should we also consider other types?
-    val parameters = operands.map(x =>
-      if (isCharacterString(x.resultType)){
-        "( " + x.nullTerm + " ) ? null : (" + x.resultTerm + ")"
-      } else {
-        x.resultTerm
-      })
-
+    val parameters = operands.map(
+      x =>
+        if (isCharacterString(x.resultType)) {
+          "( " + x.nullTerm + " ) ? null : (" + x.resultTerm + ")"
+        } else {
+          x.resultTerm
+        })
 
     val wrappedResultAssignment = if (wrapTryCatch) {
       s"""
          |try {
          |  $resultTerm = ${call(parameters)};
-         |} catch (Throwable ${newName("ignored")}) {
+         |} catch (Throwable ${newName(ctx, "ignored")}) {
          |  $nullTerm = true;
          |  $resultTerm = $defaultValue;
          |}
@@ -199,7 +182,7 @@ object GenerateUtils {
          |""".stripMargin
     }
 
-    val resultCode = if (ctx.nullCheck) {
+    val resultCode = if (resultNullable) {
       s"""
          |${operands.map(_.code).mkString("\n")}
          |$wrappedResultAssignment
@@ -216,22 +199,27 @@ object GenerateUtils {
        """.stripMargin
     }
 
-
     GeneratedExpression(resultTerm, nullTerm, resultCode, returnType)
   }
 
   // --------------------------- General Generate Utils ----------------------------------
 
   /**
-    * Generates a record declaration statement, and add it to reusable member. The record
-    * can be any type of RowData or other types.
-    *
-    * @param t  the record type
-    * @param clazz  the specified class of the type (only used when RowType)
-    * @param recordTerm the record term to be declared
-    * @param recordWriterTerm the record writer term (only used when BinaryRowData type)
-    * @param ctx the code generator context
-    * @return the record initialization statement
+   * Generates a record declaration statement, and add it to reusable member. The record can be any
+   * type of RowData or other types.
+   *
+   * @param t
+   *   the record type
+   * @param clazz
+   *   the specified class of the type (only used when RowType)
+   * @param recordTerm
+   *   the record term to be declared
+   * @param recordWriterTerm
+   *   the record writer term (only used when BinaryRowData type)
+   * @param ctx
+   *   the code generator context
+   * @return
+   *   the record initialization statement
    */
   @tailrec
   def generateRecordStatement(
@@ -239,8 +227,7 @@ object GenerateUtils {
       clazz: Class[_],
       recordTerm: String,
       recordWriterTerm: Option[String] = None,
-      ctx: CodeGeneratorContext)
-    : String = t.getTypeRoot match {
+      ctx: CodeGeneratorContext): String = t.getTypeRoot match {
     // ordered by type root definition
     case ROW | STRUCTURED_TYPE if clazz == classOf[BinaryRowData] =>
       val writerTerm = recordWriterTerm.getOrElse(
@@ -249,14 +236,14 @@ object GenerateUtils {
       val binaryRowWriter = className[BinaryRowWriter]
       val typeTerm = clazz.getCanonicalName
       ctx.addReusableMember(s"$typeTerm $recordTerm = new $typeTerm(${getFieldCount(t)});")
-      ctx.addReusableMember(
-        s"$binaryRowWriter $writerTerm = new $binaryRowWriter($recordTerm);")
+      ctx.addReusableMember(s"$binaryRowWriter $writerTerm = new $binaryRowWriter($recordTerm);")
       s"""
          |$recordTerm = new $typeTerm(${getFieldCount(t)});
          |$writerTerm = new $binaryRowWriter($recordTerm);
          |""".stripMargin.trim
-    case ROW | STRUCTURED_TYPE if clazz == classOf[GenericRowData] ||
-        clazz == classOf[BoxedWrapperRowData] =>
+    case ROW | STRUCTURED_TYPE
+        if clazz == classOf[GenericRowData] ||
+          clazz == classOf[BoxedWrapperRowData] =>
       val typeTerm = clazz.getCanonicalName
       ctx.addReusableMember(s"$typeTerm $recordTerm = new $typeTerm(${getFieldCount(t)});")
       s"$recordTerm = new $typeTerm(${getFieldCount(t)});"
@@ -277,12 +264,7 @@ object GenerateUtils {
       s"$recordTerm = new $typeTerm();"
   }
 
-  def generateNullLiteral(
-      resultType: LogicalType,
-      nullCheck: Boolean): GeneratedExpression = {
-    if (!nullCheck) {
-      throw new CodeGenException("Null literals are not allowed if nullCheck is disabled.")
-    }
+  def generateNullLiteral(resultType: LogicalType): GeneratedExpression = {
     val defaultValue = primitiveDefaultValue(resultType)
     val resultTypeTerm = primitiveTypeTermForType(resultType)
     GeneratedExpression(
@@ -318,7 +300,7 @@ object GenerateUtils {
       literalValue: Any,
       literalType: LogicalType): GeneratedExpression = {
     if (literalValue == null) {
-      return generateNullLiteral(literalType, ctx.nullCheck)
+      return generateNullLiteral(literalType)
     }
     literalType.getTypeRoot match {
       // For strings, binary and decimal, we add the literal as reusable field,
@@ -326,20 +308,24 @@ object GenerateUtils {
       // the literal value
       case CHAR | VARCHAR =>
         val str = literalValue.asInstanceOf[BinaryStringData]
-        val field = ctx.addReusableEscapedStringConstant(EncodingUtils.escapeJava(str.toString))
+        val field = ctx.addReusablePreEscapedStringConstant(EncodingUtils.escapeJava(str.toString))
+        // The original value should be passed as literalValue
+        // all required escaping should be done in corresponding code generation,
+        // so that the literalValue can be also used directly when needed
         generateNonNullLiteral(literalType, field, str)
 
-      case BINARY | VARBINARY =>
+      case BINARY | VARBINARY | UUID =>
         val bytesVal = literalValue.asInstanceOf[Array[Byte]]
-        val fieldTerm = ctx.addReusableObject(
-          bytesVal, "binary", bytesVal.getClass.getCanonicalName)
+        val fieldTerm =
+          ctx.addReusableObject(bytesVal, "binary", bytesVal.getClass.getCanonicalName)
         generateNonNullLiteral(literalType, fieldTerm, bytesVal)
 
       case DECIMAL =>
-        val fieldTerm = newName("decimal")
-        ctx.addReusableMember(s"""
-           |${className[DecimalData]} $fieldTerm = ${primitiveLiteralForType(literalValue)};
-           |""".stripMargin)
+        val fieldTerm = newName(ctx, "decimal")
+        ctx.addReusableMember(
+          s"""
+             |${className[DecimalData]} $fieldTerm = ${primitiveLiteralForType(literalValue)};
+             |""".stripMargin)
         generateNonNullLiteral(literalType, fieldTerm, literalValue)
 
       case DISTINCT_TYPE =>
@@ -349,11 +335,11 @@ object GenerateUtils {
         generateSymbol(literalValue.asInstanceOf[Enum[_]])
 
       case BOOLEAN | TINYINT | SMALLINT | INTEGER | BIGINT | FLOAT | DOUBLE | DATE |
-           TIME_WITHOUT_TIME_ZONE | TIMESTAMP_WITHOUT_TIME_ZONE | TIMESTAMP_WITH_LOCAL_TIME_ZONE |
-           INTERVAL_YEAR_MONTH | INTERVAL_DAY_TIME =>
+          TIME_WITHOUT_TIME_ZONE | TIMESTAMP_WITHOUT_TIME_ZONE | TIMESTAMP_WITH_LOCAL_TIME_ZONE |
+          INTERVAL_YEAR_MONTH | INTERVAL_DAY_TIME =>
         generateNonNullLiteral(literalType, primitiveLiteralForType(literalValue), literalValue)
 
-      case ARRAY | MULTISET | MAP | ROW | STRUCTURED_TYPE | NULL | UNRESOLVED =>
+      case ARRAY | MULTISET | MAP | ROW | STRUCTURED_TYPE | NULL | UNRESOLVED | BITMAP =>
         throw new CodeGenException(s"Type not supported: $literalType")
     }
   }
@@ -369,16 +355,18 @@ object GenerateUtils {
   }
 
   /**
-    * Generates access to a non-null field that does not require unboxing logic.
-    *
-    * @param fieldType type of field
-    * @param fieldTerm expression term of field (already unboxed)
-    * @return internal unboxed field representation
-    */
+   * Generates access to a non-null field that does not require unboxing logic.
+   *
+   * @param fieldType
+   *   type of field
+   * @param fieldTerm
+   *   expression term of field (already unboxed)
+   * @return
+   *   internal unboxed field representation
+   */
   private[flink] def generateNonNullField(
       fieldType: LogicalType,
-      fieldTerm: String)
-    : GeneratedExpression = {
+      fieldTerm: String): GeneratedExpression = {
     val resultTypeTerm = primitiveTypeTermForType(fieldType)
     GeneratedExpression(s"(($resultTypeTerm) $fieldTerm)", NEVER_NULL, NO_CODE, fieldType)
   }
@@ -398,8 +386,7 @@ object GenerateUtils {
     GeneratedExpression(resultTerm, NEVER_NULL, resultCode, resultType)
   }
 
-  def generateCurrentTimestamp(
-      ctx: CodeGeneratorContext): GeneratedExpression = {
+  def generateCurrentTimestamp(ctx: CodeGeneratorContext): GeneratedExpression = {
     new CurrentTimePointCallGen(true, true).generate(ctx, Seq(), new LocalZonedTimestampType(3))
   }
 
@@ -430,11 +417,7 @@ object GenerateUtils {
          |$nullTerm = false;
        """.stripMargin.trim
 
-    GeneratedExpression(
-      resultTerm,
-      nullTerm,
-      accessCode,
-      resultType)
+    GeneratedExpression(resultTerm, nullTerm, accessCode, resultType)
   }
 
   def generateWatermark(
@@ -458,14 +441,20 @@ object GenerateUtils {
   }
 
   /**
-    * Generates access to a field of the input.
-    * @param ctx  code generator context which maintains various code statements.
-    * @param inputType  input type
-    * @param inputTerm  input term
-    * @param index  the field index to access
-    * @param nullableInput  whether the input is nullable
-    * @param deepCopy whether to copy the accessed field (usually needed when buffered)
-    */
+   * Generates access to a field of the input.
+   * @param ctx
+   *   code generator context which maintains various code statements.
+   * @param inputType
+   *   input type
+   * @param inputTerm
+   *   input term
+   * @param index
+   *   the field index to access
+   * @param nullableInput
+   *   whether the input is nullable
+   * @param deepCopy
+   *   whether to copy the accessed field (usually needed when buffered)
+   */
   def generateInputAccess(
       ctx: CodeGeneratorContext,
       inputType: LogicalType,
@@ -495,11 +484,11 @@ object GenerateUtils {
   }
 
   def generateNullableInputFieldAccess(
-    ctx: CodeGeneratorContext,
-    inputType: LogicalType,
-    inputTerm: String,
-    index: Int,
-    deepCopy: Boolean = false): GeneratedExpression = {
+      ctx: CodeGeneratorContext,
+      inputType: LogicalType,
+      inputTerm: String,
+      index: Int,
+      deepCopy: Boolean = false): GeneratedExpression = {
 
     @tailrec
     def getFieldType(t: LogicalType, pos: Int): LogicalType = t.getTypeRoot match {
@@ -512,12 +501,10 @@ object GenerateUtils {
     val fieldType = getFieldType(inputType, index)
     val resultTypeTerm = primitiveTypeTermForType(fieldType)
     val defaultValue = primitiveDefaultValue(fieldType)
-    val Seq(resultTerm, nullTerm) = ctx.addReusableLocalVariables(
-      (resultTypeTerm, "result"),
-      ("boolean", "isNull"))
+    val Seq(resultTerm, nullTerm) =
+      ctx.addReusableLocalVariables((resultTypeTerm, "result"), ("boolean", "isNull"))
 
-    val fieldAccessExpr = generateFieldAccess(
-      ctx, inputType, inputTerm, index, deepCopy)
+    val fieldAccessExpr = generateFieldAccess(ctx, inputType, inputTerm, index, deepCopy)
 
     val inputCheckCode =
       s"""
@@ -534,30 +521,33 @@ object GenerateUtils {
   }
 
   /**
-    * Converts the external boxed format to an internal mostly primitive field representation.
-    * Wrapper types can autoboxed to their corresponding primitive type (Integer -> int).
-    *
-    * @param ctx code generator context which maintains various code statements.
-    * @param inputType type of field
-    * @param inputTerm expression term of field to be unboxed
-    * @param inputUnboxingTerm unboxing/conversion term
-    * @return internal unboxed field representation
-    */
+   * Converts the external boxed format to an internal mostly primitive field representation.
+   * Wrapper types can autoboxed to their corresponding primitive type (Integer -> int).
+   *
+   * @param ctx
+   *   code generator context which maintains various code statements.
+   * @param inputType
+   *   type of field
+   * @param inputTerm
+   *   expression term of field to be unboxed
+   * @param inputUnboxingTerm
+   *   unboxing/conversion term
+   * @return
+   *   internal unboxed field representation
+   */
   def generateInputFieldUnboxing(
       ctx: CodeGeneratorContext,
       inputType: LogicalType,
       inputTerm: String,
-      inputUnboxingTerm: String)
-    : GeneratedExpression = {
+      inputUnboxingTerm: String): GeneratedExpression = {
 
     val resultTypeTerm = primitiveTypeTermForType(inputType)
     val defaultValue = primitiveDefaultValue(inputType)
 
-    val Seq(resultTerm, nullTerm) = ctx.addReusableLocalVariables(
-      (resultTypeTerm, "result"),
-      ("boolean", "isNull"))
+    val Seq(resultTerm, nullTerm) =
+      ctx.addReusableLocalVariables((resultTypeTerm, "result"), ("boolean", "isNull"))
 
-    val wrappedCode = if (ctx.nullCheck) {
+    val wrappedCode =
       s"""
          |$nullTerm = $inputTerm == null;
          |$resultTerm = $defaultValue;
@@ -565,29 +555,24 @@ object GenerateUtils {
          |  $resultTerm = $inputUnboxingTerm;
          |}
          |""".stripMargin.trim
-    } else {
-      s"""
-         |$resultTerm = $inputUnboxingTerm;
-         |""".stripMargin.trim
-    }
 
     GeneratedExpression(resultTerm, nullTerm, wrappedCode, inputType)
   }
 
   /**
-    * Generates field access code expression. The different between this method and
-    * [[generateFieldAccess(ctx, inputType, inputTerm, index)]] is that this method
-    * accepts an additional `deepCopy` parameter. When deepCopy is set to true, the returned
-    * result will be copied.
-    *
-    * NOTE: Please set `deepCopy` to true when the result will be buffered.
-    */
+   * Generates field access code expression. The different between this method and
+   * [[generateFieldAccess(ctx, inputType, inputTerm, index)]] is that this method accepts an
+   * additional `deepCopy` parameter. When deepCopy is set to true, the returned result will be
+   * copied.
+   *
+   * NOTE: Please set `deepCopy` to true when the result will be buffered.
+   */
   def generateFieldAccess(
-    ctx: CodeGeneratorContext,
-    inputType: LogicalType,
-    inputTerm: String,
-    index: Int,
-    deepCopy: Boolean): GeneratedExpression = {
+      ctx: CodeGeneratorContext,
+      inputType: LogicalType,
+      inputTerm: String,
+      index: Int,
+      deepCopy: Boolean): GeneratedExpression = {
     val expr = generateFieldAccess(ctx, inputType, inputTerm, index)
     if (deepCopy) {
       expr.deepCopy(ctx)
@@ -601,78 +586,69 @@ object GenerateUtils {
       ctx: CodeGeneratorContext,
       inputType: LogicalType,
       inputTerm: String,
-      index: Int)
-    : GeneratedExpression = inputType.getTypeRoot match {
-      // ordered by type root definition
-      case ROW | STRUCTURED_TYPE =>
-        val fieldType = getFieldTypes(inputType).get(index)
-        val resultTypeTerm = primitiveTypeTermForType(fieldType)
-        val defaultValue = primitiveDefaultValue(fieldType)
-        val readCode = rowFieldReadAccess(index.toString, inputTerm, fieldType)
-        val Seq(fieldTerm, nullTerm) = ctx.addReusableLocalVariables(
-          (resultTypeTerm, "field"),
-          ("boolean", "isNull"))
+      index: Int): GeneratedExpression = inputType.getTypeRoot match {
+    // ordered by type root definition
+    case ROW | STRUCTURED_TYPE =>
+      val fieldType = getFieldTypes(inputType).get(index)
+      val resultTypeTerm = primitiveTypeTermForType(fieldType)
+      val defaultValue = primitiveDefaultValue(fieldType)
+      val readCode = rowFieldReadAccess(index.toString, inputTerm, fieldType)
+      val Seq(fieldTerm, nullTerm) =
+        ctx.addReusableLocalVariables((resultTypeTerm, "field"), ("boolean", "isNull"))
 
-        val inputCode = if (ctx.nullCheck) {
-          s"""
-             |$nullTerm = $inputTerm.isNullAt($index);
-             |$fieldTerm = $defaultValue;
-             |if (!$nullTerm) {
-             |  $fieldTerm = $readCode;
-             |}
+      val inputCode =
+        s"""
+           |$nullTerm = $inputTerm.isNullAt($index);
+           |$fieldTerm = $defaultValue;
+           |if (!$nullTerm) {
+           |  $fieldTerm = $readCode;
+           |}
            """.stripMargin.trim
-        } else {
-          s"""
-             |$nullTerm = false;
-             |$fieldTerm = $readCode;
-           """.stripMargin
-        }
-        GeneratedExpression(fieldTerm, nullTerm, inputCode, fieldType)
 
-      case DISTINCT_TYPE =>
-        generateFieldAccess(
-          ctx,
-          inputType.asInstanceOf[DistinctType].getSourceType,
-          inputTerm,
-          index)
+      GeneratedExpression(fieldTerm, nullTerm, inputCode, fieldType)
 
-      case _ =>
-        val fieldTypeTerm = boxedTypeTermForType(inputType)
-        val inputCode = s"($fieldTypeTerm) $inputTerm"
-        generateInputFieldUnboxing(ctx, inputType, inputCode, inputCode)
-    }
+    case DISTINCT_TYPE =>
+      generateFieldAccess(ctx, inputType.asInstanceOf[DistinctType].getSourceType, inputTerm, index)
 
-  /**
-    * Generates code for comparing two fields.
-    */
+    case _ =>
+      val fieldTypeTerm = boxedTypeTermForType(inputType)
+      val inputCode = s"($fieldTypeTerm) $inputTerm"
+      generateInputFieldUnboxing(ctx, inputType, inputCode, inputCode)
+  }
+
+  /** Generates code for comparing two fields. */
   @tailrec
   def generateCompare(
       ctx: CodeGeneratorContext,
       t: LogicalType,
       nullsIsLast: Boolean,
       leftTerm: String,
-      rightTerm: String)
-    : String = t.getTypeRoot match {
+      rightTerm: String): String = t.getTypeRoot match {
     // ordered by type root definition
     case CHAR | VARCHAR | DECIMAL | TIMESTAMP_WITHOUT_TIME_ZONE | TIMESTAMP_WITH_LOCAL_TIME_ZONE =>
       s"$leftTerm.compareTo($rightTerm)"
     case BOOLEAN =>
       s"($leftTerm == $rightTerm ? 0 : ($leftTerm ? 1 : -1))"
-    case BINARY | VARBINARY =>
-      val sortUtil = classOf[org.apache.flink.table.runtime.operators.sort.SortUtil]
-        .getCanonicalName
+    case BINARY | VARBINARY | UUID =>
+      // UUID is stored as its 16-byte big-endian encoding, so it orders by the same unsigned
+      // byte-wise comparison as binary strings.
+      val sortUtil =
+        classOf[org.apache.flink.table.runtime.operators.sort.SortUtil].getCanonicalName
       s"$sortUtil.compareBinary($leftTerm, $rightTerm)"
     case TINYINT | SMALLINT | INTEGER | BIGINT | FLOAT | DOUBLE | DATE | TIME_WITHOUT_TIME_ZONE |
-         INTERVAL_YEAR_MONTH | INTERVAL_DAY_TIME =>
+        INTERVAL_YEAR_MONTH | INTERVAL_DAY_TIME =>
       s"($leftTerm > $rightTerm ? 1 : $leftTerm < $rightTerm ? -1 : 0)"
-    case TIMESTAMP_WITH_TIME_ZONE | MULTISET | MAP =>
-      throw new UnsupportedOperationException() // TODO support MULTISET and MAP?
+    // keep in sync with BatchPhysicalJoinRuleBase#hasOrderableJoinKeys
+    case TIMESTAMP_WITH_TIME_ZONE | MULTISET | MAP | VARIANT | BITMAP =>
+      throw new ValidationException(
+        s"Type '$t' cannot be ordered, so it cannot be used as a key for sorting, grouping, " +
+          s"or joining (for example in ORDER BY, GROUP BY, DISTINCT, or a join condition). " +
+          s"Remove it from the key, or replace it with a value that can be ordered.")
+    // TODO support MULTISET and MAP?
     case ARRAY =>
       val at = t.asInstanceOf[ArrayType]
-      val compareFunc = newName("compareArray")
-      val compareCode = generateArrayCompare(
-        ctx,
-        SortUtil.getNullDefaultOrder(true), at, "a", "b")
+      val compareFunc = newName(ctx, "compareArray")
+      val compareCode = generateArrayCompare(ctx, SortUtil.getNullDefaultOrder(true), at, "a", "b")
       val funcCode: String =
         s"""
           public int $compareFunc($ARRAY_DATA a, $ARRAY_DATA b) {
@@ -690,7 +666,7 @@ object GenerateUtils {
         SortUtil.getAscendingSortSpec((0 until fieldCount).toArray),
         "a",
         "b")
-      val compareFunc = newName("compareRow")
+      val compareFunc = newName(ctx, "compareRow")
       val funcCode: String =
         s"""
           public int $compareFunc($ROW_DATA a, $ROW_DATA b) {
@@ -722,39 +698,37 @@ object GenerateUtils {
             s".compareTo($rightTerm.toObject($serializerTerm))"
 
         case rawType: TypeInformationRawType[_] =>
-          val serializer = rawType.getTypeInformation.createSerializer(new ExecutionConfig)
+          val serializer = rawType.getTypeInformation.createSerializer(new SerializerConfigImpl)
           val ser = ctx.addReusableObject(serializer, "serializer")
           val comp = ctx.addReusableObject(
-            rawType.getTypeInformation.asInstanceOf[AtomicTypeInfo[_]]
+            rawType.getTypeInformation
+              .asInstanceOf[AtomicTypeInfo[_]]
               .createComparator(true, new ExecutionConfig),
-          "comparator")
+            "comparator")
           s"$comp.compare($leftTerm.toObject($ser), $rightTerm.toObject($ser))"
       }
     case NULL | SYMBOL | UNRESOLVED =>
       throw new IllegalArgumentException("Illegal type: " + t)
   }
 
-  /**
-    * Generates code for comparing array.
-    */
+  /** Generates code for comparing array. */
   def generateArrayCompare(
-    ctx: CodeGeneratorContext,
-    nullsIsLast: Boolean,
-    arrayType: ArrayType,
-    leftTerm: String,
-    rightTerm: String)
-  : String = {
+      ctx: CodeGeneratorContext,
+      nullsIsLast: Boolean,
+      arrayType: ArrayType,
+      leftTerm: String,
+      rightTerm: String): String = {
     val nullIsLastRet = if (nullsIsLast) 1 else -1
     val elementType = arrayType.getElementType
-    val fieldA = newName("fieldA")
-    val isNullA = newName("isNullA")
-    val lengthA = newName("lengthA")
-    val fieldB = newName("fieldB")
-    val isNullB = newName("isNullB")
-    val lengthB = newName("lengthB")
-    val minLength = newName("minLength")
-    val i = newName("i")
-    val comp = newName("comp")
+    val fieldA = newName(ctx, "fieldA")
+    val isNullA = newName(ctx, "isNullA")
+    val lengthA = newName(ctx, "lengthA")
+    val fieldB = newName(ctx, "fieldB")
+    val isNullB = newName(ctx, "isNullB")
+    val lengthB = newName(ctx, "lengthB")
+    val minLength = newName(ctx, "minLength")
+    val i = newName(ctx, "i")
+    val comp = newName(ctx, "comp")
     val typeTerm = primitiveTypeTermForType(elementType)
     s"""
         int $lengthA = a.size();
@@ -787,9 +761,7 @@ object GenerateUtils {
       """
   }
 
-  /**
-   * Generates code for comparing row keys.
-   */
+  /** Generates code for comparing row keys. */
   def generateRowCompare(
       ctx: CodeGeneratorContext,
       inputType: LogicalType,
@@ -799,41 +771,57 @@ object GenerateUtils {
 
     val fieldTypes = getFieldTypes(inputType)
     val compares = new mutable.ArrayBuffer[String]
-    sortSpec.getFieldSpecs.foreach { fieldSpec =>
-      val index = fieldSpec.getFieldIndex
-      val symbol = if (fieldSpec.getIsAscendingOrder) "" else "-"
-      val nullIsLastRet = if (fieldSpec.getNullIsLast) 1 else -1
-      val t = fieldTypes.get(index)
+    sortSpec.getFieldSpecs.foreach {
+      fieldSpec =>
+        val index = fieldSpec.getFieldIndex
+        val symbol = if (fieldSpec.getIsAscendingOrder) "" else "-"
+        val nullIsLastRet = if (fieldSpec.getNullIsLast) 1 else -1
+        val t = fieldTypes.get(index)
 
-      val typeTerm = primitiveTypeTermForType(t)
-      val fieldA = newName("fieldA")
-      val isNullA = newName("isNullA")
-      val fieldB = newName("fieldB")
-      val isNullB = newName("isNullB")
-      val comp = newName("comp")
+        val typeTerm = primitiveTypeTermForType(t)
+        val fieldA = newName(ctx, "fieldA")
+        val isNullA = newName(ctx, "isNullA")
+        val fieldB = newName(ctx, "fieldB")
+        val isNullB = newName(ctx, "isNullB")
+        val comp = newName(ctx, "comp")
 
-      val code =
-        s"""
-           |boolean $isNullA = $leftTerm.isNullAt($index);
-           |boolean $isNullB = $rightTerm.isNullAt($index);
-           |if ($isNullA && $isNullB) {
-           |  // Continue to compare the next element
-           |} else if ($isNullA) {
-           |  return $nullIsLastRet;
-           |} else if ($isNullB) {
-           |  return ${-nullIsLastRet};
-           |} else {
-           |  $typeTerm $fieldA = ${rowFieldReadAccess(index, leftTerm, t)};
-           |  $typeTerm $fieldB = ${rowFieldReadAccess(index, rightTerm, t)};
-           |  int $comp = ${generateCompare(ctx, t, fieldSpec.getNullIsLast, fieldA, fieldB)};
-           |  if ($comp != 0) {
-           |    return $symbol$comp;
-           |  }
-           |}
+        val code =
+          s"""
+             |boolean $isNullA = $leftTerm.isNullAt($index);
+             |boolean $isNullB = $rightTerm.isNullAt($index);
+             |if ($isNullA && $isNullB) {
+             |  // Continue to compare the next element
+             |} else if ($isNullA) {
+             |  return $nullIsLastRet;
+             |} else if ($isNullB) {
+             |  return ${-nullIsLastRet};
+             |} else {
+             |  $typeTerm $fieldA = ${rowFieldReadAccess(index, leftTerm, t)};
+             |  $typeTerm $fieldB = ${rowFieldReadAccess(index, rightTerm, t)};
+             |  int $comp = ${generateCompare(ctx, t, fieldSpec.getNullIsLast, fieldA, fieldB)};
+             |  if ($comp != 0) {
+             |    return $symbol$comp;
+             |  }
+             |}
          """.stripMargin
-      compares += code
+        compares += code
     }
     compares.mkString
+  }
+
+  /**
+   * Groups the input sequence by the key function, and keeps the order of the first appearance of
+   * each key.
+   */
+  def groupByOrdered[A, K](xs: collection.Seq[A])(
+      f: A => K): collection.Seq[(K, collection.Seq[A])] = {
+    val m = collection.mutable.LinkedHashMap.empty[K, collection.mutable.ArrayBuffer[A]]
+    xs.foreach {
+      x =>
+        val k = f(x)
+        m.getOrElseUpdate(k, collection.mutable.ArrayBuffer.empty[A]) += x
+    }
+    m.toSeq.map { case (k, buffer) => (k, buffer) }
   }
 
 }

@@ -26,15 +26,15 @@ import org.apache.flink.configuration.ConfigUtils;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.DeploymentOptions;
 import org.apache.flink.configuration.PipelineOptions;
-import org.apache.flink.runtime.dispatcher.ExecutionGraphInfoStore;
-import org.apache.flink.runtime.dispatcher.MemoryExecutionGraphInfoStore;
+import org.apache.flink.runtime.dispatcher.ArchivedApplicationStore;
+import org.apache.flink.runtime.dispatcher.MemoryArchivedApplicationStore;
 import org.apache.flink.runtime.dispatcher.SessionDispatcherFactory;
 import org.apache.flink.runtime.dispatcher.runner.DefaultDispatcherRunnerFactory;
 import org.apache.flink.runtime.entrypoint.ClusterEntrypoint;
 import org.apache.flink.runtime.entrypoint.component.DefaultDispatcherResourceManagerComponentFactory;
 import org.apache.flink.runtime.entrypoint.component.DispatcherResourceManagerComponentFactory;
 import org.apache.flink.runtime.resourcemanager.ResourceManagerFactory;
-import org.apache.flink.runtime.rest.JobRestEndpointFactory;
+import org.apache.flink.runtime.rest.ApplicationRestEndpointFactory;
 import org.apache.flink.util.concurrent.ScheduledExecutor;
 
 import java.io.IOException;
@@ -74,16 +74,16 @@ public class ApplicationClusterEntryPoint extends ClusterEntrypoint {
                         ApplicationDispatcherLeaderProcessFactoryFactory.create(
                                 configuration, SessionDispatcherFactory.INSTANCE, program)),
                 resourceManagerFactory,
-                JobRestEndpointFactory.INSTANCE);
+                ApplicationRestEndpointFactory.INSTANCE);
     }
 
     @Override
-    protected ExecutionGraphInfoStore createSerializableExecutionGraphStore(
+    protected ArchivedApplicationStore createArchivedApplicationStore(
             final Configuration configuration, final ScheduledExecutor scheduledExecutor) {
-        return new MemoryExecutionGraphInfoStore();
+        return new MemoryArchivedApplicationStore();
     }
 
-    protected static void configureExecution(
+    public static void configureExecution(
             final Configuration configuration, final PackagedProgram program) throws Exception {
         configuration.set(DeploymentOptions.TARGET, EmbeddedExecutor.NAME);
         ConfigUtils.encodeCollectionToConfig(

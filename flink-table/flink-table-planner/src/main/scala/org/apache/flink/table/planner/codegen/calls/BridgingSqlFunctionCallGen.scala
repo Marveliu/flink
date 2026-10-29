@@ -15,19 +15,18 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.planner.codegen.calls
 
-import org.apache.flink.table.functions.{FunctionDefinition, ScalarFunction, TableFunction, UserDefinedFunctionHelper}
+import org.apache.flink.table.functions.{ScalarFunction, TableFunction, UserDefinedFunctionHelper}
 import org.apache.flink.table.planner.codegen._
-import org.apache.flink.table.planner.codegen.calls.BridgingFunctionGenUtil.generateFunctionAwareCall
+import org.apache.flink.table.planner.codegen.calls.BridgingFunctionGenUtil.{generateFunctionAwareCall, DefaultExpressionEvaluatorFactory}
 import org.apache.flink.table.planner.delegation.PlannerBase
 import org.apache.flink.table.planner.functions.bridging.BridgingSqlFunction
 import org.apache.flink.table.planner.functions.inference.OperatorBindingCallContext
 import org.apache.flink.table.runtime.collector.WrappingCollector
 import org.apache.flink.table.types.logical.LogicalType
 
-import org.apache.calcite.rex.{RexCall, RexCallBinding}
+import org.apache.calcite.rex.{RexCall, RexCallBinding, RexProgram}
 
 import java.util.Collections
 
@@ -38,27 +37,24 @@ import java.util.Collections
  * generator will be a reference to a [[WrappingCollector]]. Furthermore, atomic types are wrapped
  * into a row by the collector.
  */
-class BridgingSqlFunctionCallGen(call: RexCall) extends CallGenerator {
+class BridgingSqlFunctionCallGen(call: RexCall, rexProgram: RexProgram) extends CallGenerator {
 
   override def generate(
       ctx: CodeGeneratorContext,
       operands: Seq[GeneratedExpression],
-      returnType: LogicalType)
-    : GeneratedExpression = {
+      returnType: LogicalType): GeneratedExpression = {
 
-    val function: BridgingSqlFunction = call.getOperator.asInstanceOf[BridgingSqlFunction]
-    val definition: FunctionDefinition = function.getDefinition
+    val function = call.getOperator.asInstanceOf[BridgingSqlFunction]
+    val definition = function.getDefinition
     val dataTypeFactory = function.getDataTypeFactory
+    val rexFactory = function.getRexFactory
 
     // we could have implemented a dedicated code generation context but the closer we are to
     // Calcite the more consistent is the type inference during the data type enrichment
     val callContext = new OperatorBindingCallContext(
       dataTypeFactory,
       definition,
-      RexCallBinding.create(
-        function.getTypeFactory,
-        call,
-        Collections.emptyList()),
+      RexCallBinding.create(function.getTypeFactory, call, rexProgram, Collections.emptyList()),
       call.getType)
 
     // create the final UDF for runtime
@@ -67,7 +63,9 @@ class BridgingSqlFunctionCallGen(call: RexCall) extends CallGenerator {
       definition,
       callContext,
       classOf[PlannerBase].getClassLoader,
-      ctx.tableConfig.getConfiguration)
+      ctx.tableConfig,
+      new DefaultExpressionEvaluatorFactory(ctx.tableConfig, ctx.classLoader, rexFactory)
+    )
     val inference = udf.getTypeInference(dataTypeFactory)
 
     generateFunctionAwareCall(
@@ -78,6 +76,10 @@ class BridgingSqlFunctionCallGen(call: RexCall) extends CallGenerator {
       callContext,
       udf,
       function.toString,
-      skipIfArgsNull = false)
+      skipIfArgsNull = false,
+      // Only the true user-UDF entry opts into metrics; lookup/ML/vector reuse the same util with
+      // the default None and stay un-instrumented.
+      udfMetricName = Some(function.getName)
+    )
   }
 }

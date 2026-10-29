@@ -95,13 +95,15 @@ based on the following set of rules:
  3. Declared fields types cannot change.
  4. Class name of the POJO type cannot change, including the namespace of the class.
 
+The same rules apply to [Java records]({{< ref "docs/dev/datastream/fault-tolerance/serialization/types_serialization" >}}#pojos), which Flink treats as POJO types since Flink 1.19.
+
 Note that the schema of POJO type state can only be evolved when restoring from a previous savepoint with Flink versions
 newer than 1.8.0. When restoring with Flink versions older than 1.8.0, the schema cannot be changed.
 
 ### Avro types
 
 Flink fully supports evolving schema of Avro type state, as long as the schema change is considered compatible by
-[Avro's rules for schema resolution](http://avro.apache.org/docs/current/spec.html#Schema+Resolution).
+[Avro's rules for schema resolution](https://avro.apache.org/docs/current/specification/).
 
 One limitation is that Avro generated classes used as the state type cannot be relocated or have different
 namespaces when the job is restored.
@@ -124,5 +126,11 @@ Additionally, the RocksDB state backend relies on binary object identity, rather
 ### **Kryo** cannot be used for schema evolution.  
 
 When Kryo is used, there is no possibility for the framework to verify if any incompatible changes have been made.
+
+{{< hint warning >}}
+This means that if a data-structure containing a given type is serialized via Kryo, then that contained type can **not** undergo schema evolution.
+
+For example, if a POJO contains a `List<SomeOtherPojo>`, then the `List` _and_ its contents are serialized via Kryo and schema evolution is **not** supported for `SomeOtherPojo`.
+{{< /hint >}}
 
 {{< top >}}

@@ -16,16 +16,27 @@
  * limitations under the License.
  */
 
-import { formatDate } from '@angular/common';
+import { DatePipe, formatDate, KeyValuePipe, NgForOf, NgIf } from '@angular/common';
 import { Component, OnInit, ChangeDetectionStrategy, ChangeDetectorRef, OnDestroy } from '@angular/core';
+import { FormsModule } from '@angular/forms';
+import { Router } from '@angular/router';
 import { Subject } from 'rxjs';
 import { distinctUntilChanged, mergeMap, takeUntil, tap } from 'rxjs/operators';
 
-import { EditorOptions } from 'ng-zorro-antd/code-editor/typings';
-import { flinkEditorOptions } from 'share/common/editor/editor-config';
+import { AutoResizeDirective } from '@flink-runtime-web/components/editor/auto-resize.directive';
+import { flinkEditorOptions } from '@flink-runtime-web/components/editor/editor-config';
+import { ExceptionInfo, RootExceptionInfo } from '@flink-runtime-web/interfaces';
+import { JobService } from '@flink-runtime-web/services';
+import { NzButtonModule } from 'ng-zorro-antd/button';
+import { NzCodeEditorModule, EditorOptions } from 'ng-zorro-antd/code-editor';
+import { NzIconModule } from 'ng-zorro-antd/icon';
+import { NzSelectModule } from 'ng-zorro-antd/select';
+import { NzTableModule } from 'ng-zorro-antd/table';
+import { NzTabsModule } from 'ng-zorro-antd/tabs';
+import { NzTagModule } from 'ng-zorro-antd/tag';
+import { NzTooltipModule } from 'ng-zorro-antd/tooltip';
 
-import { ExceptionInfo, RootExceptionInfo } from 'interfaces';
-import { JobService } from 'services';
+import { JobLocalService } from '../job-local.service';
 
 interface ExceptionHistoryItem {
   /**
@@ -60,7 +71,23 @@ const markGlobalFailure = function (exception: ExceptionInfo): ExceptionInfo {
   selector: 'flink-job-exceptions',
   templateUrl: './job-exceptions.component.html',
   styleUrls: ['./job-exceptions.component.less'],
-  changeDetection: ChangeDetectionStrategy.OnPush
+  changeDetection: ChangeDetectionStrategy.OnPush,
+  imports: [
+    NzTabsModule,
+    NzCodeEditorModule,
+    AutoResizeDirective,
+    NzTableModule,
+    NgForOf,
+    DatePipe,
+    NzSelectModule,
+    NzTooltipModule,
+    NgIf,
+    FormsModule,
+    NzIconModule,
+    NzButtonModule,
+    NzTagModule,
+    KeyValuePipe
+  ]
 })
 export class JobExceptionsComponent implements OnInit, OnDestroy {
   public readonly trackByTimestamp = (_: number, node: ExceptionInfo): number => node.timestamp;
@@ -75,7 +102,12 @@ export class JobExceptionsComponent implements OnInit, OnDestroy {
 
   private readonly destroy$ = new Subject<void>();
 
-  constructor(private readonly jobService: JobService, private readonly cdr: ChangeDetectorRef) {}
+  constructor(
+    private readonly jobService: JobService,
+    private readonly jobLocalService: JobLocalService,
+    private readonly cdr: ChangeDetectorRef,
+    private readonly router: Router
+  ) {}
 
   public ngOnInit(): void {
     this.loadMore();
@@ -89,7 +121,8 @@ export class JobExceptionsComponent implements OnInit, OnDestroy {
   public loadMore(): void {
     this.isLoading = true;
     this.maxExceptions += 10;
-    this.jobService.jobDetail$
+    this.jobLocalService
+      .jobDetailChanges()
       .pipe(
         distinctUntilChanged((pre, next) => pre.jid === next.jid),
         mergeMap(job => this.jobService.loadExceptions(job.jid, this.maxExceptions)),
@@ -120,5 +153,11 @@ export class JobExceptionsComponent implements OnInit, OnDestroy {
           };
         });
       });
+  }
+
+  public navigateTo(taskManagerId?: string): void {
+    if (taskManagerId) {
+      this.router.navigate(['task-manager', taskManagerId, 'metrics']).then();
+    }
   }
 }

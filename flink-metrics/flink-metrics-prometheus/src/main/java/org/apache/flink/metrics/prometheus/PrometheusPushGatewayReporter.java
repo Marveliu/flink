@@ -21,25 +21,27 @@ package org.apache.flink.metrics.prometheus;
 import org.apache.flink.annotation.PublicEvolving;
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.metrics.Metric;
-import org.apache.flink.metrics.reporter.InstantiateViaFactory;
 import org.apache.flink.metrics.reporter.MetricReporter;
 import org.apache.flink.metrics.reporter.Scheduled;
 import org.apache.flink.util.Preconditions;
 
-import io.prometheus.client.CollectorRegistry;
+import io.prometheus.client.exporter.DefaultHttpConnectionFactory;
+import io.prometheus.client.exporter.HttpConnectionFactory;
 import io.prometheus.client.exporter.PushGateway;
 
+import javax.annotation.Nullable;
+
 import java.io.IOException;
+import java.net.HttpURLConnection;
 import java.net.URL;
+import java.nio.charset.StandardCharsets;
+import java.util.Base64;
 import java.util.Map;
 
 /**
  * {@link MetricReporter} that exports {@link Metric Metrics} via Prometheus {@link PushGateway}.
  */
 @PublicEvolving
-@InstantiateViaFactory(
-        factoryClassName =
-                "org.apache.flink.metrics.prometheus.PrometheusPushGatewayReporterFactory")
 public class PrometheusPushGatewayReporter extends AbstractPrometheusReporter implements Scheduled {
 
     private final PushGateway pushGateway;
@@ -47,14 +49,24 @@ public class PrometheusPushGatewayReporter extends AbstractPrometheusReporter im
     private final Map<String, String> groupingKey;
     private final boolean deleteOnShutdown;
     @VisibleForTesting final URL hostUrl;
+    @VisibleForTesting final boolean basicAuthEnabled;
 
     PrometheusPushGatewayReporter(
             URL hostUrl,
             String jobName,
             Map<String, String> groupingKey,
-            final boolean deleteOnShutdown) {
+            final boolean deleteOnShutdown,
+            @Nullable String username,
+            @Nullable String password) {
         this.hostUrl = hostUrl;
         this.pushGateway = new PushGateway(hostUrl);
+        if (username != null && password != null) {
+            this.pushGateway.setConnectionFactory(
+                    new JdkBasicAuthHttpConnectionFactory(username, password));
+            this.basicAuthEnabled = true;
+        } else {
+            this.basicAuthEnabled = false;
+        }
         this.jobName = Preconditions.checkNotNull(jobName);
         this.groupingKey = Preconditions.checkNotNull(groupingKey);
         this.deleteOnShutdown = deleteOnShutdown;
@@ -63,7 +75,7 @@ public class PrometheusPushGatewayReporter extends AbstractPrometheusReporter im
     @Override
     public void report() {
         try {
-            pushGateway.push(CollectorRegistry.defaultRegistry, jobName, groupingKey);
+            pushGateway.push(registry, jobName, groupingKey);
         } catch (Exception e) {
             log.warn(
                     "Failed to push metrics to PushGateway with jobName {}, groupingKey {}.",
@@ -87,5 +99,27 @@ public class PrometheusPushGatewayReporter extends AbstractPrometheusReporter im
             }
         }
         super.close();
+    }
+
+    private static final class JdkBasicAuthHttpConnectionFactory implements HttpConnectionFactory {
+        private final HttpConnectionFactory connectionFactory = new DefaultHttpConnectionFactory();
+        private final String authorizationHeader;
+
+        private JdkBasicAuthHttpConnectionFactory(String username, String password) {
+            // Use the JDK encoder because simpleclient's implementation requires JAXB.
+            authorizationHeader =
+                    "Basic "
+                            + Base64.getEncoder()
+                                    .encodeToString(
+                                            (username + ":" + password)
+                                                    .getBytes(StandardCharsets.UTF_8));
+        }
+
+        @Override
+        public HttpURLConnection create(String url) throws IOException {
+            final HttpURLConnection connection = connectionFactory.create(url);
+            connection.setRequestProperty("Authorization", authorizationHeader);
+            return connection;
+        }
     }
 }

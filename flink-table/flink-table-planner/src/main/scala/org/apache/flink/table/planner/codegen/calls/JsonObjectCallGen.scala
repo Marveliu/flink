@@ -15,32 +15,30 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.planner.codegen.calls
 
+import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.databind.node.{NullNode, ObjectNode}
 import org.apache.flink.table.api.JsonOnNull
+import org.apache.flink.table.planner.codegen.{CodeGeneratorContext, CodeGenUtils, GeneratedExpression}
 import org.apache.flink.table.planner.codegen.CodeGenUtils._
 import org.apache.flink.table.planner.codegen.JsonGenerateUtils.{createNodeTerm, getOnNullBehavior}
-import org.apache.flink.table.planner.codegen.{CodeGeneratorContext, GeneratedExpression}
 import org.apache.flink.table.runtime.functions.SqlJsonUtils
 import org.apache.flink.table.types.logical.LogicalType
 
-import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.databind.node.{NullNode, ObjectNode}
-
-import org.apache.calcite.rex.RexCall
+import org.apache.calcite.rex.{RexCall, RexProgram}
 
 /**
  * [[CallGenerator]] for `JSON_OBJECT`.
  *
  * `JSON_OBJECT` returns a character string. However, this creates an issue when nesting calls to
  * this function with the intention of creating a nested JSON structure. Instead of a nested JSON
- * object, a JSON string would be inserted, i.e.
- * `JSON_OBJECT(KEY 'K' VALUE JSON_OBJECT(KEY 'A' VALUE 'B'))` would result in
- * `{"K":"{\"A\":\"B\"}"}` instead of the intended `{"K":{"A":"B"}}`. We remedy this by treating
- * nested calls to this function differently and inserting the value as a raw node instead of as a
- * string node.
+ * object, a JSON string would be inserted, i.e. `JSON_OBJECT(KEY 'K' VALUE JSON_OBJECT(KEY 'A'
+ * VALUE 'B'))` would result in `{"K":"{\"A\":\"B\"}"}` instead of the intended `{"K":{"A":"B"}}`.
+ * We remedy this by treating nested calls to this function differently and inserting the value as a
+ * raw node instead of as a string node.
  */
-class JsonObjectCallGen(call: RexCall) extends CallGenerator {
+class JsonObjectCallGen(call: RexCall, rexProgram: RexProgram) extends CallGenerator {
+
   private def jsonUtils = className[SqlJsonUtils]
 
   override def generate(
@@ -48,46 +46,52 @@ class JsonObjectCallGen(call: RexCall) extends CallGenerator {
       operands: Seq[GeneratedExpression],
       returnType: LogicalType): GeneratedExpression = {
 
-    val nodeTerm = newName("node")
+    val nodeTerm = newName(ctx, "node")
     ctx.addReusableMember(s"${className[ObjectNode]} $nodeTerm = $jsonUtils.createObjectNode();")
 
-    val nullNodeTerm = newName("nullNode")
+    val nullNodeTerm = newName(ctx, "nullNode")
     ctx.addReusableMember(s"${className[NullNode]} $nullNodeTerm = $nodeTerm.nullNode();")
 
     val onNull = getOnNullBehavior(operands.head)
-    val populateNodeCode = operands.zipWithIndex.drop(1).grouped(2).map {
-      case Seq((keyExpr, _), (valueExpr, valueIdx)) =>
-        val valueTerm = createNodeTerm(ctx, valueExpr, call.operands.get(valueIdx))
+    val populateNodeCode = operands.zipWithIndex
+      .drop(1)
+      .grouped(2)
+      .map {
+        case Seq((keyExpr, _), (valueExpr, valueIdx)) =>
+          val exprs = CodeGenUtils.getExprsFromProgramOrNull(rexProgram)
+          val valueTerm = createNodeTerm(ctx, valueExpr, call.operands.get(valueIdx), exprs)
 
-        onNull match {
-          case JsonOnNull.NULL =>
-            s"""
-               |if (${valueExpr.nullTerm}) {
-               |    $nodeTerm.set(${keyExpr.resultTerm}.toString(), $nullNodeTerm);
-               |} else {
-               |    $nodeTerm.set(${keyExpr.resultTerm}.toString(), $valueTerm);
-               |}
-               |""".stripMargin
-          case JsonOnNull.ABSENT =>
-            s"""
-               |if (!${valueExpr.nullTerm}) {
-               |    $nodeTerm.set(${keyExpr.resultTerm}.toString(), $valueTerm);
-               |}
-               |""".stripMargin
-        }
-    }.mkString
+          onNull match {
+            case JsonOnNull.NULL =>
+              s"""
+                 |if (${valueExpr.nullTerm}) {
+                 |    $nodeTerm.set(${keyExpr.resultTerm}.toString(), $nullNodeTerm);
+                 |} else {
+                 |    $nodeTerm.set(${keyExpr.resultTerm}.toString(), $valueTerm);
+                 |}
+                 |""".stripMargin
+            case JsonOnNull.ABSENT =>
+              s"""
+                 |if (!${valueExpr.nullTerm}) {
+                 |    $nodeTerm.set(${keyExpr.resultTerm}.toString(), $valueTerm);
+                 |}
+                 |""".stripMargin
+          }
+      }
+      .mkString
 
-    val resultTerm = newName("result")
+    val resultTerm = newName(ctx, "result")
     val resultTermType = primitiveTypeTermForType(returnType)
+    val operandsCode = operands.map(_.code).mkString
     val resultCode = s"""
-       |${operands.map(_.code).mkString}
-       |
-       |$nodeTerm.removeAll();
-       |$populateNodeCode
-       |
-       |$resultTermType $resultTerm =
-       |    $BINARY_STRING.fromString($jsonUtils.serializeJson($nodeTerm));
-       |""".stripMargin
+                        |$operandsCode
+                        |
+                        |$nodeTerm.removeAll();
+                        |$populateNodeCode
+                        |
+                        |$resultTermType $resultTerm =
+                        |    $BINARY_STRING.fromString($jsonUtils.serializeJson($nodeTerm));
+                        |""".stripMargin
 
     GeneratedExpression(resultTerm, "false", resultCode, returnType)
   }

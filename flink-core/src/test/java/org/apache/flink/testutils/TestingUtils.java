@@ -18,27 +18,34 @@
 
 package org.apache.flink.testutils;
 
-import org.apache.flink.api.common.time.Time;
-import org.apache.flink.util.concurrent.ScheduledExecutor;
-import org.apache.flink.util.concurrent.ScheduledExecutorServiceAdapter;
+import org.apache.flink.testutils.executor.TestExecutorExtension;
+import org.apache.flink.testutils.executor.TestExecutorResource;
 
+import java.io.File;
+import java.io.IOException;
+import java.net.URL;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.time.Duration;
+import java.util.Collection;
 import java.util.UUID;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ThreadFactory;
+import java.util.function.Predicate;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 /** Convenience functions to test actor based components. */
 public class TestingUtils {
     private static final UUID ZERO_UUID = new UUID(0L, 0L);
 
     public static final Duration TESTING_DURATION = Duration.ofMinutes(2L);
-    public static final Time TIMEOUT = Time.minutes(1L);
-    public static final Duration DEFAULT_AKKA_ASK_TIMEOUT = Duration.ofSeconds(200);
+    public static final Duration TIMEOUT = Duration.ofMinutes(1L);
+    public static final Duration DEFAULT_ASK_TIMEOUT = Duration.ofSeconds(200);
 
-    private static ScheduledExecutorService sharedExecutorInstance;
-
-    public static Time infiniteTime() {
-        return Time.milliseconds(Integer.MAX_VALUE);
+    public static Duration infiniteTime() {
+        return Duration.ofMillis(Integer.MAX_VALUE);
     }
 
     public static Duration infiniteDuration() {
@@ -47,19 +54,65 @@ public class TestingUtils {
         return Duration.ofDays(365L);
     }
 
-    public static synchronized ScheduledExecutorService defaultExecutor() {
-        if (sharedExecutorInstance == null || sharedExecutorInstance.isShutdown()) {
-            sharedExecutorInstance = Executors.newSingleThreadScheduledExecutor();
+    // To make debugging logs easier, we use a custom thread factory that names the thread.
+    static class JmMainSingleThreadPoolFactory implements ThreadFactory {
+        public Thread newThread(final Runnable r) {
+            return new Thread(r, "jm-main-thread");
         }
-
-        return sharedExecutorInstance;
     }
 
-    public static ScheduledExecutor defaultScheduledExecutor() {
-        return new ScheduledExecutorServiceAdapter(defaultExecutor());
+    // To make debugging logs easier, we use a custom thread factory that names the thread.
+    static class AsyncSingleThreadPoolFactory implements ThreadFactory {
+        public Thread newThread(final Runnable r) {
+            return new Thread(r, "async-single-thread-pool");
+        }
+    }
+
+    public static TestExecutorExtension<ScheduledExecutorService> defaultExecutorExtension() {
+        return new TestExecutorExtension<>(Executors::newSingleThreadScheduledExecutor);
+    }
+
+    public static TestExecutorExtension<ScheduledExecutorService> jmMainThreadExecutorExtension() {
+        return new TestExecutorExtension<>(
+                () ->
+                        Executors.newSingleThreadScheduledExecutor(
+                                new JmMainSingleThreadPoolFactory()));
+    }
+
+    public static TestExecutorExtension<ScheduledExecutorService> jmAsyncThreadExecutorExtension() {
+        return new TestExecutorExtension<>(
+                () ->
+                        Executors.newSingleThreadScheduledExecutor(
+                                new AsyncSingleThreadPoolFactory()));
+    }
+
+    public static TestExecutorResource<ScheduledExecutorService> defaultExecutorResource() {
+        return new TestExecutorResource<>(Executors::newSingleThreadScheduledExecutor);
     }
 
     public static UUID zeroUUID() {
         return ZERO_UUID;
+    }
+
+    public static File getClassFile(Class<?> cls) {
+        String className = String.format("%s.class", cls.getSimpleName());
+        URL url = cls.getResource(className);
+        assertThat(url).isNotNull();
+
+        return new File(url.getPath());
+    }
+
+    public static File getFileFromTargetDir(Class<?> cls, Predicate<Path> fileFilter)
+            throws IOException {
+        final String pathStr = cls.getProtectionDomain().getCodeSource().getLocation().getPath();
+        final Path mvnTargetDir = Paths.get(pathStr).getParent();
+
+        final Collection<Path> jarPaths =
+                org.apache.flink.util.FileUtils.listFilesInDirectory(mvnTargetDir, fileFilter);
+        assertThat(jarPaths)
+                .describedAs("Could not find any matching files in %s", mvnTargetDir)
+                .isNotEmpty();
+
+        return jarPaths.iterator().next().toFile();
     }
 }

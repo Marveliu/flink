@@ -22,7 +22,7 @@ under the License.
 	<parent>
 		<artifactId>flink-end-to-end-tests</artifactId>
 		<groupId>org.apache.flink</groupId>
-		<version>1.16-SNAPSHOT</version>
+		<version>2.5-SNAPSHOT</version>
 	</parent>
 	<modelVersion>4.0.0</modelVersion>
 
@@ -38,76 +38,33 @@ under the License.
 			<scope>provided</scope>
 		</dependency>
 
-		<!-- The following dependencies are for connector/format sql-jars that
-			we copy using the maven-dependency-plugin. When extending the test
- 			to cover more connectors/formats, add a dependency here and an entry
-			to the dependency-plugin configuration below.
-			This ensures that all modules we actually need (as defined by the
- 			dependency-plugin configuration) are built before this module. -->
 		<dependency>
-			<!-- Used by maven-dependency-plugin -->
 			<groupId>org.apache.flink</groupId>
-			<artifactId>flink-sql-avro</artifactId>
+			<artifactId>flink-table-api-java-bridge</artifactId>
 			<version>${project.version}</version>
 			<scope>provided</scope>
 		</dependency>
-		<dependency>
-			<!-- Used by maven-dependency-plugin -->
-			<groupId>org.apache.flink</groupId>
-			<artifactId>flink-json</artifactId>
-			<version>${project.version}</version>
-			<classifier>sql-jar</classifier>
-			<scope>provided</scope>
-		</dependency>
-		<dependency>
-			<!-- Used by maven-dependency-plugin -->
-			<groupId>org.apache.flink</groupId>
-			<artifactId>flink-csv</artifactId>
-			<version>${project.version}</version>
-			<classifier>sql-jar</classifier>
-			<scope>provided</scope>
-		</dependency>
-		<dependency>
-			<!-- Used by maven-dependency-plugin -->
-			<groupId>org.apache.flink</groupId>
-			<artifactId>flink-sql-connector-kafka</artifactId>
-			<version>${project.version}</version>
-			<scope>provided</scope>
-		</dependency>
-		<dependency>
-			<!-- Used by maven-dependency-plugin -->
-			<groupId>org.apache.flink</groupId>
-			<artifactId>flink-sql-connector-kinesis</artifactId>
-			<version>${project.version}</version>
-			<scope>provided</scope>
-		</dependency>
-		<dependency>
-			<!-- Used by maven-dependency-plugin -->
-			<groupId>org.apache.flink</groupId>
-			<artifactId>flink-sql-connector-elasticsearch6</artifactId>
-			<version>${project.version}</version>
-			<scope>provided</scope>
-		</dependency>
-		<dependency>
-			<!-- Used by maven-dependency-plugin -->
-			<groupId>org.apache.flink</groupId>
-			<artifactId>flink-sql-connector-elasticsearch7</artifactId>
-			<version>${project.version}</version>
-			<scope>provided</scope>
-		</dependency>
-	</dependencies>
 
-	<dependencyManagement>
-		<dependencies>
-			<dependency>
-				<!-- Pick an arbitrary version here to satisfy the enforcer-plugin,
-					as we neither access nor package the kafka dependencies -->
-				<groupId>org.apache.kafka</groupId>
-				<artifactId>kafka-clients</artifactId>
-				<version>2.2.2</version>
-			</dependency>
-		</dependencies>
-	</dependencyManagement>
+		<dependency>
+			<!-- Bundled into SqlToolbox.jar; not part of flink-dist -->
+			<groupId>org.apache.flink</groupId>
+			<artifactId>flink-connector-datagen</artifactId>
+			<version>${project.version}</version>
+		</dependency>
+
+		<dependency>
+			<groupId>org.apache.flink</groupId>
+			<artifactId>flink-end-to-end-tests-common</artifactId>
+			<version>${project.version}</version>
+		</dependency>
+
+		<dependency>
+			<groupId>commons-codec</groupId>
+			<artifactId>commons-codec</artifactId>
+			<scope>test</scope>
+		</dependency>
+
+	</dependencies>
 
 	<build>
 		<plugins>
@@ -117,6 +74,8 @@ under the License.
 				<artifactId>maven-shade-plugin</artifactId>
 				<executions>
 					<execution>
+						<!-- Use a special execution id to be ignored by license/optional checks -->
+						<id>e2e-dependencies</id>
 						<phase>package</phase>
 						<goals>
 							<goal>shade</goal>
@@ -147,31 +106,7 @@ under the License.
 							<artifactItems>
 								<artifactItem>
 									<groupId>org.apache.flink</groupId>
-									<artifactId>flink-sql-avro</artifactId>
-									<version>${project.version}</version>
-									<type>jar</type>
-								</artifactItem>
-								<artifactItem>
-									<groupId>org.apache.flink</groupId>
-									<artifactId>flink-sql-connector-kafka</artifactId>
-									<version>${project.version}</version>
-									<type>jar</type>
-								</artifactItem>
-								<artifactItem>
-									<groupId>org.apache.flink</groupId>
-									<artifactId>flink-sql-connector-kinesis</artifactId>
-									<version>${project.version}</version>
-									<type>jar</type>
-								</artifactItem>
-								<artifactItem>
-									<groupId>org.apache.flink</groupId>
-									<artifactId>flink-sql-connector-elasticsearch6</artifactId>
-									<version>${project.version}</version>
-									<type>jar</type>
-								</artifactItem>
-								<artifactItem>
-									<groupId>org.apache.flink</groupId>
-									<artifactId>flink-sql-connector-elasticsearch7</artifactId>
+									<artifactId>flink-test-utils</artifactId>
 									<version>${project.version}</version>
 									<type>jar</type>
 								</artifactItem>

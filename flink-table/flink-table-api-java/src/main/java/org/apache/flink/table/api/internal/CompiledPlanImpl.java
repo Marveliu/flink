@@ -22,6 +22,7 @@ import org.apache.flink.FlinkVersion;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.table.api.CompiledPlan;
 import org.apache.flink.table.api.ExplainDetail;
+import org.apache.flink.table.api.ExplainFormat;
 import org.apache.flink.table.api.TableResult;
 import org.apache.flink.table.api.config.TableConfigOptions;
 import org.apache.flink.table.delegation.InternalPlan;
@@ -50,14 +51,16 @@ class CompiledPlanImpl implements CompiledPlan {
     }
 
     @Override
+    public byte[] asSmileBytes() {
+        return internalPlan.asSmileBytes();
+    }
+
+    @Override
     public void writeToFile(File file, boolean ignoreIfExists) {
         internalPlan.writeToFile(
                 file,
                 ignoreIfExists,
-                !tableEnvironment
-                        .getConfig()
-                        .getConfiguration()
-                        .get(TableConfigOptions.PLAN_FORCE_RECOMPILE));
+                !tableEnvironment.getConfig().get(TableConfigOptions.PLAN_FORCE_RECOMPILE));
     }
 
     @Override
@@ -71,7 +74,7 @@ class CompiledPlanImpl implements CompiledPlan {
     }
 
     @Override
-    public String explain(ExplainDetail... extraDetails) {
+    public String explain(ExplainFormat format, ExplainDetail... extraDetails) {
         return tableEnvironment.explainPlan(internalPlan, extraDetails);
     }
 

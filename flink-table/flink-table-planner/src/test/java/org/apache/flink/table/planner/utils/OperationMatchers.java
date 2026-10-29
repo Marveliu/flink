@@ -19,7 +19,7 @@
 package org.apache.flink.table.planner.utils;
 
 import org.apache.flink.table.api.Schema;
-import org.apache.flink.table.api.TableSchema;
+import org.apache.flink.table.catalog.TableDistribution;
 import org.apache.flink.table.operations.Operation;
 import org.apache.flink.table.operations.ddl.CreateTableOperation;
 
@@ -32,6 +32,7 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 import static org.hamcrest.CoreMatchers.equalTo;
 
@@ -68,7 +69,7 @@ public class OperationMatchers {
      *
      * @param nestedMatchers additional matchers that must match
      * @see #withOptions(MapEntry[])
-     * @see #withSchema(TableSchema)
+     * @see #withSchema(Schema)
      * @see #partitionedBy(String...)
      */
     @SafeVarargs
@@ -113,6 +114,33 @@ public class OperationMatchers {
                 return actual.getCatalogTable().getPartitionKeys();
             }
         };
+    }
+
+    /**
+     * Checks that {@link CreateTableOperation} is equal to the given {@link TableDistribution}.
+     *
+     * @param distribution TableDistribution that the {@link CreateTableOperation} should have
+     * @see #isCreateTableOperation(Matcher[])
+     */
+    public static Matcher<CreateTableOperation> withDistribution(TableDistribution distribution) {
+        return new FeatureMatcher<CreateTableOperation, Optional<TableDistribution>>(
+                equalTo(Optional.ofNullable(distribution)),
+                "distribution of the derived table",
+                "distribution") {
+            @Override
+            protected Optional<TableDistribution> featureValueOf(CreateTableOperation actual) {
+                return actual.getCatalogTable().getDistribution();
+            }
+        };
+    }
+
+    /**
+     * Checks that {@link CreateTableOperation} has no {@link TableDistribution}.
+     *
+     * @see #isCreateTableOperation(Matcher[])
+     */
+    public static Matcher<CreateTableOperation> withNoDistribution() {
+        return withDistribution(null);
     }
 
     /**

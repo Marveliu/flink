@@ -19,11 +19,11 @@
 package org.apache.flink.table.runtime.util.collections.binary;
 
 import org.apache.flink.annotation.VisibleForTesting;
+import org.apache.flink.core.memory.AbstractPagedInputView;
 import org.apache.flink.core.memory.MemorySegment;
 import org.apache.flink.core.memory.MemorySegmentFactory;
-import org.apache.flink.runtime.io.disk.RandomAccessInputView;
+import org.apache.flink.core.memory.RandomAccessInputView;
 import org.apache.flink.runtime.io.disk.SimpleCollectingOutputView;
-import org.apache.flink.runtime.memory.AbstractPagedInputView;
 import org.apache.flink.runtime.memory.MemoryManager;
 import org.apache.flink.table.data.binary.BinaryRowData;
 import org.apache.flink.table.runtime.typeutils.BinaryRowDataSerializer;
@@ -202,7 +202,9 @@ public abstract class AbstractBytesHashMap<K> extends BytesMap<K, BinaryRowData>
         return ((RecordArea) recordArea).entryIterator(requiresCopy);
     }
 
-    /** @return the underlying memory segments of the hash map's record area */
+    /**
+     * @return the underlying memory segments of the hash map's record area
+     */
     @SuppressWarnings("WeakerAccess")
     public ArrayList<MemorySegment> getRecordAreaMemorySegments() {
         return ((RecordArea) recordArea).segments;
@@ -218,7 +220,9 @@ public abstract class AbstractBytesHashMap<K> extends BytesMap<K, BinaryRowData>
         free(false);
     }
 
-    /** @param reservedRecordMemory reserved fixed memory or not. */
+    /**
+     * @param reservedRecordMemory reserved fixed memory or not.
+     */
     public void free(boolean reservedRecordMemory) {
         recordArea.release();
         destructiveIterator = null;
@@ -316,7 +320,9 @@ public abstract class AbstractBytesHashMap<K> extends BytesMap<K, BinaryRowData>
             return lookupKey.equals(reusedKey);
         }
 
-        /** @throws IOException when invalid memory address visited. */
+        /**
+         * @throws IOException when invalid memory address visited.
+         */
         void skipKey() throws IOException {
             keySerializer.skipRecordFromPages(inView);
         }

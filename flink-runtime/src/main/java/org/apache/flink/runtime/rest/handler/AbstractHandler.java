@@ -18,7 +18,6 @@
 
 package org.apache.flink.runtime.rest.handler;
 
-import org.apache.flink.api.common.time.Time;
 import org.apache.flink.runtime.entrypoint.ClusterEntryPointExceptionUtils;
 import org.apache.flink.runtime.rest.FileUploadHandler;
 import org.apache.flink.runtime.rest.FlinkHttpObjectAggregator;
@@ -29,6 +28,7 @@ import org.apache.flink.runtime.rest.messages.MessageParameters;
 import org.apache.flink.runtime.rest.messages.RequestBody;
 import org.apache.flink.runtime.rest.messages.UntypedResponseMessageHeaders;
 import org.apache.flink.runtime.rest.util.RestMapperUtils;
+import org.apache.flink.runtime.rpc.exceptions.EndpointNotStartedException;
 import org.apache.flink.runtime.webmonitor.RestfulGateway;
 import org.apache.flink.runtime.webmonitor.retriever.GatewayRetriever;
 import org.apache.flink.util.AutoCloseableAsync;
@@ -36,7 +36,7 @@ import org.apache.flink.util.ExceptionUtils;
 import org.apache.flink.util.Preconditions;
 import org.apache.flink.util.concurrent.FutureUtils;
 
-import org.apache.flink.shaded.guava30.com.google.common.base.Ascii;
+import org.apache.flink.shaded.guava33.com.google.common.base.Ascii;
 import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.core.JsonParseException;
 import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.databind.JsonMappingException;
 import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.databind.ObjectMapper;
@@ -55,6 +55,7 @@ import javax.annotation.Nullable;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.time.Duration;
 import java.util.Arrays;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
@@ -75,7 +76,7 @@ public abstract class AbstractHandler<
 
     protected final Logger log = LoggerFactory.getLogger(getClass());
 
-    protected static final ObjectMapper MAPPER = RestMapperUtils.getStrictObjectMapper();
+    protected static final ObjectMapper MAPPER = RestMapperUtils.getFlexibleObjectMapper();
 
     /**
      * Other response payload overhead (in bytes). If we truncate response payload, we should leave
@@ -96,7 +97,7 @@ public abstract class AbstractHandler<
 
     protected AbstractHandler(
             @Nonnull GatewayRetriever<? extends T> leaderRetriever,
-            @Nonnull Time timeout,
+            @Nonnull Duration timeout,
             @Nonnull Map<String, String> responseHeaders,
             @Nonnull UntypedResponseMessageHeaders<R, M> untypedResponseMessageHeaders) {
         super(leaderRetriever, timeout, responseHeaders);
@@ -255,6 +256,14 @@ public abstract class AbstractHandler<
                     httpRequest,
                     new ErrorResponseBody(truncatedStackTrace),
                     rhe.getHttpResponseStatus(),
+                    responseHeaders);
+        } else if (throwable instanceof EndpointNotStartedException) {
+            log.debug("A queried endpoint was not ready: {}", throwable.getMessage());
+            return HandlerUtils.sendErrorResponse(
+                    ctx,
+                    httpRequest,
+                    new ErrorResponseBody(throwable.getMessage()),
+                    HttpResponseStatus.SERVICE_UNAVAILABLE,
                     responseHeaders);
         } else {
             log.error("Unhandled exception.", throwable);

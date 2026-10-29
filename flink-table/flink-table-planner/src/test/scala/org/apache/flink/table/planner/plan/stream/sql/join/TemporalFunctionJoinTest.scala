@@ -17,12 +17,11 @@
  */
 package org.apache.flink.table.planner.plan.stream.sql.join
 
-import org.apache.flink.api.scala._
 import org.apache.flink.table.api._
 import org.apache.flink.table.planner.utils.{StreamTableTestUtil, TableTestBase}
 
-import org.hamcrest.Matchers.containsString
-import org.junit.Test
+import org.assertj.core.api.Assertions.assertThatThrownBy
+import org.junit.jupiter.api.Test
 
 import java.sql.Timestamp
 
@@ -30,21 +29,19 @@ class TemporalFunctionJoinTest extends TableTestBase {
 
   val util: StreamTableTestUtil = streamTestUtil()
 
-  util.addDataStream[(Long, String)](
-    "Orders", 'o_amount, 'o_currency, 'o_rowtime.rowtime)
+  util.addDataStream[(Long, String)]("Orders", 'o_amount, 'o_currency, 'o_rowtime.rowtime)
 
-  private val ratesHistory = util.addDataStream[(String, Int, Timestamp)](
-    "RatesHistory", 'currency, 'rate, 'rowtime.rowtime)
+  private val ratesHistory =
+    util.addDataStream[(String, Int, Timestamp)]("RatesHistory", 'currency, 'rate, 'rowtime.rowtime)
 
   util.addTemporarySystemFunction(
     "Rates",
     ratesHistory.createTemporalTableFunction($"rowtime", $"currency"))
 
-  util.addDataStream[(Long, String)](
-    "ProctimeOrders", 'o_amount, 'o_currency, 'o_proctime.proctime)
+  util.addDataStream[(Long, String)]("ProctimeOrders", 'o_amount, 'o_currency, 'o_proctime.proctime)
 
-  private val proctimeRatesHistory = util.addDataStream[(String, Int)](
-    "ProctimeRatesHistory", 'currency, 'rate, 'proctime.proctime)
+  private val proctimeRatesHistory =
+    util.addDataStream[(String, Int)]("ProctimeRatesHistory", 'currency, 'rate, 'proctime.proctime)
 
   util.addTemporarySystemFunction(
     "ProctimeRates",
@@ -87,19 +84,28 @@ class TemporalFunctionJoinTest extends TableTestBase {
   }
 
   /**
-    * Test versioned joins with more complicated query.
-    * Important thing here is that we have complex OR join condition
-    * and there are some columns that are not being used (are being pruned).
-    */
+   * Test versioned joins with more complicated query. Important thing here is that we have complex
+   * OR join condition and there are some columns that are not being used (are being pruned).
+   */
   @Test
   def testComplexJoin(): Unit = {
     val util = streamTestUtil()
     util.addDataStream[(String, Int)]("Table3", 't3_comment, 't3_secondary_key)
     util.addDataStream[(Timestamp, String, Long, String, Int)](
-      "Orders", 'o_rowtime.rowtime, 'o_comment, 'o_amount, 'o_currency, 'o_secondary_key)
+      "Orders",
+      'o_rowtime.rowtime,
+      'o_comment,
+      'o_amount,
+      'o_currency,
+      'o_secondary_key)
 
     util.addDataStream[(Timestamp, String, String, Int, Int)](
-      "RatesHistory", 'rowtime.rowtime, 'comment, 'currency, 'rate, 'secondary_key)
+      "RatesHistory",
+      'rowtime.rowtime,
+      'comment,
+      'currency,
+      'rate,
+      'secondary_key)
     val rates = util.tableEnv
       .sqlQuery("SELECT * FROM RatesHistory WHERE rate > 110")
       .createTemporalTableFunction($"rowtime", $"currency")
@@ -121,25 +127,23 @@ class TemporalFunctionJoinTest extends TableTestBase {
 
   @Test
   def testUncorrelatedJoin(): Unit = {
-    expectedException.expect(classOf[TableException])
-    expectedException.expectMessage(containsString("Cannot generate a valid execution plan"))
-
     val sqlQuery = "SELECT " +
       "o_amount * rate as rate " +
       "FROM Orders AS o, " +
       "LATERAL TABLE (Rates(TIMESTAMP '2016-06-27 10:10:42.123')) AS r " +
       "WHERE currency = o_currency"
 
-    util.verifyExplain(sqlQuery)
+    assertThatThrownBy(() => util.verifyExplain(sqlQuery))
+      .hasMessageContaining("Cannot generate a valid execution plan")
+      .isInstanceOf[TableException]
   }
 
   @Test
   def testTemporalTableFunctionScan(): Unit = {
-    expectedException.expect(classOf[TableException])
-    expectedException.expectMessage(containsString("Cannot generate a valid execution plan"))
-
     val sqlQuery = "SELECT * FROM LATERAL TABLE (Rates(TIMESTAMP '2016-06-27 10:10:42.123'))"
 
-    util.verifyExplain(sqlQuery)
+    assertThatThrownBy(() => util.verifyExplain(sqlQuery))
+      .hasMessageContaining("Cannot generate a valid execution plan")
+      .isInstanceOf[TableException]
   }
 }

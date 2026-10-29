@@ -23,8 +23,8 @@ import org.apache.flink.api.common.functions.RuntimeContext;
 import org.apache.flink.runtime.memory.MemoryManager;
 import org.apache.flink.runtime.state.KeyedStateBackend;
 import org.apache.flink.table.data.RowData;
-import org.apache.flink.table.runtime.operators.window.slicing.WindowTimerService;
-import org.apache.flink.table.runtime.operators.window.state.WindowState;
+import org.apache.flink.table.runtime.operators.window.tvf.common.WindowTimerService;
+import org.apache.flink.table.runtime.operators.window.tvf.state.WindowState;
 import org.apache.flink.util.Collector;
 
 import java.io.IOException;
@@ -36,7 +36,7 @@ import java.time.ZoneId;
  * frequently accessing state, or flushes to output to reduce shuffling data.
  */
 @Internal
-public interface WindowBuffer {
+public interface WindowBuffer extends AutoCloseable {
 
     /**
      * Adds an element with associated key into the buffer. The buffer may temporarily buffer the
@@ -72,9 +72,6 @@ public interface WindowBuffer {
      */
     void flush() throws Exception;
 
-    /** Release resources allocated by this buffer. */
-    void close() throws Exception;
-
     // ------------------------------------------------------------------------
 
     /** A factory that creates a {@link WindowBuffer}. */
@@ -93,7 +90,7 @@ public interface WindowBuffer {
          * @param windowState the window state to flush buffered data into.
          * @param isEventTime indicates whether the operator works in event-time or processing-time
          *     mode, used for register corresponding timers.
-         * @param shiftTimeZone the shit timezone of the window
+         * @param shiftTimeZone the shift timezone of the window
          * @throws IOException thrown if the buffer can't be opened
          */
         WindowBuffer create(
@@ -121,7 +118,7 @@ public interface WindowBuffer {
          * @param memoryManager the manager that governs memory by Flink framework
          * @param memorySize the managed memory size can be used by this operator
          * @param collector collector to emit records
-         * @param shiftTimeZone the shit timezone of the window
+         * @param shiftTimeZone the shift timezone of the window
          * @throws IOException thrown if the buffer can't be opened
          */
         WindowBuffer create(

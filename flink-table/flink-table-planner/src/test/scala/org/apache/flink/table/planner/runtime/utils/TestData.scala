@@ -15,15 +15,14 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.planner.runtime.utils
 
 import org.apache.flink.api.common.typeinfo.BasicTypeInfo._
 import org.apache.flink.api.common.typeinfo.LocalTimeTypeInfo.{LOCAL_DATE, LOCAL_DATE_TIME, LOCAL_TIME}
 import org.apache.flink.api.java.tuple.{Tuple2 => JTuple2}
 import org.apache.flink.api.java.typeutils.{RowTypeInfo, TupleTypeInfo}
-import org.apache.flink.table.planner.factories.TestValuesTableFactory.changelogRow
 import org.apache.flink.table.planner.{JHashMap, JInt}
+import org.apache.flink.table.planner.factories.TestValuesTableFactory.changelogRow
 import org.apache.flink.table.planner.runtime.utils.BatchTestBase.row
 import org.apache.flink.table.planner.utils.DateTimeTestUtil._
 import org.apache.flink.table.utils.DateTimeUtils.toLocalDateTime
@@ -31,37 +30,54 @@ import org.apache.flink.types.Row
 
 import java.lang.{Boolean => JBool, Long => JLong}
 import java.math.{BigDecimal => JBigDecimal}
-import java.time.{Instant, LocalDate, LocalDateTime, LocalTime, ZoneId}
+import java.time._
 
-import scala.collection.{Seq, mutable}
+import scala.collection.{mutable, Seq}
 
 object TestData {
 
   val type1 = new RowTypeInfo(INT_TYPE_INFO, STRING_TYPE_INFO, INT_TYPE_INFO)
-  val type2 = new RowTypeInfo(
-    INT_TYPE_INFO, LONG_TYPE_INFO, INT_TYPE_INFO, STRING_TYPE_INFO, LONG_TYPE_INFO)
+  val type2 =
+    new RowTypeInfo(INT_TYPE_INFO, LONG_TYPE_INFO, INT_TYPE_INFO, STRING_TYPE_INFO, LONG_TYPE_INFO)
   val type3 = new RowTypeInfo(INT_TYPE_INFO, LONG_TYPE_INFO, STRING_TYPE_INFO)
   val type4 = new RowTypeInfo(STRING_TYPE_INFO, INT_TYPE_INFO, INT_TYPE_INFO)
-  val type5 = new RowTypeInfo(INT_TYPE_INFO, LONG_TYPE_INFO, INT_TYPE_INFO, STRING_TYPE_INFO,
-    LONG_TYPE_INFO)
-  val type6 = new RowTypeInfo(INT_TYPE_INFO, DOUBLE_TYPE_INFO, STRING_TYPE_INFO, LOCAL_DATE,
-    LOCAL_TIME, LOCAL_DATE_TIME)
+  val type5 =
+    new RowTypeInfo(INT_TYPE_INFO, LONG_TYPE_INFO, INT_TYPE_INFO, STRING_TYPE_INFO, LONG_TYPE_INFO)
+  val type6 = new RowTypeInfo(
+    INT_TYPE_INFO,
+    DOUBLE_TYPE_INFO,
+    STRING_TYPE_INFO,
+    LOCAL_DATE,
+    LOCAL_TIME,
+    LOCAL_DATE_TIME)
 
   val simpleType2 = new RowTypeInfo(INT_TYPE_INFO, DOUBLE_TYPE_INFO)
 
-  val buildInType = new RowTypeInfo(BOOLEAN_TYPE_INFO, BYTE_TYPE_INFO, INT_TYPE_INFO,
-    LONG_TYPE_INFO, DOUBLE_TYPE_INFO, STRING_TYPE_INFO, STRING_TYPE_INFO, LOCAL_DATE, LOCAL_TIME,
+  val buildInType = new RowTypeInfo(
+    BOOLEAN_TYPE_INFO,
+    BYTE_TYPE_INFO,
+    INT_TYPE_INFO,
+    LONG_TYPE_INFO,
+    DOUBLE_TYPE_INFO,
+    STRING_TYPE_INFO,
+    STRING_TYPE_INFO,
+    LOCAL_DATE,
+    LOCAL_TIME,
     LOCAL_DATE_TIME)
-  val numericType = new RowTypeInfo(INT_TYPE_INFO, LONG_TYPE_INFO, FLOAT_TYPE_INFO,
-    DOUBLE_TYPE_INFO, BIG_DEC_TYPE_INFO)
+  val numericType = new RowTypeInfo(
+    INT_TYPE_INFO,
+    LONG_TYPE_INFO,
+    FLOAT_TYPE_INFO,
+    DOUBLE_TYPE_INFO,
+    BIG_DEC_TYPE_INFO)
 
   val tupleIntInt = new TupleTypeInfo(INT_TYPE_INFO, INT_TYPE_INFO)
   val tupleStringInt = new TupleTypeInfo(STRING_TYPE_INFO, INT_TYPE_INFO)
   val genericType3 = new RowTypeInfo(tupleStringInt, tupleIntInt, INT_TYPE_INFO)
-  val genericType5 = new RowTypeInfo(tupleIntInt, LONG_TYPE_INFO, INT_TYPE_INFO, STRING_TYPE_INFO,
-    LONG_TYPE_INFO)
-  val type3WithTimestamp = new RowTypeInfo(INT_TYPE_INFO, LONG_TYPE_INFO, STRING_TYPE_INFO,
-    LOCAL_DATE_TIME)
+  val genericType5 =
+    new RowTypeInfo(tupleIntInt, LONG_TYPE_INFO, INT_TYPE_INFO, STRING_TYPE_INFO, LONG_TYPE_INFO)
+  val type3WithTimestamp =
+    new RowTypeInfo(INT_TYPE_INFO, LONG_TYPE_INFO, STRING_TYPE_INFO, LOCAL_DATE_TIME)
 
   val nullablesOfData1 = Array(true, true, true)
 
@@ -143,7 +159,7 @@ object TestData {
   val nullablesOfNullData5 = Array(true, true, true, true, true)
 
   lazy val smallTupleData3: Seq[(Int, Long, String)] = {
-    val data = new mutable.MutableList[(Int, Long, String)]
+    val data = new mutable.ListBuffer[(Int, Long, String)]
     data.+=((1, 1L, "Hi"))
     data.+=((2, 2L, "Hello"))
     data.+=((3, 2L, "Hello world"))
@@ -155,7 +171,7 @@ object TestData {
   val nullablesOfSmallData3 = Array(true, true, true)
 
   lazy val smallTupleData5: Seq[(Int, Long, Int, String, Long)] = {
-    val data = new mutable.MutableList[(Int, Long, Int, String, Long)]
+    val data = new mutable.ListBuffer[(Int, Long, Int, String, Long)]
     data.+=((1, 1L, 0, "Hallo", 1L))
     data.+=((2, 2L, 1, "Hallo Welt", 2L))
     data.+=((2, 3L, 2, "Hallo Welt wie", 1L))
@@ -167,14 +183,39 @@ object TestData {
   val nullablesOfSmallData5 = Array(true, true, true, true, true)
 
   lazy val buildInData: Seq[Row] = Seq(
-    row(false, 1.toByte, 2, 3L, 2.56, "abcd", "f%g", localDate("2017-12-12"),
-      localTime("10:08:09"), localDateTime("2017-11-11 20:32:19")),
-
-    row(null, 2.toByte, -3, -4L, 90.08, null, "hij_k", localDate("2017-12-12"),
-      localTime("10:08:09"), localDateTime("2017-11-11 20:32:19")),
-
-    row(true, 3.toByte, -4, -5L, -0.8, "e fg", null, null,
-      localTime("10:08:09"), localDateTime("2015-05-20 10:00:00.887"))
+    row(
+      false,
+      1.toByte,
+      2,
+      3L,
+      2.56,
+      "abcd",
+      "f%g",
+      localDate("2017-12-12"),
+      localTime("10:08:09"),
+      localDateTime("2017-11-11 20:32:19")),
+    row(
+      null,
+      2.toByte,
+      -3,
+      -4L,
+      90.08,
+      null,
+      "hij_k",
+      localDate("2017-12-12"),
+      localTime("10:08:09"),
+      localDateTime("2017-11-11 20:32:19")),
+    row(
+      true,
+      3.toByte,
+      -4,
+      -5L,
+      -0.8,
+      "e fg",
+      null,
+      null,
+      localTime("10:08:09"),
+      localDateTime("2015-05-20 10:00:00.887"))
   )
 
   lazy val simpleData2 = Seq(
@@ -196,7 +237,7 @@ object TestData {
   )
 
   lazy val tupleData2: Seq[(Int, Double)] = {
-    val data = new mutable.MutableList[(Int, Double)]
+    val data = new mutable.ListBuffer[(Int, Double)]
     data.+=((1, 0.1))
     data.+=((2, 0.2))
     data.+=((2, 0.2))
@@ -215,7 +256,7 @@ object TestData {
   }
 
   lazy val tupleData3: Seq[(Int, Long, String)] = {
-    val data = new mutable.MutableList[(Int, Long, String)]
+    val data = new mutable.ListBuffer[(Int, Long, String)]
     data.+=((1, 1L, "Hi"))
     data.+=((2, 2L, "Hello"))
     data.+=((3, 2L, "Hello world"))
@@ -239,6 +280,14 @@ object TestData {
     data.+=((21, 6L, "Comment#15"))
     data
   }
+
+  lazy val tupleData4: Seq[Row] = Seq(
+    row(1, "Latte", 6),
+    row(2, "Milk", 3),
+    row(3, "Breve", 5),
+    row(4, "Mocha", 8),
+    row(5, "Tea", 4)
+  )
 
   lazy val data3: Seq[Row] = tupleData3.map(d => row(d.productIterator.toList: _*))
 
@@ -282,24 +331,34 @@ object TestData {
   )
 
   lazy val smallNestedTupleData: Seq[((Int, Int), String)] = {
-      val data = new mutable.MutableList[((Int, Int), String)]
-      data.+=(((1, 1), "one"))
-      data.+=(((2, 2), "two"))
-      data.+=(((3, 3), "three"))
+    val data = new mutable.ListBuffer[((Int, Int), String)]
+    data.+=(((1, 1), "one"))
+    data.+=(((2, 2), "two"))
+    data.+=(((3, 3), "three"))
     data
   }
 
-  lazy val arrayRows = Array(
-    Row.of(new JInt(1)),
-    Row.of(new JInt(2)),
-    Row.of(new JInt(3)),
-    Row.of(new JInt(4)))
+  lazy val arrayRows =
+    Array(Row.of(new JInt(1)), Row.of(new JInt(2)), Row.of(new JInt(3)), Row.of(new JInt(4)))
 
   lazy val mapRows = map(("Monday", 1), ("Tuesday", 2), ("Wednesday", 3))
 
+  lazy val orderedLoopRows: Seq[Row] = {
+    for {
+      cnt <- 0 until 33
+    } yield {
+      Row.of(
+        s"Record_$cnt",
+        cnt.toLong.asInstanceOf[AnyRef],
+        cnt.asInstanceOf[AnyRef],
+        cnt.toDouble.asInstanceOf[AnyRef])
+    }
+  }
+
   lazy val deepNestedRow: Seq[Row] = {
     Seq(
-      Row.of(new JLong(1),
+      Row.of(
+        new JLong(1),
         Row.of(
           Row.of("Sarah", new JInt(100)),
           Row.of(new JInt(1000), new JBool(true))
@@ -307,7 +366,8 @@ object TestData {
         Row.of("Peter", new JInt(10000)),
         "Mary",
         Row.of(arrayRows, mapRows)),
-      Row.of(new JLong(2),
+      Row.of(
+        new JLong(2),
         Row.of(
           Row.of("Rob", new JInt(200)),
           Row.of(new JInt(2000), new JBool(false))
@@ -315,18 +375,20 @@ object TestData {
         Row.of("Lucy", new JInt(20000)),
         "Bob",
         Row.of(arrayRows, mapRows)),
-      Row.of(new JLong(3),
+      Row.of(
+        new JLong(3),
         Row.of(
           Row.of("Mike", new JInt(300)),
           Row.of(new JInt(3000), new JBool(true))
         ),
         Row.of("Betty", new JInt(30000)),
         "Liz",
-        Row.of(arrayRows, mapRows)))
+        Row.of(arrayRows, mapRows))
+    )
   }
 
   lazy val tupleData5: Seq[(Int, Long, Int, String, Long)] = {
-    val data = new mutable.MutableList[(Int, Long, Int, String, Long)]
+    val data = new mutable.ListBuffer[(Int, Long, Int, String, Long)]
     data.+=((1, 1L, 0, "Hallo", 1L))
     data.+=((2, 2L, 1, "Hallo Welt", 2L))
     data.+=((2, 3L, 2, "Hallo Welt wie", 1L))
@@ -350,35 +412,110 @@ object TestData {
   val nullablesOfData5 = Array(true, true, true, true, true)
 
   lazy val data6: Seq[Row] = Seq(
-    row(1,   1.1, "a",    localDate("2017-04-08"), localTime("12:00:59"),
+    row(
+      1,
+      1.1,
+      "a",
+      localDate("2017-04-08"),
+      localTime("12:00:59"),
       localDateTime("2015-05-20 10:00:00")),
-    row(2,   2.5, "abc",  localDate("2017-04-09"), localTime("12:00:59"),
+    row(
+      2,
+      2.5,
+      "abc",
+      localDate("2017-04-09"),
+      localTime("12:00:59"),
       localDateTime("2019-09-19 08:03:09")),
-    row(2,  -2.4, "abcd", localDate("2017-04-08"), localTime("00:00:00"),
+    row(
+      2,
+      -2.4,
+      "abcd",
+      localDate("2017-04-08"),
+      localTime("00:00:00"),
       localDateTime("2016-09-01 23:07:06")),
-    row(3,   0.0, "abc?", localDate("2017-10-11"), localTime("23:59:59"),
+    row(
+      3,
+      0.0,
+      "abc?",
+      localDate("2017-10-11"),
+      localTime("23:59:59"),
       localDateTime("1999-12-12 10:00:00")),
-    row(3, -9.77, "ABC",  localDate("2016-08-08"), localTime("04:15:00"),
+    row(
+      3,
+      -9.77,
+      "ABC",
+      localDate("2016-08-08"),
+      localTime("04:15:00"),
       localDateTime("1999-12-12 10:00:02")),
-    row(3,  0.08, "BCD",  localDate("2017-04-10"), localTime("02:30:00"),
+    row(
+      3,
+      0.08,
+      "BCD",
+      localDate("2017-04-10"),
+      localTime("02:30:00"),
       localDateTime("1999-12-12 10:03:00")),
-    row(4,  3.14, "CDE",  localDate("2017-11-11"), localTime("02:30:00"),
+    row(
+      4,
+      3.14,
+      "CDE",
+      localDate("2017-11-11"),
+      localTime("02:30:00"),
       localDateTime("2017-11-20 09:00:00")),
-    row(4,  3.15, "DEF",  localDate("2017-02-06"), localTime("06:00:00"),
+    row(
+      4,
+      3.15,
+      "DEF",
+      localDate("2017-02-06"),
+      localTime("06:00:00"),
       localDateTime("2015-11-19 10:00:00")),
-    row(4,  3.14, "EFG",  localDate("2017-05-20"), localTime("09:45:78"),
+    row(
+      4,
+      3.14,
+      "EFG",
+      localDate("2017-05-20"),
+      localTime("09:45:58"),
       localDateTime("2015-11-19 10:00:01")),
-    row(4,  3.16, "FGH",  localDate("2017-05-19"), localTime("11:11:11"),
+    row(
+      4,
+      3.16,
+      "FGH",
+      localDate("2017-05-19"),
+      localTime("11:11:11"),
       localDateTime("2015-11-20 08:59:59")),
-    row(5,  -5.9, "GHI",  localDate("2017-07-20"), localTime("22:22:22"),
+    row(
+      5,
+      -5.9,
+      "GHI",
+      localDate("2017-07-20"),
+      localTime("22:22:22"),
       localDateTime("1989-06-04 10:00:00.78")),
-    row(5,  2.71, "HIJ",  localDate("2017-09-08"), localTime("20:09:09"),
+    row(
+      5,
+      2.71,
+      "HIJ",
+      localDate("2017-09-08"),
+      localTime("20:09:09"),
       localDateTime("1997-07-01 09:00:00.99")),
-    row(5,   3.9, "IJK",  localDate("2017-02-02"), localTime("03:03:03"),
+    row(
+      5,
+      3.9,
+      "IJK",
+      localDate("2017-02-02"),
+      localTime("03:03:03"),
       localDateTime("2000-01-01 00:00:00.09")),
-    row(5,   0.7, "JKL",  localDate("2017-10-01"), localTime("19:00:00"),
+    row(
+      5,
+      0.7,
+      "JKL",
+      localDate("2017-10-01"),
+      localTime("19:00:00"),
       localDateTime("2010-06-01 10:00:00.999")),
-    row(5,  -2.8, "KLM",  localDate("2017-07-01"), localTime("12:00:59"),
+    row(
+      5,
+      -2.8,
+      "KLM",
+      localDate("2017-07-01"),
+      localTime("12:00:59"),
       localDateTime("1937-07-07 08:08:08.888"))
   )
 
@@ -404,6 +541,22 @@ object TestData {
 
   val nullablesOfDuplicateData5 = Array(true, true, true, true, true)
 
+  lazy val data7 = Seq(
+    row(1, 0, 1L),
+    row(2, 1, 1L),
+    row(2, 2, 2L),
+    row(3, 3, 2L),
+    row(3, 4, 3L),
+    row(4, 5, 2L),
+    row(4, 6, 1L),
+    row(4, 7, 2L),
+    row(5, 8, 1L),
+    row(5, 9, 2L),
+    row(5, 10, 3L),
+    row(6, 11, 2L),
+    row(6, 11, 4L)
+  )
+
   lazy val numericData: Seq[Row] = Seq(
     row(1, 1L, 1.0f, 1.0d, JBigDecimal.valueOf(1)),
     row(2, 2L, 2.0f, 2.0d, JBigDecimal.valueOf(2)),
@@ -428,8 +581,8 @@ object TestData {
   )
 
   val nullablesOfPersonData = Array(true, true, true, true, true)
-  val personType = new RowTypeInfo(INT_TYPE_INFO, INT_TYPE_INFO, STRING_TYPE_INFO,
-    INT_TYPE_INFO, STRING_TYPE_INFO)
+  val personType =
+    new RowTypeInfo(INT_TYPE_INFO, INT_TYPE_INFO, STRING_TYPE_INFO, INT_TYPE_INFO, STRING_TYPE_INFO)
 
   val INT_DOUBLE = new RowTypeInfo(INT_TYPE_INFO, DOUBLE_TYPE_INFO)
   val INT_STRING = new RowTypeInfo(INT_TYPE_INFO, STRING_TYPE_INFO)
@@ -478,45 +631,32 @@ object TestData {
 
   lazy val intIntData2: Seq[Row] = {
     row(1, 1) ::
-        row(1, 2) ::
-        row(2, 1) ::
-        row(2, 2) ::
-        row(3, 1) ::
-        row(3, 2) :: Nil
+      row(1, 2) ::
+      row(2, 1) ::
+      row(2, 2) ::
+      row(3, 1) ::
+      row(3, 2) :: Nil
   }
 
   val nullablesOfIntIntData2 = Array(true, true)
 
   lazy val intIntData3: Seq[Row] = {
     row(1, null) ::
-        row(2, 2) :: Nil
+      row(2, 2) :: Nil
   }
 
   val nullablesOfIntIntData3 = Array(true, true)
 
-  lazy val upperCaseData: Seq[Row] = Seq(
-    row(1, "A"),
-    row(2, "B"),
-    row(3, "C"),
-    row(4, "D"),
-    row(5, "E"),
-    row(6, "F"))
+  lazy val upperCaseData: Seq[Row] =
+    Seq(row(1, "A"), row(2, "B"), row(3, "C"), row(4, "D"), row(5, "E"), row(6, "F"))
 
   val nullablesOfUpperCaseData = Array(true, true)
 
-  lazy val lowerCaseData: Seq[Row] = Seq(
-    row(1, "a"),
-    row(2, "b"),
-    row(3, "c"),
-    row(4, "d"))
+  lazy val lowerCaseData: Seq[Row] = Seq(row(1, "a"), row(2, "b"), row(3, "c"), row(4, "d"))
 
   val nullablesOfLowerCaseData = Array(true, true)
 
-  lazy val allNulls: Seq[Row] = Seq(
-    row(null),
-    row(null),
-    row(null),
-    row(null))
+  lazy val allNulls: Seq[Row] = Seq(row(null), row(null), row(null), row(null))
 
   val nullablesOfAllNulls = Array(true)
 
@@ -527,9 +667,14 @@ object TestData {
 
   val projectionTestDataType =
     new RowTypeInfo(
-      INT_TYPE_INFO, INT_TYPE_INFO, INT_TYPE_INFO,
-      STRING_TYPE_INFO, STRING_TYPE_INFO, STRING_TYPE_INFO,
-      INT_TYPE_INFO, STRING_TYPE_INFO)
+      INT_TYPE_INFO,
+      INT_TYPE_INFO,
+      INT_TYPE_INFO,
+      STRING_TYPE_INFO,
+      STRING_TYPE_INFO,
+      STRING_TYPE_INFO,
+      INT_TYPE_INFO,
+      STRING_TYPE_INFO)
 
   val nullablesOfProjectionTestData = Array(true, true, true, true, true, true, true, true)
 
@@ -543,7 +688,8 @@ object TestData {
     changelogRow("-D", "user2", "Jack", "jack@hotmail.com", new JBigDecimal("71.2")),
     changelogRow("+I", "user4", "Tina", "tina@gmail.com", new JBigDecimal("11.3")),
     changelogRow("-U", "user3", "Bailey", "bailey@gmail.com", new JBigDecimal("9.99")),
-    changelogRow("+U", "user3", "Bailey", "bailey@qq.com", new JBigDecimal("9.99")))
+    changelogRow("+U", "user3", "Bailey", "bailey@qq.com", new JBigDecimal("9.99"))
+  )
 
   val userUpsertlog: Seq[Row] = Seq(
     changelogRow("+U", "user1", "Tom", "tom@gmail.com", new JBigDecimal("10.02")),
@@ -552,7 +698,8 @@ object TestData {
     changelogRow("+U", "user3", "Bailey", "bailey@gmail.com", new JBigDecimal("9.99")),
     changelogRow("-D", "user2", "Jack", "jack@hotmail.com", new JBigDecimal("71.2")),
     changelogRow("+U", "user4", "Tina", "tina@gmail.com", new JBigDecimal("11.3")),
-    changelogRow("+U", "user3", "Bailey", "bailey@qq.com", new JBigDecimal("9.99")))
+    changelogRow("+U", "user3", "Bailey", "bailey@qq.com", new JBigDecimal("9.99"))
+  )
 
   // [amount, currency]
   val ordersData: Seq[Row] = Seq(
@@ -575,7 +722,8 @@ object TestData {
     row("San_Antonio", "TX", 1547253),
     row("San_Jose", "CA", 1021795),
     row("Chicago", "IL", 2695598),
-    row("Austin", "TX", 978908))
+    row("Austin", "TX", 978908)
+  )
 
   // kind[currency, rate]
   val ratesHistoryData: Seq[Row] = Seq(
@@ -603,82 +751,524 @@ object TestData {
     row("2020-10-10 00:00:02", 2, 2d, 2f, new JBigDecimal("2.22"), "Comment#1", "a"),
     row("2020-10-10 00:00:03", 2, 2d, 2f, new JBigDecimal("2.22"), "Comment#1", "a"),
     row("2020-10-10 00:00:04", 5, 5d, 5f, new JBigDecimal("5.55"), null, "a"),
-
     row("2020-10-10 00:00:07", 3, 3d, 3f, null, "Hello", "b"),
     row("2020-10-10 00:00:06", 6, 6d, 6f, new JBigDecimal("6.66"), "Hi", "b"), // out of order
     row("2020-10-10 00:00:08", 3, null, 3f, new JBigDecimal("3.33"), "Comment#2", "a"),
     row("2020-10-10 00:00:04", 5, 5d, null, new JBigDecimal("5.55"), "Hi", "a"), // late event
 
     row("2020-10-10 00:00:16", 4, 4d, 4f, new JBigDecimal("4.44"), "Hi", "b"),
-
     row("2020-10-10 00:00:32", 7, 7d, 7f, new JBigDecimal("7.77"), null, null),
-    row("2020-10-10 00:00:34", 1, 3d, 3f, new JBigDecimal("3.33"), "Comment#3", "b"))
+    row("2020-10-10 00:00:34", 1, 3d, 3f, new JBigDecimal("3.33"), "Comment#3", "b")
+  )
 
   val windowData2WithTimestamp: Seq[Row] = List(
     row("2020-10-10 00:00:01", 1, 1d, 1f, new JBigDecimal("1.11"), "Hi", "a1"),
     row("2020-10-10 00:00:02", 2, 2d, 2f, new JBigDecimal("2.22"), "Comment#1", "a1"),
     row("2020-10-10 00:00:03", 2, 2d, 2f, new JBigDecimal("2.22"), "Comment#1", "a1"),
     row("2020-10-10 00:00:04", 5, 5d, 5f, new JBigDecimal("5.55"), null, "a1"),
-
     row("2020-10-10 00:00:07", 3, 3d, 3f, null, "Hello", "b"),
     row("2020-10-10 00:00:06", 6, 6d, 6f, new JBigDecimal("6.66"), "Hi", "b"), // out of order
     row("2020-10-10 00:00:08", 3, null, 3f, new JBigDecimal("3.33"), "Comment#2", "a1"),
     row("2020-10-10 00:00:04", 5, 5d, null, new JBigDecimal("5.55"), "Hi", "a1"), // late event
 
     row("2020-10-10 00:00:16", 4, 4d, 4f, new JBigDecimal("4.44"), "Hi", "b"),
-
     row("2020-10-10 00:00:32", 7, 7d, 7f, new JBigDecimal("7.77"), null, null),
-    row("2020-10-10 00:00:34", 1, 3d, 3f, new JBigDecimal("3.33"), "Comment#3", "b"))
+    row("2020-10-10 00:00:34", 1, 3d, 3f, new JBigDecimal("3.33"), "Comment#3", "b")
+  )
+
+  // +----+---------------------+---+-----+-----+-------+------------+---+
+  // | Op |      Timestamp      | 1 |  2  |  3  |   4   |     5      | 6 |
+  // +----+---------------------+---+-----+-----+-------+------------+---+
+  // | +I | 2020-10-10 00:00:01 | 1 | 1.0 | 1.0 |  1.11 |     Hi     | a |
+  // | +I | 2020-10-10 00:00:02 | 2 | 2.0 | 2.0 |  2.22 | Comment#1  | a |
+  // | -D | 2020-10-10 00:00:03 | 1 | 1.0 | 1.0 |  1.11 |     Hi     | a |
+  // | +I | 2020-10-10 00:00:03 | 2 | 2.0 | 2.0 |  2.22 | Comment#1  | a |
+  // | +I | 2020-10-10 00:00:04 | 5 | 5.0 | 5.0 |  5.55 |    null    | a |
+  // | -U | 2020-10-10 00:00:04 | 2 | 2.0 | 2.0 |  2.22 | Comment#1  | a |
+  // | +U | 2020-10-10 00:00:04 | 22|22.0 |22.2 | 22.22 | Comment#22 | a |
+  // | +I | 2020-10-10 00:00:07 | 3 | 3.0 | 3.0 |  null |   Hello    | b |
+  // | +I | 2020-10-10 00:00:06 | 6 | 6.0 | 6.0 |  6.66 |     Hi     | b |
+  // | +I | 2020-10-10 00:00:08 | 3 |null | 3.0 |  3.33 | Comment#2  | a |
+  // | +I | 2020-10-10 00:00:04 | 5 | 5.0 |null |  5.55 |     Hi     | a |
+  // | +I | 2020-10-10 00:00:16 | 4 | 4.0 | 4.0 |  4.44 |     Hi     | b |
+  // | -D | 2020-10-10 00:00:04 | 5 | 5.0 | 5.0 |  5.55 |    null    | a |
+  // | +I | 2020-10-10 00:00:38 | 8 | 8.0 | 8.0 |  8.88 | Comment#4  | b |
+  // | -D | 2020-10-10 00:00:39 | 8 | 8.0 | 8.0 |  8.88 | Comment#4  | b |
+  // +----+---------------------+---+-----+-----+-------+------------+---+
+  val windowChangelogDataWithTimestamp: Seq[Row] = List(
+    changelogRow(
+      "+I",
+      "2020-10-10 00:00:01",
+      Int.box(1),
+      Double.box(1d),
+      Float.box(1f),
+      new JBigDecimal("1.11"),
+      "Hi",
+      "a"),
+    changelogRow(
+      "+I",
+      "2020-10-10 00:00:02",
+      Int.box(2),
+      Double.box(2d),
+      Float.box(2f),
+      new JBigDecimal("2.22"),
+      "Comment#1",
+      "a"),
+    changelogRow(
+      "-D",
+      "2020-10-10 00:00:03",
+      Int.box(1),
+      Double.box(1d),
+      Float.box(1f),
+      new JBigDecimal("1.11"),
+      "Hi",
+      "a"),
+    changelogRow(
+      "+I",
+      "2020-10-10 00:00:03",
+      Int.box(2),
+      Double.box(2d),
+      Float.box(2f),
+      new JBigDecimal("2.22"),
+      "Comment#1",
+      "a"),
+    changelogRow(
+      "+I",
+      "2020-10-10 00:00:04",
+      Int.box(5),
+      Double.box(5d),
+      Float.box(5f),
+      new JBigDecimal("5.55"),
+      null,
+      "a"),
+    changelogRow(
+      "-U",
+      "2020-10-10 00:00:04",
+      Int.box(2),
+      Double.box(2d),
+      Float.box(2f),
+      new JBigDecimal("2.22"),
+      "Comment#1",
+      "a"),
+    changelogRow(
+      "+U",
+      "2020-10-10 00:00:04",
+      Int.box(22),
+      Double.box(22d),
+      Float.box(22.2f),
+      new JBigDecimal("22.22"),
+      "Comment#22",
+      "a"),
+    changelogRow(
+      "+I",
+      "2020-10-10 00:00:07",
+      Int.box(3),
+      Double.box(3d),
+      Float.box(3f),
+      null,
+      "Hello",
+      "b"),
+    changelogRow(
+      "+I",
+      "2020-10-10 00:00:06",
+      Int.box(6),
+      Double.box(6d),
+      Float.box(6f),
+      new JBigDecimal("6.66"),
+      "Hi",
+      "b"
+    ), // out of order
+    changelogRow(
+      "+I",
+      "2020-10-10 00:00:08",
+      Int.box(3),
+      null,
+      Float.box(3f),
+      new JBigDecimal("3.33"),
+      "Comment#2",
+      "a"),
+    changelogRow(
+      "+I",
+      "2020-10-10 00:00:04",
+      Int.box(5),
+      Double.box(5d),
+      null,
+      new JBigDecimal("5.55"),
+      "Hi",
+      "a"
+    ), // late insert event
+    changelogRow(
+      "+I",
+      "2020-10-10 00:00:16",
+      Int.box(4),
+      Double.box(4d),
+      Float.box(4f),
+      new JBigDecimal("4.44"),
+      "Hi",
+      "b"),
+    changelogRow(
+      "-D",
+      "2020-10-10 00:00:04",
+      Int.box(5),
+      Double.box(5d),
+      Float.box(5f),
+      new JBigDecimal("5.55"),
+      null,
+      "a"
+    ), // late delete event
+    changelogRow(
+      "+I",
+      "2020-10-10 00:00:38",
+      Int.box(8),
+      Double.box(8d),
+      Float.box(8f),
+      new JBigDecimal("8.88"),
+      "Comment#4",
+      "b"),
+    changelogRow(
+      "-D",
+      "2020-10-10 00:00:39",
+      Int.box(8),
+      Double.box(8d),
+      Float.box(8f),
+      new JBigDecimal("8.88"),
+      "Comment#4",
+      "b")
+  )
 
   val shanghaiZone = ZoneId.of("Asia/Shanghai")
 
   val windowDataWithLtzInShanghai: Seq[Row] = List(
-    row(toEpochMills("2020-10-10T00:00:01", shanghaiZone),
-      1, 1d, 1f, new JBigDecimal("1.11"), "Hi", "a"),
-    row(toEpochMills("2020-10-10T00:00:02", shanghaiZone),
-      2, 2d, 2f, new JBigDecimal("2.22"), "Comment#1", "a"),
-    row(toEpochMills("2020-10-10T00:00:03", shanghaiZone),
-      2, 2d, 2f, new JBigDecimal("2.22"), "Comment#1", "a"),
-    row(toEpochMills("2020-10-10T00:00:04", shanghaiZone),
-      5, 5d, 5f, new JBigDecimal("5.55"), null, "a"),
-    row(toEpochMills("2020-10-10T00:00:07", shanghaiZone),
-      3, 3d, 3f, null, "Hello", "b"),
-    row(toEpochMills("2020-10-10T00:00:06", shanghaiZone),
-      6, 6d, 6f, new JBigDecimal("6.66"), "Hi", "b"), // out of order
-    row(toEpochMills("2020-10-10T00:00:08", shanghaiZone),
-      3, null, 3f, new JBigDecimal("3.33"), "Comment#2", "a"),
-    row(toEpochMills("2020-10-10T00:00:04", shanghaiZone),
-      5, 5d, null, new JBigDecimal("5.55"), "Hi", "a"), // late event
-    row(toEpochMills("2020-10-10T00:00:16", shanghaiZone),
-      4, 4d, 4f, new JBigDecimal("4.44"), "Hi", "b"),
-    row(toEpochMills("2020-10-10T00:00:32", shanghaiZone),
-      7, 7d, 7f, new JBigDecimal("7.77"), null, null),
-    row(toEpochMills("2020-10-10T00:00:34", shanghaiZone),
-      1, 3d, 3f, new JBigDecimal("3.33"), "Comment#3", "b"))
+    row(
+      toEpochMills("2020-10-10T00:00:01", shanghaiZone),
+      1,
+      1d,
+      1f,
+      new JBigDecimal("1.11"),
+      "Hi",
+      "a"),
+    row(
+      toEpochMills("2020-10-10T00:00:02", shanghaiZone),
+      2,
+      2d,
+      2f,
+      new JBigDecimal("2.22"),
+      "Comment#1",
+      "a"),
+    row(
+      toEpochMills("2020-10-10T00:00:03", shanghaiZone),
+      2,
+      2d,
+      2f,
+      new JBigDecimal("2.22"),
+      "Comment#1",
+      "a"),
+    row(
+      toEpochMills("2020-10-10T00:00:04", shanghaiZone),
+      5,
+      5d,
+      5f,
+      new JBigDecimal("5.55"),
+      null,
+      "a"),
+    row(toEpochMills("2020-10-10T00:00:07", shanghaiZone), 3, 3d, 3f, null, "Hello", "b"),
+    row(
+      toEpochMills("2020-10-10T00:00:06", shanghaiZone),
+      6,
+      6d,
+      6f,
+      new JBigDecimal("6.66"),
+      "Hi",
+      "b"
+    ), // out of order
+    row(
+      toEpochMills("2020-10-10T00:00:08", shanghaiZone),
+      3,
+      null,
+      3f,
+      new JBigDecimal("3.33"),
+      "Comment#2",
+      "a"),
+    row(
+      toEpochMills("2020-10-10T00:00:04", shanghaiZone),
+      5,
+      5d,
+      null,
+      new JBigDecimal("5.55"),
+      "Hi",
+      "a"
+    ), // late event
+    row(
+      toEpochMills("2020-10-10T00:00:16", shanghaiZone),
+      4,
+      4d,
+      4f,
+      new JBigDecimal("4.44"),
+      "Hi",
+      "b"),
+    row(
+      toEpochMills("2020-10-10T00:00:32", shanghaiZone),
+      7,
+      7d,
+      7f,
+      new JBigDecimal("7.77"),
+      null,
+      null),
+    row(
+      toEpochMills("2020-10-10T00:00:34", shanghaiZone),
+      1,
+      3d,
+      3f,
+      new JBigDecimal("3.33"),
+      "Comment#3",
+      "b")
+  )
 
   val windowData2WithLtzInShanghai: Seq[Row] = List(
-    row(toEpochMills("2020-10-10T00:00:01", shanghaiZone),
-      1, 1d, 1f, new JBigDecimal("1.11"), "Hi", "a1"),
-    row(toEpochMills("2020-10-10T00:00:02", shanghaiZone),
-      2, 2d, 2f, new JBigDecimal("2.22"), "Comment#1", "a1"),
-    row(toEpochMills("2020-10-10T00:00:03", shanghaiZone),
-      2, 2d, 2f, new JBigDecimal("2.22"), "Comment#1", "a1"),
-    row(toEpochMills("2020-10-10T00:00:04", shanghaiZone),
-      5, 5d, 5f, new JBigDecimal("5.55"), null, "a1"),
-    row(toEpochMills("2020-10-10T00:00:07", shanghaiZone),
-      3, 3d, 3f, null, "Hello", "b"),
-    row(toEpochMills("2020-10-10T00:00:06", shanghaiZone),
-      6, 6d, 6f, new JBigDecimal("6.66"), "Hi", "b"), // out of order
-    row(toEpochMills("2020-10-10T00:00:08", shanghaiZone),
-      3, null, 3f, new JBigDecimal("3.33"), "Comment#2", "a1"),
-    row(toEpochMills("2020-10-10T00:00:04", shanghaiZone),
-      5, 5d, null, new JBigDecimal("5.55"), "Hi", "a1"), // late event
-    row(toEpochMills("2020-10-10T00:00:16", shanghaiZone),
-      4, 4d, 4f, new JBigDecimal("4.44"), "Hi", "b"),
-    row(toEpochMills("2020-10-10T00:00:32", shanghaiZone),
-      7, 7d, 7f, new JBigDecimal("7.77"), null, null),
-    row(toEpochMills("2020-10-10T00:00:34", shanghaiZone),
-      1, 3d, 3f, new JBigDecimal("3.33"), "Comment#3", "b"))
+    row(
+      toEpochMills("2020-10-10T00:00:01", shanghaiZone),
+      1,
+      1d,
+      1f,
+      new JBigDecimal("1.11"),
+      "Hi",
+      "a1"),
+    row(
+      toEpochMills("2020-10-10T00:00:02", shanghaiZone),
+      2,
+      2d,
+      2f,
+      new JBigDecimal("2.22"),
+      "Comment#1",
+      "a1"),
+    row(
+      toEpochMills("2020-10-10T00:00:03", shanghaiZone),
+      2,
+      2d,
+      2f,
+      new JBigDecimal("2.22"),
+      "Comment#1",
+      "a1"),
+    row(
+      toEpochMills("2020-10-10T00:00:04", shanghaiZone),
+      5,
+      5d,
+      5f,
+      new JBigDecimal("5.55"),
+      null,
+      "a1"),
+    row(toEpochMills("2020-10-10T00:00:07", shanghaiZone), 3, 3d, 3f, null, "Hello", "b"),
+    row(
+      toEpochMills("2020-10-10T00:00:06", shanghaiZone),
+      6,
+      6d,
+      6f,
+      new JBigDecimal("6.66"),
+      "Hi",
+      "b"
+    ), // out of order
+    row(
+      toEpochMills("2020-10-10T00:00:08", shanghaiZone),
+      3,
+      null,
+      3f,
+      new JBigDecimal("3.33"),
+      "Comment#2",
+      "a1"),
+    row(
+      toEpochMills("2020-10-10T00:00:04", shanghaiZone),
+      5,
+      5d,
+      null,
+      new JBigDecimal("5.55"),
+      "Hi",
+      "a1"
+    ), // late event
+    row(
+      toEpochMills("2020-10-10T00:00:16", shanghaiZone),
+      4,
+      4d,
+      4f,
+      new JBigDecimal("4.44"),
+      "Hi",
+      "b"),
+    row(
+      toEpochMills("2020-10-10T00:00:32", shanghaiZone),
+      7,
+      7d,
+      7f,
+      new JBigDecimal("7.77"),
+      null,
+      null),
+    row(
+      toEpochMills("2020-10-10T00:00:34", shanghaiZone),
+      1,
+      3d,
+      3f,
+      new JBigDecimal("3.33"),
+      "Comment#3",
+      "b")
+  )
+
+  // +----+---------------------+---+-----+-----+-------+------------+---+
+  // | Op |      Timestamp      | 1 |  2  |  3  |   4   |     5      | 6 |
+  // +----+---------------------+---+-----+-----+-------+------------+---+
+  // | +I | 2020-10-10 00:00:01 | 1 | 1.0 | 1.0 |  1.11 |     Hi     | a |
+  // | +I | 2020-10-10 00:00:02 | 2 | 2.0 | 2.0 |  2.22 | Comment#1  | a |
+  // | -D | 2020-10-10 00:00:03 | 1 | 1.0 | 1.0 |  1.11 |     Hi     | a |
+  // | +I | 2020-10-10 00:00:03 | 2 | 2.0 | 2.0 |  2.22 | Comment#1  | a |
+  // | +I | 2020-10-10 00:00:04 | 5 | 5.0 | 5.0 |  5.55 |    null    | a |
+  // | -U | 2020-10-10 00:00:04 | 2 | 2.0 | 2.0 |  2.22 | Comment#1  | a |
+  // | +U | 2020-10-10 00:00:04 | 22|22.0 |22.2 | 22.22 | Comment#22 | a |
+  // | +I | 2020-10-10 00:00:07 | 3 | 3.0 | 3.0 |  null |   Hello    | b |
+  // | +I | 2020-10-10 00:00:06 | 6 | 6.0 | 6.0 |  6.66 |     Hi     | b |
+  // | +I | 2020-10-10 00:00:08 | 3 |null | 3.0 |  3.33 | Comment#2  | a |
+  // | +I | 2020-10-10 00:00:04 | 5 | 5.0 |null |  5.55 |     Hi     | a |
+  // | +I | 2020-10-10 00:00:16 | 4 | 4.0 | 4.0 |  4.44 |     Hi     | b |
+  // | -D | 2020-10-10 00:00:04 | 5 | 5.0 | 5.0 |  5.55 |    null    | a |
+  // | +I | 2020-10-10 00:00:38 | 8 | 8.0 | 8.0 |  8.88 | Comment#4  | b |
+  // | -D | 2020-10-10 00:00:39 | 8 | 8.0 | 8.0 |  8.88 | Comment#4  | b |
+  // +----+---------------------+---+-----+-----+-------+------------+---+
+  val windowChangelogDataWithLtzInShanghai: Seq[Row] = List(
+    changelogRow(
+      "+I",
+      Long.box(toEpochMills("2020-10-10T00:00:01", shanghaiZone)),
+      Int.box(1),
+      Double.box(1d),
+      Float.box(1f),
+      new JBigDecimal("1.11"),
+      "Hi",
+      "a"),
+    changelogRow(
+      "+I",
+      Long.box(toEpochMills("2020-10-10T00:00:02", shanghaiZone)),
+      Int.box(2),
+      Double.box(2d),
+      Float.box(2f),
+      new JBigDecimal("2.22"),
+      "Comment#1",
+      "a"),
+    changelogRow(
+      "-D",
+      Long.box(toEpochMills("2020-10-10T00:00:03", shanghaiZone)),
+      Int.box(1),
+      Double.box(1d),
+      Float.box(1f),
+      new JBigDecimal("1.11"),
+      "Hi",
+      "a"),
+    changelogRow(
+      "+I",
+      Long.box(toEpochMills("2020-10-10T00:00:03", shanghaiZone)),
+      Int.box(2),
+      Double.box(2d),
+      Float.box(2f),
+      new JBigDecimal("2.22"),
+      "Comment#1",
+      "a"),
+    changelogRow(
+      "+I",
+      Long.box(toEpochMills("2020-10-10T00:00:04", shanghaiZone)),
+      Int.box(5),
+      Double.box(5d),
+      Float.box(5f),
+      new JBigDecimal("5.55"),
+      null,
+      "a"),
+    changelogRow(
+      "-U",
+      Long.box(toEpochMills("2020-10-10T00:00:04", shanghaiZone)),
+      Int.box(2),
+      Double.box(2d),
+      Float.box(2f),
+      new JBigDecimal("2.22"),
+      "Comment#1",
+      "a"),
+    changelogRow(
+      "+U",
+      Long.box(toEpochMills("2020-10-10T00:00:04", shanghaiZone)),
+      Int.box(22),
+      Double.box(22d),
+      Float.box(22.2f),
+      new JBigDecimal("22.22"),
+      "Comment#22",
+      "a"),
+    changelogRow(
+      "+I",
+      Long.box(toEpochMills("2020-10-10T00:00:07", shanghaiZone)),
+      Int.box(3),
+      Double.box(3d),
+      Float.box(3f),
+      null,
+      "Hello",
+      "b"),
+    changelogRow(
+      "+I",
+      Long.box(toEpochMills("2020-10-10T00:00:06", shanghaiZone)),
+      Int.box(6),
+      Double.box(6d),
+      Float.box(6f),
+      new JBigDecimal("6.66"),
+      "Hi",
+      "b"
+    ), // out of order
+    changelogRow(
+      "+I",
+      Long.box(toEpochMills("2020-10-10T00:00:08", shanghaiZone)),
+      Int.box(3),
+      null,
+      Float.box(3f),
+      new JBigDecimal("3.33"),
+      "Comment#2",
+      "a"),
+    changelogRow(
+      "+I",
+      Long.box(toEpochMills("2020-10-10T00:00:04", shanghaiZone)),
+      Int.box(5),
+      Double.box(5d),
+      null,
+      new JBigDecimal("5.55"),
+      "Hi",
+      "a"
+    ), // late insert event
+    changelogRow(
+      "+I",
+      Long.box(toEpochMills("2020-10-10T00:00:16", shanghaiZone)),
+      Int.box(4),
+      Double.box(4d),
+      Float.box(4f),
+      new JBigDecimal("4.44"),
+      "Hi",
+      "b"),
+    changelogRow(
+      "-D",
+      Long.box(toEpochMills("2020-10-10T00:00:04", shanghaiZone)),
+      Int.box(5),
+      Double.box(5d),
+      Float.box(5f),
+      new JBigDecimal("5.55"),
+      null,
+      "a"
+    ), // late delete event
+    changelogRow(
+      "+I",
+      Long.box(toEpochMills("2020-10-10T00:00:38", shanghaiZone)),
+      Int.box(8),
+      Double.box(8d),
+      Float.box(8f),
+      new JBigDecimal("8.88"),
+      "Comment#4",
+      "b"),
+    changelogRow(
+      "-D",
+      Long.box(toEpochMills("2020-10-10T00:00:39", shanghaiZone)),
+      Int.box(8),
+      Double.box(8d),
+      Float.box(8f),
+      new JBigDecimal("8.88"),
+      "Comment#4",
+      "b")
+  )
 
   val timestampData: Seq[Row] = List(
     row("1970-01-01 00:00:00.001", 1, 1d, 1f, new JBigDecimal("1"), "Hi", "a"),
@@ -689,28 +1279,90 @@ object TestData {
     row("1970-01-01 00:00:00.006", 5, 5d, 5f, new JBigDecimal("5"), "Hello", "a"),
     row("1970-01-01 00:00:00.008", 3, 3d, 3f, new JBigDecimal("3"), "Hello world", "a"),
     row("1970-01-01 00:00:00.016", 4, 4d, 4f, new JBigDecimal("4"), "Hello world", "b"),
-    row("1970-01-01 00:00:00.032", 4, 4d, 4f,
-      new JBigDecimal("4"), null.asInstanceOf[String], null.asInstanceOf[String]))
+    row(
+      "1970-01-01 00:00:00.032",
+      4,
+      4d,
+      4f,
+      new JBigDecimal("4"),
+      null.asInstanceOf[String],
+      null.asInstanceOf[String])
+  )
 
   val timestampLtzData: Seq[Row] = List(
-    row(toEpochMills("1970-01-01T00:00:00.001", shanghaiZone),
-      1, 1d, 1f, new JBigDecimal("1"), "Hi", "a"),
-    row(toEpochMills("1970-01-01T00:00:00.002", shanghaiZone),
-      2, 2d, 2f, new JBigDecimal("2"), "Hallo", "a"),
-    row(toEpochMills("1970-01-01T00:00:00.003", shanghaiZone),
-      2, 2d, 2f, new JBigDecimal("2"), "Hello", "a"),
-    row(toEpochMills("1970-01-01T00:00:00.004", shanghaiZone),
-      5, 5d, 5f, new JBigDecimal("5"), "Hello", "a"),
-    row(toEpochMills("1970-01-01T00:00:00.007", shanghaiZone),
-      3, 3d, 3f, new JBigDecimal("3"), "Hello", "b"),
-    row(toEpochMills("1970-01-01T00:00:00.006", shanghaiZone),
-      5, 5d, 5f, new JBigDecimal("5"), "Hello", "a"),
-    row(toEpochMills("1970-01-01T00:00:00.008", shanghaiZone),
-      3, 3d, 3f, new JBigDecimal("3"), "Hello world", "a"),
-    row(toEpochMills("1970-01-01T00:00:00.016", shanghaiZone),
-      4, 4d, 4f, new JBigDecimal("4"), "Hello world", "b"),
-    row(toEpochMills("1970-01-01T00:00:00.032", shanghaiZone),
-      4, 4d, 4f, new JBigDecimal("4"), null.asInstanceOf[String], null.asInstanceOf[String]))
+    row(
+      toEpochMills("1970-01-01T00:00:00.001", shanghaiZone),
+      1,
+      1d,
+      1f,
+      new JBigDecimal("1"),
+      "Hi",
+      "a"),
+    row(
+      toEpochMills("1970-01-01T00:00:00.002", shanghaiZone),
+      2,
+      2d,
+      2f,
+      new JBigDecimal("2"),
+      "Hallo",
+      "a"),
+    row(
+      toEpochMills("1970-01-01T00:00:00.003", shanghaiZone),
+      2,
+      2d,
+      2f,
+      new JBigDecimal("2"),
+      "Hello",
+      "a"),
+    row(
+      toEpochMills("1970-01-01T00:00:00.004", shanghaiZone),
+      5,
+      5d,
+      5f,
+      new JBigDecimal("5"),
+      "Hello",
+      "a"),
+    row(
+      toEpochMills("1970-01-01T00:00:00.007", shanghaiZone),
+      3,
+      3d,
+      3f,
+      new JBigDecimal("3"),
+      "Hello",
+      "b"),
+    row(
+      toEpochMills("1970-01-01T00:00:00.006", shanghaiZone),
+      5,
+      5d,
+      5f,
+      new JBigDecimal("5"),
+      "Hello",
+      "a"),
+    row(
+      toEpochMills("1970-01-01T00:00:00.008", shanghaiZone),
+      3,
+      3d,
+      3f,
+      new JBigDecimal("3"),
+      "Hello world",
+      "a"),
+    row(
+      toEpochMills("1970-01-01T00:00:00.016", shanghaiZone),
+      4,
+      4d,
+      4f,
+      new JBigDecimal("4"),
+      "Hello world",
+      "b"),
+    row(
+      toEpochMills("1970-01-01T00:00:00.032", shanghaiZone),
+      4,
+      4d,
+      4f,
+      new JBigDecimal("4"),
+      null.asInstanceOf[String],
+      null.asInstanceOf[String])
+  )
 
   val fullDataTypesData: Seq[Row] = {
     val bools = List(true, false, true, false, null)
@@ -718,11 +1370,23 @@ object TestData {
     val shorts = List(Short.MaxValue, Short.MinValue, 0.shortValue(), 4.shortValue(), null)
     val ints = List(Int.MaxValue, Int.MinValue, 0, 123, null)
     val longs = List(Long.MaxValue, Long.MinValue, 0L, 1234L, null)
-    val floats = List(-1.123F, 3.4F, 0.12F, 1.2345F, null)
-    val doubles = List(-1.123D, 3.4D, 0.12D, 1.2345D, null)
-    val decimals = List(
-      new JBigDecimal("5.1"), new JBigDecimal("6.1"), new JBigDecimal("7.1"),
-      new JBigDecimal("8.123"), null)
+    val floats = List(-1.123f, 3.4f, 0.12f, 1.2345f, null)
+    val doubles = List(-1.123d, 3.4d, 0.12d, 1.2345d, null)
+    // DECIMAL(5, 2)
+    val decimals52 = List(
+      new JBigDecimal("5.1"),
+      new JBigDecimal("6.1"),
+      new JBigDecimal("7.1"),
+      new JBigDecimal("8.123"),
+      null)
+    // DECIMAL(30, 10)
+    val decimals3010 = List(
+      new JBigDecimal("1234567891012345.1"),
+      new JBigDecimal("61234567891012345.1"),
+      new JBigDecimal("71234567891012345.1"),
+      new JBigDecimal("812345678910123451.0123456789"),
+      null
+    )
     val varchars = List("1", "12", "123", "1234", null)
     val chars = List("1", "12", "123", "1234", null)
     val dates = List(
@@ -742,8 +1406,9 @@ object TestData {
       LocalDateTime.of(1970, 9, 30, 1, 1, 1, 123456000),
       LocalDateTime.of(1990, 12, 24, 8, 10, 24, 123000000),
       LocalDateTime.of(2020, 5, 1, 23, 23, 23, 0),
-      null)
-    val instants = new mutable.MutableList[Instant]
+      null
+    )
+    val instants = new mutable.ListBuffer[Instant]
     for (i <- datetimes.indices) {
       if (datetimes(i) == null) {
         instants += null
@@ -752,31 +1417,38 @@ object TestData {
         instants += datetimes(i).toInstant(ZoneId.of("UTC").getRules.getOffset(datetimes(i)))
       }
     }
-    val arrays = List(
-      array(1L, 2L, 3L),
-      array(4L, 5L),
-      array(6L, null, 7L),
-      array(8L),
-      null)
+    val arrays = List(array(1L, 2L, 3L), array(4L, 5L), array(6L, null, 7L), array(8L), null)
     val rows = List(
-      row(1L, "a", 2.3D),
-      row(null, "b", 4.56D),
-      row(3L, null, 7.86D),
+      row(1L, "a", 2.3d),
+      row(null, "b", 4.56d),
+      row(3L, null, 7.86d),
       row(4L, "c", null),
       null)
-    val maps = List(
-      map(("k1", 1)),
-      map(("k2", 2), ("k4", 4)),
-      map(("k3", null)),
-      map((null, 3)),
-      null)
+    val maps =
+      List(map(("k1", 1)), map(("k2", 2), ("k4", 4)), map(("k3", null)), map((null, 3)), null)
 
-    val data = new mutable.MutableList[Row]
+    val data = new mutable.ListBuffer[Row]
     for (i <- ints.indices) {
       data += row(
-        bools(i), bytes(i), shorts(i), ints(i), longs(i), floats(i), doubles(i),
-        decimals(i), varchars(i), chars(i), dates(i), times(i), datetimes(i), instants(i),
-        arrays(i), rows(i), maps(i))
+        bools(i),
+        bytes(i),
+        shorts(i),
+        ints(i),
+        longs(i),
+        floats(i),
+        doubles(i),
+        decimals52(i),
+        decimals3010(i),
+        varchars(i),
+        chars(i),
+        dates(i),
+        times(i),
+        datetimes(i),
+        instants(i),
+        arrays(i),
+        rows(i),
+        maps(i)
+      )
     }
     data
   }

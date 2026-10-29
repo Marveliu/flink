@@ -25,6 +25,8 @@ import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.types.logical.BinaryType;
 import org.apache.flink.table.types.logical.CharType;
 import org.apache.flink.table.types.logical.LogicalTypeFamily;
+import org.apache.flink.types.bitmap.Bitmap;
+import org.apache.flink.types.variant.Variant;
 
 import java.math.BigDecimal;
 import java.util.Objects;
@@ -81,8 +83,7 @@ public final class ValueDataTypeConverter {
             convertedDataType =
                     convertToLocalZonedTimestampType(((java.time.Instant) value).getNano());
         } else if (value instanceof java.time.Period) {
-            convertedDataType =
-                    convertToYearMonthIntervalType(((java.time.Period) value).getYears());
+            convertedDataType = convertToYearMonthIntervalType((java.time.Period) value);
         } else if (value instanceof java.time.Duration) {
             final java.time.Duration duration = (java.time.Duration) value;
             convertedDataType = convertToDayTimeIntervalType(duration.toDays(), duration.getNano());
@@ -101,7 +102,16 @@ public final class ValueDataTypeConverter {
             // DATE, TIME with java.sql.Time, and arrays of primitive types
             resultType = ClassDataTypeConverter.extractDataType(value.getClass());
         }
-        return resultType.map(dt -> dt.notNull().bridgedTo(value.getClass()));
+        return resultType.map(
+                dt -> {
+                    final DataType notNullDataType = dt.notNull();
+                    // Because they are interfaces, and we want to avoid bridgeTo internal
+                    // conversion classes.
+                    if (value instanceof Variant || value instanceof Bitmap) {
+                        return notNullDataType;
+                    }
+                    return notNullDataType.bridgedTo(value.getClass());
+                });
     }
 
     private static DataType convertToCharType(String string) {
@@ -119,12 +129,17 @@ public final class ValueDataTypeConverter {
     }
 
     private static DataType convertToDecimalType(BigDecimal decimal) {
-        final int precision = decimal.precision();
-        final int scale = decimal.scale();
+        int precision = decimal.precision();
+        int scale = decimal.scale();
         // let underlying layers check if precision and scale are supported
         if (scale < 0) {
             // negative scale is not supported, normalize it
-            return DataTypes.DECIMAL(precision - scale, 0);
+            precision -= scale;
+            scale = 0;
+        } else if (scale >= precision) {
+            // if scale >= precision, it implies that abs(decimal) < 1
+            // in this case, the SQL precision becomes scale + 1 to account for the leading zero
+            precision = scale + 1;
         }
         return DataTypes.DECIMAL(precision, scale);
     }
@@ -145,7 +160,8 @@ public final class ValueDataTypeConverter {
         return DataTypes.TIMESTAMP_WITH_LOCAL_TIME_ZONE(fractionalSecondPrecision(nanos));
     }
 
-    private static DataType convertToYearMonthIntervalType(int years) {
+    private static DataType convertToYearMonthIntervalType(java.time.Period period) {
+        final long years = period.toTotalMonths() / 12;
         return DataTypes.INTERVAL(DataTypes.YEAR(yearPrecision(years)), DataTypes.MONTH());
     }
 
@@ -206,12 +222,12 @@ public final class ValueDataTypeConverter {
         return String.format("%09d", nanos).replaceAll("0+$", "").length();
     }
 
-    private static int yearPrecision(int years) {
-        return String.valueOf(years).length();
+    private static int yearPrecision(long years) {
+        return String.valueOf(Math.abs(years)).length();
     }
 
     private static int dayPrecision(long days) {
-        return String.valueOf(days).length();
+        return String.valueOf(Math.abs(days)).length();
     }
 
     private ValueDataTypeConverter() {

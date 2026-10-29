@@ -15,60 +15,63 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.planner.runtime.stream.sql
 
-import org.apache.flink.api.common.restartstrategy.RestartStrategies
-import org.apache.flink.api.scala._
-import org.apache.flink.streaming.api.CheckpointingMode
+import org.apache.flink.configuration.{Configuration, RestartStrategyOptions}
+import org.apache.flink.core.execution.CheckpointingMode
 import org.apache.flink.table.api.bridge.scala._
 import org.apache.flink.table.planner.factories.TestValuesTableFactory
 import org.apache.flink.table.planner.plan.utils.JavaUserDefinedAggFunctions.ConcatDistinctAggFunction
-import org.apache.flink.table.planner.runtime.utils.StreamingWithStateTestBase.StateBackendMode
 import org.apache.flink.table.planner.runtime.utils.{FailingCollectionSource, StreamingWithStateTestBase, TestData, TestingAppendSink}
-import org.apache.flink.types.Row
+import org.apache.flink.table.planner.runtime.utils.StreamingWithStateTestBase.StateBackendMode
+import org.apache.flink.testutils.junit.extensions.parameterized.ParameterizedTestExtension
 
-import org.junit.Assert.assertEquals
-import org.junit.runner.RunWith
-import org.junit.runners.Parameterized
-import org.junit.{Before, Test}
+import org.assertj.core.api.Assertions.assertThat
+import org.junit.jupiter.api.{BeforeEach, TestTemplate}
+import org.junit.jupiter.api.extension.ExtendWith
 
-@RunWith(classOf[Parameterized])
-class WindowDeduplicateITCase(mode: StateBackendMode)
-  extends StreamingWithStateTestBase(mode) {
+import java.time.Duration
 
-  @Before
+@ExtendWith(Array(classOf[ParameterizedTestExtension]))
+class WindowDeduplicateITCase(mode: StateBackendMode) extends StreamingWithStateTestBase(mode) {
+
+  @BeforeEach
   override def before(): Unit = {
     super.before()
     // enable checkpoint, we are using failing source to force have a complete checkpoint
     // and cover restore path
     env.enableCheckpointing(100, CheckpointingMode.EXACTLY_ONCE)
-    env.setRestartStrategy(RestartStrategies.fixedDelayRestart(1, 0))
+    val configuration = new Configuration()
+    configuration.set(RestartStrategyOptions.RESTART_STRATEGY, "fixeddelay")
+    configuration.set(RestartStrategyOptions.RESTART_STRATEGY_FIXED_DELAY_ATTEMPTS, Int.box(1))
+    configuration.set(
+      RestartStrategyOptions.RESTART_STRATEGY_FIXED_DELAY_DELAY,
+      Duration.ofMillis(0))
+    env.configure(configuration, Thread.currentThread.getContextClassLoader)
     FailingCollectionSource.reset()
 
     val dataId = TestValuesTableFactory.registerData(TestData.windowDataWithTimestamp)
-    tEnv.executeSql(
-      s"""
-        |CREATE TABLE T1 (
-        | `ts` STRING,
-        | `int` INT,
-        | `double` DOUBLE,
-        | `float` FLOAT,
-        | `bigdec` DECIMAL(10, 2),
-        | `string` STRING,
-        | `name` STRING,
-        | `rowtime` AS TO_TIMESTAMP(`ts`),
-        | WATERMARK for `rowtime` AS `rowtime` - INTERVAL '1' SECOND
-        |) WITH (
-        | 'connector' = 'values',
-        | 'data-id' = '$dataId',
-        | 'failing-source' = 'true'
-        |)
-        |""".stripMargin)
+    tEnv.executeSql(s"""
+                       |CREATE TABLE T1 (
+                       | `ts` STRING,
+                       | `int` INT,
+                       | `double` DOUBLE,
+                       | `float` FLOAT,
+                       | `bigdec` DECIMAL(10, 2),
+                       | `string` STRING,
+                       | `name` STRING,
+                       | `rowtime` AS TO_TIMESTAMP(`ts`),
+                       | WATERMARK for `rowtime` AS `rowtime` - INTERVAL '1' SECOND
+                       |) WITH (
+                       | 'connector' = 'values',
+                       | 'data-id' = '$dataId',
+                       | 'failing-source' = 'true'
+                       |)
+                       |""".stripMargin)
     tEnv.createFunction("concat_distinct_agg", classOf[ConcatDistinctAggFunction])
   }
 
-  @Test
+  @TestTemplate
   def testTumbleWindowKeepLastRow(): Unit = {
     val sql =
       s"""
@@ -95,7 +98,7 @@ class WindowDeduplicateITCase(mode: StateBackendMode)
       """.stripMargin
 
     val sink = new TestingAppendSink
-    tEnv.sqlQuery(sql).toAppendStream[Row].addSink(sink)
+    tEnv.sqlQuery(sql).toDataStream.addSink(sink)
     env.execute()
 
     val expected =
@@ -111,11 +114,13 @@ class WindowDeduplicateITCase(mode: StateBackendMode)
         "2020-10-10T00:00:32,7,7.0,7.0,7.77,null,null,2020-10-10 00:00:32.000," +
           "2020-10-10T00:00:30,2020-10-10T00:00:35,2020-10-10T00:00:34.999",
         "2020-10-10T00:00:34,1,3.0,3.0,3.33,Comment#3,b,2020-10-10 00:00:34.000," +
-          "2020-10-10T00:00:30,2020-10-10T00:00:35,2020-10-10T00:00:34.999")
-    assertEquals(expected.sorted.mkString("\n"), sink.getAppendResults.sorted.mkString("\n"))
+          "2020-10-10T00:00:30,2020-10-10T00:00:35,2020-10-10T00:00:34.999"
+      )
+    assertThat(sink.getAppendResults.sorted.mkString("\n"))
+      .isEqualTo(expected.sorted.mkString("\n"))
   }
 
-  @Test
+  @TestTemplate
   def testTumbleWindowKeepFirstRow(): Unit = {
     val sql =
       s"""
@@ -142,7 +147,7 @@ class WindowDeduplicateITCase(mode: StateBackendMode)
       """.stripMargin
 
     val sink = new TestingAppendSink
-    tEnv.sqlQuery(sql).toAppendStream[Row].addSink(sink)
+    tEnv.sqlQuery(sql).toDataStream.addSink(sink)
     env.execute()
 
     val expected =
@@ -160,10 +165,11 @@ class WindowDeduplicateITCase(mode: StateBackendMode)
         "2020-10-10T00:00:34,1,3.0,3.0,3.33,Comment#3,b,2020-10-10 00:00:34.000," +
           "2020-10-10T00:00:30,2020-10-10T00:00:35,2020-10-10T00:00:34.999"
       )
-    assertEquals(expected.sorted.mkString("\n"), sink.getAppendResults.sorted.mkString("\n"))
+    assertThat(sink.getAppendResults.sorted.mkString("\n"))
+      .isEqualTo(expected.sorted.mkString("\n"))
   }
 
-  @Test
+  @TestTemplate
   def testTumbleWindowKeepLastRowWithCalc(): Unit = {
     val sql =
       """
@@ -185,7 +191,7 @@ class WindowDeduplicateITCase(mode: StateBackendMode)
       """.stripMargin
 
     val sink = new TestingAppendSink
-    tEnv.sqlQuery(sql).toAppendStream[Row].addSink(sink)
+    tEnv.sqlQuery(sql).toDataStream.addSink(sink)
     env.execute()
 
     val expected =
@@ -195,11 +201,13 @@ class WindowDeduplicateITCase(mode: StateBackendMode)
         "3,Hello,b,2020-10-10T00:00:05,2020-10-10T00:00:10,2020-10-10T00:00:09.999",
         "4,Hi,b,2020-10-10T00:00:15,2020-10-10T00:00:20,2020-10-10T00:00:19.999",
         "7,null,null,2020-10-10T00:00:30,2020-10-10T00:00:35,2020-10-10T00:00:34.999",
-        "1,Comment#3,b,2020-10-10T00:00:30,2020-10-10T00:00:35,2020-10-10T00:00:34.999")
-    assertEquals(expected.sorted.mkString("\n"), sink.getAppendResults.sorted.mkString("\n"))
+        "1,Comment#3,b,2020-10-10T00:00:30,2020-10-10T00:00:35,2020-10-10T00:00:34.999"
+      )
+    assertThat(sink.getAppendResults.sorted.mkString("\n"))
+      .isEqualTo(expected.sorted.mkString("\n"))
   }
 
-  @Test
+  @TestTemplate
   def testCumulateWindowKeepLastRow(): Unit = {
     val sql =
       s"""
@@ -230,7 +238,7 @@ class WindowDeduplicateITCase(mode: StateBackendMode)
       """.stripMargin
 
     val sink = new TestingAppendSink
-    tEnv.sqlQuery(sql).toAppendStream[Row].addSink(sink)
+    tEnv.sqlQuery(sql).toDataStream.addSink(sink)
     env.execute()
 
     val expected =
@@ -262,7 +270,9 @@ class WindowDeduplicateITCase(mode: StateBackendMode)
         "2020-10-10T00:00:34,1,3.0,3.0,3.33,Comment#3,b,2020-10-10 00:00:34.000," +
           "2020-10-10T00:00:30,2020-10-10T00:00:40,2020-10-10T00:00:39.999",
         "2020-10-10T00:00:34,1,3.0,3.0,3.33,Comment#3,b,2020-10-10 00:00:34.000," +
-          "2020-10-10T00:00:30,2020-10-10T00:00:45,2020-10-10T00:00:44.999")
-    assertEquals(expected.sorted.mkString("\n"), sink.getAppendResults.sorted.mkString("\n"))
+          "2020-10-10T00:00:30,2020-10-10T00:00:45,2020-10-10T00:00:44.999"
+      )
+    assertThat(sink.getAppendResults.sorted.mkString("\n"))
+      .isEqualTo(expected.sorted.mkString("\n"))
   }
 }

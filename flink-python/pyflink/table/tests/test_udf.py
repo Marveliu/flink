@@ -17,29 +17,267 @@
 ################################################################################
 import datetime
 import os
-import sys
+import pickle
 import unittest
+import uuid
 
-import pytest
+import cloudpickle
+import pyarrow as pa
+import pyarrow.compute as pc
 import pytz
 
+from pyflink.common import Row
+from pyflink.fn_execution import flink_fn_execution_pb2 as proto
+from pyflink.fn_execution.table.operations import ScalarFunctionOperation
 from pyflink.table import DataTypes, expressions as expr
-from pyflink.table.udf import ScalarFunction, udf
+from pyflink.table.expressions import call
+from pyflink.table.udf import DelegatingScalarFunction, ScalarFunction, udf, FunctionContext
 from pyflink.testing import source_sink_utils
 from pyflink.testing.test_case_utils import PyFlinkStreamTableTestCase, \
     PyFlinkBatchTableTestCase
+
+
+def generate_random_table_name():
+    return "Table{0}".format(str(uuid.uuid1()).replace("-", "_"))
+
+
+class UdfExecutionOptionsTests(unittest.TestCase):
+    def test_valid_options(self):
+        for kind in ("general", "pandas", "arrow"):
+            for concurrency in (None, 1, 3, 2147483647):
+                for batch_size in ((None,) if kind == "general" else (None, 1, 64, 2147483647)):
+                    with self.subTest(kind=kind, concurrency=concurrency, batch_size=batch_size):
+                        wrapper = udf(lambda value: value, result_type=DataTypes.BIGINT(),
+                                      func_type=kind, concurrency=concurrency,
+                                      batch_size=batch_size)
+                        self.assertEqual(wrapper._concurrency, concurrency)
+                        self.assertEqual(wrapper._batch_size, batch_size)
+
+    def test_invalid_option_values(self):
+        for option in ("concurrency", "batch_size"):
+            for value in (0, -1, True, False, 1.5, "2", 2147483648, 10 ** 100):
+                with self.subTest(option=option, value=value):
+                    with self.assertRaisesRegex(ValueError, f"{option} must be a positive integer"):
+                        udf(lambda value: value, result_type=DataTypes.BIGINT(),
+                            func_type="pandas", **{option: value})
+
+    def test_general_functions_reject_batch_size(self):
+        async def async_identity(value):
+            return value
+
+        for function in (lambda value: value, async_identity):
+            with self.subTest(function=function):
+                with self.assertRaisesRegex(
+                        ValueError, "batch_size is only supported for pandas or Arrow UDFs"):
+                    udf(function, result_type=DataTypes.BIGINT(), batch_size=32)
+
+
+class ArrowScalarOperationTests(unittest.TestCase):
+    def operation(self, func, inputs, takes_row_as_input=False, preceding=(), output_indices=()):
+        function = proto.UserDefinedFunction(
+            payload=cloudpickle.dumps(DelegatingScalarFunction(func)),
+            is_arrow_udf=True, inputs=inputs, takes_row_as_input=takes_row_as_input)
+        operation = ScalarFunctionOperation(proto.UserDefinedFunctions(
+            udfs=[*preceding, function], output_indices=output_indices))
+        operation.open()
+        self.addCleanup(operation.close)
+        return operation
+
+    def test_literals_columns_and_chunked_results(self):
+        def add(offset, left, right):
+            if not isinstance(offset, int) or not isinstance(left, pa.Array) \
+                    or not isinstance(right, pa.Array):
+                raise TypeError("Expected a scalar literal followed by two Arrow arrays.")
+            values = pc.add(pc.add(left, right), offset)
+            return pa.chunked_array([values.slice(0, 1), values.slice(1)])
+
+        operation = self.operation(add, [
+            proto.Input(inputConstant=b"\x00" + pickle.dumps(10)),
+            proto.Input(inputOffset=0), proto.Input(inputOffset=1)])
+        result = operation.process_element(pa.record_batch(
+            [pa.array([1, None, 3]), pa.array([4, 5, 6])], names=["a", "b"]))
+        self.assertEqual(result.column(0).to_pylist(), [15, None, 19])
+
+    def test_single_chunk_result_preserves_buffers(self):
+        values = pa.array([0, 1, None, 3]).slice(1, 2)
+        operation = self.operation(lambda column: pa.chunked_array([column]),
+                                   [proto.Input(inputOffset=0)])
+        result = operation.process_element(pa.record_batch([values], names=["value"]))
+        column = result.column(0)
+        self.assertEqual(column.to_pylist(), [1, None])
+        self.assertEqual(column.offset, values.offset)
+        self.assertEqual([buffer.address for buffer in column.buffers()],
+                         [buffer.address for buffer in values.buffers()])
+
+    def test_empty_chunked_results(self):
+        values = pa.array([], type=pa.int64())
+        for chunks in ([], [values]):
+            with self.subTest(chunks=len(chunks)):
+                operation = self.operation(
+                    lambda column: pa.chunked_array(chunks, type=pa.int64()),
+                    [proto.Input(inputOffset=0)])
+                result = operation.process_element(pa.record_batch([values], names=["value"]))
+                self.assertEqual(result.column(0), values)
+
+    def test_nested_chunked_results(self):
+        values = pa.StructArray.from_arrays([pa.array([0, 1, None, 3])], names=["value"])
+        for chunks in (0, 1, 2):
+            with self.subTest(chunks=chunks):
+                column = values.slice(1, 0 if chunks == 0 else 3)
+
+                def chunk_result(array):
+                    parts = [] if chunks == 0 else [array] if chunks == 1 else [
+                        array.slice(0, 1), array.slice(1)]
+                    return pa.chunked_array(parts, type=array.type)
+
+                inner = proto.UserDefinedFunction(
+                    payload=cloudpickle.dumps(DelegatingScalarFunction(chunk_result)),
+                    is_arrow_udf=True, inputs=[proto.Input(inputOffset=0)])
+                for shared in (False, True):
+                    with self.subTest(shared=shared):
+                        operation = self.operation(
+                            lambda row: row.field("value"),
+                            [proto.Input(refIndex=0)] if shared else [proto.Input(udf=inner)],
+                            preceding=[inner] if shared else [],
+                            output_indices=[1, 0, 1] if shared else [])
+                        result = operation.process_element(
+                            pa.record_batch([column], names=["record"]))
+                        self.assertEqual(result.num_columns, 3 if shared else 1)
+                        self.assertEqual(result.column(0).to_pylist(),
+                                         [] if chunks == 0 else [1, None, 3])
+                        if shared:
+                            self.assertEqual(result.column(1), column)
+                            self.assertEqual(result.column(2), result.column(0))
+                        if chunks == 1:
+                            self.assertEqual(result.column(0).offset, column.field(0).offset)
+                            self.assertEqual(
+                                [buffer.address for buffer in result.column(0).buffers()],
+                                [buffer.address for buffer in column.field(0).buffers()])
+
+    def test_whole_row_input(self):
+        batch = pa.record_batch([pa.array(["alice", None]), pa.array([1, 2])],
+                                names=["name", "count"])
+
+        def increment(row):
+            return pa.StructArray.from_arrays(
+                [pc.struct_field(row, "name"), pc.add(pc.struct_field(row, "count"), 1)],
+                names=["name", "count"])
+
+        inputs = [proto.Input(inputOffset=0), proto.Input(inputOffset=1)]
+        identity = proto.UserDefinedFunction(
+            payload=cloudpickle.dumps(DelegatingScalarFunction(lambda row: row)),
+            is_arrow_udf=True, inputs=inputs, takes_row_as_input=True)
+        for arguments in (inputs, [proto.Input(udf=identity)], [proto.Input(refIndex=0)]):
+            with self.subTest(input_kind=arguments[0].WhichOneof("input")):
+                shared = arguments[0].HasField("refIndex")
+                operation = self.operation(
+                    increment, arguments, takes_row_as_input=True,
+                    preceding=[identity] if shared else [], output_indices=[1] if shared else [])
+                result = operation.process_element(batch)
+                self.assertEqual(result.num_columns, 1)
+                self.assertEqual(result.column(0).to_pylist(),
+                                 [{"name": "alice", "count": 2}, {"name": None, "count": 3}])
+
+    def test_whole_row_argument_offsets(self):
+        batch = pa.record_batch([pa.array([0, 1, None, 3]), pa.array([0, 100, 200, 300])],
+                                names=["a", "b"]).slice(1)
+        for offsets in ([0, 0, 1], [1, 0]):
+            with self.subTest(offsets=offsets):
+                operation = self.operation(
+                    lambda row: row.field(1),
+                    [proto.Input(inputOffset=offset) for offset in offsets],
+                    takes_row_as_input=True)
+                result = operation.process_element(batch)
+                self.assertEqual(result.column(0).to_pylist(), [1, None, 3])
+
+    def test_invalid_scalar_results(self):
+        batch = pa.record_batch([pa.array([1, 2, 3])], names=["value"])
+        for result, error, message in (
+            ([1, 2, 3], TypeError, "Array or pyarrow.ChunkedArray"),
+            (None, TypeError, "NoneType"),
+            (pa.scalar(1), TypeError, "Scalar"),
+            (batch, TypeError, "RecordBatch"),
+            (pa.Table.from_batches([batch]), TypeError, "Table"),
+            (pa.array([1]), ValueError, "returned 1 rows, expected 3"),
+            (pa.chunked_array([[1], [2]]), ValueError, "returned 2 rows, expected 3"),
+        ):
+            with self.subTest(result=result):
+                operation = self.operation(lambda values: result, [proto.Input(inputOffset=0)])
+                with self.assertRaisesRegex(error, message):
+                    operation.process_element(batch)
+
+    def test_invalid_intermediate_result_is_not_consumed(self):
+        inner = proto.UserDefinedFunction(
+            payload=cloudpickle.dumps(DelegatingScalarFunction(lambda values: values.slice(0, 1))),
+            is_arrow_udf=True, inputs=[proto.Input(inputOffset=0)])
+        # The outer result has the correct batch length, but must not hide the invalid inner result.
+        operation = self.operation(lambda values: pa.array([1, 2, 3]), [proto.Input(udf=inner)])
+        with self.assertRaisesRegex(ValueError, "returned 1 rows, expected 3"):
+            operation.process_element(pa.record_batch([pa.array([1, 2, 3])], names=["value"]))
+
+    def test_arrow_scalar_operation(self):
+        class Uppercase(ScalarFunction):
+            def eval(self, values):
+                return pc.utf8_upper(values)
+
+        function = proto.UserDefinedFunction(
+            payload=cloudpickle.dumps(Uppercase()), is_arrow_udf=True,
+            inputs=[proto.Input(inputOffset=0)])
+        operation = ScalarFunctionOperation(
+            proto.UserDefinedFunctions(udfs=[function]), one_arg_optimization=True)
+        operation.open()
+        self.addCleanup(operation.close)
+        result = operation.process_element(pa.record_batch(
+            [pa.array(["alice", None, "Bob"])], names=["name"]))
+        self.assertIsInstance(result, pa.RecordBatch)
+        self.assertEqual(result.column(0).to_pylist(), ["ALICE", None, "BOB"])
+
+
+class ProcessModeLocalZonedTimestampTests(object):
+
+    def test_local_zoned_timestamp_instants(self):
+        original_timezone = self.t_env.get_config().get_local_timezone()
+        self.addCleanup(self.t_env.get_config().set_local_timezone, original_timezone)
+        for timezone in ['Asia/Shanghai', 'America/New_York']:
+            with self.subTest(timezone=timezone):
+                self.t_env.get_config().set_local_timezone(timezone)
+
+                @udf(result_type=DataTypes.TIMESTAMP_LTZ(3))
+                def add_hour(value):
+                    if value is None:
+                        return None
+                    assert str(value.tzinfo) == timezone
+                    assert value == datetime.datetime(2024, 11, 3, 5, 30, 0, 123000,
+                                                      tzinfo=pytz.UTC)
+                    return value + datetime.timedelta(hours=1)
+
+                table = self.t_env.sql_query(
+                    'SELECT TO_TIMESTAMP_LTZ(epoch_millis, 3) AS ltz '
+                    'FROM (VALUES (1730611800123), (CAST(NULL AS BIGINT))) AS v(epoch_millis)')
+                results = table.select(add_hour(table.ltz))._j_table.execute().collect()
+                actual = []
+                try:
+                    while results.hasNext():
+                        value = results.next().getField(0)
+                        actual.append(None if value is None else value.toEpochMilli())
+                finally:
+                    results.close()
+                self.assertCountEqual([1730615400123, None], actual)
 
 
 class UserDefinedFunctionTests(object):
 
     def test_scalar_function(self):
         # test metric disabled.
-        self.t_env.get_config().get_configuration().set_string('python.metric.enabled', 'false')
+        self.t_env.get_config().set('python.metric.enabled', 'false')
+        self.t_env.get_config().set('pipeline.global-job-parameters', 'subtract_value:2')
         # test lambda function
         add_one = udf(lambda i: i + 1, result_type=DataTypes.BIGINT())
 
         # test Python ScalarFunction
         subtract_one = udf(SubtractOne(), result_type=DataTypes.BIGINT())
+
+        subtract_two = udf(SubtractWithParameters(), result_type=DataTypes.BIGINT())
 
         # test callable function
         add_one_callable = udf(CallablePlus(), result_type=DataTypes.BIGINT())
@@ -59,35 +297,41 @@ class UserDefinedFunctionTests(object):
                 assert os.environ['_PYTHON_WORKER_MEMORY_LIMIT'] is not None
             return 1
 
-        table_sink = source_sink_utils.TestAppendSink(
-            ['a', 'b', 'c', 'd', 'e', 'f', 'g'],
-            [DataTypes.BIGINT(), DataTypes.BIGINT(), DataTypes.BIGINT(), DataTypes.BIGINT(),
-             DataTypes.BIGINT(), DataTypes.BIGINT(), DataTypes.BIGINT()])
-        self.t_env.register_table_sink("Results", table_sink)
+        sink_table = generate_random_table_name()
+        sink_table_ddl = f"""
+            CREATE TABLE {sink_table}(a BIGINT, b BIGINT, c BIGINT, d BIGINT, e BIGINT, f BIGINT,
+             g BIGINT, h BIGINT) WITH ('connector'='test-sink')
+        """
+        self.t_env.execute_sql(sink_table_ddl)
 
-        execution_mode = self.t_env.get_config().get_configuration().get_string(
-            "python.execution-mode", "process")
+        execution_mode = self.t_env.get_config().get("python.execution-mode", "process")
 
         t = self.t_env.from_elements([(1, 2, 3), (2, 5, 6), (3, 1, 9)], ['a', 'b', 'c'])
         t.where(add_one(t.b) <= 3).select(
-            add_one(t.a), subtract_one(t.b), add(t.a, t.c), add_one_callable(t.a),
-            add_one_partial(t.a), check_memory_limit(execution_mode), t.a) \
-            .execute_insert("Results").wait()
+            add_one(t.a),
+            subtract_one(t.b),
+            subtract_two(t.b),
+            add(t.a, t.c),
+            add_one_callable(t.a),
+            add_one_partial(t.a),
+            check_memory_limit(execution_mode),
+            t.a).execute_insert(sink_table).wait()
         actual = source_sink_utils.results()
-        self.assert_equals(actual, ["+I[2, 1, 4, 2, 2, 1, 1]", "+I[4, 0, 12, 4, 4, 1, 3]"])
+        self.assert_equals(actual, ["+I[2, 1, 0, 4, 2, 2, 1, 1]", "+I[4, 0, -1, 12, 4, 4, 1, 3]"])
 
     def test_chaining_scalar_function(self):
         add_one = udf(lambda i: i + 1, result_type=DataTypes.BIGINT())
         subtract_one = udf(SubtractOne(), result_type=DataTypes.BIGINT())
 
-        table_sink = source_sink_utils.TestAppendSink(
-            ['a', 'b', 'c'],
-            [DataTypes.BIGINT(), DataTypes.BIGINT(), DataTypes.INT()])
-        self.t_env.register_table_sink("Results", table_sink)
+        sink_table = generate_random_table_name()
+        sink_table_ddl = f"""
+                CREATE TABLE {sink_table}(a BIGINT, b BIGINT, c INT) WITH ('connector'='test-sink')
+                """
+        self.t_env.execute_sql(sink_table_ddl)
 
         t = self.t_env.from_elements([(1, 2, 1), (2, 5, 2), (3, 1, 3)], ['a', 'b', 'c'])
         t.select(add(add_one(t.a), subtract_one(t.b)), t.c, expr.lit(1)) \
-            .execute_insert("Results").wait()
+            .execute_insert(sink_table).wait()
         actual = source_sink_utils.results()
         self.assert_equals(actual, ["+I[3, 1, 1]", "+I[7, 2, 1]", "+I[4, 3, 1]"])
 
@@ -97,12 +341,13 @@ class UserDefinedFunctionTests(object):
 
         f = udf(lambda i: i, result_type=DataTypes.BIGINT())
 
-        table_sink = source_sink_utils.TestAppendSink(
-            ['a', 'b', 'c', 'd'],
-            [DataTypes.BIGINT(), DataTypes.STRING(), DataTypes.BIGINT(), DataTypes.STRING()])
-        self.t_env.register_table_sink("Results", table_sink)
-
-        t1.join(t2).where(f(t1.a) == t2.c).execute_insert("Results").wait()
+        sink_table = generate_random_table_name()
+        sink_table_ddl = f"""
+            CREATE TABLE {sink_table}(a BIGINT, b STRING, c BIGINT, d StRING)
+            WITH ('connector'='test-sink')
+        """
+        self.t_env.execute_sql(sink_table_ddl)
+        t1.join(t2).where(f(t1.a) == t2.c).execute_insert(sink_table).wait()
         actual = source_sink_utils.results()
         self.assert_equals(actual, ["+I[2, Hi, 2, Flink]"])
 
@@ -112,12 +357,18 @@ class UserDefinedFunctionTests(object):
 
         f = udf(lambda i: i, result_type=DataTypes.BIGINT())
 
-        table_sink = source_sink_utils.TestAppendSink(
-            ['a', 'b', 'c', 'd'],
-            [DataTypes.BIGINT(), DataTypes.STRING(), DataTypes.BIGINT(), DataTypes.STRING()])
-        self.t_env.register_table_sink("Results", table_sink)
+        sink_table = generate_random_table_name()
+        sink_table_ddl = f"""
+            CREATE TABLE {sink_table}(
+                a BIGINT,
+                b STRING,
+                c BIGINT,
+                d STRING
+            ) WITH ('connector'='test-sink')
+        """
+        self.t_env.execute_sql(sink_table_ddl)
 
-        t1.join(t2).where(f(t1.a) == f(t2.c)).execute_insert("Results").wait()
+        t1.join(t2).where(f(t1.a) == f(t2.c)).execute_insert(sink_table).wait()
         actual = source_sink_utils.results()
         self.assert_equals(actual, ["+I[2, Hi, 2, Flink]"])
 
@@ -180,12 +431,14 @@ class UserDefinedFunctionTests(object):
             "udf_with_all_constant_params", udf(lambda i, j: i + j,
                                                 result_type=DataTypes.BIGINT()))
 
-        table_sink = source_sink_utils.TestAppendSink(['a', 'b'],
-                                                      [DataTypes.BIGINT(), DataTypes.BIGINT()])
-        self.t_env.register_table_sink("Results", table_sink)
+        sink_table = generate_random_table_name()
+        sink_table_ddl = f"""
+                CREATE TABLE {sink_table}(a BIGINT, b BIGINT) WITH ('connector'='test-sink')
+                """
+        self.t_env.execute_sql(sink_table_ddl)
 
         t = self.t_env.from_elements([(1, 2, 3), (2, 5, 6), (3, 1, 9)], ['a', 'b', 'c'])
-        self.t_env.register_table("test_table", t)
+        self.t_env.create_temporary_view("test_table", t)
         self.t_env.sql_query("select udf_with_all_constant_params("
                              "cast (1 as BIGINT),"
                              "cast (2 as BIGINT)), "
@@ -203,7 +456,7 @@ class UserDefinedFunctionTests(object):
                              "cast ('2014-09-13' as DATE),"
                              "cast ('12:00:00' as TIME),"
                              "cast ('1999-9-10 05:20:10' as TIMESTAMP))"
-                             " from test_table").execute_insert("Results").wait()
+                             " from test_table").execute_insert(sink_table).wait()
         actual = source_sink_utils.results()
         self.assert_equals(actual, ["+I[3, 8]", "+I[3, 9]", "+I[3, 10]"])
 
@@ -212,43 +465,77 @@ class UserDefinedFunctionTests(object):
             "plus", udf(lambda i, j: i + j - 1,
                         result_type=DataTypes.BIGINT()))
 
-        table_sink = source_sink_utils.TestAppendSink(['a'], [DataTypes.BIGINT()])
-        self.t_env.register_table_sink("Results", table_sink)
+        sink_table = generate_random_table_name()
+        sink_table_ddl = f"""
+                        CREATE TABLE {sink_table}(a BIGINT) WITH ('connector'='test-sink')
+                        """
+        self.t_env.execute_sql(sink_table_ddl)
 
         t = self.t_env.from_elements([(1, 2, 3), (2, 5, 6), (3, 1, 9)], ['a', 'b', 'c'])
-        t.select("plus(a, b)").execute_insert("Results").wait()
+        t.select(t.a + t.b).execute_insert(sink_table).wait()
         actual = source_sink_utils.results()
         self.assert_equals(actual, ["+I[2]", "+I[6]", "+I[3]"])
 
     def test_open(self):
-        self.t_env.get_config().get_configuration().set_string('python.metric.enabled', 'true')
-        execution_mode = self.t_env.get_config().get_configuration().get_string(
-            "python.execution-mode", None)
+        self.t_env.get_config().set('python.metric.enabled', 'true')
+        execution_mode = self.t_env.get_config().get("python.execution-mode", None)
 
         if execution_mode == "process":
             subtract = udf(SubtractWithMetrics(), result_type=DataTypes.BIGINT())
         else:
             subtract = udf(Subtract(), result_type=DataTypes.BIGINT())
 
-        table_sink = source_sink_utils.TestAppendSink(
-            ['a', 'b'], [DataTypes.BIGINT(), DataTypes.BIGINT()])
-        self.t_env.register_table_sink("Results", table_sink)
+        sink_table = generate_random_table_name()
+        sink_table_ddl = f"""
+                        CREATE TABLE {sink_table}(a BIGINT, b BIGINT) WITH ('connector'='test-sink')
+                        """
+        self.t_env.execute_sql(sink_table_ddl)
 
         t = self.t_env.from_elements([(1, 2), (2, 5), (3, 4)], ['a', 'b'])
-        t.select(t.a, subtract(t.b)).execute_insert("Results").wait()
+        t.select(t.a, subtract(t.b)).execute_insert(sink_table).wait()
         actual = source_sink_utils.results()
         self.assert_equals(actual, ["+I[1, 1]", "+I[2, 4]", "+I[3, 3]"])
+
+    def test_function_context_runtime_info(self):
+        runtime_info_func = udf(RuntimeInfoFunc(), result_type=DataTypes.STRING())
+
+        sink_table = generate_random_table_name()
+        sink_table_ddl = f"""
+            CREATE TABLE {sink_table}(a STRING) WITH ('connector'='test-sink')
+        """
+        self.t_env.execute_sql(sink_table_ddl)
+
+        t = self.t_env.from_elements([(1,)], ['a'])
+        t.select(runtime_info_func(t.a)).execute_insert(sink_table).wait()
+        actual = source_sink_utils.results()
+        result = actual[0]
+        # The result should contain task_name, number_of_parallel_subtasks, and
+        # index_of_this_subtask info, verifying that FunctionContext runtime info
+        # is properly propagated from Java to Python.
+        self.assertTrue(result.startswith("+I["))
+        # Extract the value between +I[ and ]
+        value = result[3:-1]
+        parts = value.split(",")
+        self.assertEqual(len(parts), 3)
+        # task_name should be non-empty
+        self.assertTrue(len(parts[0].strip()) > 0)
+        # number_of_parallel_subtasks should be a positive integer
+        self.assertTrue(int(parts[1].strip()) > 0)
+        # index_of_this_subtask should be a non-negative integer
+        self.assertTrue(int(parts[2].strip()) >= 0)
 
     def test_udf_without_arguments(self):
         one = udf(lambda: 1, result_type=DataTypes.BIGINT(), deterministic=True)
         two = udf(lambda: 2, result_type=DataTypes.BIGINT(), deterministic=False)
 
-        table_sink = source_sink_utils.TestAppendSink(['a', 'b'],
-                                                      [DataTypes.BIGINT(), DataTypes.BIGINT()])
-        self.t_env.register_table_sink("Results", table_sink)
+        sink_table = generate_random_table_name()
+        sink_table_ddl = f"""
+                        CREATE TABLE {sink_table}(a BIGINT, b BIGINT) WITH ('connector'='test-sink')
+                        """
+        self.t_env.execute_sql(sink_table_ddl)
 
         t = self.t_env.from_elements([(1, 2), (2, 5), (3, 1)], ['a', 'b'])
-        t.select(one(), two()).execute_insert("Results").wait()
+        t.select(one(), two()).execute_insert(sink_table).wait()
         actual = source_sink_utils.results()
         self.assert_equals(actual, ["+I[1, 2]", "+I[1, 2]", "+I[1, 2]"])
 
@@ -337,7 +624,7 @@ class UserDefinedFunctionTests(object):
 
         @udf(result_type=DataTypes.ARRAY(DataTypes.BIGINT()))
         def array_func(array_param):
-            assert array_param == [[1, 2, 3]], \
+            assert array_param == [[1, 2, 3]] or array_param == ((1, 2, 3),), \
                 'array_param is wrong value %s !' % array_param
             return array_param[0]
 
@@ -361,16 +648,47 @@ class UserDefinedFunctionTests(object):
                 'decimal_param is wrong value %s !' % decimal_param
             return decimal_param
 
-        table_sink = source_sink_utils.TestAppendSink(
-            ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q'],
-            [DataTypes.BIGINT(), DataTypes.BIGINT(), DataTypes.TINYINT(),
-             DataTypes.BOOLEAN(), DataTypes.SMALLINT(), DataTypes.INT(),
-             DataTypes.FLOAT(), DataTypes.DOUBLE(), DataTypes.BYTES(),
-             DataTypes.STRING(), DataTypes.DATE(), DataTypes.TIME(),
-             DataTypes.TIMESTAMP(3), DataTypes.ARRAY(DataTypes.BIGINT()),
-             DataTypes.MAP(DataTypes.BIGINT(), DataTypes.STRING()),
-             DataTypes.DECIMAL(38, 18), DataTypes.DECIMAL(38, 18)])
-        self.t_env.register_table_sink("Results", table_sink)
+        @udf(result_type=DataTypes.BINARY(5))
+        def binary_func(binary_param):
+            assert len(binary_param) == 5
+            return binary_param
+
+        @udf(result_type=DataTypes.CHAR(7))
+        def char_func(char_param):
+            assert len(char_param) == 7
+            return char_param
+
+        @udf(result_type=DataTypes.VARCHAR(10))
+        def varchar_func(varchar_param):
+            assert len(varchar_param) <= 10
+            return varchar_param
+
+        sink_table = generate_random_table_name()
+        sink_table_ddl = f"""
+            CREATE TABLE {sink_table}(
+                a BIGINT,
+                b BIGINT,
+                c TINYINT,
+                d BOOLEAN,
+                e SMALLINT,
+                f INT,
+                g FLOAT,
+                h DOUBLE,
+                i BYTES,
+                j STRING,
+                k DATE,
+                l TIME,
+                m TIMESTAMP(3),
+                n ARRAY<BIGINT>,
+                o MAP<BIGINT, STRING>,
+                p DECIMAL(38, 18),
+                q DECIMAL(38, 18),
+                r BINARY(5),
+                s CHAR(7),
+                t VARCHAR(10)
+            ) WITH ('connector'='test-sink')
+        """
+        self.t_env.execute_sql(sink_table_ddl)
 
         import datetime
         import decimal
@@ -380,7 +698,8 @@ class UserDefinedFunctionTests(object):
               datetime.time(hour=12, minute=0, second=0, microsecond=123000),
               datetime.datetime(2018, 3, 11, 3, 0, 0, 123000), [[1, 2, 3]],
               {1: 'flink', 2: 'pyflink'}, decimal.Decimal('1000000000000000000.05'),
-              decimal.Decimal('1000000000000000000.05999999999999999899999999999'))],
+              decimal.Decimal('1000000000000000000.05999999999999999899999999999'),
+              bytearray(b'flink'), 'pyflink', 'pyflink')],
             DataTypes.ROW(
                 [DataTypes.FIELD("a", DataTypes.BIGINT()),
                  DataTypes.FIELD("b", DataTypes.BIGINT()),
@@ -398,7 +717,10 @@ class UserDefinedFunctionTests(object):
                  DataTypes.FIELD("n", DataTypes.ARRAY(DataTypes.ARRAY(DataTypes.BIGINT()))),
                  DataTypes.FIELD("o", DataTypes.MAP(DataTypes.BIGINT(), DataTypes.STRING())),
                  DataTypes.FIELD("p", DataTypes.DECIMAL(38, 18)),
-                 DataTypes.FIELD("q", DataTypes.DECIMAL(38, 18))]))
+                 DataTypes.FIELD("q", DataTypes.DECIMAL(38, 18)),
+                 DataTypes.FIELD("r", DataTypes.BINARY(5)),
+                 DataTypes.FIELD("s", DataTypes.CHAR(7)),
+                 DataTypes.FIELD("t", DataTypes.VARCHAR(10))]))
 
         t.select(
             bigint_func(t.a),
@@ -417,16 +739,20 @@ class UserDefinedFunctionTests(object):
             array_func(t.n),
             map_func(t.o),
             decimal_func(t.p),
-            decimal_cut_func(t.q)) \
-            .execute_insert("Results").wait()
+            decimal_cut_func(t.q),
+            binary_func(t.r),
+            char_func(t.s),
+            varchar_func(t.t)) \
+            .execute_insert(sink_table).wait()
         actual = source_sink_utils.results()
         # Currently the sink result precision of DataTypes.TIME(precision) only supports 0.
         self.assert_equals(actual,
                            ["+I[1, null, 1, true, 32767, -2147483648, 1.23, 1.98932, "
-                            "[102, 108, 105, 110, 107], pyflink, 2014-09-13, "
-                            "12:00:00, 2018-03-11 03:00:00.123, [1, 2, 3], "
+                            "[102, 108, 105, 110, 107], pyflink, 2014-09-13, 12:00:00.123, "
+                            "2018-03-11T03:00:00.123, [1, 2, 3], "
                             "{1=flink, 2=pyflink}, 1000000000000000000.050000000000000000, "
-                            "1000000000000000000.059999999999999999]"])
+                            "1000000000000000000.059999999999999999, [102, 108, 105, 110, 107], "
+                            "pyflink, pyflink]"])
 
     def test_all_data_types(self):
         def boolean_func(bool_param):
@@ -499,7 +825,7 @@ class UserDefinedFunctionTests(object):
             return timestamp_param
 
         def array_func(array_param):
-            assert array_param == [[1, 2, 3]], \
+            assert array_param == [[1, 2, 3]] or array_param == ((1, 2, 3),), \
                 'array_param is wrong value %s !' % array_param
             return array_param[0]
 
@@ -566,22 +892,21 @@ class UserDefinedFunctionTests(object):
             "map_func", udf(map_func,
                             result_type=DataTypes.MAP(DataTypes.BIGINT(), DataTypes.STRING())))
 
-        self.t_env.register_function(
+        self.t_env.create_temporary_system_function(
             "decimal_func", udf(decimal_func, result_type=DataTypes.DECIMAL(38, 18)))
 
-        self.t_env.register_function(
+        self.t_env.create_temporary_system_function(
             "decimal_cut_func", udf(decimal_cut_func, result_type=DataTypes.DECIMAL(38, 18)))
 
-        table_sink = source_sink_utils.TestAppendSink(
-            ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q'],
-            [DataTypes.BIGINT(), DataTypes.BIGINT(), DataTypes.TINYINT(),
-             DataTypes.BOOLEAN(), DataTypes.SMALLINT(), DataTypes.INT(),
-             DataTypes.FLOAT(), DataTypes.DOUBLE(), DataTypes.BYTES(),
-             DataTypes.STRING(), DataTypes.DATE(), DataTypes.TIME(),
-             DataTypes.TIMESTAMP(3), DataTypes.ARRAY(DataTypes.BIGINT()),
-             DataTypes.MAP(DataTypes.BIGINT(), DataTypes.STRING()),
-             DataTypes.DECIMAL(38, 18), DataTypes.DECIMAL(38, 18)])
-        self.t_env.register_table_sink("Results", table_sink)
+        sink_table = generate_random_table_name()
+        sink_table_ddl = f"""
+            CREATE TABLE {sink_table}(
+            a BIGINT, b BIGINT, c TINYINT, d BOOLEAN, e SMALLINT, f INT, g FLOAT, h DOUBLE,
+            i BYTES, j STRING, k DATE, l TIME, m TIMESTAMP(3), n ARRAY<BIGINT>,
+            o MAP<BIGINT, STRING>, p DECIMAL(38, 18), q DECIMAL(38, 18))
+            WITH ('connector'='test-sink')
+        """
+        self.t_env.execute_sql(sink_table_ddl)
 
         import datetime
         import decimal
@@ -611,22 +936,208 @@ class UserDefinedFunctionTests(object):
                  DataTypes.FIELD("p", DataTypes.DECIMAL(38, 18)),
                  DataTypes.FIELD("q", DataTypes.DECIMAL(38, 18))]))
 
-        t.select("bigint_func(a), bigint_func_none(b),"
-                 "tinyint_func(c), boolean_func(d),"
-                 "smallint_func(e),int_func(f),"
-                 "float_func(g),double_func(h),"
-                 "bytes_func(i),str_func(j),"
-                 "date_func(k),time_func(l),"
-                 "timestamp_func(m),array_func(n),"
-                 "map_func(o),decimal_func(p),"
-                 "decimal_cut_func(q)") \
-            .execute_insert("Results").wait()
+        t.select(call("bigint_func", t.a), call("bigint_func_none", t.b),
+                 call("tinyint_func", t.c), call("boolean_func", t.d),
+                 call("smallint_func", t.e), call("int_func", t.f),
+                 call("float_func", t.g), call("double_func", t.h),
+                 call("bytes_func", t.i), call("str_func", t.j),
+                 call("date_func", t.k), call("time_func", t.l),
+                 call("timestamp_func", t.m), call("array_func", t.n),
+                 call("map_func", t.o), call("decimal_func", t.p),
+                 call("decimal_cut_func", t.q)) \
+            .execute_insert(sink_table).wait()
         actual = source_sink_utils.results()
         # Currently the sink result precision of DataTypes.TIME(precision) only supports 0.
         self.assert_equals(actual,
                            ["+I[1, null, 1, true, 32767, -2147483648, 1.23, 1.98932, "
                             "[102, 108, 105, 110, 107], pyflink, 2014-09-13, "
-                            "12:00:00, 2018-03-11 03:00:00.123, [1, 2, 3], "
+                            "12:00:00.123, 2018-03-11T03:00:00.123, [1, 2, 3], "
+                            "{1=flink, 2=pyflink}, 1000000000000000000.050000000000000000, "
+                            "1000000000000000000.059999999999999999]"])
+
+    def test_using_udf_in_sql(self):
+        sql = f"""
+                  CREATE TEMPORARY FUNCTION echo AS
+                  '{UserDefinedFunctionTests.__module__}.echo'
+                  LANGUAGE PYTHON
+                 """
+        self.t_env.execute_sql(sql)
+        self.assert_equals(
+            list(self.t_env.execute_sql("SELECT echo(1)").collect()),
+            [Row(1)])
+
+    def test_all_data_types_string(self):
+        @udf(result_type='BOOLEAN')
+        def boolean_func(bool_param):
+            assert isinstance(bool_param, bool), 'bool_param of wrong type %s !' \
+                                                 % type(bool_param)
+            return bool_param
+
+        @udf(result_type='TINYINT')
+        def tinyint_func(tinyint_param):
+            assert isinstance(tinyint_param, int), 'tinyint_param of wrong type %s !' \
+                                                   % type(tinyint_param)
+            return tinyint_param
+
+        @udf(result_type='SMALLINT')
+        def smallint_func(smallint_param):
+            assert isinstance(smallint_param, int), 'smallint_param of wrong type %s !' \
+                                                    % type(smallint_param)
+            assert smallint_param == 32767, 'smallint_param of wrong value %s' % smallint_param
+            return smallint_param
+
+        @udf(result_type='INT')
+        def int_func(int_param):
+            assert isinstance(int_param, int), 'int_param of wrong type %s !' \
+                                               % type(int_param)
+            assert int_param == -2147483648, 'int_param of wrong value %s' % int_param
+            return int_param
+
+        @udf(result_type='BIGINT')
+        def bigint_func(bigint_param):
+            assert isinstance(bigint_param, int), 'bigint_param of wrong type %s !' \
+                                                  % type(bigint_param)
+            return bigint_param
+
+        @udf(result_type='BIGINT')
+        def bigint_func_none(bigint_param):
+            assert bigint_param is None, 'bigint_param %s should be None!' % bigint_param
+            return bigint_param
+
+        @udf(result_type='FLOAT')
+        def float_func(float_param):
+            assert isinstance(float_param, float) and float_equal(float_param, 1.23, 1e-6), \
+                'float_param is wrong value %s !' % float_param
+            return float_param
+
+        @udf(result_type='DOUBLE')
+        def double_func(double_param):
+            assert isinstance(double_param, float) and float_equal(double_param, 1.98932, 1e-7), \
+                'double_param is wrong value %s !' % double_param
+            return double_param
+
+        @udf(result_type='BYTES')
+        def bytes_func(bytes_param):
+            assert bytes_param == b'flink', \
+                'bytes_param is wrong value %s !' % bytes_param
+            return bytes_param
+
+        @udf(result_type='STRING')
+        def str_func(str_param):
+            assert str_param == 'pyflink', \
+                'str_param is wrong value %s !' % str_param
+            return str_param
+
+        @udf(result_type='DATE')
+        def date_func(date_param):
+            from datetime import date
+            assert date_param == date(year=2014, month=9, day=13), \
+                'date_param is wrong value %s !' % date_param
+            return date_param
+
+        @udf(result_type='TIME')
+        def time_func(time_param):
+            from datetime import time
+            assert time_param == time(hour=12, minute=0, second=0, microsecond=123000), \
+                'time_param is wrong value %s !' % time_param
+            return time_param
+
+        @udf(result_type='TIMESTAMP(3)')
+        def timestamp_func(timestamp_param):
+            from datetime import datetime
+            assert timestamp_param == datetime(2018, 3, 11, 3, 0, 0, 123000), \
+                'timestamp_param is wrong value %s !' % timestamp_param
+            return timestamp_param
+
+        @udf(result_type='ARRAY<BIGINT>')
+        def array_func(array_param):
+            assert array_param == [[1, 2, 3]] or array_param == ((1, 2, 3),), \
+                'array_param is wrong value %s !' % array_param
+            return array_param[0]
+
+        @udf(result_type='MAP<BIGINT, STRING>')
+        def map_func(map_param):
+            assert map_param == {1: 'flink', 2: 'pyflink'}, \
+                'map_param is wrong value %s !' % map_param
+            return map_param
+
+        @udf(result_type='DECIMAL(38, 18)')
+        def decimal_func(decimal_param):
+            from decimal import Decimal
+            assert decimal_param == Decimal('1000000000000000000.050000000000000000'), \
+                'decimal_param is wrong value %s !' % decimal_param
+            return decimal_param
+
+        @udf(result_type='DECIMAL(38, 18)')
+        def decimal_cut_func(decimal_param):
+            from decimal import Decimal
+            assert decimal_param == Decimal('1000000000000000000.059999999999999999'), \
+                'decimal_param is wrong value %s !' % decimal_param
+            return decimal_param
+
+        sink_table = generate_random_table_name()
+        sink_table_ddl = f"""
+               CREATE TABLE {sink_table}(
+               a BIGINT, b BIGINT, c TINYINT, d BOOLEAN, e SMALLINT, f INT, g FLOAT, h DOUBLE,
+               i BYTES, j STRING, k DATE, l TIME, m TIMESTAMP(3), n ARRAY<BIGINT>,
+               o MAP<BIGINT, STRING>, p DECIMAL(38, 18), q DECIMAL(38, 18))
+               WITH ('connector'='test-sink')
+           """
+        self.t_env.execute_sql(sink_table_ddl)
+
+        import datetime
+        import decimal
+        t = self.t_env.from_elements(
+            [(1, None, 1, True, 32767, -2147483648, 1.23, 1.98932,
+              bytearray(b'flink'), 'pyflink', datetime.date(2014, 9, 13),
+              datetime.time(hour=12, minute=0, second=0, microsecond=123000),
+              datetime.datetime(2018, 3, 11, 3, 0, 0, 123000), [[1, 2, 3]],
+              {1: 'flink', 2: 'pyflink'}, decimal.Decimal('1000000000000000000.05'),
+              decimal.Decimal('1000000000000000000.05999999999999999899999999999'))],
+            DataTypes.ROW(
+                [DataTypes.FIELD("a", DataTypes.BIGINT()),
+                 DataTypes.FIELD("b", DataTypes.BIGINT()),
+                 DataTypes.FIELD("c", DataTypes.TINYINT()),
+                 DataTypes.FIELD("d", DataTypes.BOOLEAN()),
+                 DataTypes.FIELD("e", DataTypes.SMALLINT()),
+                 DataTypes.FIELD("f", DataTypes.INT()),
+                 DataTypes.FIELD("g", DataTypes.FLOAT()),
+                 DataTypes.FIELD("h", DataTypes.DOUBLE()),
+                 DataTypes.FIELD("i", DataTypes.BYTES()),
+                 DataTypes.FIELD("j", DataTypes.STRING()),
+                 DataTypes.FIELD("k", DataTypes.DATE()),
+                 DataTypes.FIELD("l", DataTypes.TIME()),
+                 DataTypes.FIELD("m", DataTypes.TIMESTAMP(3)),
+                 DataTypes.FIELD("n", DataTypes.ARRAY(DataTypes.ARRAY(DataTypes.BIGINT()))),
+                 DataTypes.FIELD("o", DataTypes.MAP(DataTypes.BIGINT(), DataTypes.STRING())),
+                 DataTypes.FIELD("p", DataTypes.DECIMAL(38, 18)),
+                 DataTypes.FIELD("q", DataTypes.DECIMAL(38, 18))]))
+
+        t.select(
+            bigint_func(t.a),
+            bigint_func_none(t.b),
+            tinyint_func(t.c),
+            boolean_func(t.d),
+            smallint_func(t.e),
+            int_func(t.f),
+            float_func(t.g),
+            double_func(t.h),
+            bytes_func(t.i),
+            str_func(t.j),
+            date_func(t.k),
+            time_func(t.l),
+            timestamp_func(t.m),
+            array_func(t.n),
+            map_func(t.o),
+            decimal_func(t.p),
+            decimal_cut_func(t.q)) \
+            .execute_insert(sink_table).wait()
+        actual = source_sink_utils.results()
+        # Currently the sink result precision of DataTypes.TIME(precision) only supports 0.
+        self.assert_equals(actual,
+                           ["+I[1, null, 1, true, 32767, -2147483648, 1.23, 1.98932, "
+                            "[102, 108, 105, 110, 107], pyflink, 2014-09-13, 12:00:00.123, "
+                            "2018-03-11T03:00:00.123, [1, 2, 3], "
                             "{1=flink, 2=pyflink}, 1000000000000000000.050000000000000000, "
                             "1000000000000000000.059999999999999999]"])
 
@@ -637,12 +1148,150 @@ class UserDefinedFunctionTests(object):
             "add_one_func", udf(lambda i: i + 1, result_type=DataTypes.BIGINT()))
         t_env.create_temporary_function(
             "subtract_one_func", udf(SubtractOne(), result_type=DataTypes.BIGINT()))
-        self.assert_equals(t_env.list_user_defined_functions(),
-                           ['add_one_func', 'subtract_one_func'])
+        self.assertTrue('add_one_func' in t_env.list_user_defined_functions())
+        self.assertTrue('subtract_one_func' in t_env.list_user_defined_functions())
 
         t_env.drop_temporary_system_function("add_one_func")
         t_env.drop_temporary_function("subtract_one_func")
-        self.assert_equals(t_env.list_user_defined_functions(), [])
+        self.assertTrue('add_one_func' not in t_env.list_user_defined_functions())
+        self.assertTrue('subtract_one_func' not in t_env.list_user_defined_functions())
+
+    def test_python_local_ref_reuse(self):
+        """
+        Parameterized test for Python UDF local reference reuse.
+        Each case specifies a SQL query and a result verifier.
+        Similar to FunctionITCase.inputForTestCalcLocalRefReuse in Java.
+
+        Deterministic UDF calls with same args are computed once and reused;
+        non-deterministic UDF calls are always executed independently.
+        The UUID suffix in UDF output proves whether calls were deduplicated.
+        """
+        @udf(result_type=DataTypes.STRING())
+        def Det(s):
+            import uuid
+            return (s.upper() + "_" + str(uuid.uuid4())[:8]) if s else None
+
+        @udf(result_type=DataTypes.STRING(), deterministic=False)
+        def Nondet(s):
+            import uuid
+            return (s.upper() + "_" + str(uuid.uuid4())[:8]) if s else None
+
+        @udf(result_type=DataTypes.STRING(), deterministic=False)
+        def ZeroNondet():
+            import uuid
+            return "z_" + str(uuid.uuid4())[:8]
+
+        self.t_env.create_temporary_system_function("Det", Det)
+        self.t_env.create_temporary_system_function("ZeroNondet", ZeroNondet)
+        self.t_env.create_temporary_system_function("Nondet", Nondet)
+
+        source_t = self.t_env.from_elements([("hello",)], ['s'])
+        self.t_env.create_temporary_view("SourceTable", source_t)
+
+        # (description, sql, verify_fn)
+        cases = [
+            (
+                "Det(Det(s)) - inner Det shared with the standalone Det call",
+                "SELECT Det(Det(s)), Det(s) FROM SourceTable",
+                lambda vals: (
+                    self.assertEqual(len(vals), 2),
+                    # Det upper-cases its input, so the outer result must start with the
+                    # upper-cased inner value. That proves the outer call consumed the very
+                    # same result as the standalone Det(s) rather than recomputing it.
+                    self.assertTrue(
+                        vals[0].startswith(vals[1].upper() + "_"),
+                        f"outer={vals[0]} does not build on inner={vals[1]}"),
+                ),
+            ),
+            (
+                "Nondet(Det(s)) - outer Nondet not reused, inner Det reused",
+                "SELECT Nondet(Det(s)), Nondet(Det(s)), Det(s) FROM SourceTable",
+                lambda vals: (
+                    self.assertEqual(len(vals), 3),
+                    self.assertNotEqual(vals[0], vals[1]),
+                    self.assertTrue(vals[2].startswith("HELLO_")),
+                ),
+            ),
+            (
+                "Det(Nondet(s)) - nondet input disables reuse",
+                "SELECT Det(Nondet(s)), Det(Nondet(s)) FROM SourceTable",
+                lambda vals: (
+                    self.assertEqual(len(vals), 2),
+                    self.assertNotEqual(vals[0], vals[1]),
+                ),
+            ),
+            (
+                "Nondet(s) as a projection is not referenced by a nested occurrence",
+                "SELECT Nondet(s), Det(Nondet(s)) FROM SourceTable",
+                lambda vals: (
+                    self.assertEqual(len(vals), 2),
+                    # Det upper-cases its input, so if the nested Nondet(s) had consumed the
+                    # result of the standalone one, vals[1] would start with vals[0].upper().
+                    # A non-deterministic call must be evaluated once per occurrence.
+                    self.assertFalse(
+                        vals[1].startswith(vals[0].upper() + "_"),
+                        f"nested Nondet reused the projected result: {vals}"),
+                ),
+            ),
+            (
+                "Det(s) below Nondet reads the shared Det(s) rather than a later slot",
+                "SELECT Det(Nondet(Det(s))), Det(s) FROM SourceTable",
+                lambda vals: (
+                    self.assertEqual(len(vals), 2),
+                    # Both Det(s) are one evaluation, so the value below Nondet is vals[1]
+                    # itself. Nondet upper-cases it and appends its own suffix, and the outer
+                    # Det does so again, hence the prefix. Had the inner Det(s) read the entry
+                    # of the projected one instead, that slot would still have been unset and
+                    # the whole column would silently have been None.
+                    self.assertIsNotNone(
+                        vals[0], f"forward reference produced a null column: {vals}"),
+                    self.assertTrue(
+                        vals[0].startswith(vals[1].upper() + "_"),
+                        f"Det(s) was not reused below Nondet: {vals}"),
+                ),
+            ),
+            (
+                "zero-argument Nondet nested before its projection",
+                "SELECT Det(ZeroNondet()), ZeroNondet() FROM SourceTable",
+                lambda vals: (
+                    self.assertEqual(len(vals), 2),
+                    # Calcite hands out the very same RexCall object for both ZeroNondet()
+                    # occurrences, so the nested one must not be resolved to the projected one:
+                    # that entry is evaluated later, and reading it would yield None.
+                    self.assertIsNotNone(
+                        vals[0], f"forward reference produced a null column: {vals}"),
+                    self.assertFalse(
+                        vals[0].startswith(vals[1].upper() + "_"),
+                        f"nested ZeroNondet reused the projected result: {vals}"),
+                ),
+            ),
+            (
+                "zero-argument Nondet projected before its nested occurrence",
+                "SELECT ZeroNondet(), Det(ZeroNondet()) FROM SourceTable",
+                lambda vals: (
+                    self.assertEqual(len(vals), 2),
+                    self.assertFalse(
+                        vals[1].startswith(vals[0].upper() + "_"),
+                        f"nested ZeroNondet reused the projected result: {vals}"),
+                ),
+            ),
+        ]
+
+        for desc, sql, verify_fn in cases:
+            with self.subTest(desc):
+                result = self.t_env.sql_query(sql)
+                col_count = len(result.get_schema().get_field_names())
+                cols = ", ".join([f"c{i} STRING" for i in range(col_count)])
+                sink_table = generate_random_table_name()
+                self.t_env.execute_sql(f"""
+                    CREATE TABLE {sink_table}({cols})
+                    WITH ('connector'='test-sink')
+                """)
+                result.execute_insert(sink_table).wait()
+                actual = source_sink_utils.results()
+                self.assertEqual(len(actual), 1)
+                vals = actual[0].replace("+I[", "").replace("]", "").split(", ")
+                verify_fn(vals)
 
 
 # decide whether two floats are equal
@@ -650,8 +1299,8 @@ def float_equal(a, b, rel_tol=1e-09, abs_tol=0.0):
     return abs(a - b) <= max(rel_tol * max(abs(a), abs(b)), abs_tol)
 
 
-class PyFlinkStreamUserDefinedFunctionTests(UserDefinedFunctionTests,
-                                            PyFlinkStreamTableTestCase):
+class PyFlinkStreamUserDefinedFunctionTests(
+        ProcessModeLocalZonedTimestampTests, UserDefinedFunctionTests, PyFlinkStreamTableTestCase):
     def test_deterministic(self):
         add_one = udf(lambda i: i + 1, result_type=DataTypes.BIGINT())
         self.assertTrue(add_one._deterministic)
@@ -718,8 +1367,8 @@ class PyFlinkStreamUserDefinedFunctionTests(UserDefinedFunctionTests,
 
     def test_data_types(self):
         timezone = self.t_env.get_config().get_local_timezone()
-        local_datetime = pytz.timezone(timezone).localize(
-            datetime.datetime(1970, 1, 1, 0, 0, 0, 123000))
+        local_datetime = datetime.datetime(
+            1970, 1, 1, 0, 0, 0, 123000, tzinfo=pytz.UTC).astimezone(pytz.timezone(timezone))
 
         @udf(result_type=DataTypes.TIMESTAMP_WITH_LOCAL_TIME_ZONE(3))
         def local_zoned_timestamp_func(local_zoned_timestamp_param):
@@ -727,21 +1376,20 @@ class PyFlinkStreamUserDefinedFunctionTests(UserDefinedFunctionTests,
                 'local_zoned_timestamp_param is wrong value %s !' % local_zoned_timestamp_param
             return local_zoned_timestamp_param
 
-        table_sink = source_sink_utils.TestAppendSink(
-            ['a'], [DataTypes.TIMESTAMP_WITH_LOCAL_TIME_ZONE(3)])
-        self.t_env.register_table_sink("Results", table_sink)
+        sink_table = generate_random_table_name()
+        sink_table_ddl = f"""
+        CREATE TABLE {sink_table}(a TIMESTAMP_LTZ(3)) WITH ('connector'='test-sink')
+        """
+        self.t_env.execute_sql(sink_table_ddl)
 
-        t = self.t_env.from_elements(
-            [(local_datetime,)],
-            DataTypes.ROW([DataTypes.FIELD("a", DataTypes.TIMESTAMP_WITH_LOCAL_TIME_ZONE(3))]))
+        t = self.t_env.sql_query('SELECT TO_TIMESTAMP_LTZ(123, 3) AS a')
 
         t.select(local_zoned_timestamp_func(local_zoned_timestamp_func(t.a))) \
-            .execute_insert("Results") \
+            .execute_insert(sink_table) \
             .wait()
         actual = source_sink_utils.results()
         self.assert_equals(actual, ["+I[1970-01-01T00:00:00.123Z]"])
 
-    @unittest.skip("Python UDFs are currently unsupported in JSON plan")
     def test_execute_from_json_plan(self):
         # create source file path
         tmp_dir = self.tempdir
@@ -783,33 +1431,65 @@ class PyFlinkStreamUserDefinedFunctionTests(UserDefinedFunctionTests,
                                                       "add_one(b) "
                                                       "FROM source_table")
         from py4j.java_gateway import get_method
-        get_method(self.t_env._j_tenv.executePlan(json_plan), "await")()
+        get_method(json_plan.execute(), "await")()
 
         import glob
         lines = [line.strip() for file in glob.glob(sink_path + '/*') for line in open(file, 'r')]
         lines.sort()
         self.assertEqual(lines, ['1,2', '2,3', '3,4'])
 
+    def test_udf_with_rowtime_arguments(self):
+        from pyflink.common import WatermarkStrategy
+        from pyflink.common.typeinfo import Types
+        from pyflink.common.watermark_strategy import TimestampAssigner
+        from pyflink.table import Schema
 
-class PyFlinkBatchUserDefinedFunctionTests(UserDefinedFunctionTests,
-                                           PyFlinkBatchTableTestCase):
+        class MyTimestampAssigner(TimestampAssigner):
+
+            def extract_timestamp(self, value, record_timestamp) -> int:
+                return int(value[0])
+
+        ds = self.env.from_collection(
+            [(1, 42, "a"), (2, 5, "a"), (3, 1000, "c"), (100, 1000, "c")],
+            Types.ROW_NAMED(["a", "b", "c"], [Types.LONG(), Types.INT(), Types.STRING()]))
+
+        ds = ds.assign_timestamps_and_watermarks(
+            WatermarkStrategy.for_monotonous_timestamps()
+            .with_timestamp_assigner(MyTimestampAssigner()))
+
+        table = self.t_env.from_data_stream(
+            ds,
+            Schema.new_builder()
+                  .column_by_metadata("rowtime", "TIMESTAMP_LTZ(3)")
+                  .watermark("rowtime", "SOURCE_WATERMARK()")
+                  .build())
+
+        @udf(result_type=DataTypes.ROW([DataTypes.FIELD('f1', DataTypes.INT())]))
+        def inc(input_row):
+            return Row(input_row.b)
+
+        sink_table = generate_random_table_name()
+        sink_table_ddl = f"""
+                    CREATE TABLE {sink_table}(
+                        a INT
+                    ) WITH ('connector'='test-sink')
+                """
+        self.t_env.execute_sql(sink_table_ddl)
+        table.map(inc).execute_insert(sink_table).wait()
+
+        actual = source_sink_utils.results()
+        self.assert_equals(actual, ['+I[42]', '+I[5]', '+I[1000]', '+I[1000]'])
+
+
+class PyFlinkBatchUserDefinedFunctionTests(
+        ProcessModeLocalZonedTimestampTests, UserDefinedFunctionTests, PyFlinkBatchTableTestCase):
     pass
 
 
-@pytest.mark.skipif(sys.version_info < (3, 7), reason="requires python3.7")
-class PyFlinkEmbeddedMultiThreadTests(UserDefinedFunctionTests, PyFlinkBatchTableTestCase):
+class PyFlinkEmbeddedThreadTests(UserDefinedFunctionTests, PyFlinkBatchTableTestCase):
     def setUp(self):
-        super(PyFlinkEmbeddedMultiThreadTests, self).setUp()
-        self.t_env.get_config().get_configuration().set_string("python.execution-mode",
-                                                               "multi-thread")
-
-
-@pytest.mark.skipif(sys.version_info < (3, 8), reason="requires python3.8")
-class PyFlinkEmbeddedSubInterpreterTests(UserDefinedFunctionTests, PyFlinkBatchTableTestCase):
-    def setUp(self):
-        super(PyFlinkEmbeddedSubInterpreterTests, self).setUp()
-        self.t_env.get_config().get_configuration().set_string("python.execution-mode",
-                                                               "sub-interpreter")
+        super(PyFlinkEmbeddedThreadTests, self).setUp()
+        self.t_env.get_config().set("python.execution-mode", "thread")
 
 
 # test specify the input_types
@@ -822,6 +1502,15 @@ class SubtractOne(ScalarFunction):
 
     def eval(self, i):
         return i - 1
+
+
+class SubtractWithParameters(ScalarFunction):
+
+    def open(self, function_context: FunctionContext):
+        self.subtract_value = int(function_context.get_job_parameter("subtract_value", "1"))
+
+    def eval(self, i):
+        return i - self.subtract_value
 
 
 class SubtractWithMetrics(ScalarFunction, unittest.TestCase):
@@ -851,10 +1540,26 @@ class Subtract(ScalarFunction, unittest.TestCase):
         return i - self.subtracted_value
 
 
+class RuntimeInfoFunc(ScalarFunction):
+
+    def open(self, function_context: FunctionContext):
+        self.task_name = function_context.get_task_name()
+        self.num_parallel = function_context.get_number_of_parallel_subtasks()
+        self.subtask_index = function_context.get_index_of_this_subtask()
+
+    def eval(self, i):
+        return "%s,%d,%d" % (self.task_name, self.num_parallel, self.subtask_index)
+
+
 class CallablePlus(object):
 
     def __call__(self, col):
         return col + 1
+
+
+@udf(input_types=['BIGINT'], result_type='BIGINT')
+def echo(i: str):
+    return i
 
 
 if __name__ == '__main__':

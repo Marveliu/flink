@@ -17,40 +17,99 @@
 
 package org.apache.flink.table.codesplit;
 
-import org.apache.flink.core.testutils.FlinkMatchers;
 import org.apache.flink.util.FileUtils;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Disabled;
+import org.junit.jupiter.api.Test;
 
 import java.io.File;
 
+import static org.apache.flink.table.codesplit.CodeSplitTestUtil.trimLines;
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.HamcrestCondition.matching;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** Tests for {@link JavaCodeSplitter}. */
-public class JavaCodeSplitterTest {
+class JavaCodeSplitterTest {
 
     @Test
-    public void testSplitJavaCode() {
+    void testSplitJavaCode() {
         runTest("TestSplitJavaCode", 100, 3);
     }
 
     @Test
-    public void testNotSplitJavaCode() {
+    void testNotSplitJavaCode() {
         runTest("TestNotSplitJavaCode", 4000, 10000);
     }
 
     @Test
-    public void testInvalidJavaCode() {
+    void testSplitIsDeterministic() throws Exception {
+        String code =
+                FileUtils.readFileUtf8(
+                        new File(
+                                JavaCodeSplitterTest.class
+                                        .getClassLoader()
+                                        .getResource("splitter/code/TestSplitJavaCode.java")
+                                        .toURI()));
+
         try {
-            JavaCodeSplitter.split("public class InvalidClass { return 1; }", 4000, 10000);
-        } catch (Exception e) {
-            assertThat(e)
-                    .satisfies(
-                            matching(
-                                    FlinkMatchers.containsMessage(
-                                            "JavaCodeSplitter failed. This is a bug. Please file an issue.")));
+            // call splitImpl directly to bypass the result cache and actually re-run the splitter
+            String first = JavaCodeSplitter.splitImpl(code, 100, 3);
+            String second = JavaCodeSplitter.splitImpl(code, 100, 3);
+
+            assertThat(second).isEqualTo(first);
+        } finally {
+            CodeSplitUtil.getCounter().set(0L);
         }
+    }
+
+    @Test
+    @Disabled("Disabled in because of https://issues.apache.org/jira/browse/FLINK-27702")
+    void testInvalidJavaCode() {
+        assertThatThrownBy(
+                        () ->
+                                JavaCodeSplitter.split(
+                                        "public class InvalidClass { return 1; }", 4000, 10000))
+                .hasMessageContaining(
+                        "JavaCodeSplitter failed. This is a bug. Please file an issue.");
+    }
+
+    @Test
+    public void testNullCode() {
+        assertThatThrownBy(() -> JavaCodeSplitter.split(null, 4000, 10000))
+                .hasMessage("code cannot be empty");
+    }
+
+    @Test
+    public void testEmptyCode() {
+        assertThatThrownBy(() -> JavaCodeSplitter.split("", 4000, 10000))
+                .hasMessage("code cannot be empty");
+    }
+
+    @Test
+    public void testWrongMaxMethodLength() {
+        assertThatThrownBy(
+                        () ->
+                                JavaCodeSplitter.split(
+                                        "public interface DummyInterface {}", 0, 10000))
+                .hasMessage("maxMethodLength must be greater than 0");
+    }
+
+    @Test
+    public void testWrongMaxClassMemberCount() {
+        assertThatThrownBy(
+                        () -> JavaCodeSplitter.split("public interface DummyInterface {}", 10, 0))
+                .hasMessage("maxClassMemberCount must be greater than 0");
+    }
+
+    /**
+     * Check whether the given and expected classes are actually a valid Java code -> it compiles.
+     * If this test fails on "expected" files, it probably means that code split logic is invalid
+     * and an issue was missed when preparing test files.
+     */
+    @Test
+    void shouldCompileGivenAndExpectedCode() throws Exception {
+        CodeSplitTestUtil.tryCompile("splitter/code/");
+        CodeSplitTestUtil.tryCompile("splitter/expected/");
     }
 
     private void runTest(String filename, int maxLength, int maxMembers) {
@@ -69,7 +128,14 @@ public class JavaCodeSplitterTest {
                                             .getClassLoader()
                                             .getResource("splitter/expected/" + filename + ".java")
                                             .toURI()));
-            assertThat(JavaCodeSplitter.split(code, maxLength, maxMembers)).isEqualTo(expected);
+
+            // Trying to mitigate any indentation issues between all sort of platforms by simply
+            // trim every line of the "class". Before this change, code-splitter test could fail on
+            // Windows machines while passing on Unix.
+            expected = trimLines(expected);
+            String actual = JavaCodeSplitter.split(code, maxLength, maxMembers);
+
+            assertThat(trimLines(actual)).isEqualTo(expected);
         } catch (Exception e) {
             throw new RuntimeException(e);
         } finally {

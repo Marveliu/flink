@@ -18,59 +18,58 @@
 
 package org.apache.flink.state.api;
 
+import org.apache.flink.api.common.functions.OpenContext;
 import org.apache.flink.api.common.state.ValueState;
 import org.apache.flink.api.common.state.ValueStateDescriptor;
 import org.apache.flink.api.common.typeinfo.Types;
 import org.apache.flink.api.java.tuple.Tuple2;
-import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.MemorySize;
-import org.apache.flink.contrib.streaming.state.EmbeddedRocksDBStateBackend;
 import org.apache.flink.runtime.state.StateBackend;
 import org.apache.flink.runtime.state.hashmap.HashMapStateBackend;
 import org.apache.flink.state.api.functions.KeyedStateBootstrapFunction;
 import org.apache.flink.state.api.functions.KeyedStateReaderFunction;
 import org.apache.flink.state.api.utils.JobResultRetriever;
+import org.apache.flink.state.rocksdb.EmbeddedRocksDBStateBackend;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.test.util.AbstractTestBase;
+import org.apache.flink.testutils.junit.extensions.parameterized.Parameter;
+import org.apache.flink.testutils.junit.extensions.parameterized.ParameterizedTestExtension;
+import org.apache.flink.testutils.junit.extensions.parameterized.Parameters;
 import org.apache.flink.util.AbstractID;
 import org.apache.flink.util.Collector;
+import org.apache.flink.util.FileUtils;
 
 import org.apache.commons.lang3.RandomStringUtils;
-import org.junit.Assert;
-import org.junit.Test;
-import org.junit.runner.RunWith;
-import org.junit.runners.Parameterized;
+import org.junit.jupiter.api.TestTemplate;
+import org.junit.jupiter.api.extension.ExtendWith;
 
 import java.io.File;
+import java.io.IOException;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Set;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import static org.apache.flink.configuration.CheckpointingOptions.FS_SMALL_FILE_THRESHOLD;
-import static org.hamcrest.Matchers.everyItem;
-import static org.hamcrest.Matchers.isIn;
-import static org.junit.Assert.assertThat;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /** Test the savepoint deep copy. */
-@RunWith(value = Parameterized.class)
-public class SavepointDeepCopyTest extends AbstractTestBase {
+@ExtendWith(ParameterizedTestExtension.class)
+class SavepointDeepCopyTest extends AbstractTestBase {
 
     private static final MemorySize FILE_STATE_SIZE_THRESHOLD = new MemorySize(1);
 
     private static final String TEXT = "The quick brown fox jumps over the lazy dog";
     private static final String RANDOM_VALUE = RandomStringUtils.randomAlphanumeric(120);
 
-    private final StateBackend backend;
+    @Parameter public StateBackend backend;
 
-    public SavepointDeepCopyTest(StateBackend backend) throws Exception {
-        this.backend = backend;
-    }
-
-    @Parameterized.Parameters(name = "State Backend: {0}")
+    @Parameters(name = "State Backend: {0}")
     public static Collection<StateBackend> data() {
         return Arrays.asList(new HashMapStateBackend(), new EmbeddedRocksDBStateBackend());
     }
@@ -80,7 +79,7 @@ public class SavepointDeepCopyTest extends AbstractTestBase {
         private ValueState<Tuple2<String, String>> state;
 
         @Override
-        public void open(Configuration parameters) {
+        public void open(OpenContext openContext) {
             ValueStateDescriptor<Tuple2<String, String>> descriptor =
                     new ValueStateDescriptor<>("state", Types.TUPLE(Types.STRING, Types.STRING));
             state = getRuntimeContext().getState(descriptor);
@@ -100,7 +99,7 @@ public class SavepointDeepCopyTest extends AbstractTestBase {
         private ValueState<Tuple2<String, String>> state;
 
         @Override
-        public void open(Configuration parameters) {
+        public void open(OpenContext openContext) {
             ValueStateDescriptor<Tuple2<String, String>> stateDescriptor =
                     new ValueStateDescriptor<>("state", Types.TUPLE(Types.STRING, Types.STRING));
             state = getRuntimeContext().getState(stateDescriptor);
@@ -129,11 +128,12 @@ public class SavepointDeepCopyTest extends AbstractTestBase {
      *
      * @throws Exception throw exceptions when anything goes wrong
      */
-    @Test
-    public void testSavepointDeepCopy() throws Exception {
+    @TestTemplate
+    void testSavepointDeepCopy() throws Exception {
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        env.setParallelism(1);
 
-        DataStream<String> words = env.fromElements(TEXT.split(" "));
+        DataStream<String> words = env.fromData(TEXT.split(" "));
 
         StateBootstrapTransformation<String> transformation =
                 OperatorTransformation.bootstrapWith(words)
@@ -143,46 +143,46 @@ public class SavepointDeepCopyTest extends AbstractTestBase {
         File savepointUrl1 = createAndRegisterTempFile(new AbstractID().toHexString());
         String savepointPath1 = savepointUrl1.getPath();
 
-        SavepointWriter.newSavepoint(backend, 128)
+        SavepointWriter.newSavepoint(env, backend, 128)
                 .withConfiguration(FS_SMALL_FILE_THRESHOLD, FILE_STATE_SIZE_THRESHOLD)
-                .withOperator("Operator1", transformation)
+                .withOperator(OperatorIdentifier.forUid("Operator1"), transformation)
                 .write(savepointPath1);
 
         env.execute("bootstrap savepoint1");
 
-        Assert.assertTrue(
-                "Failed to bootstrap savepoint1 with additional state files",
-                Files.list(Paths.get(savepointPath1)).count() > 1);
+        Set<String> stateFiles1 = getFileNamesInDirectory(Paths.get(savepointPath1));
 
-        Set<String> stateFiles1 =
-                Files.list(Paths.get(savepointPath1))
-                        .map(path -> path.getFileName().toString())
-                        .collect(Collectors.toSet());
+        assertThat(stateFiles1)
+                .as("Failed to bootstrap savepoint1 with additional state files")
+                .hasSizeGreaterThan(1);
 
         // create savepoint2 from savepoint1 created above
         File savepointUrl2 = createAndRegisterTempFile(new AbstractID().toHexString());
         String savepointPath2 = savepointUrl2.getPath();
 
         SavepointWriter savepoint2 =
-                SavepointWriter.fromExistingSavepoint(savepointPath1, backend)
+                SavepointWriter.fromExistingSavepoint(env, savepointPath1, backend)
                         .withConfiguration(FS_SMALL_FILE_THRESHOLD, FILE_STATE_SIZE_THRESHOLD);
 
-        savepoint2.withOperator("Operator2", transformation).write(savepointPath2);
+        savepoint2
+                .withOperator(OperatorIdentifier.forUid("Operator2"), transformation)
+                .write(savepointPath2);
         env.execute("create savepoint2");
 
-        Assert.assertTrue(
-                "Failed to create savepoint2 from savepoint1 with additional state files",
-                Files.list(Paths.get(savepointPath2)).count() > 1);
+        Set<String> stateFiles2 = getFileNamesInDirectory(Paths.get(savepointPath2));
 
-        Set<String> stateFiles2 =
-                Files.list(Paths.get(savepointPath2))
-                        .map(path -> path.getFileName().toString())
-                        .collect(Collectors.toSet());
+        assertThat(stateFiles2)
+                .as("Failed to create savepoint2 from savepoint1 with additional state files")
+                .hasSizeGreaterThan(1);
 
-        assertThat(
-                "At least one state file in savepoint1 are not in savepoint2",
-                stateFiles1,
-                everyItem(isIn(stateFiles2)));
+        assertThat(stateFiles1)
+                .as("At least one state file in savepoint1 are not in savepoint2")
+                .isSubsetOf(stateFiles2);
+
+        // Not a cleanup step: deleting savepoint1 before reading savepoint2 proves the deep
+        // copy is self-contained — savepoint2's metadata must reference the copied files, not
+        // the originals in savepoint1.
+        FileUtils.deleteDirectory(new File(savepointPath1));
 
         // Try to fromExistingSavepoint savepoint2 and read the state of "Operator1" (which has not
         // been
@@ -191,13 +191,20 @@ public class SavepointDeepCopyTest extends AbstractTestBase {
         long actuallyKeyNum =
                 JobResultRetriever.collect(
                                 SavepointReader.read(env, savepointPath2, backend)
-                                        .readKeyedState("Operator1", new ReadFunction()))
+                                        .readKeyedState(
+                                                OperatorIdentifier.forUid("Operator1"),
+                                                new ReadFunction()))
                         .size();
 
         long expectedKeyNum = Arrays.stream(TEXT.split(" ")).distinct().count();
-        Assert.assertEquals(
-                "Unexpected number of keys in the state of Operator1",
-                expectedKeyNum,
-                actuallyKeyNum);
+        assertThat(actuallyKeyNum)
+                .as("Unexpected number of keys in the state of Operator1")
+                .isEqualTo(expectedKeyNum);
+    }
+
+    private static Set<String> getFileNamesInDirectory(Path path) throws IOException {
+        try (Stream<Path> files = Files.list(path)) {
+            return files.map(file -> file.getFileName().toString()).collect(Collectors.toSet());
+        }
     }
 }

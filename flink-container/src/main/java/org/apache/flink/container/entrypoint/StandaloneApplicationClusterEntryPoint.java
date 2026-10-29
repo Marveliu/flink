@@ -20,23 +20,20 @@ package org.apache.flink.container.entrypoint;
 
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
-import org.apache.flink.api.common.JobID;
 import org.apache.flink.client.deployment.application.ApplicationClusterEntryPoint;
-import org.apache.flink.client.program.DefaultPackagedProgramRetriever;
 import org.apache.flink.client.program.PackagedProgram;
-import org.apache.flink.client.program.PackagedProgramRetriever;
 import org.apache.flink.configuration.Configuration;
-import org.apache.flink.configuration.PipelineOptionsInternal;
+import org.apache.flink.core.execution.RecoveryClaimMode;
+import org.apache.flink.core.fs.FileSystem;
+import org.apache.flink.core.plugin.PluginManager;
+import org.apache.flink.core.plugin.PluginUtils;
 import org.apache.flink.runtime.entrypoint.ClusterEntrypoint;
 import org.apache.flink.runtime.entrypoint.ClusterEntrypointUtils;
-import org.apache.flink.runtime.jobgraph.SavepointRestoreSettings;
 import org.apache.flink.runtime.resourcemanager.StandaloneResourceManagerFactory;
+import org.apache.flink.runtime.security.contexts.SecurityContext;
 import org.apache.flink.runtime.util.EnvironmentInformation;
 import org.apache.flink.runtime.util.JvmShutdownSafeguard;
 import org.apache.flink.runtime.util.SignalHandler;
-import org.apache.flink.util.FlinkException;
-
-import java.io.File;
 
 /** An {@link ApplicationClusterEntryPoint} which is started with a job in a predefined location. */
 @Internal
@@ -61,9 +58,29 @@ public final class StandaloneApplicationClusterEntryPoint extends ApplicationClu
                         StandaloneApplicationClusterEntryPoint.class);
 
         Configuration configuration = loadConfigurationFromClusterConfig(clusterConfiguration);
+        if (clusterConfiguration
+                .getSavepointRestoreSettings()
+                .getRecoveryClaimMode()
+                .equals(RecoveryClaimMode.LEGACY)) {
+            LOG.warn(
+                    "The {} restore mode is deprecated, please use {} or {} mode instead.",
+                    RecoveryClaimMode.LEGACY,
+                    RecoveryClaimMode.CLAIM,
+                    RecoveryClaimMode.NO_CLAIM);
+        }
         PackagedProgram program = null;
         try {
-            program = getPackagedProgram(clusterConfiguration, configuration);
+            PluginManager pluginManager =
+                    PluginUtils.createPluginManagerFromRootFolder(configuration);
+            LOG.info(
+                    "Install default filesystem for fetching user artifacts in Standalone Application Mode.");
+            FileSystem.initialize(configuration, pluginManager);
+            SecurityContext securityContext = installSecurityContext(configuration);
+            program =
+                    securityContext.runSecured(
+                            () ->
+                                    ApplicationClusterEntryPointUtils.getPackagedProgram(
+                                            clusterConfiguration, configuration));
         } catch (Exception e) {
             LOG.error("Could not create application program.", e);
             System.exit(1);
@@ -90,33 +107,6 @@ public final class StandaloneApplicationClusterEntryPoint extends ApplicationClu
     @VisibleForTesting
     static Configuration loadConfigurationFromClusterConfig(
             StandaloneApplicationClusterConfiguration clusterConfiguration) {
-        Configuration configuration = loadConfiguration(clusterConfiguration);
-        setStaticJobId(clusterConfiguration, configuration);
-        SavepointRestoreSettings.toConfiguration(
-                clusterConfiguration.getSavepointRestoreSettings(), configuration);
-        return configuration;
-    }
-
-    private static PackagedProgram getPackagedProgram(
-            final StandaloneApplicationClusterConfiguration clusterConfiguration,
-            Configuration flinkConfiguration)
-            throws FlinkException {
-        final File userLibDir = ClusterEntrypointUtils.tryFindUserLibDirectory().orElse(null);
-        final PackagedProgramRetriever programRetriever =
-                DefaultPackagedProgramRetriever.create(
-                        userLibDir,
-                        clusterConfiguration.getJobClassName(),
-                        clusterConfiguration.getArgs(),
-                        flinkConfiguration);
-        return programRetriever.getPackagedProgram();
-    }
-
-    private static void setStaticJobId(
-            StandaloneApplicationClusterConfiguration clusterConfiguration,
-            Configuration configuration) {
-        final JobID jobId = clusterConfiguration.getJobId();
-        if (jobId != null) {
-            configuration.set(PipelineOptionsInternal.PIPELINE_FIXED_JOB_ID, jobId.toHexString());
-        }
+        return ApplicationClusterEntryPointUtils.loadConfiguration(clusterConfiguration);
     }
 }

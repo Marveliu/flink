@@ -15,47 +15,43 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.planner.plan.stream.sql.join
 
 import org.apache.flink.table.api.TableException
 import org.apache.flink.table.planner.utils.{StreamTableTestUtil, TableTestBase}
 
-import org.junit.Test
+import org.assertj.core.api.Assertions.assertThatThrownBy
+import org.junit.jupiter.api.Test
 
-/**
- * Tests for window join.
- */
+/** Tests for window join. */
 class WindowJoinTest extends TableTestBase {
 
   private val util: StreamTableTestUtil = streamTestUtil()
-  util.tableEnv.executeSql(
-    s"""
-       |CREATE TABLE MyTable (
-       |  a INT,
-       |  b STRING NOT NULL,
-       |  c BIGINT,
-       |  rowtime TIMESTAMP(3),
-       |  proctime as PROCTIME(),
-       |  WATERMARK FOR rowtime AS rowtime - INTERVAL '1' SECOND
-       |) with (
-       |  'connector' = 'values'
-       |)
-       |""".stripMargin)
+  util.tableEnv.executeSql(s"""
+                              |CREATE TABLE MyTable (
+                              |  a INT,
+                              |  b STRING NOT NULL,
+                              |  c BIGINT,
+                              |  rowtime TIMESTAMP(3),
+                              |  proctime as PROCTIME(),
+                              |  WATERMARK FOR rowtime AS rowtime - INTERVAL '1' SECOND
+                              |) with (
+                              |  'connector' = 'values'
+                              |)
+                              |""".stripMargin)
 
-  util.tableEnv.executeSql(
-    s"""
-       |CREATE TABLE MyTable2 (
-       |  a INT,
-       |  b STRING NOT NULL,
-       |  c BIGINT,
-       |  rowtime TIMESTAMP(3),
-       |  proctime as PROCTIME(),
-       |  WATERMARK FOR rowtime AS rowtime - INTERVAL '1' SECOND
-       |) with (
-       |  'connector' = 'values'
-       |)
-       |""".stripMargin)
+  util.tableEnv.executeSql(s"""
+                              |CREATE TABLE MyTable2 (
+                              |  a INT,
+                              |  b STRING NOT NULL,
+                              |  c BIGINT,
+                              |  rowtime TIMESTAMP(3),
+                              |  proctime as PROCTIME(),
+                              |  WATERMARK FOR rowtime AS rowtime - INTERVAL '1' SECOND
+                              |) with (
+                              |  'connector' = 'values'
+                              |)
+                              |""".stripMargin)
 
   // ----------------------------------------------------------------------------------------
   // Tests for queries Join on window TVF
@@ -138,6 +134,20 @@ class WindowJoinTest extends TableTestBase {
   }
 
   @Test
+  def testWindowJoinWithoutProjections(): Unit = {
+    val sql =
+      """
+        |SELECT *
+        |FROM
+        |  TABLE(TUMBLE(TABLE MyTable, DESCRIPTOR(rowtime), INTERVAL '15' MINUTE)) AS L
+        |JOIN
+        |  TABLE(TUMBLE(TABLE MyTable2, DESCRIPTOR(rowtime), INTERVAL '15' MINUTE)) AS R
+        |ON L.window_start = R.window_start AND L.window_end = R.window_end AND L.a = R.a
+      """.stripMargin
+    util.verifyRelPlan(sql)
+  }
+
+  @Test
   def testUnsupportedWindowTVF_TumbleOnProctime(): Unit = {
     val sql =
       """
@@ -153,9 +163,9 @@ class WindowJoinTest extends TableTestBase {
         |ON L.window_start = R.window_start AND L.window_end = R.window_end AND L.a = R.a
       """.stripMargin
 
-    thrown.expectMessage("Processing time Window Join is not supported yet.")
-    thrown.expect(classOf[TableException])
-    util.verifyExplain(sql)
+    assertThatThrownBy(() => util.verifyExplain(sql))
+      .hasMessageContaining("Processing time Window Join is not supported yet.")
+      .isInstanceOf[TableException]
   }
 
   @Test
@@ -260,9 +270,9 @@ class WindowJoinTest extends TableTestBase {
         |ON L.window_start = R.window_start AND L.window_end = R.window_end AND L.a = R.a
       """.stripMargin
 
-    thrown.expectMessage("Processing time Window Join is not supported yet.")
-    thrown.expect(classOf[TableException])
-    util.verifyExplain(sql)
+    assertThatThrownBy(() => util.verifyExplain(sql))
+      .hasMessageContaining("Processing time Window Join is not supported yet.")
+      .isInstanceOf[TableException]
   }
 
   @Test
@@ -367,9 +377,9 @@ class WindowJoinTest extends TableTestBase {
         |ON L.window_start = R.window_start AND L.window_end = R.window_end AND L.a = R.a
       """.stripMargin
 
-    thrown.expectMessage("Processing time Window Join is not supported yet.")
-    thrown.expect(classOf[TableException])
-    util.verifyExplain(sql)
+    assertThatThrownBy(() => util.verifyExplain(sql))
+      .hasMessageContaining("Processing time Window Join is not supported yet.")
+      .isInstanceOf[TableException]
   }
 
   // ----------------------------------------------------------------------------------------
@@ -377,7 +387,7 @@ class WindowJoinTest extends TableTestBase {
   // because left window strategy is not equals to right window strategy.
   // ----------------------------------------------------------------------------------------
 
-  /** Window type in left and right child should be same **/
+  /** Window type in left and right child should be same * */
   @Test
   def testNotSameWindowType(): Unit = {
     val sql =
@@ -412,7 +422,7 @@ class WindowJoinTest extends TableTestBase {
     util.verifyRelPlan(sql)
   }
 
-  /** Window spec in left and right child should be same **/
+  /** Window spec in left and right child should be same * */
   @Test
   def testNotSameWindowSpec(): Unit = {
     val sql =
@@ -447,7 +457,7 @@ class WindowJoinTest extends TableTestBase {
     util.verifyRelPlan(sql)
   }
 
-  /** Window spec in left and right child should be same **/
+  /** Window spec in left and right child should be same * */
   @Test
   def testNotSameTimeAttributeType(): Unit = {
     val sql =
@@ -944,19 +954,18 @@ class WindowJoinTest extends TableTestBase {
 
   @Test
   def testTimeAttributePropagateForWindowJoin(): Unit = {
-    util.tableEnv.executeSql(
-      s"""
-         |CREATE TABLE MyTable3 (
-         |  a INT,
-         |  b STRING NOT NULL,
-         |  c BIGINT,
-         |  rowtime TIMESTAMP(3),
-         |  proctime as PROCTIME(),
-         |  WATERMARK FOR rowtime AS rowtime - INTERVAL '1' SECOND
-         |) with (
-         |  'connector' = 'values'
-         |)
-         |""".stripMargin)
+    util.tableEnv.executeSql(s"""
+                                |CREATE TABLE MyTable3 (
+                                |  a INT,
+                                |  b STRING NOT NULL,
+                                |  c BIGINT,
+                                |  rowtime TIMESTAMP(3),
+                                |  proctime as PROCTIME(),
+                                |  WATERMARK FOR rowtime AS rowtime - INTERVAL '1' SECOND
+                                |) with (
+                                |  'connector' = 'values'
+                                |)
+                                |""".stripMargin)
 
     util.tableEnv.executeSql(
       """
@@ -992,19 +1001,18 @@ class WindowJoinTest extends TableTestBase {
 
   @Test
   def testTimeAttributePropagateForWindowJoin1(): Unit = {
-    util.tableEnv.executeSql(
-      s"""
-         |CREATE TABLE MyTable4 (
-         |  a INT,
-         |  b STRING NOT NULL,
-         |  c BIGINT,
-         |  rowtime TIMESTAMP(3),
-         |  proctime as PROCTIME(),
-         |  WATERMARK FOR rowtime AS rowtime - INTERVAL '1' SECOND
-         |) with (
-         |  'connector' = 'values'
-         |)
-         |""".stripMargin)
+    util.tableEnv.executeSql(s"""
+                                |CREATE TABLE MyTable4 (
+                                |  a INT,
+                                |  b STRING NOT NULL,
+                                |  c BIGINT,
+                                |  rowtime TIMESTAMP(3),
+                                |  proctime as PROCTIME(),
+                                |  WATERMARK FOR rowtime AS rowtime - INTERVAL '1' SECOND
+                                |) with (
+                                |  'connector' = 'values'
+                                |)
+                                |""".stripMargin)
 
     util.tableEnv.executeSql(
       """
@@ -1277,6 +1285,89 @@ class WindowJoinTest extends TableTestBase {
         |) R
         |ON L.window_start = R.window_start AND L.window_end = R.window_end AND
         |L.a IS NOT DISTINCT FROM R.a
+      """.stripMargin
+    util.verifyRelPlan(sql)
+  }
+
+  @Test
+  def testJoinToMultiSink(): Unit = {
+    val sourceDdl =
+      """
+        |CREATE TABLE food_order (
+        | user_id STRING,
+        | order_id STRING,
+        | amount INT,
+        | event_time TIMESTAMP(3),
+        | WATERMARK FOR event_time AS event_time
+        |) WITH (
+        |'connector' = 'values')
+        |""".stripMargin
+    util.tableEnv.executeSql(sourceDdl)
+
+    val query =
+      """
+        |CREATE TEMPORARY VIEW food_view AS
+        |WITH food AS ( 
+        |  SELECT user_id, 
+        |         window_start, 
+        |         window_end 
+        |  FROM TABLE(TUMBLE(TABLE food_order, DESCRIPTOR(event_time), INTERVAL '1' MINUTES)) 
+        |  GROUP BY 
+        |  user_id,
+        |  window_start,
+        |  window_end)
+        |SELECT food.window_start
+        |     ,food.window_end
+        |     ,food.user_id
+        |     ,DATE_FORMAT(food.window_end + INTERVAL '7' HOUR, 'yyyyMMdd') AS dt
+        |     ,DATE_FORMAT(food.window_end + INTERVAL '7' HOUR, 'HH') AS `hour`
+        |FROM food
+        |JOIN food AS a ON food.user_id = a.user_id
+        |AND food.window_start = a.window_start
+        |AND food.window_end = a.window_end
+        |""".stripMargin
+
+    util.tableEnv.executeSql(query)
+
+    val sinkDdl =
+      """
+        |CREATE TABLE %s (
+        | window_start TIMESTAMP(3),
+        | window_end TIMESTAMP(3),
+        | user_id STRING,
+        | dt STRING,
+        | `hour` STRING
+        |) WITH (
+        | 'connector' = 'values')
+        |""".stripMargin
+    util.tableEnv.executeSql(sinkDdl.format("sink1"))
+    util.tableEnv.executeSql(sinkDdl.format("sink2"))
+
+    val statementSet = util.tableEnv.createStatementSet()
+    statementSet.addInsertSql("INSERT INTO sink1 SELECT * FROM food_view")
+    statementSet.addInsertSql("INSERT INTO sink2 SELECT * FROM food_view")
+    util.verifyRelPlan(statementSet)
+  }
+
+  @Test
+  def testWindowJoinOnNullSideFallsBackToRegularJoin(): Unit = {
+    val sql =
+      """
+        |SELECT outer_join.null_window_start, outer_join.null_window_end, probe_side.a
+        |FROM (
+        |  SELECT
+        |    null_side.window_start AS null_window_start,
+        |    null_side.window_end AS null_window_end,
+        |    preserved_side.a AS a
+        |  FROM TUMBLE(TABLE MyTable, DESCRIPTOR(rowtime), INTERVAL '15' MINUTE) preserved_side
+        |  LEFT JOIN TUMBLE(TABLE MyTable2, DESCRIPTOR(rowtime), INTERVAL '15' MINUTE) null_side
+        |  ON preserved_side.window_start = null_side.window_start
+        |    AND preserved_side.window_end = null_side.window_end
+        |    AND preserved_side.a = null_side.a
+        |) outer_join
+        |JOIN TUMBLE(TABLE MyTable, DESCRIPTOR(rowtime), INTERVAL '15' MINUTE) probe_side
+        |ON outer_join.null_window_start = probe_side.window_start
+        |  AND outer_join.null_window_end = probe_side.window_end
       """.stripMargin
     util.verifyRelPlan(sql)
   }

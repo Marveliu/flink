@@ -15,62 +15,79 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.planner.codegen
 
 import org.apache.flink.api.common.eventtime.WatermarkGeneratorSupplier
-import org.apache.flink.api.common.externalresource.ExternalResourceInfo
-import org.apache.flink.configuration.Configuration
-import org.apache.flink.metrics.MetricGroup
-import org.apache.flink.table.api.{TableConfig, TableException}
+import org.apache.flink.api.common.functions.OpenContext
+import org.apache.flink.configuration.ReadableConfig
 import org.apache.flink.table.functions.{FunctionContext, UserDefinedFunction}
 import org.apache.flink.table.planner.calcite.FlinkTypeFactory
-import org.apache.flink.table.planner.codegen.CodeGenUtils.{ROW_DATA, newName}
+import org.apache.flink.table.planner.codegen.CodeGenUtils.{newName, ROW_DATA}
 import org.apache.flink.table.planner.codegen.Indenter.toISC
-import org.apache.flink.table.runtime.generated.{GeneratedWatermarkGenerator, WatermarkGenerator}
-import org.apache.flink.table.types.logical.{LogicalTypeRoot, RowType}
+import org.apache.flink.table.runtime.generated.{GeneratedWatermarkGenerator, WatermarkGenerator, WatermarkGeneratorCodeGeneratorFunctionContextWrapper}
 import org.apache.flink.table.types.DataType
+import org.apache.flink.table.types.logical.{LogicalTypeRoot, RowType}
 
 import org.apache.calcite.rex.RexNode
 
-import java.io.File
-import java.util
-
-/**
-  * A code generator for generating [[WatermarkGenerator]]s.
-  */
+/** A code generator for generating [[WatermarkGenerator]]s. */
 object WatermarkGeneratorCodeGenerator {
 
+  /**
+   * Generates a [[WatermarkGenerator]]. The generator is also able to provide the event-time
+   * timestamp for advanced watermark strategies if the given parameter has been specified.
+   */
   def generateWatermarkGenerator(
-      tableConfig: TableConfig,
+      tableConfig: ReadableConfig,
+      classLoader: ClassLoader,
       inputType: RowType,
       watermarkExpr: RexNode,
+      rowtimeExpr: Option[RexNode] = None,
       contextTerm: Option[String] = None): GeneratedWatermarkGenerator = {
     // validation
     val watermarkOutputType = FlinkTypeFactory.toLogicalType(watermarkExpr.getType)
-    if (!(watermarkOutputType.getTypeRoot == LogicalTypeRoot.TIMESTAMP_WITHOUT_TIME_ZONE ||
-      watermarkOutputType.getTypeRoot == LogicalTypeRoot.TIMESTAMP_WITH_LOCAL_TIME_ZONE)) {
+    if (
+      !(watermarkOutputType.getTypeRoot == LogicalTypeRoot.TIMESTAMP_WITHOUT_TIME_ZONE ||
+        watermarkOutputType.getTypeRoot == LogicalTypeRoot.TIMESTAMP_WITH_LOCAL_TIME_ZONE)
+    ) {
       throw new CodeGenException(
         "WatermarkGenerator only accepts output data type of TIMESTAMP or TIMESTAMP_LTZ," +
           " but is " + watermarkOutputType)
     }
-    val funcName = newName("WatermarkGenerator")
     val ctx = if (contextTerm.isDefined) {
-      new WatermarkGeneratorFunctionContext(tableConfig, contextTerm.get)
+      new WatermarkGeneratorFunctionContext(tableConfig, classLoader, contextTerm.get)
     } else {
-      CodeGeneratorContext(tableConfig)
+      new CodeGeneratorContext(tableConfig, classLoader)
     }
+    val funcName = newName(ctx, "WatermarkGenerator")
     val generator = new ExprCodeGenerator(ctx, false)
       .bindInput(inputType, inputTerm = "row")
       .bindConstructorTerm(contextTerm.orNull)
-    val generatedExpr = generator.generateExpression(watermarkExpr)
+    val generatedWatermarkExpr = generator.generateExpression(watermarkExpr)
+
+    val generatedTimestampCode = if (rowtimeExpr.isDefined) {
+      val generatedRowtimeExpr = generator.generateExpression(rowtimeExpr.get)
+      j"""
+         |${ctx.reusePerRecordCode()}
+         |${ctx.reuseLocalVariableCode()}
+         |${ctx.reuseInputUnboxingCode()}
+         |${generatedRowtimeExpr.code}
+         |if (${generatedRowtimeExpr.nullTerm}) {
+         |  return Long.MIN_VALUE;
+         |} else {
+         |  return ${generatedRowtimeExpr.resultTerm}.getMillisecond();
+         |}
+         |""".stripMargin
+    } else {
+      "return Long.MIN_VALUE;"
+    }
 
     if (contextTerm.isDefined) {
       ctx.addReusableMember(
         s"""
-          |private transient ${classOf[WatermarkGeneratorSupplier.Context].getCanonicalName}
-          |${contextTerm.get};
-          |""".stripMargin
+           |private transient ${classOf[WatermarkGeneratorSupplier.Context].getCanonicalName}
+           |${contextTerm.get};
+           |""".stripMargin
       )
       ctx.addReusableInitStatement(
         s"""
@@ -78,7 +95,6 @@ object WatermarkGeneratorCodeGenerator {
            |${contextTerm.get} =
            |(${classOf[WatermarkGeneratorSupplier.Context].getCanonicalName}) references[len-1];
            |""".stripMargin
-
       )
     }
 
@@ -94,8 +110,13 @@ object WatermarkGeneratorCodeGenerator {
         }
 
         @Override
-        public void open(${classOf[Configuration].getCanonicalName} parameters) throws Exception {
+        public void open(${classOf[OpenContext].getCanonicalName} openContext) throws Exception {
           ${ctx.reuseOpenCode()}
+        }
+
+        @Override
+        public long extractTimestamp($ROW_DATA row) throws Exception {
+          $generatedTimestampCode
         }
 
         @Override
@@ -103,11 +124,11 @@ object WatermarkGeneratorCodeGenerator {
           ${ctx.reusePerRecordCode()}
           ${ctx.reuseLocalVariableCode()}
           ${ctx.reuseInputUnboxingCode()}
-          ${generatedExpr.code}
-          if (${generatedExpr.nullTerm}) {
+          ${generatedWatermarkExpr.code}
+          if (${generatedWatermarkExpr.nullTerm}) {
             return null;
           } else {
-            return ${generatedExpr.resultTerm}.getMillisecond();
+            return ${generatedWatermarkExpr.resultTerm}.getMillisecond();
           }
         }
 
@@ -118,51 +139,27 @@ object WatermarkGeneratorCodeGenerator {
       }
     """.stripMargin
 
-    new GeneratedWatermarkGenerator(
-      funcName, funcCode, ctx.references.toArray, ctx.tableConfig.getConfiguration)
+    new GeneratedWatermarkGenerator(funcName, funcCode, ctx.references.toArray, ctx.tableConfig)
   }
 }
 
 class WatermarkGeneratorFunctionContext(
-    tableConfig: TableConfig,
-    contextTerm: String = "parameters") extends CodeGeneratorContext(tableConfig) {
+    tableConfig: ReadableConfig,
+    classLoader: ClassLoader,
+    contextTerm: String)
+  extends CodeGeneratorContext(tableConfig, classLoader) {
 
   override def addReusableFunction(
       function: UserDefinedFunction,
       functionContextClass: Class[_ <: FunctionContext] = classOf[FunctionContext],
-      runtimeContextTerm: String = null): String = {
+      contextArgs: Seq[String] = null): String = {
     super.addReusableFunction(
-      function, classOf[WatermarkGeneratorCodeGeneratorFunctionContextWrapper], this.contextTerm)
+      function,
+      classOf[WatermarkGeneratorCodeGeneratorFunctionContextWrapper],
+      Seq(contextTerm))
   }
 
-  override def addReusableConverter(
-      dataType: DataType,
-      classLoaderTerm: String = null): String = {
+  override def addReusableConverter(dataType: DataType, classLoaderTerm: String = null): String = {
     super.addReusableConverter(dataType, "this.getClass().getClassLoader()")
-  }
-}
-
-class WatermarkGeneratorCodeGeneratorFunctionContextWrapper(
-    context: WatermarkGeneratorSupplier.Context) extends FunctionContext(null) {
-
-  override def getMetricGroup: MetricGroup = context.getMetricGroup
-
-  override def getCachedFile(name: String): File = {
-    throw new TableException(
-      "Calls to FunctionContext.getCachedFile are not available " +
-        "for WatermarkGeneratorCodeGeneratorFunctionContextWrapper.")
-  }
-
-  override def getJobParameter(key: String, defaultValue: String): String = {
-    throw new TableException(
-      "Calls to FunctionContext.getJobParameter are not available " +
-        "for WatermarkGeneratorCodeGeneratorFunctionContextWrapper")
-
-  }
-
-  override def getExternalResourceInfos(resourceName: String): util.Set[ExternalResourceInfo] = {
-    throw new TableException(
-      "Calls to FunctionContext.getExternalResourceInfos are not available " +
-        "for WatermarkGeneratorCodeGeneratorFunctionContextWrapper")
   }
 }

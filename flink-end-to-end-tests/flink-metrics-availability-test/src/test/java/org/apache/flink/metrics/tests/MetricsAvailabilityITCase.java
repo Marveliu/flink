@@ -19,7 +19,6 @@
 package org.apache.flink.metrics.tests;
 
 import org.apache.flink.api.common.time.Deadline;
-import org.apache.flink.api.common.time.Time;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.runtime.clusterframework.types.ResourceID;
 import org.apache.flink.runtime.rest.RestClient;
@@ -34,18 +33,19 @@ import org.apache.flink.runtime.rest.messages.taskmanager.TaskManagerInfo;
 import org.apache.flink.runtime.rest.messages.taskmanager.TaskManagersHeaders;
 import org.apache.flink.runtime.rest.messages.taskmanager.TaskManagersInfo;
 import org.apache.flink.tests.util.flink.ClusterController;
-import org.apache.flink.tests.util.flink.FlinkResource;
+import org.apache.flink.tests.util.flink.FlinkResourceExtension;
 import org.apache.flink.tests.util.flink.FlinkResourceSetup;
 import org.apache.flink.tests.util.flink.LocalStandaloneFlinkResourceFactory;
-import org.apache.flink.util.TestLogger;
+import org.apache.flink.util.TestLoggerExtension;
 import org.apache.flink.util.concurrent.FutureUtils;
 import org.apache.flink.util.concurrent.ScheduledExecutorServiceAdapter;
 import org.apache.flink.util.function.SupplierWithException;
 
-import org.junit.AfterClass;
-import org.junit.BeforeClass;
-import org.junit.Rule;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.api.extension.RegisterExtension;
 
 import javax.annotation.Nullable;
 
@@ -61,33 +61,36 @@ import java.util.function.Predicate;
 import java.util.stream.Collectors;
 
 /** End-to-end test for the availability of metrics. */
-public class MetricsAvailabilityITCase extends TestLogger {
+@ExtendWith(TestLoggerExtension.class)
+class MetricsAvailabilityITCase {
 
     private static final String HOST = "localhost";
     private static final int PORT = 8081;
 
-    @Rule
-    public final FlinkResource dist =
-            new LocalStandaloneFlinkResourceFactory().create(FlinkResourceSetup.builder().build());
+    @RegisterExtension
+    private final FlinkResourceExtension dist =
+            new FlinkResourceExtension(
+                    new LocalStandaloneFlinkResourceFactory()
+                            .create(FlinkResourceSetup.builder().build()));
 
     @Nullable private static ScheduledExecutorService scheduledExecutorService = null;
 
-    @BeforeClass
-    public static void startExecutor() {
+    @BeforeAll
+    static void startExecutor() {
         scheduledExecutorService = Executors.newScheduledThreadPool(4);
     }
 
-    @AfterClass
-    public static void shutdownExecutor() {
+    @AfterAll
+    static void shutdownExecutor() {
         if (scheduledExecutorService != null) {
             scheduledExecutorService.shutdown();
         }
     }
 
     @Test
-    public void testReporter() throws Exception {
+    void testReporter() throws Exception {
         final Deadline deadline = Deadline.fromNow(Duration.ofMinutes(10));
-        try (ClusterController ignored = dist.startCluster(1)) {
+        try (ClusterController ignored = dist.getFlinkResource().startCluster(1)) {
             final RestClient restClient =
                     new RestClient(new Configuration(), scheduledExecutorService);
 
@@ -146,13 +149,13 @@ public class MetricsAvailabilityITCase extends TestLogger {
                 headers.getUnresolvedMessageParameters();
         parameters.taskManagerIdParameter.resolve(taskManagerId);
         parameters.metricsFilterParameter.resolve(
-                Collections.singletonList("Status.Network.TotalMemorySegments"));
+                Collections.singletonList("Status.Shuffle.Netty.TotalMemorySegments"));
 
         fetchMetric(
                 () ->
                         restClient.sendRequest(
                                 HOST, PORT, headers, parameters, EmptyRequestBody.getInstance()),
-                getMetricNamePredicate("Status.Network.TotalMemorySegments"),
+                getMetricNamePredicate("Status.Shuffle.Netty.TotalMemorySegments"),
                 deadline);
     }
 
@@ -170,7 +173,7 @@ public class MetricsAvailabilityITCase extends TestLogger {
                                 throw new RuntimeException(e);
                             }
                         },
-                        Time.milliseconds(100),
+                        Duration.ofMillis(100),
                         deadline,
                         predicate,
                         new ScheduledExecutorServiceAdapter(scheduledExecutorService));

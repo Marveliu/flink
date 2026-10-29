@@ -15,21 +15,19 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.planner.plan.batch.sql
 
-import org.apache.flink.api.scala._
 import org.apache.flink.table.api._
 import org.apache.flink.table.planner.utils.TableTestBase
 
-import org.junit.{Before, Test}
+import org.junit.jupiter.api.{BeforeEach, Test}
 
 // TODO add more union case after aggregation and join supported
 class UnionTest extends TableTestBase {
 
   private val util = batchTestUtil()
 
-  @Before
+  @BeforeEach
   def before(): Unit = {
     util.addTableSource[(Int, Long, String)]("MyTable1", 'a, 'b, 'c)
     util.addTableSource[(Int, Long, String)]("MyTable2", 'a, 'b, 'c)

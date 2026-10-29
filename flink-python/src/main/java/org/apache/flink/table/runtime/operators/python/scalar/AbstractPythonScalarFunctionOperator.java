@@ -21,7 +21,7 @@ package org.apache.flink.table.runtime.operators.python.scalar;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.fnexecution.v1.FlinkFnApi;
-import org.apache.flink.streaming.api.utils.ProtoUtils;
+import org.apache.flink.python.util.ProtoUtils;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.data.binary.BinaryRowData;
 import org.apache.flink.table.data.utils.JoinedRowData;
@@ -34,6 +34,11 @@ import org.apache.flink.table.runtime.operators.python.AbstractStatelessFunction
 import org.apache.flink.table.runtime.operators.python.utils.StreamRecordRowDataWrappingCollector;
 import org.apache.flink.table.types.logical.RowType;
 import org.apache.flink.util.Preconditions;
+
+import javax.annotation.Nullable;
+
+import static org.apache.flink.python.PythonOptions.PYTHON_METRIC_ENABLED;
+import static org.apache.flink.python.PythonOptions.PYTHON_PROFILE_ENABLED;
 
 /**
  * Base class for all stream operators to execute Python {@link ScalarFunction}s. It executes the
@@ -62,6 +67,16 @@ public abstract class AbstractPythonScalarFunctionOperator
     /** The Python {@link ScalarFunction}s to be executed. */
     protected final PythonFunctionInfo[] scalarFunctions;
 
+    /**
+     * The positions of the projected results within {@link #scalarFunctions}, or {@code null} when
+     * the functions are exactly the operator output in order.
+     *
+     * <p>Flattening nested calls for CSE appends intermediate sub-expressions that are consumed by
+     * reference and must not be emitted, and it can leave the projected results in a different
+     * order than the projection.
+     */
+    @Nullable private final int[] udfOutputIndices;
+
     private final GeneratedProjection udfInputGeneratedProjection;
     private final GeneratedProjection forwardedFieldGeneratedProjection;
 
@@ -85,8 +100,29 @@ public abstract class AbstractPythonScalarFunctionOperator
             RowType udfOutputType,
             GeneratedProjection udfInputGeneratedProjection,
             GeneratedProjection forwardedFieldGeneratedProjection) {
+        this(
+                config,
+                scalarFunctions,
+                null,
+                inputType,
+                udfInputType,
+                udfOutputType,
+                udfInputGeneratedProjection,
+                forwardedFieldGeneratedProjection);
+    }
+
+    public AbstractPythonScalarFunctionOperator(
+            Configuration config,
+            PythonFunctionInfo[] scalarFunctions,
+            @Nullable int[] udfOutputIndices,
+            RowType inputType,
+            RowType udfInputType,
+            RowType udfOutputType,
+            GeneratedProjection udfInputGeneratedProjection,
+            GeneratedProjection forwardedFieldGeneratedProjection) {
         super(config, inputType, udfInputType, udfOutputType);
         this.scalarFunctions = Preconditions.checkNotNull(scalarFunctions);
+        this.udfOutputIndices = udfOutputIndices;
         this.udfInputGeneratedProjection = Preconditions.checkNotNull(udfInputGeneratedProjection);
         this.forwardedFieldGeneratedProjection =
                 Preconditions.checkNotNull(forwardedFieldGeneratedProjection);
@@ -114,16 +150,27 @@ public abstract class AbstractPythonScalarFunctionOperator
 
     /** Gets the proto representation of the Python user-defined functions to be executed. */
     @Override
-    public FlinkFnApi.UserDefinedFunctions getUserDefinedFunctionsProto() {
-        FlinkFnApi.UserDefinedFunctions.Builder builder =
-                FlinkFnApi.UserDefinedFunctions.newBuilder();
-        // add udf proto
-        for (PythonFunctionInfo pythonFunctionInfo : scalarFunctions) {
-            builder.addUdfs(ProtoUtils.getUserDefinedFunctionProto(pythonFunctionInfo));
+    public FlinkFnApi.UserDefinedFunctions createUserDefinedFunctionsProto() {
+        return ProtoUtils.createUserDefinedFunctionsProto(
+                getRuntimeContext(),
+                scalarFunctions,
+                udfOutputIndices,
+                config.get(PYTHON_METRIC_ENABLED),
+                config.get(PYTHON_PROFILE_ENABLED));
+    }
+
+    protected boolean returnsTableRow() {
+        final int outputCount =
+                udfOutputIndices == null ? scalarFunctions.length : udfOutputIndices.length;
+        for (int i = 0; i < outputCount; i++) {
+            final int functionIndex = udfOutputIndices == null ? i : udfOutputIndices[i];
+            if (scalarFunctions[functionIndex].getPythonFunction().returnsTableRow()) {
+                Preconditions.checkArgument(
+                        outputCount == 1, "A table-row result must be the sole UDF output.");
+                return true;
+            }
         }
-        builder.setMetricEnabled(pythonConfig.isMetricEnabled());
-        builder.setProfileEnabled(pythonConfig.isProfileEnabled());
-        return builder.build();
+        return false;
     }
 
     @Override

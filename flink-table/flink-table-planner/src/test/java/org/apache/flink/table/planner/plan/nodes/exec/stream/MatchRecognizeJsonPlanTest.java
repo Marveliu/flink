@@ -23,22 +23,20 @@ import org.apache.flink.table.api.TableEnvironment;
 import org.apache.flink.table.planner.utils.StreamTableTestUtil;
 import org.apache.flink.table.planner.utils.TableTestBase;
 
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
-/** Test json serialization for match recognize. */
-public class MatchRecognizeJsonPlanTest extends TableTestBase {
+/** Test json plan generation for {@link StreamExecMatch}. */
+class MatchRecognizeJsonPlanTest extends TableTestBase {
+
     private StreamTableTestUtil util;
     private TableEnvironment tEnv;
 
-    @Before
-    public void setup() {
+    @BeforeEach
+    void setup() {
         util = streamTestUtil(TableConfig.getDefault());
         tEnv = util.getTableEnv();
-    }
 
-    @Test
-    public void testMatch() {
         String srcTableDdl =
                 "CREATE TABLE MyTable (\n"
                         + "  id bigint,\n"
@@ -48,6 +46,7 @@ public class MatchRecognizeJsonPlanTest extends TableTestBase {
                         + "  'connector' = 'values',\n"
                         + "  'bounded' = 'false')";
         tEnv.executeSql(srcTableDdl);
+
         String sinkTableDdl =
                 "CREATE TABLE MySink (\n"
                         + "  a bigint,\n"
@@ -55,25 +54,26 @@ public class MatchRecognizeJsonPlanTest extends TableTestBase {
                         + "  c bigint\n"
                         + ") with (\n"
                         + "  'connector' = 'values',\n"
-                        + "  'sink-insert-only' = 'false',\n"
                         + "  'table-sink-class' = 'DEFAULT')";
         tEnv.executeSql(sinkTableDdl);
+    }
 
-        String sql =
+    @Test
+    void testMatchRecognize() {
+        util.verifyJsonPlan(
                 "insert into MySink"
                         + " SELECT T.aid, T.bid, T.cid\n"
                         + "     FROM MyTable MATCH_RECOGNIZE (\n"
                         + "             ORDER BY proctime\n"
                         + "             MEASURES\n"
-                        + "             `A\"`.id AS aid,\n"
-                        + "             \u006C.id AS bid,\n"
+                        + "             A.id AS aid,\n"
+                        + "             B.id AS bid,\n"
                         + "             C.id AS cid\n"
-                        + "             PATTERN (`A\"` \u006C C)\n"
+                        + "             PATTERN (A B C)\n"
                         + "             DEFINE\n"
-                        + "                 `A\"` AS name = 'a',\n"
-                        + "                 \u006C AS name = 'b',\n"
+                        + "                 A AS name = 'a',\n"
+                        + "                 B AS name = 'b',\n"
                         + "                 C AS name = 'c'\n"
-                        + "     ) AS T";
-        util.verifyJsonPlan(sql);
+                        + "     ) AS T");
     }
 }

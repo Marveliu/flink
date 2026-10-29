@@ -18,14 +18,20 @@
 
 package org.apache.flink.runtime.execution.librarycache;
 
+import org.apache.flink.api.common.ApplicationID;
 import org.apache.flink.api.common.JobID;
 import org.apache.flink.runtime.blob.PermanentBlobKey;
 import org.apache.flink.runtime.blob.PermanentBlobService;
 import org.apache.flink.runtime.rpc.FatalErrorHandler;
+import org.apache.flink.util.CollectionUtil;
 import org.apache.flink.util.ExceptionUtils;
 import org.apache.flink.util.FlinkUserCodeClassLoader;
+import org.apache.flink.util.FlinkUserCodeClassLoaders;
 import org.apache.flink.util.Preconditions;
+import org.apache.flink.util.StringUtils;
 import org.apache.flink.util.UserCodeClassLoader;
+
+import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.databind.type.TypeFactory;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -34,6 +40,7 @@ import javax.annotation.Nullable;
 import javax.annotation.concurrent.GuardedBy;
 import javax.annotation.concurrent.ThreadSafe;
 
+import java.io.Closeable;
 import java.io.IOException;
 import java.net.URL;
 import java.net.URLClassLoader;
@@ -72,19 +79,25 @@ public class BlobLibraryCacheManager implements LibraryCacheManager {
 
     private final ClassLoaderFactory classLoaderFactory;
 
+    /** If true, it will use system class loader when the jars and classpaths of job are empty. */
+    private final boolean wrapsSystemClassLoader;
+
     // --------------------------------------------------------------------------------------------
 
     public BlobLibraryCacheManager(
-            PermanentBlobService blobService, ClassLoaderFactory classLoaderFactory) {
+            PermanentBlobService blobService,
+            ClassLoaderFactory classLoaderFactory,
+            boolean wrapsSystemClassLoader) {
         this.blobService = checkNotNull(blobService);
         this.classLoaderFactory = checkNotNull(classLoaderFactory);
+        this.wrapsSystemClassLoader = wrapsSystemClassLoader;
     }
 
     @Override
-    public ClassLoaderLease registerClassLoaderLease(JobID jobId) {
+    public ClassLoaderLease registerClassLoaderLease(JobID jobId, ApplicationID applicationId) {
         synchronized (lockObject) {
             return cacheEntries
-                    .computeIfAbsent(jobId, jobID -> new LibraryCacheEntry(jobId))
+                    .computeIfAbsent(jobId, jobID -> new LibraryCacheEntry(jobId, applicationId))
                     .obtainLease();
         }
     }
@@ -199,6 +212,8 @@ public class BlobLibraryCacheManager implements LibraryCacheManager {
     private final class LibraryCacheEntry {
         private final JobID jobId;
 
+        private final ApplicationID applicationId;
+
         @GuardedBy("lockObject")
         private int referenceCount;
 
@@ -209,8 +224,9 @@ public class BlobLibraryCacheManager implements LibraryCacheManager {
         @GuardedBy("lockObject")
         private boolean isReleased;
 
-        private LibraryCacheEntry(JobID jobId) {
+        private LibraryCacheEntry(JobID jobId, ApplicationID applicationId) {
             this.jobId = jobId;
+            this.applicationId = applicationId;
             referenceCount = 0;
             this.resolvedClassLoader = null;
             this.isReleased = false;
@@ -223,11 +239,17 @@ public class BlobLibraryCacheManager implements LibraryCacheManager {
                 verifyIsNotReleased();
 
                 if (resolvedClassLoader == null) {
+                    boolean systemClassLoader =
+                            wrapsSystemClassLoader && libraries.isEmpty() && classPaths.isEmpty();
                     resolvedClassLoader =
                             new ResolvedClassLoader(
-                                    createUserCodeClassLoader(jobId, libraries, classPaths),
+                                    systemClassLoader
+                                            ? ClassLoader.getSystemClassLoader()
+                                            : createUserCodeClassLoader(
+                                                    jobId, applicationId, libraries, classPaths),
                                     libraries,
-                                    classPaths);
+                                    classPaths,
+                                    systemClassLoader);
                 } else {
                     resolvedClassLoader.verifyClassLoader(libraries, classPaths);
                 }
@@ -239,6 +261,7 @@ public class BlobLibraryCacheManager implements LibraryCacheManager {
         @GuardedBy("lockObject")
         private URLClassLoader createUserCodeClassLoader(
                 JobID jobId,
+                ApplicationID applicationId,
                 Collection<PermanentBlobKey> requiredJarFiles,
                 Collection<URL> requiredClasspaths)
                 throws IOException {
@@ -248,7 +271,19 @@ public class BlobLibraryCacheManager implements LibraryCacheManager {
                 int count = 0;
                 // add URLs to locally cached JAR files
                 for (PermanentBlobKey key : requiredJarFiles) {
-                    libraryURLs[count] = blobService.getFile(jobId, key).toURI().toURL();
+                    try {
+                        // first try job specific libraries
+                        libraryURLs[count] = blobService.getFile(jobId, key).toURI().toURL();
+                    } catch (Exception e) {
+                        // then try application specific libraries
+                        LOG.info(
+                                "Falling back to application blob {} with application id {} for job {}.",
+                                key,
+                                applicationId,
+                                jobId);
+                        libraryURLs[count] =
+                                blobService.getFile(applicationId, key).toURI().toURL();
+                    }
                     ++count;
                 }
 
@@ -354,15 +389,30 @@ public class BlobLibraryCacheManager implements LibraryCacheManager {
     }
 
     private static final class ResolvedClassLoader implements UserCodeClassLoader {
-        private final URLClassLoader classLoader;
+        private final ClassLoader classLoader;
 
         /**
-         * Set of BLOB keys used for a previous job/task registration.
+         * Set of BLOB keys used for a previous job/task registration, kept for error messages and
+         * logging only. Later registrations are checked against {@link #libraryHashes}.
+         */
+        private final Set<PermanentBlobKey> libraries;
+
+        /**
+         * Content hashes of {@link #libraries}.
          *
          * <p>The purpose of this is to make sure, future registrations do not differ in content as
          * this is a contract of the {@link BlobLibraryCacheManager}.
+         *
+         * <p>A {@link PermanentBlobKey} contains a random component on top of the content hash (see
+         * FLINK-7140), so the same JAR uploaded twice yields two unequal keys. Comparing content
+         * hashes instead of whole keys keeps the contract check meaningful while tolerating the
+         * re-upload of unchanged JARs that happens when a JobManager fails over (FLINK-32212).
+         *
+         * <p>Note that this compares the set of distinct contents, so a registration that only adds
+         * or drops a duplicate of a JAR already in the required library set is accepted: the
+         * resolved class loader can serve it either way.
          */
-        private final Set<PermanentBlobKey> libraries;
+        private final Set<String> libraryHashes;
 
         /**
          * Set of class path URLs used for a previous job/task registration.
@@ -372,22 +422,27 @@ public class BlobLibraryCacheManager implements LibraryCacheManager {
          */
         private final Set<String> classPaths;
 
+        private final boolean wrapsSystemClassLoader;
+
         private final Map<String, Runnable> releaseHooks;
 
         private ResolvedClassLoader(
-                URLClassLoader classLoader,
+                ClassLoader classLoader,
                 Collection<PermanentBlobKey> requiredLibraries,
-                Collection<URL> requiredClassPaths) {
+                Collection<URL> requiredClassPaths,
+                boolean wrapsSystemClassLoader) {
             this.classLoader = classLoader;
 
             // NOTE: do not store the class paths, i.e. URLs, into a set for performance reasons
             //       see http://findbugs.sourceforge.net/bugDescriptions.html#DMI_COLLECTION_OF_URLS
             //       -> alternatively, compare their string representation
-            this.classPaths = new HashSet<>(requiredClassPaths.size());
+            this.classPaths = CollectionUtil.newHashSetWithExpectedSize(requiredClassPaths.size());
             for (URL url : requiredClassPaths) {
                 classPaths.add(url.toString());
             }
             this.libraries = new HashSet<>(requiredLibraries);
+            this.libraryHashes = hashesOf(requiredLibraries);
+            this.wrapsSystemClassLoader = wrapsSystemClassLoader;
 
             this.releaseHooks = new HashMap<>();
         }
@@ -406,21 +461,25 @@ public class BlobLibraryCacheManager implements LibraryCacheManager {
                 Collection<PermanentBlobKey> requiredLibraries,
                 Collection<URL> requiredClassPaths) {
             // Make sure the previous registration referred to the same libraries and class paths.
-            // NOTE: the original collections may contain duplicates and may not already be Set
-            //       collections with fast checks whether an item is contained in it.
 
-            // lazy construction of a new set for faster comparisons
-            if (libraries.size() != requiredLibraries.size()
-                    || !new HashSet<>(requiredLibraries).containsAll(libraries)) {
-
+            // Libraries are compared by BLOB content rather than by key, see #libraryHashes.
+            final Set<String> requiredLibraryHashes = hashesOf(requiredLibraries);
+            if (!libraryHashes.equals(requiredLibraryHashes)) {
                 throw new IllegalStateException(
-                        "The library registration references a different set of library BLOBs than"
-                                + " previous registrations for this job:\nold:"
+                        "The library registration references a different set of library BLOB"
+                                + " contents than previous registrations for this job:\nold:"
                                 + libraries
-                                + "\nnew:"
-                                + requiredLibraries);
+                                + " (contents: "
+                                + libraryHashes
+                                + ")\nnew:"
+                                + requiredLibraries
+                                + " (contents: "
+                                + requiredLibraryHashes
+                                + ")");
             }
 
+            // NOTE: the original collection may contain duplicates and may not already be a Set
+            //       collection with fast checks whether an item is contained in it.
             // lazy construction of a new set with String representations of the URLs
             if (classPaths.size() != requiredClassPaths.size()
                     || !requiredClassPaths.stream()
@@ -429,12 +488,20 @@ public class BlobLibraryCacheManager implements LibraryCacheManager {
                             .containsAll(classPaths)) {
 
                 throw new IllegalStateException(
-                        "The library registration references a different set of library BLOBs than"
+                        "The library registration references a different set of class paths than"
                                 + " previous registrations for this job:\nold:"
                                 + classPaths
                                 + "\nnew:"
                                 + requiredClassPaths);
             }
+        }
+
+        private static Set<String> hashesOf(Collection<PermanentBlobKey> libraries) {
+            final Set<String> hashes = CollectionUtil.newHashSetWithExpectedSize(libraries.size());
+            for (PermanentBlobKey library : libraries) {
+                hashes.add(StringUtils.byteToHexString(library.getHash()));
+            }
+            return hashes;
         }
 
         /**
@@ -444,13 +511,17 @@ public class BlobLibraryCacheManager implements LibraryCacheManager {
         private void releaseClassLoader() {
             runReleaseHooks();
 
-            try {
-                classLoader.close();
-            } catch (IOException e) {
-                LOG.warn(
-                        "Failed to release user code class loader for "
-                                + Arrays.toString(libraries.toArray()));
+            if (!wrapsSystemClassLoader) {
+                try {
+                    ((Closeable) classLoader).close();
+                } catch (IOException e) {
+                    LOG.warn(
+                            "Failed to release user code class loader for "
+                                    + Arrays.toString(libraries.toArray()));
+                }
             }
+            // clear potential references to user-classes in the singleton cache
+            TypeFactory.defaultInstance().clearCache();
         }
 
         private void runReleaseHooks() {

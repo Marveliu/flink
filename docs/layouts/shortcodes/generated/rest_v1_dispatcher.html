@@ -1,6 +1,377 @@
 <table class="rest-api table table-bordered">
   <tbody>
     <tr>
+      <td class="text-left" colspan="2"><h5><strong>/applications/overview</strong></h5></td>
+    </tr>
+    <tr>
+      <td class="text-left" style="width: 20%">Verb: <code>GET</code></td>
+      <td class="text-left">Response code: <code>200 OK</code></td>
+    </tr>
+    <tr>
+      <td colspan="2">Returns an overview over all applications.</td>
+    </tr>
+    <tr>
+      <td colspan="2">
+        <label>
+          <details>
+          <summary>Request</summary>
+          <pre><code>{}</code></pre>
+        </label>
+      </td>
+    </tr>
+    <tr>
+      <td colspan="2">
+        <label>
+          <details>
+          <summary>Response</summary>
+          <pre><code>{
+  "type" : "object",
+  "id" : "urn:jsonschema:org:apache:flink:runtime:messages:webmonitor:MultipleApplicationsDetails",
+  "properties" : {
+    "applications" : {
+      "type" : "array",
+      "items" : {
+        "type" : "object",
+        "id" : "urn:jsonschema:org:apache:flink:runtime:messages:webmonitor:ApplicationDetails",
+        "properties" : {
+          "duration" : {
+            "type" : "integer"
+          },
+          "end-time" : {
+            "type" : "integer"
+          },
+          "id" : {
+            "type" : "any"
+          },
+          "jobs" : {
+            "type" : "object",
+            "additionalProperties" : {
+              "type" : "integer"
+            }
+          },
+          "name" : {
+            "type" : "string"
+          },
+          "start-time" : {
+            "type" : "integer"
+          },
+          "status" : {
+            "type" : "string"
+          }
+        }
+      }
+    }
+  }
+}</code></pre>
+        </label>
+      </td>
+    </tr>
+  </tbody>
+</table>
+<table class="rest-api table table-bordered">
+  <tbody>
+    <tr>
+      <td class="text-left" colspan="2"><h5><strong>/applications/:applicationid</strong></h5></td>
+    </tr>
+    <tr>
+      <td class="text-left" style="width: 20%">Verb: <code>GET</code></td>
+      <td class="text-left">Response code: <code>200 OK</code></td>
+    </tr>
+    <tr>
+      <td colspan="2">Returns details of an application.</td>
+    </tr>
+    <tr>
+      <td colspan="2">Path parameters</td>
+    </tr>
+    <tr>
+      <td colspan="2">
+        <ul>
+<li><code>applicationid</code> - 32-character hexadecimal string value that identifies an application.</li>
+        </ul>
+      </td>
+    </tr>
+    <tr>
+      <td colspan="2">
+        <label>
+          <details>
+          <summary>Request</summary>
+          <pre><code>{}</code></pre>
+        </label>
+      </td>
+    </tr>
+    <tr>
+      <td colspan="2">
+        <label>
+          <details>
+          <summary>Response</summary>
+          <pre><code>{
+  "type" : "object",
+  "id" : "urn:jsonschema:org:apache:flink:runtime:messages:webmonitor:ApplicationDetailsInfo",
+  "properties" : {
+    "duration" : {
+      "type" : "integer"
+    },
+    "end-time" : {
+      "type" : "integer"
+    },
+    "id" : {
+      "type" : "any"
+    },
+    "jobs" : {
+      "type" : "array",
+      "items" : {
+        "type" : "object",
+        "id" : "urn:jsonschema:org:apache:flink:runtime:messages:webmonitor:JobDetails",
+        "properties" : {
+          "duration" : {
+            "type" : "integer"
+          },
+          "end-time" : {
+            "type" : "integer"
+          },
+          "jid" : {
+            "type" : "any"
+          },
+          "jobType" : {
+            "type" : "string",
+            "enum" : [ "BATCH", "STREAMING" ]
+          },
+          "last-modification" : {
+            "type" : "integer"
+          },
+          "name" : {
+            "type" : "string"
+          },
+          "pending-operators" : {
+            "type" : "integer"
+          },
+          "schedulerType" : {
+            "type" : "string",
+            "enum" : [ "Default", "Adaptive", "AdaptiveBatch" ]
+          },
+          "start-time" : {
+            "type" : "integer"
+          },
+          "state" : {
+            "type" : "string",
+            "enum" : [ "INITIALIZING", "CREATED", "RUNNING", "FAILING", "FAILED", "CANCELLING", "CANCELED", "FINISHED", "RESTARTING", "SUSPENDED", "RECONCILING" ]
+          },
+          "tasks" : {
+            "type" : "object",
+            "additionalProperties" : {
+              "type" : "integer"
+            }
+          }
+        }
+      }
+    },
+    "name" : {
+      "type" : "string"
+    },
+    "start-time" : {
+      "type" : "integer"
+    },
+    "status" : {
+      "type" : "string"
+    },
+    "timestamps" : {
+      "type" : "object",
+      "additionalProperties" : {
+        "type" : "integer"
+      }
+    }
+  }
+}</code></pre>
+        </label>
+      </td>
+    </tr>
+  </tbody>
+</table>
+<table class="rest-api table table-bordered">
+  <tbody>
+    <tr>
+      <td class="text-left" colspan="2"><h5><strong>/applications/:applicationid/cancel</strong></h5></td>
+    </tr>
+    <tr>
+      <td class="text-left" style="width: 20%">Verb: <code>POST</code></td>
+      <td class="text-left">Response code: <code>202 Accepted</code></td>
+    </tr>
+    <tr>
+      <td colspan="2">Terminates an application.</td>
+    </tr>
+    <tr>
+      <td colspan="2">Path parameters</td>
+    </tr>
+    <tr>
+      <td colspan="2">
+        <ul>
+<li><code>applicationid</code> - 32-character hexadecimal string value that identifies an application.</li>
+        </ul>
+      </td>
+    </tr>
+    <tr>
+      <td colspan="2">
+        <label>
+          <details>
+          <summary>Request</summary>
+          <pre><code>{}</code></pre>
+        </label>
+      </td>
+    </tr>
+    <tr>
+      <td colspan="2">
+        <label>
+          <details>
+          <summary>Response</summary>
+          <pre><code>{}</code></pre>
+        </label>
+      </td>
+    </tr>
+  </tbody>
+</table>
+<table class="rest-api table table-bordered">
+  <tbody>
+    <tr>
+      <td class="text-left" colspan="2"><h5><strong>/applications/:applicationid/exceptions</strong></h5></td>
+    </tr>
+    <tr>
+      <td class="text-left" style="width: 20%">Verb: <code>GET</code></td>
+      <td class="text-left">Response code: <code>200 OK</code></td>
+    </tr>
+    <tr>
+      <td colspan="2">Returns exception history for an application.</td>
+    </tr>
+    <tr>
+      <td colspan="2">Path parameters</td>
+    </tr>
+    <tr>
+      <td colspan="2">
+        <ul>
+<li><code>applicationid</code> - 32-character hexadecimal string value that identifies an application.</li>
+        </ul>
+      </td>
+    </tr>
+    <tr>
+      <td colspan="2">Query parameters</td>
+    </tr>
+    <tr>
+      <td colspan="2">
+        <ul>
+<li><code>maxExceptions</code> (optional): Comma-separated list of integer values that specifies the upper limit of exceptions to return.</li>
+        </ul>
+      </td>
+    </tr>
+    <tr>
+      <td colspan="2">
+        <label>
+          <details>
+          <summary>Request</summary>
+          <pre><code>{}</code></pre>
+        </label>
+      </td>
+    </tr>
+    <tr>
+      <td colspan="2">
+        <label>
+          <details>
+          <summary>Response</summary>
+          <pre><code>{
+  "type" : "object",
+  "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:ApplicationExceptionsInfoWithHistory",
+  "properties" : {
+    "exceptionHistory" : {
+      "type" : "object",
+      "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:ApplicationExceptionsInfoWithHistory:ApplicationExceptionHistory",
+      "properties" : {
+        "entries" : {
+          "type" : "array",
+          "items" : {
+            "type" : "object",
+            "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:ApplicationExceptionsInfoWithHistory:ApplicationExceptionInfo",
+            "properties" : {
+              "exceptionName" : {
+                "type" : "string"
+              },
+              "jobId" : {
+                "type" : "any"
+              },
+              "stacktrace" : {
+                "type" : "string"
+              },
+              "timestamp" : {
+                "type" : "integer"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}</code></pre>
+        </label>
+      </td>
+    </tr>
+  </tbody>
+</table>
+<table class="rest-api table table-bordered">
+  <tbody>
+    <tr>
+      <td class="text-left" colspan="2"><h5><strong>/applications/:applicationid/jobmanager/config</strong></h5></td>
+    </tr>
+    <tr>
+      <td class="text-left" style="width: 20%">Verb: <code>GET</code></td>
+      <td class="text-left">Response code: <code>200 OK</code></td>
+    </tr>
+    <tr>
+      <td colspan="2">Returns the jobmanager's configuration of a specific application.</td>
+    </tr>
+    <tr>
+      <td colspan="2">Path parameters</td>
+    </tr>
+    <tr>
+      <td colspan="2">
+        <ul>
+<li><code>applicationid</code> - 32-character hexadecimal string value that identifies an application.</li>
+        </ul>
+      </td>
+    </tr>
+    <tr>
+      <td colspan="2">
+        <label>
+          <details>
+          <summary>Request</summary>
+          <pre><code>{}</code></pre>
+        </label>
+      </td>
+    </tr>
+    <tr>
+      <td colspan="2">
+        <label>
+          <details>
+          <summary>Response</summary>
+          <pre><code>{
+  "type" : "array",
+  "items" : {
+    "type" : "object",
+    "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:ConfigurationInfoEntry",
+    "properties" : {
+      "key" : {
+        "type" : "string"
+      },
+      "value" : {
+        "type" : "string"
+      }
+    }
+  }
+}</code></pre>
+        </label>
+      </td>
+    </tr>
+  </tbody>
+</table>
+<table class="rest-api table table-bordered">
+  <tbody>
+    <tr>
       <td class="text-left" colspan="2"><h5><strong>/cluster</strong></h5></td>
     </tr>
     <tr>
@@ -12,40 +383,20 @@
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Request</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{}            </code>
-          </pre>
-          </div>
+          <details>
+          <summary>Request</summary>
+          <pre><code>{}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Response</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{}            </code>
-          </pre>
-          </div>
+          <details>
+          <summary>Response</summary>
+          <pre><code>{}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
   </tbody>
@@ -64,36 +415,19 @@
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Request</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{}            </code>
-          </pre>
-          </div>
+          <details>
+          <summary>Request</summary>
+          <pre><code>{}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Response</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{
+          <details>
+          <summary>Response</summary>
+          <pre><code>{
   "type" : "object",
   "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:DashboardConfiguration",
   "properties" : {
@@ -102,6 +436,12 @@
       "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:DashboardConfiguration:Features",
       "properties" : {
         "web-cancel" : {
+          "type" : "boolean"
+        },
+        "web-history" : {
+          "type" : "boolean"
+        },
+        "web-rescale" : {
           "type" : "boolean"
         },
         "web-submit" : {
@@ -125,11 +465,8 @@
       "type" : "integer"
     }
   }
-}            </code>
-          </pre>
-          </div>
+}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
   </tbody>
@@ -148,36 +485,19 @@
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Request</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{}            </code>
-          </pre>
-          </div>
+          <details>
+          <summary>Request</summary>
+          <pre><code>{}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Response</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{
+          <details>
+          <summary>Response</summary>
+          <pre><code>{
   "type" : "object",
   "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:dataset:ClusterDataSetListResponseBody",
   "properties" : {
@@ -197,11 +517,8 @@
       }
     }
   }
-}            </code>
-          </pre>
-          </div>
+}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
   </tbody>
@@ -230,36 +547,19 @@
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Request</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{}            </code>
-          </pre>
-          </div>
+          <details>
+          <summary>Request</summary>
+          <pre><code>{}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Response</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{
+          <details>
+          <summary>Response</summary>
+          <pre><code>{
   "type" : "object",
   "id" : "urn:jsonschema:org:apache:flink:runtime:rest:handler:async:AsynchronousOperationResult",
   "properties" : {
@@ -284,11 +584,8 @@
       }
     }
   }
-}            </code>
-          </pre>
-          </div>
+}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
   </tbody>
@@ -317,36 +614,19 @@
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Request</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{}            </code>
-          </pre>
-          </div>
+          <details>
+          <summary>Request</summary>
+          <pre><code>{}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Response</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{
+          <details>
+          <summary>Response</summary>
+          <pre><code>{
   "type" : "object",
   "id" : "urn:jsonschema:org:apache:flink:runtime:rest:handler:async:TriggerResponse",
   "properties" : {
@@ -354,11 +634,8 @@
       "type" : "any"
     }
   }
-}            </code>
-          </pre>
-          </div>
+}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
   </tbody>
@@ -377,36 +654,19 @@
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Request</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{}            </code>
-          </pre>
-          </div>
+          <details>
+          <summary>Request</summary>
+          <pre><code>{}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Response</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{
+          <details>
+          <summary>Response</summary>
+          <pre><code>{
   "type" : "object",
   "id" : "urn:jsonschema:org:apache:flink:runtime:webmonitor:handlers:JarListInfo",
   "properties" : {
@@ -447,11 +707,8 @@
       }
     }
   }
-}            </code>
-          </pre>
-          </div>
+}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
   </tbody>
@@ -471,36 +728,19 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Request</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{}            </code>
-          </pre>
-          </div>
+          <details>
+          <summary>Request</summary>
+          <pre><code>{}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Response</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{
+          <details>
+          <summary>Response</summary>
+          <pre><code>{
   "type" : "object",
   "id" : "urn:jsonschema:org:apache:flink:runtime:webmonitor:handlers:JarUploadResponseBody",
   "properties" : {
@@ -512,11 +752,8 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
       "enum" : [ "success" ]
     }
   }
-}            </code>
-          </pre>
-          </div>
+}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
   </tbody>
@@ -545,146 +782,20 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Request</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{}            </code>
-          </pre>
-          </div>
+          <details>
+          <summary>Request</summary>
+          <pre><code>{}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Response</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{}            </code>
-          </pre>
-          </div>
+          <details>
+          <summary>Response</summary>
+          <pre><code>{}</code></pre>
         </label>
-      </div>
-      </td>
-    </tr>
-  </tbody>
-</table>
-<table class="rest-api table table-bordered">
-  <tbody>
-    <tr>
-      <td class="text-left" colspan="2"><h5><strong>/jars/:jarid/plan</strong></h5></td>
-    </tr>
-    <tr>
-      <td class="text-left" style="width: 20%">Verb: <code>GET</code></td>
-      <td class="text-left">Response code: <code>200 OK</code></td>
-    </tr>
-    <tr>
-      <td colspan="2">Returns the dataflow plan of a job contained in a jar previously uploaded via '/jars/upload'. Program arguments can be passed both via the JSON request (recommended) or query parameters.</td>
-    </tr>
-    <tr>
-      <td colspan="2">Path parameters</td>
-    </tr>
-    <tr>
-      <td colspan="2">
-        <ul>
-<li><code>jarid</code> - String value that identifies a jar. When uploading the jar a path is returned, where the filename is the ID. This value is equivalent to the `id` field in the list of uploaded jars (/jars).</li>
-        </ul>
-      </td>
-    </tr>
-    <tr>
-      <td colspan="2">Query parameters</td>
-    </tr>
-    <tr>
-      <td colspan="2">
-        <ul>
-<li><code>program-args</code> (optional): Deprecated, please use 'programArg' instead. String value that specifies the arguments for the program or plan</li>
-<li><code>programArg</code> (optional): Comma-separated list of program arguments.</li>
-<li><code>entry-class</code> (optional): String value that specifies the fully qualified name of the entry point class. Overrides the class defined in the jar file manifest.</li>
-<li><code>parallelism</code> (optional): Positive integer value that specifies the desired parallelism for the job.</li>
-        </ul>
-      </td>
-    </tr>
-    <tr>
-      <td colspan="2">
-      <div class="book-expand">
-        <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Request</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{
-  "type" : "object",
-  "id" : "urn:jsonschema:org:apache:flink:runtime:webmonitor:handlers:JarPlanRequestBody",
-  "properties" : {
-    "entryClass" : {
-      "type" : "string"
-    },
-    "jobId" : {
-      "type" : "any"
-    },
-    "parallelism" : {
-      "type" : "integer"
-    },
-    "programArgs" : {
-      "type" : "string"
-    },
-    "programArgsList" : {
-      "type" : "array",
-      "items" : {
-        "type" : "string"
-      }
-    }
-  }
-}            </code>
-          </pre>
-          </div>
-        </label>
-      </div>
-      </td>
-    </tr>
-    <tr>
-      <td colspan="2">
-      <div class="book-expand">
-        <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Response</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{
-  "type" : "object",
-  "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:JobPlanInfo",
-  "properties" : {
-    "plan" : {
-      "type" : "any"
-    }
-  }
-}            </code>
-          </pre>
-          </div>
-        </label>
-      </div>
       </td>
     </tr>
   </tbody>
@@ -717,7 +828,6 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
     <tr>
       <td colspan="2">
         <ul>
-<li><code>program-args</code> (optional): Deprecated, please use 'programArg' instead. String value that specifies the arguments for the program or plan</li>
 <li><code>programArg</code> (optional): Comma-separated list of program arguments.</li>
 <li><code>entry-class</code> (optional): String value that specifies the fully qualified name of the entry point class. Overrides the class defined in the jar file manifest.</li>
 <li><code>parallelism</code> (optional): Positive integer value that specifies the desired parallelism for the job.</li>
@@ -726,31 +836,27 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Request</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{
+          <details>
+          <summary>Request</summary>
+          <pre><code>{
   "type" : "object",
   "id" : "urn:jsonschema:org:apache:flink:runtime:webmonitor:handlers:JarPlanRequestBody",
   "properties" : {
     "entryClass" : {
       "type" : "string"
     },
+    "flinkConfiguration" : {
+      "type" : "object",
+      "additionalProperties" : {
+        "type" : "string"
+      }
+    },
     "jobId" : {
       "type" : "any"
     },
     "parallelism" : {
       "type" : "integer"
-    },
-    "programArgs" : {
-      "type" : "string"
     },
     "programArgsList" : {
       "type" : "array",
@@ -759,38 +865,92 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
       }
     }
   }
-}            </code>
-          </pre>
-          </div>
+}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Response</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{
+          <details>
+          <summary>Response</summary>
+          <pre><code>{
   "type" : "object",
   "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:JobPlanInfo",
   "properties" : {
     "plan" : {
-      "type" : "any"
+      "type" : "object",
+      "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:JobPlanInfo:Plan",
+      "properties" : {
+        "jid" : {
+          "type" : "string"
+        },
+        "name" : {
+          "type" : "string"
+        },
+        "nodes" : {
+          "type" : "array",
+          "items" : {
+            "type" : "object",
+            "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:JobPlanInfo:Plan:Node",
+            "properties" : {
+              "description" : {
+                "type" : "string"
+              },
+              "id" : {
+                "type" : "string"
+              },
+              "inputs" : {
+                "type" : "array",
+                "items" : {
+                  "type" : "object",
+                  "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:JobPlanInfo:Plan:Node:Input",
+                  "properties" : {
+                    "caching" : {
+                      "type" : "string"
+                    },
+                    "exchange" : {
+                      "type" : "string"
+                    },
+                    "id" : {
+                      "type" : "string"
+                    },
+                    "local_strategy" : {
+                      "type" : "string"
+                    },
+                    "num" : {
+                      "type" : "integer"
+                    },
+                    "ship_strategy" : {
+                      "type" : "string"
+                    }
+                  }
+                }
+              },
+              "operator" : {
+                "type" : "string"
+              },
+              "operator_strategy" : {
+                "type" : "string"
+              },
+              "optimizer_properties" : {
+                "type" : "object",
+                "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:JobPlanInfo:RawJson"
+              },
+              "parallelism" : {
+                "type" : "integer"
+              }
+            }
+          }
+        },
+        "type" : {
+          "type" : "string"
+        }
+      }
     }
   }
-}            </code>
-          </pre>
-          </div>
+}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
   </tbody>
@@ -825,7 +985,6 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
         <ul>
 <li><code>allowNonRestoredState</code> (optional): Boolean value that specifies whether the job submission should be rejected if the savepoint contains state that cannot be mapped back to the job.</li>
 <li><code>savepointPath</code> (optional): String value that specifies the path of the savepoint to restore the job from.</li>
-<li><code>program-args</code> (optional): Deprecated, please use 'programArg' instead. String value that specifies the arguments for the program or plan</li>
 <li><code>programArg</code> (optional): Comma-separated list of program arguments.</li>
 <li><code>entry-class</code> (optional): String value that specifies the fully qualified name of the entry point class. Overrides the class defined in the jar file manifest.</li>
 <li><code>parallelism</code> (optional): Positive integer value that specifies the desired parallelism for the job.</li>
@@ -834,34 +993,34 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Request</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{
+          <details>
+          <summary>Request</summary>
+          <pre><code>{
   "type" : "object",
   "id" : "urn:jsonschema:org:apache:flink:runtime:webmonitor:handlers:JarRunRequestBody",
   "properties" : {
     "allowNonRestoredState" : {
       "type" : "boolean"
     },
+    "claimMode" : {
+      "type" : "string",
+      "enum" : [ "CLAIM", "NO_CLAIM", "LEGACY" ]
+    },
     "entryClass" : {
       "type" : "string"
+    },
+    "flinkConfiguration" : {
+      "type" : "object",
+      "additionalProperties" : {
+        "type" : "string"
+      }
     },
     "jobId" : {
       "type" : "any"
     },
     "parallelism" : {
       "type" : "integer"
-    },
-    "programArgs" : {
-      "type" : "string"
     },
     "programArgsList" : {
       "type" : "array",
@@ -877,38 +1036,131 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
       "type" : "string"
     }
   }
-}            </code>
-          </pre>
-          </div>
+}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Response</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{
+          <details>
+          <summary>Response</summary>
+          <pre><code>{
   "type" : "object",
   "id" : "urn:jsonschema:org:apache:flink:runtime:webmonitor:handlers:JarRunResponseBody",
   "properties" : {
+    "applicationId" : {
+      "type" : "any"
+    },
     "jobid" : {
       "type" : "any"
     }
   }
-}            </code>
-          </pre>
-          </div>
+}</code></pre>
         </label>
-      </div>
+      </td>
+    </tr>
+  </tbody>
+</table>
+<table class="rest-api table table-bordered">
+  <tbody>
+    <tr>
+      <td class="text-left" colspan="2"><h5><strong>/jars/:jarid/run-application</strong></h5></td>
+    </tr>
+    <tr>
+      <td class="text-left" style="width: 20%">Verb: <code>POST</code></td>
+      <td class="text-left">Response code: <code>202 Accepted</code></td>
+    </tr>
+    <tr>
+      <td colspan="2">Submits an application by running a jar previously uploaded via '/jars/upload'. </td>
+    </tr>
+    <tr>
+      <td colspan="2">Path parameters</td>
+    </tr>
+    <tr>
+      <td colspan="2">
+        <ul>
+<li><code>jarid</code> - String value that identifies a jar. When uploading the jar a path is returned, where the filename is the ID. This value is equivalent to the `id` field in the list of uploaded jars (/jars).</li>
+        </ul>
+      </td>
+    </tr>
+    <tr>
+      <td colspan="2">Query parameters</td>
+    </tr>
+    <tr>
+      <td colspan="2">
+        <ul>
+<li><code>allowNonRestoredState</code> (optional): Boolean value that specifies whether the job submission should be rejected if the savepoint contains state that cannot be mapped back to the job.</li>
+<li><code>savepointPath</code> (optional): String value that specifies the path of the savepoint to restore the job from.</li>
+<li><code>programArg</code> (optional): Comma-separated list of program arguments.</li>
+<li><code>entry-class</code> (optional): String value that specifies the fully qualified name of the entry point class. Overrides the class defined in the jar file manifest.</li>
+<li><code>parallelism</code> (optional): Positive integer value that specifies the desired parallelism for the job.</li>
+        </ul>
+      </td>
+    </tr>
+    <tr>
+      <td colspan="2">
+        <label>
+          <details>
+          <summary>Request</summary>
+          <pre><code>{
+  "type" : "object",
+  "id" : "urn:jsonschema:org:apache:flink:runtime:webmonitor:handlers:JarRunApplicationRequestBody",
+  "properties" : {
+    "allowNonRestoredState" : {
+      "type" : "boolean"
+    },
+    "applicationId" : {
+      "type" : "any"
+    },
+    "claimMode" : {
+      "type" : "string",
+      "enum" : [ "CLAIM", "NO_CLAIM", "LEGACY" ]
+    },
+    "entryClass" : {
+      "type" : "string"
+    },
+    "flinkConfiguration" : {
+      "type" : "object",
+      "additionalProperties" : {
+        "type" : "string"
+      }
+    },
+    "jobId" : {
+      "type" : "any"
+    },
+    "parallelism" : {
+      "type" : "integer"
+    },
+    "programArgsList" : {
+      "type" : "array",
+      "items" : {
+        "type" : "string"
+      }
+    },
+    "savepointPath" : {
+      "type" : "string"
+    }
+  }
+}</code></pre>
+        </label>
+      </td>
+    </tr>
+    <tr>
+      <td colspan="2">
+        <label>
+          <details>
+          <summary>Response</summary>
+          <pre><code>{
+  "type" : "object",
+  "id" : "urn:jsonschema:org:apache:flink:runtime:webmonitor:handlers:JarRunApplicationResponseBody",
+  "properties" : {
+    "applicationid" : {
+      "type" : "any"
+    }
+  }
+}</code></pre>
+        </label>
       </td>
     </tr>
   </tbody>
@@ -927,40 +1179,23 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Request</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{}            </code>
-          </pre>
-          </div>
+          <details>
+          <summary>Request</summary>
+          <pre><code>{}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Response</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{
+          <details>
+          <summary>Response</summary>
+          <pre><code>{
   "type" : "array",
   "items" : {
     "type" : "object",
-    "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:ClusterConfigurationInfoEntry",
+    "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:ConfigurationInfoEntry",
     "properties" : {
       "key" : {
         "type" : "string"
@@ -970,11 +1205,69 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
       }
     }
   }
-}            </code>
-          </pre>
-          </div>
+}</code></pre>
         </label>
-      </div>
+      </td>
+    </tr>
+  </tbody>
+</table>
+<table class="rest-api table table-bordered">
+  <tbody>
+    <tr>
+      <td class="text-left" colspan="2"><h5><strong>/jobmanager/environment</strong></h5></td>
+    </tr>
+    <tr>
+      <td class="text-left" style="width: 20%">Verb: <code>GET</code></td>
+      <td class="text-left">Response code: <code>200 OK</code></td>
+    </tr>
+    <tr>
+      <td colspan="2">Returns the jobmanager environment.</td>
+    </tr>
+    <tr>
+      <td colspan="2">
+        <label>
+          <details>
+          <summary>Request</summary>
+          <pre><code>{}</code></pre>
+        </label>
+      </td>
+    </tr>
+    <tr>
+      <td colspan="2">
+        <label>
+          <details>
+          <summary>Response</summary>
+          <pre><code>{
+  "type" : "object",
+  "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:EnvironmentInfo",
+  "properties" : {
+    "classpath" : {
+      "type" : "array",
+      "items" : {
+        "type" : "string"
+      }
+    },
+    "jvm" : {
+      "type" : "object",
+      "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:EnvironmentInfo:JVMInfo",
+      "properties" : {
+        "arch" : {
+          "type" : "string"
+        },
+        "options" : {
+          "type" : "array",
+          "items" : {
+            "type" : "string"
+          }
+        },
+        "version" : {
+          "type" : "string"
+        }
+      }
+    }
+  }
+}</code></pre>
+        </label>
       </td>
     </tr>
   </tbody>
@@ -993,36 +1286,19 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Request</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{}            </code>
-          </pre>
-          </div>
+          <details>
+          <summary>Request</summary>
+          <pre><code>{}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Response</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{
+          <details>
+          <summary>Response</summary>
+          <pre><code>{
   "type" : "object",
   "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:LogListInfo",
   "properties" : {
@@ -1045,11 +1321,8 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
       }
     }
   }
-}            </code>
-          </pre>
-          </div>
+}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
   </tbody>
@@ -1078,42 +1351,22 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Request</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{}            </code>
-          </pre>
-          </div>
+          <details>
+          <summary>Request</summary>
+          <pre><code>{}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Response</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{
+          <details>
+          <summary>Response</summary>
+          <pre><code>{
   "type" : "any"
-}            </code>
-          </pre>
-          </div>
+}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
   </tbody>
@@ -1131,37 +1384,30 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
       <td colspan="2">Returns the thread dump of the JobManager.</td>
     </tr>
     <tr>
+      <td colspan="2">Query parameters</td>
+    </tr>
+    <tr>
       <td colspan="2">
-      <div class="book-expand">
-        <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Request</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{}            </code>
-          </pre>
-          </div>
-        </label>
-      </div>
+        <ul>
+<li><code>mode</code> (optional): Controls how much lock information is collected. Supported values: [LITE, FULL]. When omitted, cluster.thread-dump.default-mode is used.</li>
+        </ul>
       </td>
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Response</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{
+          <details>
+          <summary>Request</summary>
+          <pre><code>{}</code></pre>
+        </label>
+      </td>
+    </tr>
+    <tr>
+      <td colspan="2">
+        <label>
+          <details>
+          <summary>Response</summary>
+          <pre><code>{
   "type" : "object",
   "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:ThreadDumpInfo",
   "properties" : {
@@ -1181,11 +1427,8 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
       }
     }
   }
-}            </code>
-          </pre>
-          </div>
+}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
   </tbody>
@@ -1204,36 +1447,19 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Request</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{}            </code>
-          </pre>
-          </div>
+          <details>
+          <summary>Request</summary>
+          <pre><code>{}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Response</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{
+          <details>
+          <summary>Response</summary>
+          <pre><code>{
   "type" : "object",
   "id" : "urn:jsonschema:org:apache:flink:runtime:messages:webmonitor:JobIdsWithStatusOverview",
   "properties" : {
@@ -1254,100 +1480,8 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
       }
     }
   }
-}            </code>
-          </pre>
-          </div>
+}</code></pre>
         </label>
-      </div>
-      </td>
-    </tr>
-  </tbody>
-</table>
-<table class="rest-api table table-bordered">
-  <tbody>
-    <tr>
-      <td class="text-left" colspan="2"><h5><strong>/jobs</strong></h5></td>
-    </tr>
-    <tr>
-      <td class="text-left" style="width: 20%">Verb: <code>POST</code></td>
-      <td class="text-left">Response code: <code>202 Accepted</code></td>
-    </tr>
-    <tr>
-      <td colspan="2">Submits a job. This call is primarily intended to be used by the Flink client. This call expects a multipart/form-data request that consists of file uploads for the serialized JobGraph, jars and distributed cache artifacts and an attribute named "request" for the JSON payload.</td>
-    </tr>
-    <tr>
-      <td colspan="2">
-      <div class="book-expand">
-        <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Request</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{
-  "type" : "object",
-  "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:job:JobSubmitRequestBody",
-  "properties" : {
-    "jobArtifactFileNames" : {
-      "type" : "array",
-      "items" : {
-        "type" : "object",
-        "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:job:JobSubmitRequestBody:DistributedCacheFile",
-        "properties" : {
-          "entryName" : {
-            "type" : "string"
-          },
-          "fileName" : {
-            "type" : "string"
-          }
-        }
-      }
-    },
-    "jobGraphFileName" : {
-      "type" : "string"
-    },
-    "jobJarFileNames" : {
-      "type" : "array",
-      "items" : {
-        "type" : "string"
-      }
-    }
-  }
-}            </code>
-          </pre>
-          </div>
-        </label>
-      </div>
-      </td>
-    </tr>
-    <tr>
-      <td colspan="2">
-      <div class="book-expand">
-        <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Response</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{
-  "type" : "object",
-  "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:job:JobSubmitResponseBody",
-  "properties" : {
-    "jobUrl" : {
-      "type" : "string"
-    }
-  }
-}            </code>
-          </pre>
-          </div>
-        </label>
-      </div>
       </td>
     </tr>
   </tbody>
@@ -1371,49 +1505,29 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
       <td colspan="2">
         <ul>
 <li><code>get</code> (optional): Comma-separated list of string values to select specific metrics.</li>
-<li><code>agg</code> (optional): Comma-separated list of aggregation modes which should be calculated. Available aggregations are: "min, max, sum, avg".</li>
+<li><code>agg</code> (optional): Comma-separated list of aggregation modes which should be calculated. Available aggregations are: "min, max, sum, avg, skew".</li>
 <li><code>jobs</code> (optional): Comma-separated list of 32-character hexadecimal strings to select specific jobs.</li>
         </ul>
       </td>
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Request</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{}            </code>
-          </pre>
-          </div>
+          <details>
+          <summary>Request</summary>
+          <pre><code>{}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Response</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{
+          <details>
+          <summary>Response</summary>
+          <pre><code>{
   "type" : "any"
-}            </code>
-          </pre>
-          </div>
+}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
   </tbody>
@@ -1432,51 +1546,73 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Request</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{}            </code>
-          </pre>
-          </div>
+          <details>
+          <summary>Request</summary>
+          <pre><code>{}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Response</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{
+          <details>
+          <summary>Response</summary>
+          <pre><code>{
   "type" : "object",
   "id" : "urn:jsonschema:org:apache:flink:runtime:messages:webmonitor:MultipleJobsDetails",
   "properties" : {
     "jobs" : {
       "type" : "array",
       "items" : {
-        "type" : "any"
+        "type" : "object",
+        "id" : "urn:jsonschema:org:apache:flink:runtime:messages:webmonitor:JobDetails",
+        "properties" : {
+          "duration" : {
+            "type" : "integer"
+          },
+          "end-time" : {
+            "type" : "integer"
+          },
+          "jid" : {
+            "type" : "any"
+          },
+          "jobType" : {
+            "type" : "string",
+            "enum" : [ "BATCH", "STREAMING" ]
+          },
+          "last-modification" : {
+            "type" : "integer"
+          },
+          "name" : {
+            "type" : "string"
+          },
+          "pending-operators" : {
+            "type" : "integer"
+          },
+          "schedulerType" : {
+            "type" : "string",
+            "enum" : [ "Default", "Adaptive", "AdaptiveBatch" ]
+          },
+          "start-time" : {
+            "type" : "integer"
+          },
+          "state" : {
+            "type" : "string",
+            "enum" : [ "INITIALIZING", "CREATED", "RUNNING", "FAILING", "FAILED", "CANCELLING", "CANCELED", "FINISHED", "RESTARTING", "SUSPENDED", "RECONCILING" ]
+          },
+          "tasks" : {
+            "type" : "object",
+            "additionalProperties" : {
+              "type" : "integer"
+            }
+          }
+        }
       }
     }
   }
-}            </code>
-          </pre>
-          </div>
+}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
   </tbody>
@@ -1505,39 +1641,25 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Request</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{}            </code>
-          </pre>
-          </div>
+          <details>
+          <summary>Request</summary>
+          <pre><code>{}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Response</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{
+          <details>
+          <summary>Response</summary>
+          <pre><code>{
   "type" : "object",
   "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:job:JobDetailsInfo",
   "properties" : {
+    "application-id" : {
+      "type" : "any"
+    },
     "duration" : {
       "type" : "integer"
     },
@@ -1550,6 +1672,10 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
     "jid" : {
       "type" : "any"
     },
+    "job-type" : {
+      "type" : "string",
+      "enum" : [ "BATCH", "STREAMING" ]
+    },
     "maxParallelism" : {
       "type" : "integer"
     },
@@ -1559,8 +1685,82 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
     "now" : {
       "type" : "integer"
     },
+    "pending-operators" : {
+      "type" : "integer"
+    },
     "plan" : {
-      "type" : "string"
+      "type" : "object",
+      "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:JobPlanInfo:Plan",
+      "properties" : {
+        "jid" : {
+          "type" : "string"
+        },
+        "name" : {
+          "type" : "string"
+        },
+        "nodes" : {
+          "type" : "array",
+          "items" : {
+            "type" : "object",
+            "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:JobPlanInfo:Plan:Node",
+            "properties" : {
+              "description" : {
+                "type" : "string"
+              },
+              "id" : {
+                "type" : "string"
+              },
+              "inputs" : {
+                "type" : "array",
+                "items" : {
+                  "type" : "object",
+                  "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:JobPlanInfo:Plan:Node:Input",
+                  "properties" : {
+                    "caching" : {
+                      "type" : "string"
+                    },
+                    "exchange" : {
+                      "type" : "string"
+                    },
+                    "id" : {
+                      "type" : "string"
+                    },
+                    "local_strategy" : {
+                      "type" : "string"
+                    },
+                    "num" : {
+                      "type" : "integer"
+                    },
+                    "ship_strategy" : {
+                      "type" : "string"
+                    }
+                  }
+                }
+              },
+              "operator" : {
+                "type" : "string"
+              },
+              "operator_strategy" : {
+                "type" : "string"
+              },
+              "optimizer_properties" : {
+                "type" : "object",
+                "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:JobPlanInfo:RawJson"
+              },
+              "parallelism" : {
+                "type" : "integer"
+              }
+            }
+          }
+        },
+        "type" : {
+          "type" : "string"
+        }
+      }
+    },
+    "schedulerType" : {
+      "type" : "string",
+      "enum" : [ "Default", "Adaptive", "AdaptiveBatch" ]
     },
     "start-time" : {
       "type" : "integer"
@@ -1574,6 +1774,10 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
       "additionalProperties" : {
         "type" : "integer"
       }
+    },
+    "stream-graph" : {
+      "type" : "object",
+      "$ref" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:JobPlanInfo:RawJson"
     },
     "timestamps" : {
       "type" : "object",
@@ -1603,6 +1807,15 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
             "type" : "object",
             "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:job:metrics:IOMetricsInfo",
             "properties" : {
+              "accumulated-backpressured-time" : {
+                "type" : "integer"
+              },
+              "accumulated-busy-time" : {
+                "type" : "number"
+              },
+              "accumulated-idle-time" : {
+                "type" : "integer"
+              },
               "read-bytes" : {
                 "type" : "integer"
               },
@@ -1635,6 +1848,9 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
           "parallelism" : {
             "type" : "integer"
           },
+          "slotSharingGroupId" : {
+            "type" : "any"
+          },
           "start-time" : {
             "type" : "integer"
           },
@@ -1652,11 +1868,8 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
       }
     }
   }
-}            </code>
-          </pre>
-          </div>
+}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
   </tbody>
@@ -1695,40 +1908,20 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Request</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{}            </code>
-          </pre>
-          </div>
+          <details>
+          <summary>Request</summary>
+          <pre><code>{}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Response</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{}            </code>
-          </pre>
-          </div>
+          <details>
+          <summary>Response</summary>
+          <pre><code>{}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
   </tbody>
@@ -1767,43 +1960,27 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Request</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{}            </code>
-          </pre>
-          </div>
+          <details>
+          <summary>Request</summary>
+          <pre><code>{}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Response</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{
+          <details>
+          <summary>Response</summary>
+          <pre><code>{
   "type" : "object",
   "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:JobAccumulatorsInfo",
   "properties" : {
     "job-accumulators" : {
       "type" : "array",
       "items" : {
-        "type" : "any"
+        "type" : "object",
+        "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:JobAccumulatorsInfo:JobAccumulator"
       }
     },
     "serialized-user-task-accumulators" : {
@@ -1831,11 +2008,8 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
       }
     }
   }
-}            </code>
-          </pre>
-          </div>
+}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
   </tbody>
@@ -1864,36 +2038,19 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Request</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{}            </code>
-          </pre>
-          </div>
+          <details>
+          <summary>Request</summary>
+          <pre><code>{}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Response</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{
+          <details>
+          <summary>Response</summary>
+          <pre><code>{
   "type" : "object",
   "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:checkpoints:CheckpointingStatistics",
   "properties" : {
@@ -1929,7 +2086,10 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
           },
           "checkpoint_type" : {
             "type" : "string",
-            "enum" : [ "CHECKPOINT", "SAVEPOINT", "SYNC_SAVEPOINT" ]
+            "enum" : [ "CHECKPOINT", "UNALIGNED_CHECKPOINT", "SAVEPOINT", "SYNC_SAVEPOINT" ]
+          },
+          "checkpointed_size" : {
+            "type" : "integer"
           },
           "end_to_end_duration" : {
             "type" : "integer"
@@ -1955,8 +2115,8 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
           "processed_data" : {
             "type" : "integer"
           },
-          "checkpointed_size" : {
-            "type" : "integer"
+          "savepointFormat" : {
+            "type" : "string"
           },
           "state_size" : {
             "type" : "integer"
@@ -1991,7 +2151,10 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
             },
             "checkpoint_type" : {
               "type" : "string",
-              "enum" : [ "CHECKPOINT", "SAVEPOINT", "SYNC_SAVEPOINT" ]
+              "enum" : [ "CHECKPOINT", "UNALIGNED_CHECKPOINT", "SAVEPOINT", "SYNC_SAVEPOINT" ]
+            },
+            "checkpointed_size" : {
+              "type" : "integer"
             },
             "discarded" : {
               "type" : "boolean"
@@ -2023,8 +2186,8 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
             "processed_data" : {
               "type" : "integer"
             },
-            "checkpointed_size" : {
-              "type" : "integer"
+            "savepointFormat" : {
+              "type" : "string"
             },
             "state_size" : {
               "type" : "integer"
@@ -2040,6 +2203,9 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
                 "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:checkpoints:TaskCheckpointStatistics",
                 "properties" : {
                   "alignment_buffered" : {
+                    "type" : "integer"
+                  },
+                  "checkpointed_size" : {
                     "type" : "integer"
                   },
                   "end_to_end_duration" : {
@@ -2061,9 +2227,6 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
                     "type" : "integer"
                   },
                   "processed_data" : {
-                    "type" : "integer"
-                  },
-                  "checkpointed_size" : {
                     "type" : "integer"
                   },
                   "state_size" : {
@@ -2090,7 +2253,10 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
             },
             "checkpoint_type" : {
               "type" : "string",
-              "enum" : [ "CHECKPOINT", "SAVEPOINT", "SYNC_SAVEPOINT" ]
+              "enum" : [ "CHECKPOINT", "UNALIGNED_CHECKPOINT", "SAVEPOINT", "SYNC_SAVEPOINT" ]
+            },
+            "checkpointed_size" : {
+              "type" : "integer"
             },
             "end_to_end_duration" : {
               "type" : "integer"
@@ -2122,8 +2288,8 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
             "processed_data" : {
               "type" : "integer"
             },
-            "checkpointed_size" : {
-              "type" : "integer"
+            "savepointFormat" : {
+              "type" : "string"
             },
             "state_size" : {
               "type" : "integer"
@@ -2174,23 +2340,11 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
       "properties" : {
         "alignment_buffered" : {
           "type" : "object",
-          "$ref" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:checkpoints:StatsSummaryDto"
-        },
-        "end_to_end_duration" : {
-          "type" : "object",
-          "$ref" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:checkpoints:StatsSummaryDto"
-        },
-        "persisted_data" : {
-          "type" : "object",
-          "$ref" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:checkpoints:StatsSummaryDto"
-        },
-        "processed_data" : {
-          "type" : "object",
-          "$ref" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:checkpoints:StatsSummaryDto"
+          "$ref" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:util:stats:StatsSummaryDto"
         },
         "checkpointed_size" : {
           "type" : "object",
-          "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:checkpoints:StatsSummaryDto",
+          "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:util:stats:StatsSummaryDto",
           "properties" : {
             "avg" : {
               "type" : "integer"
@@ -2218,44 +2372,89 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
             }
           }
         },
+        "end_to_end_duration" : {
+          "type" : "object",
+          "$ref" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:util:stats:StatsSummaryDto"
+        },
+        "persisted_data" : {
+          "type" : "object",
+          "$ref" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:util:stats:StatsSummaryDto"
+        },
+        "processed_data" : {
+          "type" : "object",
+          "$ref" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:util:stats:StatsSummaryDto"
+        },
         "state_size" : {
           "type" : "object",
-          "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:checkpoints:StatsSummaryDto",
-          "properties" : {
-            "avg" : {
-              "type" : "integer"
-            },
-            "max" : {
-              "type" : "integer"
-            },
-            "min" : {
-              "type" : "integer"
-            },
-            "p50" : {
-              "type" : "number"
-            },
-            "p90" : {
-              "type" : "number"
-            },
-            "p95" : {
-              "type" : "number"
-            },
-            "p99" : {
-              "type" : "number"
-            },
-            "p999" : {
-              "type" : "number"
-            }
-          }
+          "$ref" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:util:stats:StatsSummaryDto"
         }
       }
     }
   }
-}            </code>
-          </pre>
-          </div>
+}</code></pre>
         </label>
-      </div>
+      </td>
+    </tr>
+  </tbody>
+</table>
+<table class="rest-api table table-bordered">
+  <tbody>
+    <tr>
+      <td class="text-left" colspan="2"><h5><strong>/jobs/:jobid/checkpoints</strong></h5></td>
+    </tr>
+    <tr>
+      <td class="text-left" style="width: 20%">Verb: <code>POST</code></td>
+      <td class="text-left">Response code: <code>202 Accepted</code></td>
+    </tr>
+    <tr>
+      <td colspan="2">Triggers a checkpoint. The 'checkpointType' parameter does not support 'INCREMENTAL' option for now. See FLINK-33723. This async operation would return a 'triggerid' for further query identifier.</td>
+    </tr>
+    <tr>
+      <td colspan="2">Path parameters</td>
+    </tr>
+    <tr>
+      <td colspan="2">
+        <ul>
+<li><code>jobid</code> - 32-character hexadecimal string value that identifies a job.</li>
+        </ul>
+      </td>
+    </tr>
+    <tr>
+      <td colspan="2">
+        <label>
+          <details>
+          <summary>Request</summary>
+          <pre><code>{
+  "type" : "object",
+  "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:checkpoints:CheckpointTriggerRequestBody",
+  "properties" : {
+    "checkpointType" : {
+      "type" : "string",
+      "enum" : [ "CONFIGURED", "FULL", "INCREMENTAL" ]
+    },
+    "triggerId" : {
+      "type" : "any"
+    }
+  }
+}</code></pre>
+        </label>
+      </td>
+    </tr>
+    <tr>
+      <td colspan="2">
+        <label>
+          <details>
+          <summary>Response</summary>
+          <pre><code>{
+  "type" : "object",
+  "id" : "urn:jsonschema:org:apache:flink:runtime:rest:handler:async:TriggerResponse",
+  "properties" : {
+    "request-id" : {
+      "type" : "any"
+    }
+  }
+}</code></pre>
+        </label>
       </td>
     </tr>
   </tbody>
@@ -2284,41 +2483,30 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Request</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{}            </code>
-          </pre>
-          </div>
+          <details>
+          <summary>Request</summary>
+          <pre><code>{}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Response</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{
+          <details>
+          <summary>Response</summary>
+          <pre><code>{
   "type" : "object",
   "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:checkpoints:CheckpointConfigInfo",
   "properties" : {
     "aligned_checkpoint_timeout" : {
       "type" : "integer"
+    },
+    "changelog_periodic_materialization_interval" : {
+      "type" : "integer"
+    },
+    "changelog_storage" : {
+      "type" : "string"
     },
     "checkpoint_storage" : {
       "type" : "string"
@@ -2353,6 +2541,9 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
     "state_backend" : {
       "type" : "string"
     },
+    "state_changelog_enabled" : {
+      "type" : "boolean"
+    },
     "timeout" : {
       "type" : "integer"
     },
@@ -2363,11 +2554,8 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
       "type" : "boolean"
     }
   }
-}            </code>
-          </pre>
-          </div>
+}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
   </tbody>
@@ -2397,36 +2585,19 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Request</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{}            </code>
-          </pre>
-          </div>
+          <details>
+          <summary>Request</summary>
+          <pre><code>{}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Response</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{
+          <details>
+          <summary>Response</summary>
+          <pre><code>{
   "type" : "object",
   "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:checkpoints:CheckpointStatistics",
   "properties" : {
@@ -2435,7 +2606,10 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
     },
     "checkpoint_type" : {
       "type" : "string",
-      "enum" : [ "CHECKPOINT", "SAVEPOINT", "SYNC_SAVEPOINT" ]
+      "enum" : [ "CHECKPOINT", "UNALIGNED_CHECKPOINT", "SAVEPOINT", "SYNC_SAVEPOINT" ]
+    },
+    "checkpointed_size" : {
+      "type" : "integer"
     },
     "end_to_end_duration" : {
       "type" : "integer"
@@ -2461,8 +2635,8 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
     "processed_data" : {
       "type" : "integer"
     },
-    "checkpointed_size" : {
-      "type" : "integer"
+    "savepointFormat" : {
+      "type" : "string"
     },
     "state_size" : {
       "type" : "integer"
@@ -2478,6 +2652,9 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
         "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:checkpoints:TaskCheckpointStatistics",
         "properties" : {
           "alignment_buffered" : {
+            "type" : "integer"
+          },
+          "checkpointed_size" : {
             "type" : "integer"
           },
           "end_to_end_duration" : {
@@ -2501,9 +2678,6 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
           "processed_data" : {
             "type" : "integer"
           },
-          "checkpointed_size" : {
-            "type" : "integer"
-          },
           "state_size" : {
             "type" : "integer"
           },
@@ -2518,11 +2692,8 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
       "type" : "integer"
     }
   }
-}            </code>
-          </pre>
-          </div>
+}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
   </tbody>
@@ -2553,40 +2724,26 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Request</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{}            </code>
-          </pre>
-          </div>
+          <details>
+          <summary>Request</summary>
+          <pre><code>{}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Response</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{
+          <details>
+          <summary>Response</summary>
+          <pre><code>{
   "type" : "object",
   "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:checkpoints:TaskCheckpointStatisticsWithSubtaskDetails",
   "properties" : {
     "alignment_buffered" : {
+      "type" : "integer"
+    },
+    "checkpointed_size" : {
       "type" : "integer"
     },
     "end_to_end_duration" : {
@@ -2608,9 +2765,6 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
       "type" : "integer"
     },
     "processed_data" : {
-      "type" : "integer"
-    },
-    "checkpointed_size" : {
       "type" : "integer"
     },
     "state_size" : {
@@ -2645,19 +2799,19 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
           "properties" : {
             "buffered" : {
               "type" : "object",
-              "$ref" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:checkpoints:StatsSummaryDto"
+              "$ref" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:util:stats:StatsSummaryDto"
             },
             "duration" : {
               "type" : "object",
-              "$ref" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:checkpoints:StatsSummaryDto"
+              "$ref" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:util:stats:StatsSummaryDto"
             },
             "persisted" : {
               "type" : "object",
-              "$ref" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:checkpoints:StatsSummaryDto"
+              "$ref" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:util:stats:StatsSummaryDto"
             },
             "processed" : {
               "type" : "object",
-              "$ref" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:checkpoints:StatsSummaryDto"
+              "$ref" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:util:stats:StatsSummaryDto"
             }
           }
         },
@@ -2667,90 +2821,182 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
           "properties" : {
             "async" : {
               "type" : "object",
-              "$ref" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:checkpoints:StatsSummaryDto"
+              "$ref" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:util:stats:StatsSummaryDto"
             },
             "sync" : {
               "type" : "object",
-              "$ref" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:checkpoints:StatsSummaryDto"
+              "$ref" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:util:stats:StatsSummaryDto"
+            }
+          }
+        },
+        "checkpointed_size" : {
+          "type" : "object",
+          "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:util:stats:StatsSummaryDto",
+          "properties" : {
+            "avg" : {
+              "type" : "integer"
+            },
+            "max" : {
+              "type" : "integer"
+            },
+            "min" : {
+              "type" : "integer"
+            },
+            "p50" : {
+              "type" : "number"
+            },
+            "p90" : {
+              "type" : "number"
+            },
+            "p95" : {
+              "type" : "number"
+            },
+            "p99" : {
+              "type" : "number"
+            },
+            "p999" : {
+              "type" : "number"
             }
           }
         },
         "end_to_end_duration" : {
           "type" : "object",
-          "$ref" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:checkpoints:StatsSummaryDto"
+          "$ref" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:util:stats:StatsSummaryDto"
         },
         "start_delay" : {
           "type" : "object",
-          "$ref" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:checkpoints:StatsSummaryDto"
-        },
-        "checkpointed_size" : {
-          "type" : "object",
-          "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:checkpoints:StatsSummaryDto",
-          "properties" : {
-            "avg" : {
-              "type" : "integer"
-            },
-            "max" : {
-              "type" : "integer"
-            },
-            "min" : {
-              "type" : "integer"
-            },
-            "p50" : {
-              "type" : "number"
-            },
-            "p90" : {
-              "type" : "number"
-            },
-            "p95" : {
-              "type" : "number"
-            },
-            "p99" : {
-              "type" : "number"
-            },
-            "p999" : {
-              "type" : "number"
-            }
-          }
+          "$ref" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:util:stats:StatsSummaryDto"
         },
         "state_size" : {
           "type" : "object",
-          "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:checkpoints:StatsSummaryDto",
-          "properties" : {
-            "avg" : {
-              "type" : "integer"
-            },
-            "max" : {
-              "type" : "integer"
-            },
-            "min" : {
-              "type" : "integer"
-            },
-            "p50" : {
-              "type" : "number"
-            },
-            "p90" : {
-              "type" : "number"
-            },
-            "p95" : {
-              "type" : "number"
-            },
-            "p99" : {
-              "type" : "number"
-            },
-            "p999" : {
-              "type" : "number"
-            }
-          }
+          "$ref" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:util:stats:StatsSummaryDto"
         }
       }
     }
   }
-}            </code>
-          </pre>
-          </div>
+}</code></pre>
         </label>
-      </div>
+      </td>
+    </tr>
+  </tbody>
+</table>
+<table class="rest-api table table-bordered">
+  <tbody>
+    <tr>
+      <td class="text-left" colspan="2"><h5><strong>/jobs/:jobid/checkpoints/:triggerid</strong></h5></td>
+    </tr>
+    <tr>
+      <td class="text-left" style="width: 20%">Verb: <code>GET</code></td>
+      <td class="text-left">Response code: <code>200 OK</code></td>
+    </tr>
+    <tr>
+      <td colspan="2">Returns the status of a checkpoint trigger operation.</td>
+    </tr>
+    <tr>
+      <td colspan="2">Path parameters</td>
+    </tr>
+    <tr>
+      <td colspan="2">
+        <ul>
+<li><code>jobid</code> - 32-character hexadecimal string value that identifies a job.</li>
+<li><code>triggerid</code> - 32-character hexadecimal string that identifies an asynchronous operation trigger ID. The ID was returned then the operation was triggered.</li>
+        </ul>
+      </td>
+    </tr>
+    <tr>
+      <td colspan="2">
+        <label>
+          <details>
+          <summary>Request</summary>
+          <pre><code>{}</code></pre>
+        </label>
+      </td>
+    </tr>
+    <tr>
+      <td colspan="2">
+        <label>
+          <details>
+          <summary>Response</summary>
+          <pre><code>{
+  "type" : "object",
+  "id" : "urn:jsonschema:org:apache:flink:runtime:rest:handler:async:AsynchronousOperationResult",
+  "properties" : {
+    "operation" : {
+      "type" : "object",
+      "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:checkpoints:CheckpointInfo",
+      "properties" : {
+        "checkpointId" : {
+          "type" : "integer"
+        },
+        "failureCause" : {
+          "type" : "any"
+        }
+      }
+    },
+    "status" : {
+      "type" : "object",
+      "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:queue:QueueStatus",
+      "properties" : {
+        "id" : {
+          "type" : "string",
+          "required" : true,
+          "enum" : [ "IN_PROGRESS", "COMPLETED" ]
+        }
+      }
+    }
+  }
+}</code></pre>
+        </label>
+      </td>
+    </tr>
+  </tbody>
+</table>
+<table class="rest-api table table-bordered">
+  <tbody>
+    <tr>
+      <td class="text-left" colspan="2"><h5><strong>/jobs/:jobid/clientHeartbeat</strong></h5></td>
+    </tr>
+    <tr>
+      <td class="text-left" style="width: 20%">Verb: <code>PATCH</code></td>
+      <td class="text-left">Response code: <code>202 Accepted</code></td>
+    </tr>
+    <tr>
+      <td colspan="2">Report the jobClient's aliveness.</td>
+    </tr>
+    <tr>
+      <td colspan="2">Path parameters</td>
+    </tr>
+    <tr>
+      <td colspan="2">
+        <ul>
+<li><code>jobid</code> - 32-character hexadecimal string value that identifies a job.</li>
+        </ul>
+      </td>
+    </tr>
+    <tr>
+      <td colspan="2">
+        <label>
+          <details>
+          <summary>Request</summary>
+          <pre><code>{
+  "type" : "object",
+  "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:JobClientHeartbeatRequestBody",
+  "properties" : {
+    "expiredTimestamp" : {
+      "type" : "integer"
+    }
+  }
+}</code></pre>
+        </label>
+      </td>
+    </tr>
+    <tr>
+      <td colspan="2">
+        <label>
+          <details>
+          <summary>Response</summary>
+          <pre><code>{}</code></pre>
+        </label>
       </td>
     </tr>
   </tbody>
@@ -2779,42 +3025,22 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Request</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{}            </code>
-          </pre>
-          </div>
+          <details>
+          <summary>Request</summary>
+          <pre><code>{}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Response</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{
+          <details>
+          <summary>Response</summary>
+          <pre><code>{
   "type" : "any"
-}            </code>
-          </pre>
-          </div>
+}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
   </tbody>
@@ -2848,65 +3074,28 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
       <td colspan="2">
         <ul>
 <li><code>maxExceptions</code> (optional): Comma-separated list of integer values that specifies the upper limit of exceptions to return.</li>
+<li><code>failureLabelFilter</code> (optional): Collection of string values working as a filter in the form of `key:value` pairs allowing only exceptions with ALL of the specified failure labels to be returned.</li>
         </ul>
       </td>
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Request</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{}            </code>
-          </pre>
-          </div>
+          <details>
+          <summary>Request</summary>
+          <pre><code>{}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Response</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{
+          <details>
+          <summary>Response</summary>
+          <pre><code>{
   "type" : "object",
   "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:JobExceptionsInfoWithHistory",
   "properties" : {
-    "all-exceptions" : {
-      "type" : "array",
-      "items" : {
-        "type" : "object",
-        "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:JobExceptionsInfo:ExecutionExceptionInfo",
-        "properties" : {
-          "exception" : {
-            "type" : "string"
-          },
-          "location" : {
-            "type" : "string"
-          },
-          "task" : {
-            "type" : "string"
-          },
-          "timestamp" : {
-            "type" : "integer"
-          }
-        }
-      }
-    },
     "exceptionHistory" : {
       "type" : "object",
       "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:JobExceptionsInfoWithHistory:JobExceptionHistory",
@@ -2923,13 +3112,22 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
                   "type" : "object",
                   "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:JobExceptionsInfoWithHistory:ExceptionInfo",
                   "properties" : {
+                    "endpoint" : {
+                      "type" : "string"
+                    },
                     "exceptionName" : {
                       "type" : "string"
                     },
-                    "location" : {
-                      "type" : "string"
+                    "failureLabels" : {
+                      "type" : "object",
+                      "additionalProperties" : {
+                        "type" : "string"
+                      }
                     },
                     "stacktrace" : {
+                      "type" : "string"
+                    },
+                    "taskManagerId" : {
                       "type" : "string"
                     },
                     "taskName" : {
@@ -2941,13 +3139,22 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
                   }
                 }
               },
+              "endpoint" : {
+                "type" : "string"
+              },
               "exceptionName" : {
                 "type" : "string"
               },
-              "location" : {
-                "type" : "string"
+              "failureLabels" : {
+                "type" : "object",
+                "additionalProperties" : {
+                  "type" : "string"
+                }
               },
               "stacktrace" : {
+                "type" : "string"
+              },
+              "taskManagerId" : {
                 "type" : "string"
               },
               "taskName" : {
@@ -2963,22 +3170,10 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
           "type" : "boolean"
         }
       }
-    },
-    "root-exception" : {
-      "type" : "string"
-    },
-    "timestamp" : {
-      "type" : "integer"
-    },
-    "truncated" : {
-      "type" : "boolean"
     }
   }
-}            </code>
-          </pre>
-          </div>
+}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
   </tbody>
@@ -3007,36 +3202,19 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Request</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{}            </code>
-          </pre>
-          </div>
+          <details>
+          <summary>Request</summary>
+          <pre><code>{}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Response</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{
+          <details>
+          <summary>Response</summary>
+          <pre><code>{
   "type" : "object",
   "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:job:JobExecutionResultResponseBody",
   "properties" : {
@@ -3056,11 +3234,185 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
       }
     }
   }
-}            </code>
-          </pre>
-          </div>
+}</code></pre>
         </label>
-      </div>
+      </td>
+    </tr>
+  </tbody>
+</table>
+<table class="rest-api table table-bordered">
+  <tbody>
+    <tr>
+      <td class="text-left" colspan="2"><h5><strong>/jobs/:jobid/jobmanager/config</strong></h5></td>
+    </tr>
+    <tr>
+      <td class="text-left" style="width: 20%">Verb: <code>GET</code></td>
+      <td class="text-left">Response code: <code>200 OK</code></td>
+    </tr>
+    <tr>
+      <td colspan="2">Returns the jobmanager's configuration of a specific job.</td>
+    </tr>
+    <tr>
+      <td colspan="2">Path parameters</td>
+    </tr>
+    <tr>
+      <td colspan="2">
+        <ul>
+<li><code>jobid</code> - 32-character hexadecimal string value that identifies a job.</li>
+        </ul>
+      </td>
+    </tr>
+    <tr>
+      <td colspan="2">
+        <label>
+          <details>
+          <summary>Request</summary>
+          <pre><code>{}</code></pre>
+        </label>
+      </td>
+    </tr>
+    <tr>
+      <td colspan="2">
+        <label>
+          <details>
+          <summary>Response</summary>
+          <pre><code>{
+  "type" : "array",
+  "items" : {
+    "type" : "object",
+    "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:ConfigurationInfoEntry",
+    "properties" : {
+      "key" : {
+        "type" : "string"
+      },
+      "value" : {
+        "type" : "string"
+      }
+    }
+  }
+}</code></pre>
+        </label>
+      </td>
+    </tr>
+  </tbody>
+</table>
+<table class="rest-api table table-bordered">
+  <tbody>
+    <tr>
+      <td class="text-left" colspan="2"><h5><strong>/jobs/:jobid/jobmanager/environment</strong></h5></td>
+    </tr>
+    <tr>
+      <td class="text-left" style="width: 20%">Verb: <code>GET</code></td>
+      <td class="text-left">Response code: <code>200 OK</code></td>
+    </tr>
+    <tr>
+      <td colspan="2">Returns the jobmanager's environment of a specific job.</td>
+    </tr>
+    <tr>
+      <td colspan="2">Path parameters</td>
+    </tr>
+    <tr>
+      <td colspan="2">
+        <ul>
+<li><code>jobid</code> - 32-character hexadecimal string value that identifies a job.</li>
+        </ul>
+      </td>
+    </tr>
+    <tr>
+      <td colspan="2">
+        <label>
+          <details>
+          <summary>Request</summary>
+          <pre><code>{}</code></pre>
+        </label>
+      </td>
+    </tr>
+    <tr>
+      <td colspan="2">
+        <label>
+          <details>
+          <summary>Response</summary>
+          <pre><code>{
+  "type" : "object",
+  "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:EnvironmentInfo",
+  "properties" : {
+    "classpath" : {
+      "type" : "array",
+      "items" : {
+        "type" : "string"
+      }
+    },
+    "jvm" : {
+      "type" : "object",
+      "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:EnvironmentInfo:JVMInfo",
+      "properties" : {
+        "arch" : {
+          "type" : "string"
+        },
+        "options" : {
+          "type" : "array",
+          "items" : {
+            "type" : "string"
+          }
+        },
+        "version" : {
+          "type" : "string"
+        }
+      }
+    }
+  }
+}</code></pre>
+        </label>
+      </td>
+    </tr>
+  </tbody>
+</table>
+<table class="rest-api table table-bordered">
+  <tbody>
+    <tr>
+      <td class="text-left" colspan="2"><h5><strong>/jobs/:jobid/jobmanager/log-url</strong></h5></td>
+    </tr>
+    <tr>
+      <td class="text-left" style="width: 20%">Verb: <code>GET</code></td>
+      <td class="text-left">Response code: <code>200 OK</code></td>
+    </tr>
+    <tr>
+      <td colspan="2">Returns the log url of jobmanager of a specific job.</td>
+    </tr>
+    <tr>
+      <td colspan="2">Path parameters</td>
+    </tr>
+    <tr>
+      <td colspan="2">
+        <ul>
+<li><code>jobid</code> - 32-character hexadecimal string value that identifies a job.</li>
+        </ul>
+      </td>
+    </tr>
+    <tr>
+      <td colspan="2">
+        <label>
+          <details>
+          <summary>Request</summary>
+          <pre><code>{}</code></pre>
+        </label>
+      </td>
+    </tr>
+    <tr>
+      <td colspan="2">
+        <label>
+          <details>
+          <summary>Response</summary>
+          <pre><code>{
+  "type" : "object",
+  "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:LogUrlResponse",
+  "properties" : {
+    "url" : {
+      "type" : "string"
+    }
+  }
+}</code></pre>
+        </label>
       </td>
     </tr>
   </tbody>
@@ -3099,42 +3451,22 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Request</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{}            </code>
-          </pre>
-          </div>
+          <details>
+          <summary>Request</summary>
+          <pre><code>{}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Response</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{
+          <details>
+          <summary>Response</summary>
+          <pre><code>{
   "type" : "any"
-}            </code>
-          </pre>
-          </div>
+}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
   </tbody>
@@ -3163,48 +3495,886 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Request</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{}            </code>
-          </pre>
-          </div>
+          <details>
+          <summary>Request</summary>
+          <pre><code>{}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Response</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{
+          <details>
+          <summary>Response</summary>
+          <pre><code>{
   "type" : "object",
   "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:JobPlanInfo",
   "properties" : {
     "plan" : {
-      "type" : "any"
+      "type" : "object",
+      "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:JobPlanInfo:Plan",
+      "properties" : {
+        "jid" : {
+          "type" : "string"
+        },
+        "name" : {
+          "type" : "string"
+        },
+        "nodes" : {
+          "type" : "array",
+          "items" : {
+            "type" : "object",
+            "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:JobPlanInfo:Plan:Node",
+            "properties" : {
+              "description" : {
+                "type" : "string"
+              },
+              "id" : {
+                "type" : "string"
+              },
+              "inputs" : {
+                "type" : "array",
+                "items" : {
+                  "type" : "object",
+                  "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:JobPlanInfo:Plan:Node:Input",
+                  "properties" : {
+                    "caching" : {
+                      "type" : "string"
+                    },
+                    "exchange" : {
+                      "type" : "string"
+                    },
+                    "id" : {
+                      "type" : "string"
+                    },
+                    "local_strategy" : {
+                      "type" : "string"
+                    },
+                    "num" : {
+                      "type" : "integer"
+                    },
+                    "ship_strategy" : {
+                      "type" : "string"
+                    }
+                  }
+                }
+              },
+              "operator" : {
+                "type" : "string"
+              },
+              "operator_strategy" : {
+                "type" : "string"
+              },
+              "optimizer_properties" : {
+                "type" : "object",
+                "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:JobPlanInfo:RawJson"
+              },
+              "parallelism" : {
+                "type" : "integer"
+              }
+            }
+          }
+        },
+        "type" : {
+          "type" : "string"
+        }
+      }
     }
   }
-}            </code>
-          </pre>
-          </div>
+}</code></pre>
         </label>
-      </div>
+      </td>
+    </tr>
+  </tbody>
+</table>
+<table class="rest-api table table-bordered">
+  <tbody>
+    <tr>
+      <td class="text-left" colspan="2"><h5><strong>/jobs/:jobid/rescales/config</strong></h5></td>
+    </tr>
+    <tr>
+      <td class="text-left" style="width: 20%">Verb: <code>GET</code></td>
+      <td class="text-left">Response code: <code>200 OK</code></td>
+    </tr>
+    <tr>
+      <td colspan="2">Returns the job rescale configuration.</td>
+    </tr>
+    <tr>
+      <td colspan="2">Path parameters</td>
+    </tr>
+    <tr>
+      <td colspan="2">
+        <ul>
+<li><code>jobid</code> - 32-character hexadecimal string value that identifies a job.</li>
+        </ul>
+      </td>
+    </tr>
+    <tr>
+      <td colspan="2">
+        <label>
+          <details>
+          <summary>Request</summary>
+          <pre><code>{}</code></pre>
+        </label>
+      </td>
+    </tr>
+    <tr>
+      <td colspan="2">
+        <label>
+          <details>
+          <summary>Response</summary>
+          <pre><code>{
+  "type" : "object",
+  "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:job:rescales:JobRescaleConfigInfo",
+  "properties" : {
+    "executingCooldownTimeoutInMillis" : {
+      "type" : "integer"
+    },
+    "executingResourceStabilizationTimeoutInMillis" : {
+      "type" : "integer"
+    },
+    "maximumDelayForTriggeringRescaleInMillis" : {
+      "type" : "integer"
+    },
+    "rescaleHistoryMax" : {
+      "type" : "integer"
+    },
+    "rescaleOnFailedCheckpointCount" : {
+      "type" : "integer"
+    },
+    "schedulerExecutionMode" : {
+      "type" : "string",
+      "enum" : [ "REACTIVE" ]
+    },
+    "slotIdleTimeoutInMillis" : {
+      "type" : "integer"
+    },
+    "submissionResourceStabilizationTimeoutInMillis" : {
+      "type" : "integer"
+    },
+    "submissionResourceWaitTimeoutInMillis" : {
+      "type" : "integer"
+    }
+  }
+}</code></pre>
+        </label>
+      </td>
+    </tr>
+  </tbody>
+</table>
+<table class="rest-api table table-bordered">
+  <tbody>
+    <tr>
+      <td class="text-left" colspan="2"><h5><strong>/jobs/:jobid/rescales/details/:rescaleuuid</strong></h5></td>
+    </tr>
+    <tr>
+      <td class="text-left" style="width: 20%">Verb: <code>GET</code></td>
+      <td class="text-left">Response code: <code>200 OK</code></td>
+    </tr>
+    <tr>
+      <td colspan="2">Return a job rescale details.</td>
+    </tr>
+    <tr>
+      <td colspan="2">Path parameters</td>
+    </tr>
+    <tr>
+      <td colspan="2">
+        <ul>
+<li><code>jobid</code> - 32-character hexadecimal string value that identifies a job.</li>
+<li><code>rescaleuuid</code> - String value that identifies a job rescale.</li>
+        </ul>
+      </td>
+    </tr>
+    <tr>
+      <td colspan="2">
+        <label>
+          <details>
+          <summary>Request</summary>
+          <pre><code>{}</code></pre>
+        </label>
+      </td>
+    </tr>
+    <tr>
+      <td colspan="2">
+        <label>
+          <details>
+          <summary>Response</summary>
+          <pre><code>{
+  "type" : "object",
+  "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:job:rescales:JobRescaleDetails",
+  "properties" : {
+    "endTimestampInMillis" : {
+      "type" : "integer"
+    },
+    "rescaleAttemptId" : {
+      "type" : "integer"
+    },
+    "rescaleUuid" : {
+      "type" : "string"
+    },
+    "resourceRequirementsUuid" : {
+      "type" : "string"
+    },
+    "schedulerStates" : {
+      "type" : "array",
+      "items" : {
+        "type" : "object",
+        "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:job:rescales:SchedulerStateSpan",
+        "properties" : {
+          "durationInMillis" : {
+            "type" : "integer"
+          },
+          "enterTimestampInMillis" : {
+            "type" : "integer"
+          },
+          "leaveTimestampInMillis" : {
+            "type" : "integer"
+          },
+          "state" : {
+            "type" : "string"
+          },
+          "stringifiedException" : {
+            "type" : "string"
+          }
+        }
+      }
+    },
+    "slots" : {
+      "type" : "object",
+      "additionalProperties" : {
+        "type" : "object",
+        "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:job:rescales:JobRescaleDetails:SlotSharingGroupRescaleInfo",
+        "properties" : {
+          "acquiredResourceProfile" : {
+            "type" : "object",
+            "$ref" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:ResourceProfileInfo"
+          },
+          "desiredSlots" : {
+            "type" : "integer"
+          },
+          "minimalRequiredSlots" : {
+            "type" : "integer"
+          },
+          "postRescaleSlots" : {
+            "type" : "integer"
+          },
+          "preRescaleSlots" : {
+            "type" : "integer"
+          },
+          "requestResourceProfile" : {
+            "type" : "object",
+            "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:ResourceProfileInfo",
+            "properties" : {
+              "cpuCores" : {
+                "type" : "number"
+              },
+              "extendedResources" : {
+                "type" : "object",
+                "additionalProperties" : {
+                  "type" : "number"
+                }
+              },
+              "managedMemory" : {
+                "type" : "integer"
+              },
+              "networkMemory" : {
+                "type" : "integer"
+              },
+              "taskHeapMemory" : {
+                "type" : "integer"
+              },
+              "taskOffHeapMemory" : {
+                "type" : "integer"
+              }
+            }
+          },
+          "slotSharingGroupId" : {
+            "type" : "any"
+          },
+          "slotSharingGroupName" : {
+            "type" : "string"
+          }
+        }
+      }
+    },
+    "startTimestampInMillis" : {
+      "type" : "integer"
+    },
+    "terminalState" : {
+      "type" : "string",
+      "enum" : [ "COMPLETED", "FAILED", "IGNORED" ]
+    },
+    "terminatedReason" : {
+      "type" : "string",
+      "enum" : [ "SUCCEEDED", "EXCEPTION_OCCURRED", "RESOURCE_REQUIREMENTS_UPDATED", "NO_RESOURCES_OR_PARALLELISMS_CHANGE", "JOB_FINISHED", "JOB_FAILED", "JOB_CANCELED", "JOB_FAILOVER_RESTARTING" ]
+    },
+    "triggerCause" : {
+      "type" : "string",
+      "enum" : [ "INITIAL_SCHEDULE", "UPDATE_REQUIREMENT", "NEW_RESOURCE_AVAILABLE", "RECOVERABLE_FAILOVER" ]
+    },
+    "vertices" : {
+      "type" : "object",
+      "additionalProperties" : {
+        "type" : "object",
+        "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:job:rescales:JobRescaleDetails:VertexParallelismRescaleInfo",
+        "properties" : {
+          "desiredParallelism" : {
+            "type" : "integer"
+          },
+          "jobVertexId" : {
+            "type" : "any"
+          },
+          "jobVertexName" : {
+            "type" : "string"
+          },
+          "postRescaleParallelism" : {
+            "type" : "integer"
+          },
+          "preRescaleParallelism" : {
+            "type" : "integer"
+          },
+          "slotSharingGroupId" : {
+            "type" : "any"
+          },
+          "slotSharingGroupName" : {
+            "type" : "string"
+          },
+          "sufficientParallelism" : {
+            "type" : "integer"
+          }
+        }
+      }
+    }
+  }
+}</code></pre>
+        </label>
+      </td>
+    </tr>
+  </tbody>
+</table>
+<table class="rest-api table table-bordered">
+  <tbody>
+    <tr>
+      <td class="text-left" colspan="2"><h5><strong>/jobs/:jobid/rescales/history</strong></h5></td>
+    </tr>
+    <tr>
+      <td class="text-left" style="width: 20%">Verb: <code>GET</code></td>
+      <td class="text-left">Response code: <code>200 OK</code></td>
+    </tr>
+    <tr>
+      <td colspan="2">Return job rescales history.</td>
+    </tr>
+    <tr>
+      <td colspan="2">Path parameters</td>
+    </tr>
+    <tr>
+      <td colspan="2">
+        <ul>
+<li><code>jobid</code> - 32-character hexadecimal string value that identifies a job.</li>
+        </ul>
+      </td>
+    </tr>
+    <tr>
+      <td colspan="2">
+        <label>
+          <details>
+          <summary>Request</summary>
+          <pre><code>{}</code></pre>
+        </label>
+      </td>
+    </tr>
+    <tr>
+      <td colspan="2">
+        <label>
+          <details>
+          <summary>Response</summary>
+          <pre><code>{
+  "type" : "array",
+  "items" : {
+    "type" : "object",
+    "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:job:rescales:JobRescaleDetails",
+    "properties" : {
+      "endTimestampInMillis" : {
+        "type" : "integer"
+      },
+      "rescaleAttemptId" : {
+        "type" : "integer"
+      },
+      "rescaleUuid" : {
+        "type" : "string"
+      },
+      "resourceRequirementsUuid" : {
+        "type" : "string"
+      },
+      "schedulerStates" : {
+        "type" : "array",
+        "items" : {
+          "type" : "object",
+          "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:job:rescales:SchedulerStateSpan",
+          "properties" : {
+            "durationInMillis" : {
+              "type" : "integer"
+            },
+            "enterTimestampInMillis" : {
+              "type" : "integer"
+            },
+            "leaveTimestampInMillis" : {
+              "type" : "integer"
+            },
+            "state" : {
+              "type" : "string"
+            },
+            "stringifiedException" : {
+              "type" : "string"
+            }
+          }
+        }
+      },
+      "slots" : {
+        "type" : "object",
+        "additionalProperties" : {
+          "type" : "object",
+          "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:job:rescales:JobRescaleDetails:SlotSharingGroupRescaleInfo",
+          "properties" : {
+            "acquiredResourceProfile" : {
+              "type" : "object",
+              "$ref" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:ResourceProfileInfo"
+            },
+            "desiredSlots" : {
+              "type" : "integer"
+            },
+            "minimalRequiredSlots" : {
+              "type" : "integer"
+            },
+            "postRescaleSlots" : {
+              "type" : "integer"
+            },
+            "preRescaleSlots" : {
+              "type" : "integer"
+            },
+            "requestResourceProfile" : {
+              "type" : "object",
+              "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:ResourceProfileInfo",
+              "properties" : {
+                "cpuCores" : {
+                  "type" : "number"
+                },
+                "extendedResources" : {
+                  "type" : "object",
+                  "additionalProperties" : {
+                    "type" : "number"
+                  }
+                },
+                "managedMemory" : {
+                  "type" : "integer"
+                },
+                "networkMemory" : {
+                  "type" : "integer"
+                },
+                "taskHeapMemory" : {
+                  "type" : "integer"
+                },
+                "taskOffHeapMemory" : {
+                  "type" : "integer"
+                }
+              }
+            },
+            "slotSharingGroupId" : {
+              "type" : "any"
+            },
+            "slotSharingGroupName" : {
+              "type" : "string"
+            }
+          }
+        }
+      },
+      "startTimestampInMillis" : {
+        "type" : "integer"
+      },
+      "terminalState" : {
+        "type" : "string",
+        "enum" : [ "COMPLETED", "FAILED", "IGNORED" ]
+      },
+      "terminatedReason" : {
+        "type" : "string",
+        "enum" : [ "SUCCEEDED", "EXCEPTION_OCCURRED", "RESOURCE_REQUIREMENTS_UPDATED", "NO_RESOURCES_OR_PARALLELISMS_CHANGE", "JOB_FINISHED", "JOB_FAILED", "JOB_CANCELED", "JOB_FAILOVER_RESTARTING" ]
+      },
+      "triggerCause" : {
+        "type" : "string",
+        "enum" : [ "INITIAL_SCHEDULE", "UPDATE_REQUIREMENT", "NEW_RESOURCE_AVAILABLE", "RECOVERABLE_FAILOVER" ]
+      },
+      "vertices" : {
+        "type" : "object",
+        "additionalProperties" : {
+          "type" : "object",
+          "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:job:rescales:JobRescaleDetails:VertexParallelismRescaleInfo",
+          "properties" : {
+            "desiredParallelism" : {
+              "type" : "integer"
+            },
+            "jobVertexId" : {
+              "type" : "any"
+            },
+            "jobVertexName" : {
+              "type" : "string"
+            },
+            "postRescaleParallelism" : {
+              "type" : "integer"
+            },
+            "preRescaleParallelism" : {
+              "type" : "integer"
+            },
+            "slotSharingGroupId" : {
+              "type" : "any"
+            },
+            "slotSharingGroupName" : {
+              "type" : "string"
+            },
+            "sufficientParallelism" : {
+              "type" : "integer"
+            }
+          }
+        }
+      }
+    }
+  }
+}</code></pre>
+        </label>
+      </td>
+    </tr>
+  </tbody>
+</table>
+<table class="rest-api table table-bordered">
+  <tbody>
+    <tr>
+      <td class="text-left" colspan="2"><h5><strong>/jobs/:jobid/rescales/overview</strong></h5></td>
+    </tr>
+    <tr>
+      <td class="text-left" style="width: 20%">Verb: <code>GET</code></td>
+      <td class="text-left">Response code: <code>200 OK</code></td>
+    </tr>
+    <tr>
+      <td colspan="2">Return job rescales overview.</td>
+    </tr>
+    <tr>
+      <td colspan="2">Path parameters</td>
+    </tr>
+    <tr>
+      <td colspan="2">
+        <ul>
+<li><code>jobid</code> - 32-character hexadecimal string value that identifies a job.</li>
+        </ul>
+      </td>
+    </tr>
+    <tr>
+      <td colspan="2">
+        <label>
+          <details>
+          <summary>Request</summary>
+          <pre><code>{}</code></pre>
+        </label>
+      </td>
+    </tr>
+    <tr>
+      <td colspan="2">
+        <label>
+          <details>
+          <summary>Response</summary>
+          <pre><code>{
+  "type" : "object",
+  "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:job:rescales:JobRescalesOverview",
+  "properties" : {
+    "latest" : {
+      "type" : "object",
+      "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:job:rescales:JobRescalesOverview:LatestRescales",
+      "properties" : {
+        "completed" : {
+          "type" : "object",
+          "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:job:rescales:JobRescaleDetails",
+          "properties" : {
+            "endTimestampInMillis" : {
+              "type" : "integer"
+            },
+            "rescaleAttemptId" : {
+              "type" : "integer"
+            },
+            "rescaleUuid" : {
+              "type" : "string"
+            },
+            "resourceRequirementsUuid" : {
+              "type" : "string"
+            },
+            "schedulerStates" : {
+              "type" : "array",
+              "items" : {
+                "type" : "object",
+                "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:job:rescales:SchedulerStateSpan",
+                "properties" : {
+                  "durationInMillis" : {
+                    "type" : "integer"
+                  },
+                  "enterTimestampInMillis" : {
+                    "type" : "integer"
+                  },
+                  "leaveTimestampInMillis" : {
+                    "type" : "integer"
+                  },
+                  "state" : {
+                    "type" : "string"
+                  },
+                  "stringifiedException" : {
+                    "type" : "string"
+                  }
+                }
+              }
+            },
+            "slots" : {
+              "type" : "object",
+              "additionalProperties" : {
+                "type" : "object",
+                "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:job:rescales:JobRescaleDetails:SlotSharingGroupRescaleInfo",
+                "properties" : {
+                  "acquiredResourceProfile" : {
+                    "type" : "object",
+                    "$ref" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:ResourceProfileInfo"
+                  },
+                  "desiredSlots" : {
+                    "type" : "integer"
+                  },
+                  "minimalRequiredSlots" : {
+                    "type" : "integer"
+                  },
+                  "postRescaleSlots" : {
+                    "type" : "integer"
+                  },
+                  "preRescaleSlots" : {
+                    "type" : "integer"
+                  },
+                  "requestResourceProfile" : {
+                    "type" : "object",
+                    "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:ResourceProfileInfo",
+                    "properties" : {
+                      "cpuCores" : {
+                        "type" : "number"
+                      },
+                      "extendedResources" : {
+                        "type" : "object",
+                        "additionalProperties" : {
+                          "type" : "number"
+                        }
+                      },
+                      "managedMemory" : {
+                        "type" : "integer"
+                      },
+                      "networkMemory" : {
+                        "type" : "integer"
+                      },
+                      "taskHeapMemory" : {
+                        "type" : "integer"
+                      },
+                      "taskOffHeapMemory" : {
+                        "type" : "integer"
+                      }
+                    }
+                  },
+                  "slotSharingGroupId" : {
+                    "type" : "any"
+                  },
+                  "slotSharingGroupName" : {
+                    "type" : "string"
+                  }
+                }
+              }
+            },
+            "startTimestampInMillis" : {
+              "type" : "integer"
+            },
+            "terminalState" : {
+              "type" : "string",
+              "enum" : [ "COMPLETED", "FAILED", "IGNORED" ]
+            },
+            "terminatedReason" : {
+              "type" : "string",
+              "enum" : [ "SUCCEEDED", "EXCEPTION_OCCURRED", "RESOURCE_REQUIREMENTS_UPDATED", "NO_RESOURCES_OR_PARALLELISMS_CHANGE", "JOB_FINISHED", "JOB_FAILED", "JOB_CANCELED", "JOB_FAILOVER_RESTARTING" ]
+            },
+            "triggerCause" : {
+              "type" : "string",
+              "enum" : [ "INITIAL_SCHEDULE", "UPDATE_REQUIREMENT", "NEW_RESOURCE_AVAILABLE", "RECOVERABLE_FAILOVER" ]
+            },
+            "vertices" : {
+              "type" : "object",
+              "additionalProperties" : {
+                "type" : "object",
+                "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:job:rescales:JobRescaleDetails:VertexParallelismRescaleInfo",
+                "properties" : {
+                  "desiredParallelism" : {
+                    "type" : "integer"
+                  },
+                  "jobVertexId" : {
+                    "type" : "any"
+                  },
+                  "jobVertexName" : {
+                    "type" : "string"
+                  },
+                  "postRescaleParallelism" : {
+                    "type" : "integer"
+                  },
+                  "preRescaleParallelism" : {
+                    "type" : "integer"
+                  },
+                  "slotSharingGroupId" : {
+                    "type" : "any"
+                  },
+                  "slotSharingGroupName" : {
+                    "type" : "string"
+                  },
+                  "sufficientParallelism" : {
+                    "type" : "integer"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "failed" : {
+          "type" : "object",
+          "$ref" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:job:rescales:JobRescaleDetails"
+        },
+        "ignored" : {
+          "type" : "object",
+          "$ref" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:job:rescales:JobRescaleDetails"
+        }
+      }
+    },
+    "rescalesCounts" : {
+      "type" : "object",
+      "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:job:rescales:JobRescalesOverview:RescalesCounts",
+      "properties" : {
+        "completed" : {
+          "type" : "integer"
+        },
+        "failed" : {
+          "type" : "integer"
+        },
+        "ignored" : {
+          "type" : "integer"
+        },
+        "inProgress" : {
+          "type" : "integer"
+        }
+      }
+    }
+  }
+}</code></pre>
+        </label>
+      </td>
+    </tr>
+  </tbody>
+</table>
+<table class="rest-api table table-bordered">
+  <tbody>
+    <tr>
+      <td class="text-left" colspan="2"><h5><strong>/jobs/:jobid/rescales/summary</strong></h5></td>
+    </tr>
+    <tr>
+      <td class="text-left" style="width: 20%">Verb: <code>GET</code></td>
+      <td class="text-left">Response code: <code>200 OK</code></td>
+    </tr>
+    <tr>
+      <td colspan="2">Return job rescales summary.</td>
+    </tr>
+    <tr>
+      <td colspan="2">Path parameters</td>
+    </tr>
+    <tr>
+      <td colspan="2">
+        <ul>
+<li><code>jobid</code> - 32-character hexadecimal string value that identifies a job.</li>
+        </ul>
+      </td>
+    </tr>
+    <tr>
+      <td colspan="2">
+        <label>
+          <details>
+          <summary>Request</summary>
+          <pre><code>{}</code></pre>
+        </label>
+      </td>
+    </tr>
+    <tr>
+      <td colspan="2">
+        <label>
+          <details>
+          <summary>Response</summary>
+          <pre><code>{
+  "type" : "object",
+  "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:job:rescales:JobRescalesSummary",
+  "properties" : {
+    "completedRescalesDurationStatsInMillis" : {
+      "type" : "object",
+      "$ref" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:util:stats:StatsSummaryDto"
+    },
+    "failedRescalesDurationStatsInMillis" : {
+      "type" : "object",
+      "$ref" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:util:stats:StatsSummaryDto"
+    },
+    "ignoredRescalesDurationStatsInMillis" : {
+      "type" : "object",
+      "$ref" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:util:stats:StatsSummaryDto"
+    },
+    "rescalesCounts" : {
+      "type" : "object",
+      "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:job:rescales:JobRescalesOverview:RescalesCounts",
+      "properties" : {
+        "completed" : {
+          "type" : "integer"
+        },
+        "failed" : {
+          "type" : "integer"
+        },
+        "ignored" : {
+          "type" : "integer"
+        },
+        "inProgress" : {
+          "type" : "integer"
+        }
+      }
+    },
+    "rescalesDurationStatsInMillis" : {
+      "type" : "object",
+      "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:util:stats:StatsSummaryDto",
+      "properties" : {
+        "avg" : {
+          "type" : "integer"
+        },
+        "max" : {
+          "type" : "integer"
+        },
+        "min" : {
+          "type" : "integer"
+        },
+        "p50" : {
+          "type" : "number"
+        },
+        "p90" : {
+          "type" : "number"
+        },
+        "p95" : {
+          "type" : "number"
+        },
+        "p99" : {
+          "type" : "number"
+        },
+        "p999" : {
+          "type" : "number"
+        }
+      }
+    }
+  }
+}</code></pre>
+        </label>
       </td>
     </tr>
   </tbody>
@@ -3243,36 +4413,19 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Request</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{}            </code>
-          </pre>
-          </div>
+          <details>
+          <summary>Request</summary>
+          <pre><code>{}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Response</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{
+          <details>
+          <summary>Response</summary>
+          <pre><code>{
   "type" : "object",
   "id" : "urn:jsonschema:org:apache:flink:runtime:rest:handler:async:TriggerResponse",
   "properties" : {
@@ -3280,11 +4433,8 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
       "type" : "any"
     }
   }
-}            </code>
-          </pre>
-          </div>
+}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
   </tbody>
@@ -3314,36 +4464,19 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Request</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{}            </code>
-          </pre>
-          </div>
+          <details>
+          <summary>Request</summary>
+          <pre><code>{}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Response</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{
+          <details>
+          <summary>Response</summary>
+          <pre><code>{
   "type" : "object",
   "id" : "urn:jsonschema:org:apache:flink:runtime:rest:handler:async:AsynchronousOperationResult",
   "properties" : {
@@ -3368,11 +4501,134 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
       }
     }
   }
-}            </code>
-          </pre>
-          </div>
+}</code></pre>
         </label>
-      </div>
+      </td>
+    </tr>
+  </tbody>
+</table>
+<table class="rest-api table table-bordered">
+  <tbody>
+    <tr>
+      <td class="text-left" colspan="2"><h5><strong>/jobs/:jobid/resource-requirements</strong></h5></td>
+    </tr>
+    <tr>
+      <td class="text-left" style="width: 20%">Verb: <code>GET</code></td>
+      <td class="text-left">Response code: <code>200 OK</code></td>
+    </tr>
+    <tr>
+      <td colspan="2">Request details on the job's resource requirements.</td>
+    </tr>
+    <tr>
+      <td colspan="2">Path parameters</td>
+    </tr>
+    <tr>
+      <td colspan="2">
+        <ul>
+<li><code>jobid</code> - 32-character hexadecimal string value that identifies a job.</li>
+        </ul>
+      </td>
+    </tr>
+    <tr>
+      <td colspan="2">
+        <label>
+          <details>
+          <summary>Request</summary>
+          <pre><code>{}</code></pre>
+        </label>
+      </td>
+    </tr>
+    <tr>
+      <td colspan="2">
+        <label>
+          <details>
+          <summary>Response</summary>
+          <pre><code>{
+  "type" : "object",
+  "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:job:JobResourceRequirementsBody",
+  "additionalProperties" : {
+    "type" : "object",
+    "id" : "urn:jsonschema:org:apache:flink:runtime:jobgraph:JobVertexResourceRequirements",
+    "properties" : {
+      "parallelism" : {
+        "type" : "object",
+        "id" : "urn:jsonschema:org:apache:flink:runtime:jobgraph:JobVertexResourceRequirements:Parallelism",
+        "properties" : {
+          "lowerBound" : {
+            "type" : "integer"
+          },
+          "upperBound" : {
+            "type" : "integer"
+          }
+        }
+      }
+    }
+  }
+}</code></pre>
+        </label>
+      </td>
+    </tr>
+  </tbody>
+</table>
+<table class="rest-api table table-bordered">
+  <tbody>
+    <tr>
+      <td class="text-left" colspan="2"><h5><strong>/jobs/:jobid/resource-requirements</strong></h5></td>
+    </tr>
+    <tr>
+      <td class="text-left" style="width: 20%">Verb: <code>PUT</code></td>
+      <td class="text-left">Response code: <code>200 OK</code></td>
+    </tr>
+    <tr>
+      <td colspan="2">Request to update job's resource requirements.</td>
+    </tr>
+    <tr>
+      <td colspan="2">Path parameters</td>
+    </tr>
+    <tr>
+      <td colspan="2">
+        <ul>
+<li><code>jobid</code> - 32-character hexadecimal string value that identifies a job.</li>
+        </ul>
+      </td>
+    </tr>
+    <tr>
+      <td colspan="2">
+        <label>
+          <details>
+          <summary>Request</summary>
+          <pre><code>{
+  "type" : "object",
+  "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:job:JobResourceRequirementsBody",
+  "additionalProperties" : {
+    "type" : "object",
+    "id" : "urn:jsonschema:org:apache:flink:runtime:jobgraph:JobVertexResourceRequirements",
+    "properties" : {
+      "parallelism" : {
+        "type" : "object",
+        "id" : "urn:jsonschema:org:apache:flink:runtime:jobgraph:JobVertexResourceRequirements:Parallelism",
+        "properties" : {
+          "lowerBound" : {
+            "type" : "integer"
+          },
+          "upperBound" : {
+            "type" : "integer"
+          }
+        }
+      }
+    }
+  }
+}</code></pre>
+        </label>
+      </td>
+    </tr>
+    <tr>
+      <td colspan="2">
+        <label>
+          <details>
+          <summary>Response</summary>
+          <pre><code>{}</code></pre>
+        </label>
       </td>
     </tr>
   </tbody>
@@ -3401,17 +4657,10 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Request</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{
+          <details>
+          <summary>Request</summary>
+          <pre><code>{
   "type" : "object",
   "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:job:savepoints:SavepointTriggerRequestBody",
   "properties" : {
@@ -3429,26 +4678,16 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
       "type" : "any"
     }
   }
-}            </code>
-          </pre>
-          </div>
+}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Response</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{
+          <details>
+          <summary>Response</summary>
+          <pre><code>{
   "type" : "object",
   "id" : "urn:jsonschema:org:apache:flink:runtime:rest:handler:async:TriggerResponse",
   "properties" : {
@@ -3456,11 +4695,8 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
       "type" : "any"
     }
   }
-}            </code>
-          </pre>
-          </div>
+}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
   </tbody>
@@ -3490,36 +4726,19 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Request</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{}            </code>
-          </pre>
-          </div>
+          <details>
+          <summary>Request</summary>
+          <pre><code>{}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Response</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{
+          <details>
+          <summary>Response</summary>
+          <pre><code>{
   "type" : "object",
   "id" : "urn:jsonschema:org:apache:flink:runtime:rest:handler:async:AsynchronousOperationResult",
   "properties" : {
@@ -3547,11 +4766,59 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
       }
     }
   }
-}            </code>
-          </pre>
-          </div>
+}</code></pre>
         </label>
-      </div>
+      </td>
+    </tr>
+  </tbody>
+</table>
+<table class="rest-api table table-bordered">
+  <tbody>
+    <tr>
+      <td class="text-left" colspan="2"><h5><strong>/jobs/:jobid/status</strong></h5></td>
+    </tr>
+    <tr>
+      <td class="text-left" style="width: 20%">Verb: <code>GET</code></td>
+      <td class="text-left">Response code: <code>200 OK</code></td>
+    </tr>
+    <tr>
+      <td colspan="2">Returns the current status of a job execution.</td>
+    </tr>
+    <tr>
+      <td colspan="2">Path parameters</td>
+    </tr>
+    <tr>
+      <td colspan="2">
+        <ul>
+<li><code>jobid</code> - 32-character hexadecimal string value that identifies a job.</li>
+        </ul>
+      </td>
+    </tr>
+    <tr>
+      <td colspan="2">
+        <label>
+          <details>
+          <summary>Request</summary>
+          <pre><code>{}</code></pre>
+        </label>
+      </td>
+    </tr>
+    <tr>
+      <td colspan="2">
+        <label>
+          <details>
+          <summary>Response</summary>
+          <pre><code>{
+  "type" : "object",
+  "id" : "urn:jsonschema:org:apache:flink:runtime:messages:webmonitor:JobStatusInfo",
+  "properties" : {
+    "status" : {
+      "type" : "string",
+      "enum" : [ "INITIALIZING", "CREATED", "RUNNING", "FAILING", "FAILED", "CANCELLING", "CANCELED", "FINISHED", "RESTARTING", "SUSPENDED", "RECONCILING" ]
+    }
+  }
+}</code></pre>
+        </label>
       </td>
     </tr>
   </tbody>
@@ -3580,17 +4847,10 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Request</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{
+          <details>
+          <summary>Request</summary>
+          <pre><code>{
   "type" : "object",
   "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:job:savepoints:stop:StopWithSavepointRequestBody",
   "properties" : {
@@ -3608,26 +4868,16 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
       "type" : "any"
     }
   }
-}            </code>
-          </pre>
-          </div>
+}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Response</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{
+          <details>
+          <summary>Response</summary>
+          <pre><code>{
   "type" : "object",
   "id" : "urn:jsonschema:org:apache:flink:runtime:rest:handler:async:TriggerResponse",
   "properties" : {
@@ -3635,11 +4885,59 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
       "type" : "any"
     }
   }
-}            </code>
-          </pre>
-          </div>
+}</code></pre>
         </label>
-      </div>
+      </td>
+    </tr>
+  </tbody>
+</table>
+<table class="rest-api table table-bordered">
+  <tbody>
+    <tr>
+      <td class="text-left" colspan="2"><h5><strong>/jobs/:jobid/taskmanagers/:taskmanagerid/log-url</strong></h5></td>
+    </tr>
+    <tr>
+      <td class="text-left" style="width: 20%">Verb: <code>GET</code></td>
+      <td class="text-left">Response code: <code>200 OK</code></td>
+    </tr>
+    <tr>
+      <td colspan="2">Returns the log url of jobmanager of a specific job.</td>
+    </tr>
+    <tr>
+      <td colspan="2">Path parameters</td>
+    </tr>
+    <tr>
+      <td colspan="2">
+        <ul>
+<li><code>jobid</code> - 32-character hexadecimal string value that identifies a job.</li>
+<li><code>taskmanagerid</code> - 32-character hexadecimal string that identifies a task manager.</li>
+        </ul>
+      </td>
+    </tr>
+    <tr>
+      <td colspan="2">
+        <label>
+          <details>
+          <summary>Request</summary>
+          <pre><code>{}</code></pre>
+        </label>
+      </td>
+    </tr>
+    <tr>
+      <td colspan="2">
+        <label>
+          <details>
+          <summary>Response</summary>
+          <pre><code>{
+  "type" : "object",
+  "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:LogUrlResponse",
+  "properties" : {
+    "url" : {
+      "type" : "string"
+    }
+  }
+}</code></pre>
+        </label>
       </td>
     </tr>
   </tbody>
@@ -3669,39 +4967,46 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Request</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{}            </code>
-          </pre>
-          </div>
+          <details>
+          <summary>Request</summary>
+          <pre><code>{}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Response</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{
+          <details>
+          <summary>Response</summary>
+          <pre><code>{
   "type" : "object",
   "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:JobVertexDetailsInfo",
   "properties" : {
+    "aggregated" : {
+      "type" : "object",
+      "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:AggregatedTaskDetailsInfo",
+      "properties" : {
+        "metrics" : {
+          "type" : "object",
+          "additionalProperties" : {
+            "type" : "object",
+            "additionalProperties" : {
+              "type" : "integer"
+            }
+          }
+        },
+        "status-duration" : {
+          "type" : "object",
+          "additionalProperties" : {
+            "type" : "object",
+            "additionalProperties" : {
+              "type" : "integer"
+            }
+          }
+        }
+      }
+    },
     "id" : {
       "type" : "any"
     },
@@ -3732,13 +5037,22 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
           "end-time" : {
             "type" : "integer"
           },
-          "host" : {
+          "endpoint" : {
             "type" : "string"
           },
           "metrics" : {
             "type" : "object",
             "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:job:metrics:IOMetricsInfo",
             "properties" : {
+              "accumulated-backpressured-time" : {
+                "type" : "integer"
+              },
+              "accumulated-busy-time" : {
+                "type" : "number"
+              },
+              "accumulated-idle-time" : {
+                "type" : "integer"
+              },
               "read-bytes" : {
                 "type" : "integer"
               },
@@ -3765,6 +5079,13 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
               }
             }
           },
+          "other-concurrent-attempts" : {
+            "type" : "array",
+            "items" : {
+              "type" : "object",
+              "$ref" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:job:SubtaskExecutionAttemptDetailsInfo"
+            }
+          },
           "start-time" : {
             "type" : "integer"
           },
@@ -3774,6 +5095,12 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
           "status" : {
             "type" : "string",
             "enum" : [ "CREATED", "SCHEDULED", "DEPLOYING", "RUNNING", "FINISHED", "CANCELING", "CANCELED", "FAILED", "RECONCILING", "INITIALIZING" ]
+          },
+          "status-duration" : {
+            "type" : "object",
+            "additionalProperties" : {
+              "type" : "integer"
+            }
           },
           "subtask" : {
             "type" : "integer"
@@ -3785,11 +5112,8 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
       }
     }
   }
-}            </code>
-          </pre>
-          </div>
+}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
   </tbody>
@@ -3819,36 +5143,19 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Request</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{}            </code>
-          </pre>
-          </div>
+          <details>
+          <summary>Request</summary>
+          <pre><code>{}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Response</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{
+          <details>
+          <summary>Response</summary>
+          <pre><code>{
   "type" : "object",
   "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:JobVertexAccumulatorsInfo",
   "properties" : {
@@ -3874,11 +5181,8 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
       }
     }
   }
-}            </code>
-          </pre>
-          </div>
+}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
   </tbody>
@@ -3908,40 +5212,27 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Request</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{}            </code>
-          </pre>
-          </div>
+          <details>
+          <summary>Request</summary>
+          <pre><code>{}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Response</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{
+          <details>
+          <summary>Response</summary>
+          <pre><code>{
   "type" : "object",
   "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:JobVertexBackPressureInfo",
   "properties" : {
     "backpressure-level" : {
+      "type" : "string",
+      "enum" : [ "ok", "low", "high" ]
+    },
+    "backpressureLevel" : {
       "type" : "string",
       "enum" : [ "ok", "low", "high" ]
     },
@@ -3958,7 +5249,14 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
         "type" : "object",
         "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:JobVertexBackPressureInfo:SubtaskBackPressureInfo",
         "properties" : {
+          "attempt-number" : {
+            "type" : "integer"
+          },
           "backpressure-level" : {
+            "type" : "string",
+            "enum" : [ "ok", "low", "high" ]
+          },
+          "backpressureLevel" : {
             "type" : "string",
             "enum" : [ "ok", "low", "high" ]
           },
@@ -3967,6 +5265,13 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
           },
           "idleRatio" : {
             "type" : "number"
+          },
+          "other-concurrent-attempts" : {
+            "type" : "array",
+            "items" : {
+              "type" : "object",
+              "$ref" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:JobVertexBackPressureInfo:SubtaskBackPressureInfo"
+            }
           },
           "ratio" : {
             "type" : "number"
@@ -3978,11 +5283,8 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
       }
     }
   }
-}            </code>
-          </pre>
-          </div>
+}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
   </tbody>
@@ -4017,53 +5319,37 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
       <td colspan="2">
         <ul>
 <li><code>type</code> (optional): String value that specifies the Flame Graph type. Supported options are: "[FULL, ON_CPU, OFF_CPU]".</li>
+<li><code>subtaskindex</code> (optional): Positive integer value that identifies a subtask.</li>
         </ul>
       </td>
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Request</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{}            </code>
-          </pre>
-          </div>
+          <details>
+          <summary>Request</summary>
+          <pre><code>{}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Response</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{
+          <details>
+          <summary>Response</summary>
+          <pre><code>{
   "type" : "object",
-  "id" : "urn:jsonschema:org:apache:flink:runtime:webmonitor:threadinfo:JobVertexFlameGraph",
+  "id" : "urn:jsonschema:org:apache:flink:runtime:webmonitor:threadinfo:VertexFlameGraph",
   "properties" : {
     "data" : {
       "type" : "object",
-      "id" : "urn:jsonschema:org:apache:flink:runtime:webmonitor:threadinfo:JobVertexFlameGraph:Node",
+      "id" : "urn:jsonschema:org:apache:flink:runtime:webmonitor:threadinfo:VertexFlameGraph:Node",
       "properties" : {
         "children" : {
           "type" : "array",
           "items" : {
             "type" : "object",
-            "$ref" : "urn:jsonschema:org:apache:flink:runtime:webmonitor:threadinfo:JobVertexFlameGraph:Node"
+            "$ref" : "urn:jsonschema:org:apache:flink:runtime:webmonitor:threadinfo:VertexFlameGraph:Node"
           }
         },
         "name" : {
@@ -4078,11 +5364,63 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
       "type" : "integer"
     }
   }
-}            </code>
-          </pre>
-          </div>
+}</code></pre>
         </label>
-      </div>
+      </td>
+    </tr>
+  </tbody>
+</table>
+<table class="rest-api table table-bordered">
+  <tbody>
+    <tr>
+      <td class="text-left" colspan="2"><h5><strong>/jobs/:jobid/vertices/:vertexid/jm-operator-metrics</strong></h5></td>
+    </tr>
+    <tr>
+      <td class="text-left" style="width: 20%">Verb: <code>GET</code></td>
+      <td class="text-left">Response code: <code>200 OK</code></td>
+    </tr>
+    <tr>
+      <td colspan="2">Provides access to jobmanager operator metrics. This is an operator that executes on the jobmanager and the coordinator for FLIP 27 sources is one example of such an operator.</td>
+    </tr>
+    <tr>
+      <td colspan="2">Path parameters</td>
+    </tr>
+    <tr>
+      <td colspan="2">
+        <ul>
+<li><code>jobid</code> - 32-character hexadecimal string value that identifies a job.</li>
+<li><code>vertexid</code> - 32-character hexadecimal string value that identifies a job vertex.</li>
+        </ul>
+      </td>
+    </tr>
+    <tr>
+      <td colspan="2">Query parameters</td>
+    </tr>
+    <tr>
+      <td colspan="2">
+        <ul>
+<li><code>get</code> (optional): Comma-separated list of string values to select specific metrics.</li>
+        </ul>
+      </td>
+    </tr>
+    <tr>
+      <td colspan="2">
+        <label>
+          <details>
+          <summary>Request</summary>
+          <pre><code>{}</code></pre>
+        </label>
+      </td>
+    </tr>
+    <tr>
+      <td colspan="2">
+        <label>
+          <details>
+          <summary>Response</summary>
+          <pre><code>{
+  "type" : "any"
+}</code></pre>
+        </label>
       </td>
     </tr>
   </tbody>
@@ -4122,42 +5460,22 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Request</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{}            </code>
-          </pre>
-          </div>
+          <details>
+          <summary>Request</summary>
+          <pre><code>{}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Response</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{
+          <details>
+          <summary>Response</summary>
+          <pre><code>{
   "type" : "any"
-}            </code>
-          </pre>
-          </div>
+}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
   </tbody>
@@ -4187,36 +5505,19 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Request</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{}            </code>
-          </pre>
-          </div>
+          <details>
+          <summary>Request</summary>
+          <pre><code>{}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Response</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{
+          <details>
+          <summary>Response</summary>
+          <pre><code>{
   "type" : "object",
   "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:job:SubtasksAllAccumulatorsInfo",
   "properties" : {
@@ -4235,7 +5536,7 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
           "attempt" : {
             "type" : "integer"
           },
-          "host" : {
+          "endpoint" : {
             "type" : "string"
           },
           "subtask" : {
@@ -4263,11 +5564,8 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
       }
     }
   }
-}            </code>
-          </pre>
-          </div>
+}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
   </tbody>
@@ -4302,49 +5600,29 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
       <td colspan="2">
         <ul>
 <li><code>get</code> (optional): Comma-separated list of string values to select specific metrics.</li>
-<li><code>agg</code> (optional): Comma-separated list of aggregation modes which should be calculated. Available aggregations are: "min, max, sum, avg".</li>
+<li><code>agg</code> (optional): Comma-separated list of aggregation modes which should be calculated. Available aggregations are: "min, max, sum, avg, skew".</li>
 <li><code>subtasks</code> (optional): Comma-separated list of integer ranges (e.g. "1,3,5-9") to select specific subtasks.</li>
         </ul>
       </td>
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Request</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{}            </code>
-          </pre>
-          </div>
+          <details>
+          <summary>Request</summary>
+          <pre><code>{}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Response</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{
+          <details>
+          <summary>Response</summary>
+          <pre><code>{
   "type" : "any"
-}            </code>
-          </pre>
-          </div>
+}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
   </tbody>
@@ -4375,36 +5653,19 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Request</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{}            </code>
-          </pre>
-          </div>
+          <details>
+          <summary>Request</summary>
+          <pre><code>{}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Response</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{
+          <details>
+          <summary>Response</summary>
+          <pre><code>{
   "type" : "object",
   "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:job:SubtaskExecutionAttemptDetailsInfo",
   "properties" : {
@@ -4417,13 +5678,22 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
     "end-time" : {
       "type" : "integer"
     },
-    "host" : {
+    "endpoint" : {
       "type" : "string"
     },
     "metrics" : {
       "type" : "object",
       "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:job:metrics:IOMetricsInfo",
       "properties" : {
+        "accumulated-backpressured-time" : {
+          "type" : "integer"
+        },
+        "accumulated-busy-time" : {
+          "type" : "number"
+        },
+        "accumulated-idle-time" : {
+          "type" : "integer"
+        },
         "read-bytes" : {
           "type" : "integer"
         },
@@ -4450,6 +5720,13 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
         }
       }
     },
+    "other-concurrent-attempts" : {
+      "type" : "array",
+      "items" : {
+        "type" : "object",
+        "$ref" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:job:SubtaskExecutionAttemptDetailsInfo"
+      }
+    },
     "start-time" : {
       "type" : "integer"
     },
@@ -4460,6 +5737,12 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
       "type" : "string",
       "enum" : [ "CREATED", "SCHEDULED", "DEPLOYING", "RUNNING", "FINISHED", "CANCELING", "CANCELED", "FAILED", "RECONCILING", "INITIALIZING" ]
     },
+    "status-duration" : {
+      "type" : "object",
+      "additionalProperties" : {
+        "type" : "integer"
+      }
+    },
     "subtask" : {
       "type" : "integer"
     },
@@ -4467,11 +5750,8 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
       "type" : "string"
     }
   }
-}            </code>
-          </pre>
-          </div>
+}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
   </tbody>
@@ -4503,36 +5783,19 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Request</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{}            </code>
-          </pre>
-          </div>
+          <details>
+          <summary>Request</summary>
+          <pre><code>{}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Response</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{
+          <details>
+          <summary>Response</summary>
+          <pre><code>{
   "type" : "object",
   "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:job:SubtaskExecutionAttemptDetailsInfo",
   "properties" : {
@@ -4545,13 +5808,22 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
     "end-time" : {
       "type" : "integer"
     },
-    "host" : {
+    "endpoint" : {
       "type" : "string"
     },
     "metrics" : {
       "type" : "object",
       "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:job:metrics:IOMetricsInfo",
       "properties" : {
+        "accumulated-backpressured-time" : {
+          "type" : "integer"
+        },
+        "accumulated-busy-time" : {
+          "type" : "number"
+        },
+        "accumulated-idle-time" : {
+          "type" : "integer"
+        },
         "read-bytes" : {
           "type" : "integer"
         },
@@ -4578,6 +5850,13 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
         }
       }
     },
+    "other-concurrent-attempts" : {
+      "type" : "array",
+      "items" : {
+        "type" : "object",
+        "$ref" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:job:SubtaskExecutionAttemptDetailsInfo"
+      }
+    },
     "start-time" : {
       "type" : "integer"
     },
@@ -4588,6 +5867,12 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
       "type" : "string",
       "enum" : [ "CREATED", "SCHEDULED", "DEPLOYING", "RUNNING", "FINISHED", "CANCELING", "CANCELED", "FAILED", "RECONCILING", "INITIALIZING" ]
     },
+    "status-duration" : {
+      "type" : "object",
+      "additionalProperties" : {
+        "type" : "integer"
+      }
+    },
     "subtask" : {
       "type" : "integer"
     },
@@ -4595,11 +5880,8 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
       "type" : "string"
     }
   }
-}            </code>
-          </pre>
-          </div>
+}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
   </tbody>
@@ -4631,36 +5913,19 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Request</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{}            </code>
-          </pre>
-          </div>
+          <details>
+          <summary>Request</summary>
+          <pre><code>{}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Response</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{
+          <details>
+          <summary>Response</summary>
+          <pre><code>{
   "type" : "object",
   "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:job:SubtaskExecutionAttemptAccumulatorsInfo",
   "properties" : {
@@ -4692,11 +5957,8 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
       }
     }
   }
-}            </code>
-          </pre>
-          </div>
+}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
   </tbody>
@@ -4737,42 +5999,22 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Request</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{}            </code>
-          </pre>
-          </div>
+          <details>
+          <summary>Request</summary>
+          <pre><code>{}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Response</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{
+          <details>
+          <summary>Response</summary>
+          <pre><code>{
   "type" : "any"
-}            </code>
-          </pre>
-          </div>
+}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
   </tbody>
@@ -4802,36 +6044,19 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Request</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{}            </code>
-          </pre>
-          </div>
+          <details>
+          <summary>Request</summary>
+          <pre><code>{}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Response</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{
+          <details>
+          <summary>Response</summary>
+          <pre><code>{
   "type" : "object",
   "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:SubtasksTimesInfo",
   "properties" : {
@@ -4853,7 +6078,7 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
           "duration" : {
             "type" : "integer"
           },
-          "host" : {
+          "endpoint" : {
             "type" : "string"
           },
           "subtask" : {
@@ -4869,11 +6094,8 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
       }
     }
   }
-}            </code>
-          </pre>
-          </div>
+}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
   </tbody>
@@ -4903,36 +6125,19 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Request</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{}            </code>
-          </pre>
-          </div>
+          <details>
+          <summary>Request</summary>
+          <pre><code>{}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Response</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{
+          <details>
+          <summary>Response</summary>
+          <pre><code>{
   "type" : "object",
   "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:JobVertexTaskManagersInfo",
   "properties" : {
@@ -4951,19 +6156,52 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
         "type" : "object",
         "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:JobVertexTaskManagersInfo:TaskManagersInfo",
         "properties" : {
+          "aggregated" : {
+            "type" : "object",
+            "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:AggregatedTaskDetailsInfo",
+            "properties" : {
+              "metrics" : {
+                "type" : "object",
+                "additionalProperties" : {
+                  "type" : "object",
+                  "additionalProperties" : {
+                    "type" : "integer"
+                  }
+                }
+              },
+              "status-duration" : {
+                "type" : "object",
+                "additionalProperties" : {
+                  "type" : "object",
+                  "additionalProperties" : {
+                    "type" : "integer"
+                  }
+                }
+              }
+            }
+          },
           "duration" : {
             "type" : "integer"
           },
           "end-time" : {
             "type" : "integer"
           },
-          "host" : {
+          "endpoint" : {
             "type" : "string"
           },
           "metrics" : {
             "type" : "object",
             "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:job:metrics:IOMetricsInfo",
             "properties" : {
+              "accumulated-backpressured-time" : {
+                "type" : "integer"
+              },
+              "accumulated-busy-time" : {
+                "type" : "number"
+              },
+              "accumulated-idle-time" : {
+                "type" : "integer"
+              },
               "read-bytes" : {
                 "type" : "integer"
               },
@@ -5010,11 +6248,8 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
       }
     }
   }
-}            </code>
-          </pre>
-          </div>
+}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
   </tbody>
@@ -5044,42 +6279,22 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Request</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{}            </code>
-          </pre>
-          </div>
+          <details>
+          <summary>Request</summary>
+          <pre><code>{}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Response</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{
+          <details>
+          <summary>Response</summary>
+          <pre><code>{
   "type" : "any"
-}            </code>
-          </pre>
-          </div>
+}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
   </tbody>
@@ -5098,36 +6313,19 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Request</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{}            </code>
-          </pre>
-          </div>
+          <details>
+          <summary>Request</summary>
+          <pre><code>{}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Response</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{
+          <details>
+          <summary>Response</summary>
+          <pre><code>{
   "type" : "object",
   "id" : "urn:jsonschema:org:apache:flink:runtime:rest:handler:legacy:messages:ClusterOverviewWithVersion",
   "properties" : {
@@ -5152,18 +6350,21 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
     "slots-available" : {
       "type" : "integer"
     },
+    "slots-free-and-blocked" : {
+      "type" : "integer"
+    },
     "slots-total" : {
       "type" : "integer"
     },
     "taskmanagers" : {
       "type" : "integer"
+    },
+    "taskmanagers-blocked" : {
+      "type" : "integer"
     }
   }
-}            </code>
-          </pre>
-          </div>
+}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
   </tbody>
@@ -5182,17 +6383,10 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Request</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{
+          <details>
+          <summary>Request</summary>
+          <pre><code>{
   "type" : "object",
   "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:job:savepoints:SavepointDisposalRequest",
   "properties" : {
@@ -5200,26 +6394,16 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
       "type" : "string"
     }
   }
-}            </code>
-          </pre>
-          </div>
+}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Response</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{
+          <details>
+          <summary>Response</summary>
+          <pre><code>{
   "type" : "object",
   "id" : "urn:jsonschema:org:apache:flink:runtime:rest:handler:async:TriggerResponse",
   "properties" : {
@@ -5227,11 +6411,8 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
       "type" : "any"
     }
   }
-}            </code>
-          </pre>
-          </div>
+}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
   </tbody>
@@ -5260,36 +6441,19 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Request</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{}            </code>
-          </pre>
-          </div>
+          <details>
+          <summary>Request</summary>
+          <pre><code>{}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Response</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{
+          <details>
+          <summary>Response</summary>
+          <pre><code>{
   "type" : "object",
   "id" : "urn:jsonschema:org:apache:flink:runtime:rest:handler:async:AsynchronousOperationResult",
   "properties" : {
@@ -5314,11 +6478,8 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
       }
     }
   }
-}            </code>
-          </pre>
-          </div>
+}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
   </tbody>
@@ -5337,36 +6498,19 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Request</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{}            </code>
-          </pre>
-          </div>
+          <details>
+          <summary>Request</summary>
+          <pre><code>{}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Response</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{
+          <details>
+          <summary>Response</summary>
+          <pre><code>{
   "type" : "object",
   "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:taskmanager:TaskManagersInfo",
   "properties" : {
@@ -5376,6 +6520,12 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
         "type" : "object",
         "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:taskmanager:TaskManagerInfo",
         "properties" : {
+          "assignedTasks" : {
+            "type" : "integer"
+          },
+          "blocked" : {
+            "type" : "boolean"
+          },
           "dataPort" : {
             "type" : "integer"
           },
@@ -5486,11 +6636,8 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
       }
     }
   }
-}            </code>
-          </pre>
-          </div>
+}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
   </tbody>
@@ -5514,49 +6661,29 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
       <td colspan="2">
         <ul>
 <li><code>get</code> (optional): Comma-separated list of string values to select specific metrics.</li>
-<li><code>agg</code> (optional): Comma-separated list of aggregation modes which should be calculated. Available aggregations are: "min, max, sum, avg".</li>
+<li><code>agg</code> (optional): Comma-separated list of aggregation modes which should be calculated. Available aggregations are: "min, max, sum, avg, skew".</li>
 <li><code>taskmanagers</code> (optional): Comma-separated list of 32-character hexadecimal strings to select specific task managers.</li>
         </ul>
       </td>
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Request</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{}            </code>
-          </pre>
-          </div>
+          <details>
+          <summary>Request</summary>
+          <pre><code>{}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Response</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{
+          <details>
+          <summary>Response</summary>
+          <pre><code>{
   "type" : "any"
-}            </code>
-          </pre>
-          </div>
+}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
   </tbody>
@@ -5571,7 +6698,7 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
       <td class="text-left">Response code: <code>200 OK</code></td>
     </tr>
     <tr>
-      <td colspan="2">Returns details for a task manager. "metrics.memorySegmentsAvailable" and "metrics.memorySegmentsTotal" are deprecated. Please use "metrics.nettyShuffleMemorySegmentsAvailable" and "metrics.nettyShuffleMemorySegmentsTotal" instead.</td>
+      <td colspan="2">Returns details for a task manager.</td>
     </tr>
     <tr>
       <td colspan="2">Path parameters</td>
@@ -5585,36 +6712,19 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Request</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{}            </code>
-          </pre>
-          </div>
+          <details>
+          <summary>Request</summary>
+          <pre><code>{}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Response</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{
+          <details>
+          <summary>Response</summary>
+          <pre><code>{
   "type" : "object",
   "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:taskmanager:TaskManagerDetailsInfo",
   "properties" : {
@@ -5624,6 +6734,9 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
         "type" : "object",
         "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:taskmanager:SlotInfo",
         "properties" : {
+          "assignedTasks" : {
+            "type" : "integer"
+          },
           "jobId" : {
             "type" : "any"
           },
@@ -5633,6 +6746,12 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
           }
         }
       }
+    },
+    "assignedTasks" : {
+      "type" : "integer"
+    },
+    "blocked" : {
+      "type" : "boolean"
     },
     "dataPort" : {
       "type" : "integer"
@@ -5753,12 +6872,6 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
         "mappedUsed" : {
           "type" : "integer"
         },
-        "memorySegmentsAvailable" : {
-          "type" : "integer"
-        },
-        "memorySegmentsTotal" : {
-          "type" : "integer"
-        },
         "nettyShuffleMemoryAvailable" : {
           "type" : "integer"
         },
@@ -5825,11 +6938,8 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
       }
     }
   }
-}            </code>
-          </pre>
-          </div>
+}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
   </tbody>
@@ -5858,36 +6968,19 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Request</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{}            </code>
-          </pre>
-          </div>
+          <details>
+          <summary>Request</summary>
+          <pre><code>{}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Response</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{
+          <details>
+          <summary>Response</summary>
+          <pre><code>{
   "type" : "object",
   "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:LogListInfo",
   "properties" : {
@@ -5910,11 +7003,8 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
       }
     }
   }
-}            </code>
-          </pre>
-          </div>
+}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
   </tbody>
@@ -5953,42 +7043,22 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Request</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{}            </code>
-          </pre>
-          </div>
+          <details>
+          <summary>Request</summary>
+          <pre><code>{}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Response</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{
+          <details>
+          <summary>Response</summary>
+          <pre><code>{
   "type" : "any"
-}            </code>
-          </pre>
-          </div>
+}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
   </tbody>
@@ -6016,37 +7086,30 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
       </td>
     </tr>
     <tr>
+      <td colspan="2">Query parameters</td>
+    </tr>
+    <tr>
       <td colspan="2">
-      <div class="book-expand">
-        <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Request</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{}            </code>
-          </pre>
-          </div>
-        </label>
-      </div>
+        <ul>
+<li><code>mode</code> (optional): Controls how much lock information is collected. Supported values: [LITE, FULL]. When omitted, cluster.thread-dump.default-mode is used.</li>
+        </ul>
       </td>
     </tr>
     <tr>
       <td colspan="2">
-      <div class="book-expand">
         <label>
-          <div class="book-expand-head flex justify-between">
-            <span>Response</span>
-            &nbsp;            <span>▾</span>
-          </div>
-          <input type="checkbox" class="hidden">
-          <div class="book-expand-content markdown-inner">
-          <pre>
-            <code>
-{
+          <details>
+          <summary>Request</summary>
+          <pre><code>{}</code></pre>
+        </label>
+      </td>
+    </tr>
+    <tr>
+      <td colspan="2">
+        <label>
+          <details>
+          <summary>Response</summary>
+          <pre><code>{
   "type" : "object",
   "id" : "urn:jsonschema:org:apache:flink:runtime:rest:messages:ThreadDumpInfo",
   "properties" : {
@@ -6066,11 +7129,8 @@ Using 'curl' you can upload a jar via 'curl -X POST -H "Expect:" -F "jarfile=@pa
       }
     }
   }
-}            </code>
-          </pre>
-          </div>
+}</code></pre>
         </label>
-      </div>
       </td>
     </tr>
   </tbody>

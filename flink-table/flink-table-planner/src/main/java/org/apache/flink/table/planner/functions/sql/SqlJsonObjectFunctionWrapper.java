@@ -20,6 +20,7 @@ package org.apache.flink.table.planner.functions.sql;
 
 import org.apache.calcite.rel.type.RelDataType;
 import org.apache.calcite.sql.SqlOperatorBinding;
+import org.apache.calcite.sql.fun.SqlJsonObjectFunction;
 import org.apache.calcite.sql.type.SqlReturnTypeInference;
 
 import static org.apache.flink.table.planner.plan.type.FlinkReturnTypes.VARCHAR_NOT_NULL;
@@ -28,7 +29,7 @@ import static org.apache.flink.table.planner.plan.type.FlinkReturnTypes.VARCHAR_
  * This class is a wrapper class for the {@link SqlJsonObjectFunction} but using the {@code
  * VARCHAR_NOT_NULL} return type inference.
  */
-class SqlJsonObjectFunctionWrapper extends SqlJsonObjectFunction {
+public class SqlJsonObjectFunctionWrapper extends SqlJsonObjectFunction {
 
     @Override
     public RelDataType inferReturnType(SqlOperatorBinding opBinding) {

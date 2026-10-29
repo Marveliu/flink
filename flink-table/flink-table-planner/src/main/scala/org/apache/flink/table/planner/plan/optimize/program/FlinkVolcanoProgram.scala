@@ -15,10 +15,10 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.planner.plan.optimize.program
 
-import org.apache.flink.table.api.TableException
+import org.apache.flink.annotation.VisibleForTesting
+import org.apache.flink.table.api.{TableException, ValidationException}
 import org.apache.flink.table.planner.plan.metadata.FlinkRelMdNonCumulativeCost
 import org.apache.flink.table.planner.plan.utils.FlinkRelOptUtil
 import org.apache.flink.util.Preconditions
@@ -30,16 +30,17 @@ import org.apache.calcite.plan.volcano.VolcanoPlanner
 import org.apache.calcite.rel.RelNode
 import org.apache.calcite.tools.{Programs, RuleSet}
 
+import scala.annotation.tailrec
+
 /**
-  * A FlinkRuleSetProgram that runs with [[org.apache.calcite.plan.volcano.VolcanoPlanner]].
-  *
-  * @tparam OC OptimizeContext
-  */
+ * A FlinkRuleSetProgram that runs with [[org.apache.calcite.plan.volcano.VolcanoPlanner]].
+ *
+ * @tparam OC
+ *   OptimizeContext
+ */
 class FlinkVolcanoProgram[OC <: FlinkOptimizeContext] extends FlinkRuleSetProgram[OC] {
 
-  /**
-    * Required output traits, this must not be None when doing optimize.
-    */
+  /** Required output traits, this must not be None when doing optimize. */
   protected var requiredOutputTraits: Option[Array[RelTrait]] = None
 
   override def optimize(root: RelNode, context: OC): RelNode = {
@@ -61,42 +62,59 @@ class FlinkVolcanoProgram[OC <: FlinkOptimizeContext] extends FlinkRuleSetProgra
 
     try {
       FlinkRelMdNonCumulativeCost.THREAD_PLANNER.set(planner)
-      optProgram.run(
-        planner,
-        root,
-        targetTraits,
-        ImmutableList.of(),
-        ImmutableList.of())
+      optProgram.run(planner, root, targetTraits, ImmutableList.of(), ImmutableList.of())
     } catch {
       case e: CannotPlanException =>
         throw new TableException(
-          s"Cannot generate a valid execution plan for the given query: \n\n" +
-            s"${FlinkRelOptUtil.toString(root)}\n" +
-            s"This exception indicates that the query uses an unsupported SQL feature.\n" +
-            s"Please check the documentation for the set of currently supported SQL features.", e)
-      case t: TableException =>
-        throw new TableException(
-          s"Cannot generate a valid execution plan for the given query: \n\n" +
-            s"${FlinkRelOptUtil.toString(root)}\n" +
-            s"${t.getMessage}\n" +
-            s"Please check the documentation for the set of currently supported SQL features.", t)
+          rejectionMessage(
+            "This exception indicates that the query uses an unsupported SQL feature. " +
+              "Please check the documentation for the set of currently supported SQL features.",
+            root
+          ),
+          e)
       case a: AssertionError =>
         throw new AssertionError(s"Sql optimization: Assertion error: ${a.getMessage}", a)
-      case r: RuntimeException if r.getCause.isInstanceOf[TableException] =>
-        throw new TableException(
-          s"Sql optimization: Cannot generate a valid execution plan for the given query: \n\n" +
-            s"${FlinkRelOptUtil.toString(root)}\n" +
-            s"${r.getCause.getMessage}\n" +
-            s"Please check the documentation for the set of currently supported SQL features.",
-          r.getCause)
+      case r: RuntimeException =>
+        unwrapRuleException(r) match {
+          case t: TableException =>
+            throw new TableException(rejectionMessage(t.getMessage, root), t)
+          case v: ValidationException =>
+            throw new ValidationException(rejectionMessage(v.getMessage, root), v)
+          case other => throw other
+        }
     } finally {
       FlinkRelMdNonCumulativeCost.THREAD_PLANNER.remove()
     }
   }
 
   /**
-    * Sets required output traits.
-    */
+   * Puts the reason first so that it is the first line users see, and marks the plan with a prefix
+   * so that tools rewriting the message can find it.
+   */
+  private def rejectionMessage(reason: String, root: RelNode): String = {
+    s"Cannot generate a valid execution plan for the given query: $reason\n\n" +
+      s"Plan:\n${FlinkRelOptUtil.toString(root)}"
+  }
+
+  /**
+   * Returns the [[TableException]] or [[ValidationException]] thrown by a rule, looking through the
+   * plain [[RuntimeException]]s Calcite wraps it in while applying the rule. Any other exception is
+   * returned unchanged.
+   */
+  @VisibleForTesting
+  private[program] def unwrapRuleException(r: RuntimeException): RuntimeException = {
+    @tailrec
+    def findRuleException(t: Throwable): Option[RuntimeException] = t match {
+      case e: TableException => Some(e)
+      case e: ValidationException => Some(e)
+      case e if e != null && e.getClass == classOf[RuntimeException] =>
+        findRuleException(e.getCause)
+      case _ => None
+    }
+    findRuleException(r).getOrElse(r)
+  }
+
+  /** Sets required output traits. */
   def setRequiredOutputTraits(relTraits: Array[RelTrait]): Unit = {
     Preconditions.checkNotNull(relTraits)
     requiredOutputTraits = Some(relTraits)
@@ -107,17 +125,13 @@ class FlinkVolcanoProgram[OC <: FlinkOptimizeContext] extends FlinkRuleSetProgra
 class FlinkVolcanoProgramBuilder[OC <: FlinkOptimizeContext] {
   private val volcanoProgram = new FlinkVolcanoProgram[OC]
 
-  /**
-    * Adds rules for this program.
-    */
+  /** Adds rules for this program. */
   def add(ruleSet: RuleSet): FlinkVolcanoProgramBuilder[OC] = {
     volcanoProgram.add(ruleSet)
     this
   }
 
-  /**
-    * Sets required output traits.
-    */
+  /** Sets required output traits. */
   def setRequiredOutputTraits(relTraits: Array[RelTrait]): FlinkVolcanoProgramBuilder[OC] = {
     volcanoProgram.setRequiredOutputTraits(relTraits)
     this

@@ -25,8 +25,10 @@ import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.configuration.ConfigOption;
 import org.apache.flink.configuration.ReadableConfig;
 import org.apache.flink.table.connector.ChangelogMode;
+import org.apache.flink.table.connector.Projection;
 import org.apache.flink.table.connector.format.DecodingFormat;
 import org.apache.flink.table.connector.format.EncodingFormat;
+import org.apache.flink.table.connector.format.ProjectableDecodingFormat;
 import org.apache.flink.table.connector.sink.DynamicTableSink;
 import org.apache.flink.table.connector.source.DynamicTableSource;
 import org.apache.flink.table.data.RowData;
@@ -37,19 +39,25 @@ import org.apache.flink.table.factories.SerializationFormatFactory;
 import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.types.logical.RowType;
 
-import org.apache.commons.lang3.StringEscapeUtils;
+import org.apache.commons.text.StringEscapeUtils;
 
 import java.util.Collections;
 import java.util.Set;
 
 import static org.apache.flink.formats.csv.CsvFormatOptions.ALLOW_COMMENTS;
+import static org.apache.flink.formats.csv.CsvFormatOptions.ALLOW_TRAILING_COMMA;
 import static org.apache.flink.formats.csv.CsvFormatOptions.ARRAY_ELEMENT_DELIMITER;
 import static org.apache.flink.formats.csv.CsvFormatOptions.DISABLE_QUOTE_CHARACTER;
+import static org.apache.flink.formats.csv.CsvFormatOptions.EMPTY_STRING_AS_NULL;
 import static org.apache.flink.formats.csv.CsvFormatOptions.ESCAPE_CHARACTER;
+import static org.apache.flink.formats.csv.CsvFormatOptions.FAIL_ON_MISSING_COLUMNS;
 import static org.apache.flink.formats.csv.CsvFormatOptions.FIELD_DELIMITER;
 import static org.apache.flink.formats.csv.CsvFormatOptions.IGNORE_PARSE_ERRORS;
+import static org.apache.flink.formats.csv.CsvFormatOptions.IGNORE_TRAILING_UNMAPPABLE;
 import static org.apache.flink.formats.csv.CsvFormatOptions.NULL_LITERAL;
 import static org.apache.flink.formats.csv.CsvFormatOptions.QUOTE_CHARACTER;
+import static org.apache.flink.formats.csv.CsvFormatOptions.TRIM_SPACES;
+import static org.apache.flink.formats.csv.CsvFormatOptions.WRITE_BIGDECIMAL_IN_SCIENTIFIC_NOTATION;
 
 /**
  * Format factory for providing configured instances of CSV to RowData {@link SerializationSchema}
@@ -65,16 +73,27 @@ public final class CsvFormatFactory
         FactoryUtil.validateFactoryOptions(this, formatOptions);
         CsvCommons.validateFormatOptions(formatOptions);
 
-        return new DecodingFormat<DeserializationSchema<RowData>>() {
+        return new ProjectableDecodingFormat<DeserializationSchema<RowData>>() {
             @Override
             public DeserializationSchema<RowData> createRuntimeDecoder(
-                    DynamicTableSource.Context context, DataType producedDataType) {
-                final RowType rowType = (RowType) producedDataType.getLogicalType();
+                    DynamicTableSource.Context context,
+                    DataType physicalDataType,
+                    int[][] projections) {
+
+                final DataType projectedDataType =
+                        Projection.of(projections).project(physicalDataType);
+                final RowType projectedRowType = (RowType) projectedDataType.getLogicalType();
+                final RowType physicalRowType = (RowType) physicalDataType.getLogicalType();
+
                 final TypeInformation<RowData> rowDataTypeInfo =
-                        context.createTypeInformation(producedDataType);
+                        context.createTypeInformation(projectedRowType);
+
                 final CsvRowDataDeserializationSchema.Builder schemaBuilder =
-                        new CsvRowDataDeserializationSchema.Builder(rowType, rowDataTypeInfo);
+                        new CsvRowDataDeserializationSchema.Builder(
+                                physicalRowType, projectedRowType, rowDataTypeInfo);
+
                 configureDeserializationSchema(formatOptions, schemaBuilder);
+
                 return schemaBuilder.build();
             }
 
@@ -165,6 +184,24 @@ public final class CsvFormatFactory
                 .ifPresent(schemaBuilder::setEscapeCharacter);
 
         formatOptions.getOptional(NULL_LITERAL).ifPresent(schemaBuilder::setNullLiteral);
+
+        formatOptions.getOptional(TRIM_SPACES).ifPresent(schemaBuilder::setTrimSpaces);
+
+        formatOptions
+                .getOptional(IGNORE_TRAILING_UNMAPPABLE)
+                .ifPresent(schemaBuilder::setIgnoreTrailingUnmappable);
+
+        formatOptions
+                .getOptional(ALLOW_TRAILING_COMMA)
+                .ifPresent(schemaBuilder::setAllowTrailingComma);
+
+        formatOptions
+                .getOptional(FAIL_ON_MISSING_COLUMNS)
+                .ifPresent(schemaBuilder::setFailOnMissingColumns);
+
+        formatOptions
+                .getOptional(EMPTY_STRING_AS_NULL)
+                .ifPresent(schemaBuilder::setEmptyStringAsNull);
     }
 
     private static void configureSerializationSchema(
@@ -193,5 +230,9 @@ public final class CsvFormatFactory
                 .ifPresent(schemaBuilder::setEscapeCharacter);
 
         formatOptions.getOptional(NULL_LITERAL).ifPresent(schemaBuilder::setNullLiteral);
+
+        formatOptions
+                .getOptional(WRITE_BIGDECIMAL_IN_SCIENTIFIC_NOTATION)
+                .ifPresent(schemaBuilder::setWriteBigDecimalInScientificNotation);
     }
 }

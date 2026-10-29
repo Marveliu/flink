@@ -53,7 +53,17 @@ public enum FlinkVersion {
     v1_13("1.13"),
     v1_14("1.14"),
     v1_15("1.15"),
-    v1_16("1.16");
+    v1_16("1.16"),
+    v1_17("1.17"),
+    v1_18("1.18"),
+    v1_19("1.19"),
+    v1_20("1.20"),
+    v2_0("2.0"),
+    v2_1("2.1"),
+    v2_2("2.2"),
+    v2_3("2.3"),
+    v2_4("2.4"),
+    v2_5("2.5");
 
     private final String versionStr;
 
@@ -85,7 +95,11 @@ public enum FlinkVersion {
         return Optional.ofNullable(CODE_MAP.get(code));
     }
 
-    /** Returns the current version. */
+    public static FlinkVersion valueOf(int majorVersion, int minorVersion) {
+        return FlinkVersion.valueOf("v" + majorVersion + "_" + minorVersion);
+    }
+
+    /** Returns the version for the current branch. */
     public static FlinkVersion current() {
         return values()[values().length - 1];
     }

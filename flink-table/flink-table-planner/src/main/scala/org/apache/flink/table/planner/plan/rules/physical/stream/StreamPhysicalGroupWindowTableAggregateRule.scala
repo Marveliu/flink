@@ -15,7 +15,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.planner.plan.rules.physical.stream
 
 import org.apache.flink.table.api.TableException
@@ -29,19 +28,15 @@ import org.apache.flink.table.planner.utils.ShortcutUtils
 import org.apache.calcite.plan.{RelOptRule, RelOptRuleCall}
 import org.apache.calcite.rel.RelNode
 import org.apache.calcite.rel.convert.ConverterRule
+import org.apache.calcite.rel.convert.ConverterRule.Config
 
 import scala.collection.JavaConversions._
 
 /**
-  * Rule to convert a [[FlinkLogicalWindowTableAggregate]] into a
-  * [[StreamPhysicalGroupWindowTableAggregate]].
-  */
-class StreamPhysicalGroupWindowTableAggregateRule
-  extends ConverterRule(
-    classOf[FlinkLogicalWindowTableAggregate],
-    FlinkConventions.LOGICAL,
-    FlinkConventions.STREAM_PHYSICAL,
-    "StreamPhysicalGroupWindowTableAggregateRule") {
+ * Rule to convert a [[FlinkLogicalWindowTableAggregate]] into a
+ * [[StreamPhysicalGroupWindowTableAggregate]].
+ */
+class StreamPhysicalGroupWindowTableAggregateRule(config: Config) extends ConverterRule(config) {
 
   override def matches(call: RelOptRuleCall): Boolean = {
     val agg: FlinkLogicalWindowTableAggregate = call.rel(0)
@@ -70,8 +65,8 @@ class StreamPhysicalGroupWindowTableAggregateRule
     val providedTraitSet = rel.getTraitSet.replace(FlinkConventions.STREAM_PHYSICAL)
     val newInput: RelNode = RelOptRule.convert(input, requiredTraitSet)
 
-    val config = ShortcutUtils.unwrapTableConfig(rel)
-    val emitStrategy = WindowEmitStrategy(config, agg.getWindow)
+    val tableConfig = ShortcutUtils.unwrapTableConfig(rel)
+    val emitStrategy = WindowEmitStrategy(tableConfig, agg.getWindow)
 
     new StreamPhysicalGroupWindowTableAggregate(
       cluster,
@@ -87,5 +82,10 @@ class StreamPhysicalGroupWindowTableAggregateRule
 }
 
 object StreamPhysicalGroupWindowTableAggregateRule {
-  val INSTANCE: RelOptRule = new StreamPhysicalGroupWindowTableAggregateRule
+  val INSTANCE: RelOptRule = new StreamPhysicalGroupWindowTableAggregateRule(
+    Config.INSTANCE.withConversion(
+      classOf[FlinkLogicalWindowTableAggregate],
+      FlinkConventions.LOGICAL,
+      FlinkConventions.STREAM_PHYSICAL,
+      "StreamPhysicalGroupWindowTableAggregateRule"))
 }

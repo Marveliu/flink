@@ -18,9 +18,11 @@
 
 package org.apache.flink.table.planner.factories;
 
+import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.configuration.ConfigOption;
-import org.apache.flink.streaming.api.functions.sink.SinkFunction;
-import org.apache.flink.streaming.api.functions.source.SourceFunction;
+import org.apache.flink.connector.datagen.source.DataGeneratorSource;
+import org.apache.flink.connector.datagen.source.GeneratorFunction;
+import org.apache.flink.streaming.runtime.operators.sink.TestSinkV2;
 import org.apache.flink.table.api.Schema;
 import org.apache.flink.table.api.TableDescriptor;
 import org.apache.flink.table.api.TableEnvironment;
@@ -30,18 +32,18 @@ import org.apache.flink.table.catalog.CatalogTable;
 import org.apache.flink.table.catalog.DefaultCatalogTable;
 import org.apache.flink.table.connector.ChangelogMode;
 import org.apache.flink.table.connector.sink.DynamicTableSink;
-import org.apache.flink.table.connector.sink.SinkFunctionProvider;
+import org.apache.flink.table.connector.sink.SinkV2Provider;
 import org.apache.flink.table.connector.source.DynamicTableSource;
 import org.apache.flink.table.connector.source.LookupTableSource;
 import org.apache.flink.table.connector.source.ScanTableSource;
-import org.apache.flink.table.connector.source.SourceFunctionProvider;
-import org.apache.flink.table.connector.source.TableFunctionProvider;
+import org.apache.flink.table.connector.source.SourceProvider;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.factories.DynamicTableFactory;
 import org.apache.flink.table.factories.DynamicTableSinkFactory;
 import org.apache.flink.table.factories.DynamicTableSourceFactory;
 import org.apache.flink.table.factories.FactoryUtil;
 import org.apache.flink.table.functions.TableFunction;
+import org.apache.flink.table.legacy.connector.source.TableFunctionProvider;
 import org.apache.flink.testutils.junit.SharedObjects;
 
 import javax.annotation.Nullable;
@@ -189,6 +191,7 @@ public class TableFactoryHarness {
             super(
                     schema,
                     Collections.singletonMap(FactoryUtil.CONNECTOR.key(), IDENTIFIER),
+                    null,
                     Collections.emptyList(),
                     null);
 
@@ -305,8 +308,12 @@ public class TableFactoryHarness {
         @Override
         public CatalogTable copy(Map<String, String> options) {
             final CatalogTable parentTable =
-                    CatalogTable.of(
-                            getUnresolvedSchema(), getComment(), getPartitionKeys(), options);
+                    CatalogTable.newBuilder()
+                            .schema(getUnresolvedSchema())
+                            .comment(getComment())
+                            .partitionKeys(getPartitionKeys())
+                            .options(options)
+                            .build();
             return new HarnessCatalogTable(parentTable, source, sink);
         }
     }
@@ -342,15 +349,15 @@ public class TableFactoryHarness {
 
         @Override
         public ScanRuntimeProvider getScanRuntimeProvider(ScanContext runtimeProviderContext) {
-            return SourceFunctionProvider.of(
-                    new SourceFunction<RowData>() {
-                        @Override
-                        public void run(SourceContext<RowData> ctx) {}
-
-                        @Override
-                        public void cancel() {}
-                    },
-                    bounded);
+            return SourceProvider.of(
+                    new DataGeneratorSource<>(
+                            (GeneratorFunction<Long, RowData>)
+                                    value -> {
+                                        throw new UnsupportedOperationException(
+                                                "TableFactoryHarness no-op source should not generate data");
+                                    },
+                            0L, // Generate 0 elements (no-op)
+                            TypeInformation.of(RowData.class)));
         }
     }
 
@@ -393,11 +400,16 @@ public class TableFactoryHarness {
 
         @Override
         public SinkRuntimeProvider getSinkRuntimeProvider(Context context) {
-            return SinkFunctionProvider.of(
-                    new SinkFunction<RowData>() {
-                        @Override
-                        public void invoke(RowData value, Context context1) {}
-                    });
+            return SinkV2Provider.of(
+                    TestSinkV2.<RowData>newBuilder()
+                            .setWriter(
+                                    new TestSinkV2.DefaultSinkWriter<RowData>() {
+                                        @Override
+                                        public void write(RowData element, Context context) {
+                                            // No-op implementation for testing harness
+                                        }
+                                    })
+                            .build());
         }
 
         @Override

@@ -24,22 +24,19 @@ import org.apache.flink.table.functions.BuiltInFunctionDefinitions;
 import org.apache.flink.table.functions.ScalarFunction;
 import org.apache.flink.types.Row;
 
-import org.junit.runners.Parameterized.Parameters;
-
-import java.util.Arrays;
-import java.util.List;
+import java.util.stream.Stream;
 
 import static org.apache.flink.table.api.Expressions.$;
 import static org.apache.flink.table.api.Expressions.call;
 import static org.apache.flink.table.api.Expressions.row;
 
 /** Tests for different combinations around {@link BuiltInFunctionDefinitions#ROW}. */
-public class RowFunctionITCase extends BuiltInFunctionTestBase {
+class RowFunctionITCase extends BuiltInFunctionTestBase {
 
-    @Parameters(name = "{index}: {0}")
-    public static List<TestSpec> testData() {
-        return Arrays.asList(
-                TestSpec.forFunction(BuiltInFunctionDefinitions.ROW, "with field access")
+    @Override
+    Stream<TestSetSpec> getTestSetSpecs() {
+        return Stream.of(
+                TestSetSpec.forFunction(BuiltInFunctionDefinitions.ROW, "with field access")
                         .onFieldsWithData(12, "Hello world")
                         .andDataTypes(DataTypes.INT(), DataTypes.STRING())
                         .testTableApiResult(
@@ -56,7 +53,7 @@ public class RowFunctionITCase extends BuiltInFunctionTestBase {
                                                 DataTypes.FIELD("EXPR$0", DataTypes.INT()),
                                                 DataTypes.FIELD("EXPR$1", DataTypes.STRING()))
                                         .notNull()),
-                TestSpec.forFunction(BuiltInFunctionDefinitions.ROW, "within function call")
+                TestSetSpec.forFunction(BuiltInFunctionDefinitions.ROW, "within function call")
                         .onFieldsWithData(12, "Hello world")
                         .andDataTypes(DataTypes.INT(), DataTypes.STRING())
                         .withFunction(TakesRow.class)
@@ -67,7 +64,7 @@ public class RowFunctionITCase extends BuiltInFunctionTestBase {
                                 DataTypes.ROW(
                                         DataTypes.FIELD("i", DataTypes.INT()),
                                         DataTypes.FIELD("s", DataTypes.STRING()))),
-                TestSpec.forFunction(BuiltInFunctionDefinitions.ROW, "within cast")
+                TestSetSpec.forFunction(BuiltInFunctionDefinitions.ROW, "within cast")
                         .onFieldsWithData(1)
                         .testResult(
                                 row($("f0").plus(12), "Hello world")
@@ -83,7 +80,58 @@ public class RowFunctionITCase extends BuiltInFunctionTestBase {
                                 DataTypes.ROW(
                                                 DataTypes.FIELD("i", DataTypes.INT()),
                                                 DataTypes.FIELD("s", DataTypes.STRING()))
-                                        .notNull()));
+                                        .notNull()),
+                TestSetSpec.forFunction(BuiltInFunctionDefinitions.ROW, "cast row inputs")
+                        .onFieldsWithData(1, 2, 3, "true")
+                        .andDataTypes(
+                                DataTypes.INT(),
+                                DataTypes.INT(),
+                                DataTypes.INT(),
+                                DataTypes.STRING())
+                        .testResult(
+                                row(
+                                                $("f0").cast(DataTypes.SMALLINT().notNull()),
+                                                $("f1").cast(DataTypes.TINYINT().notNull()),
+                                                $("f2").cast(DataTypes.BIGINT().notNull()),
+                                                $("f3").cast(DataTypes.BOOLEAN().notNull()))
+                                        .cast(
+                                                DataTypes.ROW(
+                                                                DataTypes.FIELD(
+                                                                        "a", DataTypes.SMALLINT()),
+                                                                DataTypes.FIELD(
+                                                                        "b", DataTypes.TINYINT()),
+                                                                DataTypes.FIELD(
+                                                                        "c", DataTypes.BIGINT()),
+                                                                DataTypes.FIELD(
+                                                                        "d", DataTypes.BOOLEAN()))
+                                                        .notNull()),
+                                "CAST("
+                                        + "ROW("
+                                        + "CAST(f0 AS SMALLINT), CAST(f1 AS TINYINT), CAST(f2 AS BIGINT), CAST(f3 AS BOOLEAN)"
+                                        + ") AS ROW<a SMALLINT, b TINYINT, c BIGINT, d BOOLEAN>)",
+                                Row.of((short) 1, (byte) 2, 3L, true),
+                                DataTypes.ROW(
+                                                DataTypes.FIELD("a", DataTypes.SMALLINT()),
+                                                DataTypes.FIELD("b", DataTypes.TINYINT()),
+                                                DataTypes.FIELD("c", DataTypes.BIGINT()),
+                                                DataTypes.FIELD("d", DataTypes.BOOLEAN()))
+                                        .notNull()),
+                TestSetSpec.forFunction(
+                                BuiltInFunctionDefinitions.ROW, "with aliased fields using .as()")
+                        .onFieldsWithData(100, "abc", 75.50)
+                        .andDataTypes(DataTypes.INT(), DataTypes.STRING(), DataTypes.DOUBLE())
+                        .testTableApiResult(
+                                row($("f0").as("a"), $("f1").as("b"), $("f2").as("c")),
+                                Row.of(100, "abc", 75.50),
+                                DataTypes.ROW(
+                                                DataTypes.FIELD("a", DataTypes.INT()),
+                                                DataTypes.FIELD("b", DataTypes.STRING()),
+                                                DataTypes.FIELD("c", DataTypes.DOUBLE()))
+                                        .notNull())
+                        .testTableApiResult(
+                                row($("f0").as("a"), $("f1").as("b"), $("f2").as("c")).get("a"),
+                                100,
+                                DataTypes.INT()));
     }
 
     // --------------------------------------------------------------------------------------------

@@ -18,12 +18,11 @@
 
 package org.apache.flink.yarn;
 
-import org.apache.flink.api.common.time.Deadline;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.GlobalConfiguration;
 import org.apache.flink.runtime.testutils.CommonTestUtils;
 import org.apache.flink.test.testdata.WordCountData;
-import org.apache.flink.testutils.logging.TestLoggerResource;
+import org.apache.flink.testutils.logging.LoggerAuditingExtension;
 import org.apache.flink.yarn.cli.FlinkYarnSessionCli;
 import org.apache.flink.yarn.configuration.YarnConfigOptions;
 
@@ -35,40 +34,45 @@ import org.apache.hadoop.yarn.client.api.YarnClient;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.ResourceScheduler;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.fifo.FifoScheduler;
-import org.junit.After;
-import org.junit.Assert;
-import org.junit.BeforeClass;
-import org.junit.Rule;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.RegisterExtension;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.event.Level;
 
 import java.io.File;
-import java.time.Duration;
+import java.nio.charset.Charset;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.EnumSet;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 
 import static org.apache.flink.yarn.util.TestUtils.getTestJarPath;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * This test starts a MiniYARNCluster with a FIFO scheduler. There are no queues for that scheduler.
  */
-public class YARNSessionFIFOITCase extends YarnTestBase {
-    private static final Logger LOG = LoggerFactory.getLogger(YARNSessionFIFOITCase.class);
+class YARNSessionFIFOITCase extends YarnTestBase {
+    private static final Logger log = LoggerFactory.getLogger(YARNSessionFIFOITCase.class);
 
-    @Rule
-    public final TestLoggerResource yarTestLoggerResource =
-            new TestLoggerResource(YarnClusterDescriptor.class, Level.WARN);
+    protected static final String VIEW_ACLS = "user group";
+    protected static final String MODIFY_ACLS = "admin groupAdmin";
+    protected static final String VIEW_ACLS_WITH_WILDCARD = "*";
+    protected static final String MODIFY_ACLS_WITH_WILDCARD = "*";
+    protected static final String WILDCARD = "*";
 
-    /*
-    Override init with FIFO scheduler.
-     */
-    @BeforeClass
-    public static void setup() {
+    @RegisterExtension
+    protected final LoggerAuditingExtension yarLoggerAuditingExtension =
+            new LoggerAuditingExtension(YarnClusterDescriptor.class, Level.WARN);
+
+    /** Override init with FIFO scheduler. */
+    @BeforeAll
+    static void setup() {
         YARN_CONFIGURATION.setClass(
                 YarnConfiguration.RM_SCHEDULER, FifoScheduler.class, ResourceScheduler.class);
         YARN_CONFIGURATION.setInt(YarnConfiguration.NM_PMEM_MB, 768);
@@ -77,24 +81,27 @@ public class YARNSessionFIFOITCase extends YarnTestBase {
         startYARNWithConfig(YARN_CONFIGURATION);
     }
 
-    @After
-    public void checkForProhibitedLogContents() {
+    @AfterEach
+    void checkForProhibitedLogContents() {
         ensureNoProhibitedStringInLogFiles(PROHIBITED_STRINGS, WHITELISTED_STRINGS);
     }
 
-    @Test(timeout = 60000)
-    public void testDetachedMode() throws Exception {
-        runTest(() -> runDetachedModeTest(Collections.emptyMap()));
+    @Test
+    void testDetachedMode() throws Exception {
+        runTest(() -> runDetachedModeTest(Collections.emptyMap(), VIEW_ACLS, MODIFY_ACLS));
     }
 
     /** Test regular operation, including command line parameter parsing. */
-    ApplicationId runDetachedModeTest(Map<String, String> securityProperties) throws Exception {
-        LOG.info("Starting testDetachedMode()");
+    ApplicationId runDetachedModeTest(
+            Map<String, String> securityProperties, String viewAcls, String modifyAcls)
+            throws Exception {
+        log.info("Starting testDetachedMode()");
 
         File exampleJarLocation = getTestJarPath("StreamingWordCount.jar");
         // get temporary file for reading input data for wordcount example
-        File tmpInFile = tmp.newFile();
-        FileUtils.writeStringToFile(tmpInFile, WordCountData.TEXT);
+        File tmpInFile = tmp.toPath().resolve(UUID.randomUUID().toString()).toFile();
+        tmpInFile.createNewFile();
+        FileUtils.writeStringToFile(tmpInFile, WordCountData.TEXT, Charset.defaultCharset());
 
         ArrayList<String> args = new ArrayList<>();
         args.add("-j");
@@ -114,6 +121,9 @@ public class YARNSessionFIFOITCase extends YarnTestBase {
                 args.add("-D" + property.getKey() + "=" + property.getValue());
             }
         }
+
+        args.add("-D" + YarnConfigOptions.APPLICATION_VIEW_ACLS.key() + "=" + viewAcls);
+        args.add("-D" + YarnConfigOptions.APPLICATION_MODIFY_ACLS.key() + "=" + modifyAcls);
 
         args.add("--name");
         args.add("MyCustomName");
@@ -150,21 +160,15 @@ public class YARNSessionFIFOITCase extends YarnTestBase {
 
         jobRunner.join();
 
-        final Duration timeout = Duration.ofMinutes(1);
         final long testConditionIntervalInMillis = 500;
         // in "new" mode we can only wait after the job is submitted, because TMs
         // are spun up lazily
         // wait until two containers are running
-        LOG.info("Waiting until two containers are running");
+        log.info("Waiting until two containers are running");
         CommonTestUtils.waitUntilCondition(
-                () -> getRunningContainers() >= 2,
-                Deadline.fromNow(timeout),
-                testConditionIntervalInMillis,
-                "We didn't reach the state of two containers running (instead: "
-                        + getRunningContainers()
-                        + ")");
+                () -> getRunningContainers() >= 2, testConditionIntervalInMillis);
 
-        LOG.info("Waiting until the job reaches FINISHED state");
+        log.info("Waiting until the job reaches FINISHED state");
         final ApplicationId applicationId = getOnlyApplicationReport().getApplicationId();
         CommonTestUtils.waitUntilCondition(
                 () ->
@@ -172,11 +176,7 @@ public class YARNSessionFIFOITCase extends YarnTestBase {
                                 new String[] {"switched from state RUNNING to FINISHED"},
                                 applicationId,
                                 "jobmanager.log"),
-                Deadline.fromNow(timeout),
-                testConditionIntervalInMillis,
-                "The deployed job didn't finish on time reaching the timeout of "
-                        + timeout
-                        + " seconds. The application will be cancelled forcefully.");
+                testConditionIntervalInMillis);
 
         // kill application "externally".
         try {
@@ -186,11 +186,11 @@ public class YARNSessionFIFOITCase extends YarnTestBase {
             List<ApplicationReport> apps =
                     getApplicationReportWithRetryOnNPE(
                             yc, EnumSet.of(YarnApplicationState.RUNNING));
-            Assert.assertEquals(1, apps.size()); // Only one running
+            assertThat(apps).hasSize(1); // Only one running
             ApplicationReport app = apps.get(0);
 
-            Assert.assertEquals("MyCustomName", app.getName());
-            Assert.assertEquals("Apache Flink 1.x", app.getApplicationType());
+            assertThat(app.getName()).isEqualTo("MyCustomName");
+            assertThat(app.getApplicationType()).isEqualTo("Apache Flink 1.x");
             ApplicationId id = app.getApplicationId();
             yc.killApplication(id);
 
@@ -202,44 +202,41 @@ public class YARNSessionFIFOITCase extends YarnTestBase {
                                                     YarnApplicationState.KILLED,
                                                     YarnApplicationState.FINISHED))
                                     .isEmpty(),
-                    Deadline.fromNow(timeout),
                     testConditionIntervalInMillis);
         } catch (Throwable t) {
-            LOG.warn("Killing failed", t);
-            Assert.fail();
+            log.warn("Killing failed", t);
         } finally {
 
             // cleanup the yarn-properties file
             String confDirPath = System.getenv("FLINK_CONF_DIR");
             File configDirectory = new File(confDirPath);
-            LOG.info(
+            log.info(
                     "testDetachedPerJobYarnClusterInternal: Using configuration directory "
                             + configDirectory.getAbsolutePath());
 
             // load the configuration
-            LOG.info("testDetachedPerJobYarnClusterInternal: Trying to load configuration file");
+            log.info("testDetachedPerJobYarnClusterInternal: Trying to load configuration file");
             Configuration configuration =
                     GlobalConfiguration.loadConfiguration(configDirectory.getAbsolutePath());
 
             try {
                 File yarnPropertiesFile =
                         FlinkYarnSessionCli.getYarnPropertiesLocation(
-                                configuration.getString(
-                                        YarnConfigOptions.PROPERTIES_FILE_LOCATION));
+                                configuration.get(YarnConfigOptions.PROPERTIES_FILE_LOCATION));
                 if (yarnPropertiesFile.exists()) {
-                    LOG.info(
+                    log.info(
                             "testDetachedPerJobYarnClusterInternal: Cleaning up temporary Yarn address reference: {}",
                             yarnPropertiesFile.getAbsolutePath());
                     yarnPropertiesFile.delete();
                 }
             } catch (Exception e) {
-                LOG.warn(
+                log.warn(
                         "testDetachedPerJobYarnClusterInternal: Exception while deleting the JobManager address file",
                         e);
             }
         }
 
-        LOG.info("Finished testDetachedMode()");
+        log.info("Finished testDetachedMode()");
         return applicationId;
     }
 
@@ -249,17 +246,17 @@ public class YARNSessionFIFOITCase extends YarnTestBase {
      * <p>This test validates through 666*2 cores in the "cluster".
      */
     @Test
-    public void testQueryCluster() throws Exception {
+    void testQueryCluster() throws Exception {
         runTest(
                 () -> {
-                    LOG.info("Starting testQueryCluster()");
+                    log.info("Starting testQueryCluster()");
                     runWithArgs(
                             new String[] {"-q"},
-                            "Summary: totalMemory 8192 totalCores 1332",
+                            "Summary: totalMemory 8.000gb (8589934592 bytes) totalCores 1332",
                             null,
                             RunTypes.YARN_SESSION,
                             0); // we have 666*2 cores.
-                    LOG.info("Finished testQueryCluster()");
+                    log.info("Finished testQueryCluster()");
                 });
     }
 }

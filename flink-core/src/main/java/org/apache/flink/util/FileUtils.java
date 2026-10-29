@@ -35,6 +35,8 @@ import java.nio.ByteBuffer;
 import java.nio.channels.Channels;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.channels.WritableByteChannel;
+import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.AccessDeniedException;
 import java.nio.file.FileVisitOption;
 import java.nio.file.FileVisitResult;
@@ -133,22 +135,22 @@ public final class FileUtils {
     //  Simple reading and writing of files
     // ------------------------------------------------------------------------
 
-    public static String readFile(File file, String charsetName) throws IOException {
+    public static String readFile(File file, Charset charset) throws IOException {
         byte[] bytes = readAllBytes(file.toPath());
-        return new String(bytes, charsetName);
+        return new String(bytes, charset);
     }
 
     public static String readFileUtf8(File file) throws IOException {
-        return readFile(file, "UTF-8");
+        return readFile(file, StandardCharsets.UTF_8);
     }
 
-    public static void writeFile(File file, String contents, String encoding) throws IOException {
-        byte[] bytes = contents.getBytes(encoding);
+    public static void writeFile(File file, String contents, Charset charset) throws IOException {
+        byte[] bytes = contents.getBytes(charset);
         Files.write(file.toPath(), bytes, StandardOpenOption.WRITE);
     }
 
     public static void writeFileUtf8(File file, String contents) throws IOException {
-        writeFile(file, contents, "UTF-8");
+        writeFile(file, contents, StandardCharsets.UTF_8);
     }
 
     /**
@@ -191,7 +193,7 @@ public final class FileUtils {
      * @throws IOException if an I/O error occurs reading from the stream
      * @throws OutOfMemoryError if an array of the required size cannot be allocated
      */
-    private static byte[] read(InputStream source, int initialSize) throws IOException {
+    public static byte[] read(InputStream source, int initialSize) throws IOException {
         int capacity = initialSize;
         byte[] buf = new byte[capacity];
         int nread = 0;
@@ -418,53 +420,6 @@ public final class FileUtils {
             throws IOException {
         synchronized (DELETE_LOCK) {
             toRun.accept(file);
-            // briefly wait and fall through the loop
-            try {
-                Thread.sleep(1);
-            } catch (InterruptedException e) {
-                // restore the interruption flag and error out of the method
-                Thread.currentThread().interrupt();
-                throw new IOException("operation interrupted");
-            }
-        }
-    }
-
-    // ------------------------------------------------------------------------
-    //  Deleting directories on Flink FileSystem abstraction
-    // ------------------------------------------------------------------------
-
-    /**
-     * Deletes the path if it is empty. A path can only be empty if it is a directory which does not
-     * contain any other directories/files.
-     *
-     * @param fileSystem to use
-     * @param path to be deleted if empty
-     * @return true if the path could be deleted; otherwise false
-     * @throws IOException if the delete operation fails
-     */
-    public static boolean deletePathIfEmpty(FileSystem fileSystem, Path path) throws IOException {
-        final FileStatus[] fileStatuses;
-
-        try {
-            fileStatuses = fileSystem.listStatus(path);
-        } catch (FileNotFoundException e) {
-            // path already deleted
-            return true;
-        } catch (Exception e) {
-            // could not access directory, cannot delete
-            return false;
-        }
-
-        // if there are no more files or if we couldn't list the file status try to delete the path
-        if (fileStatuses == null) {
-            // another indicator of "file not found"
-            return true;
-        } else if (fileStatuses.length == 0) {
-            // attempt to delete the path (will fail and be ignored if the path now contains
-            // some files (possibly added concurrently))
-            return fileSystem.delete(path, false);
-        } else {
-            return false;
         }
     }
 
@@ -554,12 +509,22 @@ public final class FileUtils {
         }
     }
 
+    /**
+     * Un-archives files inside the target directory. Illegal fs access outside target directory is
+     * not permitted.
+     *
+     * @param file path to zipped/archived file
+     * @param targetDirectory directory path where file needs to be unarchived
+     * @return path to folder with unarchived contents
+     * @throws IOException if file open fails or in case of unsafe access outside target directory
+     */
     public static Path expandDirectory(Path file, Path targetDirectory) throws IOException {
         FileSystem sourceFs = file.getFileSystem();
         FileSystem targetFs = targetDirectory.getFileSystem();
         Path rootDir = null;
         try (ZipInputStream zis = new ZipInputStream(sourceFs.open(file))) {
             ZipEntry entry;
+            String targetDirStr = targetDirectory.toString();
             while ((entry = zis.getNextEntry()) != null) {
                 Path relativePath = new Path(entry.getName());
                 if (rootDir == null) {
@@ -568,6 +533,10 @@ public final class FileUtils {
                 }
 
                 Path newFile = new Path(targetDirectory, relativePath);
+                if (!newFile.toString().startsWith(targetDirStr)) {
+                    throw new IOException("Illegal escape from target directory");
+                }
+
                 if (entry.isDirectory()) {
                     targetFs.mkdirs(newFile);
                 } else {
@@ -620,6 +589,30 @@ public final class FileUtils {
     }
 
     /**
+     * Computes the sum of sizes of all files in the directory and it's subdirectories.
+     *
+     * @param path the root path from which to start the calculation.
+     * @param options visitation options for the directory traversal.
+     * @return sum of sizes of all files in the directory and it's subdirectories.
+     * @throws IOException if the size cannot be determined.
+     */
+    public static long getDirectoryFilesSize(java.nio.file.Path path, FileVisitOption... options)
+            throws IOException {
+
+        if (path == null) {
+            return 0L;
+        }
+
+        try (Stream<java.nio.file.Path> pathStream = Files.walk(path, options)) {
+            return pathStream
+                    .map(java.nio.file.Path::toFile)
+                    .filter(File::isFile)
+                    .mapToLong(File::length)
+                    .sum();
+        }
+    }
+
+    /**
      * Absolutize the given path if it is relative.
      *
      * @param pathToAbsolutize path which is being absolutized if it is a relative path
@@ -667,7 +660,7 @@ public final class FileUtils {
      */
     public static boolean isJarFile(java.nio.file.Path file) {
         return JAR_FILE_EXTENSION.equals(
-                org.apache.flink.shaded.guava30.com.google.common.io.Files.getFileExtension(
+                org.apache.flink.shaded.guava33.com.google.common.io.Files.getFileExtension(
                         file.toString()));
     }
 
@@ -679,12 +672,35 @@ public final class FileUtils {
      */
     public static String stripFileExtension(String fileName) {
         final String extension =
-                org.apache.flink.shaded.guava30.com.google.common.io.Files.getFileExtension(
+                org.apache.flink.shaded.guava33.com.google.common.io.Files.getFileExtension(
                         fileName);
         if (!extension.isEmpty()) {
             return fileName.substring(0, fileName.lastIndexOf(extension) - 1);
         }
         return fileName;
+    }
+
+    /**
+     * Get a target path(the path that replaced symbolic links with linked path) if the original
+     * path contains symbolic path, return the original path otherwise.
+     *
+     * @param path the original path.
+     * @return the path that replaced symbolic links with real path.
+     */
+    public static java.nio.file.Path getTargetPathIfContainsSymbolicPath(java.nio.file.Path path)
+            throws IOException {
+        java.nio.file.Path targetPath = path;
+        java.nio.file.Path suffixPath = Paths.get("");
+        while (path != null && path.getFileName() != null) {
+            if (Files.isSymbolicLink(path)) {
+                java.nio.file.Path linkedPath = path.toRealPath();
+                targetPath = Paths.get(linkedPath.toString(), suffixPath.toString());
+                break;
+            }
+            suffixPath = Paths.get(path.getFileName().toString(), suffixPath.toString());
+            path = path.getParent();
+        }
+        return targetPath;
     }
 
     /**

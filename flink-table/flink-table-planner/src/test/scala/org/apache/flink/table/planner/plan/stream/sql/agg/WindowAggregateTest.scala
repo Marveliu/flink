@@ -15,28 +15,27 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.planner.plan.stream.sql.agg
 
-import org.apache.flink.configuration.Configuration
-import org.apache.flink.table.api.TableException
-import org.apache.flink.table.api.config.OptimizerConfigOptions
-import org.apache.flink.table.planner.plan.utils.JavaUserDefinedAggFunctions.{WeightedAvgWithMerge, WeightedAvg}
+import org.apache.flink.configuration.{ConfigOption, Configuration}
+import org.apache.flink.table.api.{ExplainDetail, TableException, ValidationException}
+import org.apache.flink.table.api.config.{AggregatePhaseStrategy, OptimizerConfigOptions}
+import org.apache.flink.table.planner.plan.utils.JavaUserDefinedAggFunctions.{WeightedAvg, WeightedAvgWithMerge}
 import org.apache.flink.table.planner.plan.utils.WindowEmitStrategy.{TABLE_EXEC_EMIT_EARLY_FIRE_DELAY, TABLE_EXEC_EMIT_EARLY_FIRE_ENABLED, TABLE_EXEC_EMIT_LATE_FIRE_DELAY, TABLE_EXEC_EMIT_LATE_FIRE_ENABLED}
 import org.apache.flink.table.planner.runtime.utils.JavaUserDefinedAggFunctions.TestPythonAggregateFunction
-import org.apache.flink.table.planner.runtime.utils.JavaUserDefinedTableFunctions.JavaTableFunc1
-import org.apache.flink.table.planner.utils.{AggregatePhaseStrategy, TableTestBase}
-import org.junit.Assume.assumeTrue
-import org.junit.{Before, Test}
-import org.junit.runner.RunWith
-import org.junit.runners.Parameterized
+import org.apache.flink.table.planner.runtime.utils.JavaUserDefinedTableFunctions.{JavaTableFunc1, StringSplit}
+import org.apache.flink.table.planner.utils.TableTestBase
+import org.apache.flink.testutils.junit.extensions.parameterized.{ParameterizedTestExtension, Parameters}
+
+import org.assertj.core.api.Assertions.assertThatThrownBy
+import org.assertj.core.api.Assumptions.assumeThat
+import org.junit.jupiter.api.{BeforeEach, TestTemplate}
+import org.junit.jupiter.api.extension.ExtendWith
 
 import java.util
 
-/**
- * Tests for window aggregates based on window table-valued function.
- */
-@RunWith(classOf[Parameterized])
+/** Tests for window aggregates based on window table-valued function. */
+@ExtendWith(Array(classOf[ParameterizedTestExtension]))
 class WindowAggregateTest(aggPhaseEnforcer: AggregatePhaseStrategy) extends TableTestBase {
 
   private val util = streamTestUtil()
@@ -48,33 +47,64 @@ class WindowAggregateTest(aggPhaseEnforcer: AggregatePhaseStrategy) extends Tabl
    */
   private val isTwoPhase = aggPhaseEnforcer == AggregatePhaseStrategy.TWO_PHASE
 
-  @Before
+  @BeforeEach
   def before(): Unit = {
     util.addTemporarySystemFunction("weightedAvg", classOf[WeightedAvgWithMerge])
     util.addTemporarySystemFunction("weightedAvgWithoutMerge", classOf[WeightedAvg])
+    util.tableEnv.executeSql(s"""
+                                |CREATE TABLE MyTable (
+                                |  a INT,
+                                |  b BIGINT,
+                                |  c STRING NOT NULL,
+                                |  d DECIMAL(10, 3),
+                                |  e BIGINT,
+                                |  rowtime TIMESTAMP(3),
+                                |  proctime as PROCTIME(),
+                                |  WATERMARK FOR rowtime AS rowtime - INTERVAL '1' SECOND
+                                |) with (
+                                |  'connector' = 'values'
+                                |)
+                                |""".stripMargin)
+
+    util.tableEnv.executeSql(s"""
+                                |CREATE TABLE MyCDCTable (
+                                |  a INT,
+                                |  b BIGINT,
+                                |  c STRING NOT NULL,
+                                |  d DECIMAL(10, 3),
+                                |  e BIGINT,
+                                |  rowtime TIMESTAMP(3),
+                                |  proctime as PROCTIME(),
+                                |  WATERMARK FOR rowtime AS rowtime - INTERVAL '1' SECOND
+                                |) with (
+                                |  'connector' = 'values',
+                                |  'changelog-mode' = 'I,UA,UB,D'
+                                |)
+                                |""".stripMargin)
+
     util.tableEnv.executeSql(
-      s"""
-         |CREATE TABLE MyTable (
-         |  a INT,
-         |  b BIGINT,
-         |  c STRING NOT NULL,
-         |  d DECIMAL(10, 3),
-         |  e BIGINT,
-         |  rowtime TIMESTAMP(3),
-         |  proctime as PROCTIME(),
-         |  WATERMARK FOR rowtime AS rowtime - INTERVAL '1' SECOND
-         |) with (
-         |  'connector' = 'values'
-         |)
-         |""".stripMargin)
+      """
+        |CREATE VIEW proctime_win AS
+        |SELECT
+        |   a,
+        |   b,
+        |   window_start as ws,
+        |   window_end as we,
+        |   window_time as wt,
+        |   proctime() as new_proctime,
+        |   count(*) as cnt,
+        |   sum(d) as sum_d,
+        |   max(d) as max_d
+        |FROM TABLE(TUMBLE(TABLE MyTable, DESCRIPTOR(proctime), INTERVAL '5' MINUTE))
+        |GROUP BY a, window_start, window_end, window_time, b
+      """.stripMargin)
 
     // set agg-phase strategy
-    util.tableEnv.getConfig.getConfiguration.setString(
-      OptimizerConfigOptions.TABLE_OPTIMIZER_AGG_PHASE_STRATEGY,
-      aggPhaseEnforcer.toString)
+    util.tableEnv.getConfig
+      .set(OptimizerConfigOptions.TABLE_OPTIMIZER_AGG_PHASE_STRATEGY, aggPhaseEnforcer)
   }
 
-  @Test
+  @TestTemplate
   def testTumble_OnRowtime(): Unit = {
     val sql =
       """
@@ -93,9 +123,28 @@ class WindowAggregateTest(aggPhaseEnforcer: AggregatePhaseStrategy) extends Tabl
     util.verifyRelPlan(sql)
   }
 
-  @Test
+  @TestTemplate
+  def testTumble_OnRowtimeWithCDCSource(): Unit = {
+    val sql =
+      """
+        |SELECT
+        |   a,
+        |   window_start,
+        |   window_end,
+        |   count(*),
+        |   sum(d),
+        |   max(d) filter (where b > 1000),
+        |   weightedAvg(b, e) AS wAvg,
+        |   count(distinct c) AS uv
+        |FROM TABLE(TUMBLE(TABLE MyCDCTable, DESCRIPTOR(rowtime), INTERVAL '15' MINUTE))
+        |GROUP BY a, window_start, window_end
+      """.stripMargin
+    util.verifyRelPlan(sql, ExplainDetail.CHANGELOG_MODE)
+  }
+
+  @TestTemplate
   def testTumble_OnProctime(): Unit = {
-    assumeTrue(isTwoPhase)
+    assumeThat(isTwoPhase).isTrue
     val sql =
       """
         |SELECT
@@ -113,7 +162,27 @@ class WindowAggregateTest(aggPhaseEnforcer: AggregatePhaseStrategy) extends Tabl
     util.verifyRelPlan(sql)
   }
 
-  @Test
+  @TestTemplate
+  def testTumble_OnProctimeWithCDCSource(): Unit = {
+    assumeThat(isTwoPhase).isTrue
+    val sql =
+      """
+        |SELECT
+        |   a,
+        |   window_start,
+        |   window_end,
+        |   count(*),
+        |   sum(d),
+        |   max(d) filter (where b > 1000),
+        |   weightedAvg(b, e) AS wAvg,
+        |   count(distinct c) AS uv
+        |FROM TABLE(TUMBLE(TABLE MyCDCTable, DESCRIPTOR(proctime), INTERVAL '15' MINUTE))
+        |GROUP BY a, window_start, window_end
+      """.stripMargin
+    util.verifyRelPlan(sql, ExplainDetail.CHANGELOG_MODE)
+  }
+
+  @TestTemplate
   def testTumble_CalcOnTVF(): Unit = {
     val sql =
       """
@@ -136,7 +205,7 @@ class WindowAggregateTest(aggPhaseEnforcer: AggregatePhaseStrategy) extends Tabl
     util.verifyRelPlan(sql)
   }
 
-  @Test
+  @TestTemplate
   def testTumble_WindowColumnsAtEnd(): Unit = {
     // there shouldn't be any Calc on the WindowAggregate,
     // because fields order are align with WindowAggregate schema
@@ -157,7 +226,7 @@ class WindowAggregateTest(aggPhaseEnforcer: AggregatePhaseStrategy) extends Tabl
     util.verifyRelPlan(sql)
   }
 
-  @Test
+  @TestTemplate
   def testTumble_GroupMultipleWindowColumns(): Unit = {
     val sql =
       """
@@ -181,7 +250,7 @@ class WindowAggregateTest(aggPhaseEnforcer: AggregatePhaseStrategy) extends Tabl
     util.verifyRelPlan(sql)
   }
 
-  @Test
+  @TestTemplate
   def testTumble_GroupMultipleKeys(): Unit = {
     val sql =
       """
@@ -200,7 +269,7 @@ class WindowAggregateTest(aggPhaseEnforcer: AggregatePhaseStrategy) extends Tabl
     util.verifyRelPlan(sql)
   }
 
-  @Test
+  @TestTemplate
   def testTumble_GroupOnlyWindowColumns(): Unit = {
     val sql =
       """
@@ -217,7 +286,7 @@ class WindowAggregateTest(aggPhaseEnforcer: AggregatePhaseStrategy) extends Tabl
     util.verifyRelPlan(sql)
   }
 
-  @Test
+  @TestTemplate
   def testTumble_GroupOnLiteralValue(): Unit = {
     val sql =
       """
@@ -234,7 +303,7 @@ class WindowAggregateTest(aggPhaseEnforcer: AggregatePhaseStrategy) extends Tabl
     util.verifyRelPlan(sql)
   }
 
-  @Test
+  @TestTemplate
   def testTumble_ProjectionPushDown(): Unit = {
     val sql =
       """
@@ -250,7 +319,7 @@ class WindowAggregateTest(aggPhaseEnforcer: AggregatePhaseStrategy) extends Tabl
     util.verifyRelPlan(sql)
   }
 
-  @Test
+  @TestTemplate
   def testTumble_CascadingWindow(): Unit = {
     util.tableEnv.executeSql(
       """
@@ -282,10 +351,34 @@ class WindowAggregateTest(aggPhaseEnforcer: AggregatePhaseStrategy) extends Tabl
     util.verifyRelPlan(sql)
   }
 
-  @Test
+  @TestTemplate
+  def testTumble_CascadingWindow_RelaxForm(): Unit = {
+    // a relax form of cascaded rowtime window which is actually supported
+    util.verifyRelPlan(
+      """
+        |SELECT
+        |  a,
+        |  window_start,
+        |  window_end,
+        |  COUNT(*)
+        |  FROM
+        |  (
+        |    SELECT
+        |    a,
+        |    window_start,
+        |    window_end,
+        |    COUNT(DISTINCT c) AS cnt
+        |    FROM TABLE(
+        |      TUMBLE(TABLE MyTable, DESCRIPTOR(rowtime), INTERVAL '1' DAY, INTERVAL '8' HOUR))
+        |    GROUP BY a, b, window_start, window_end
+        |) GROUP BY a, window_start, window_end
+      """.stripMargin)
+  }
+
+  @TestTemplate
   def testTumble_DistinctSplitEnabled(): Unit = {
-    util.tableEnv.getConfig.getConfiguration.setBoolean(
-      OptimizerConfigOptions.TABLE_OPTIMIZER_DISTINCT_AGG_SPLIT_ENABLED, true)
+    util.tableEnv.getConfig
+      .set(OptimizerConfigOptions.TABLE_OPTIMIZER_DISTINCT_AGG_SPLIT_ENABLED, Boolean.box(true))
     val sql =
       """
         |SELECT
@@ -302,10 +395,10 @@ class WindowAggregateTest(aggPhaseEnforcer: AggregatePhaseStrategy) extends Tabl
     util.verifyRelPlan(sql)
   }
 
-  @Test
+  @TestTemplate
   def testTumble_DistinctOnWindowColumns(): Unit = {
-    util.tableEnv.getConfig.getConfiguration.setBoolean(
-      OptimizerConfigOptions.TABLE_OPTIMIZER_DISTINCT_AGG_SPLIT_ENABLED, true)
+    util.tableEnv.getConfig
+      .set(OptimizerConfigOptions.TABLE_OPTIMIZER_DISTINCT_AGG_SPLIT_ENABLED, Boolean.box(true))
     // window_time is used in agg arg, thus we shouldn't merge WindowTVF into WindowAggregate.
     // actually, after expanded, there's HASH_CODE(window_time),
     // and thus we shouldn't transpose WindowTVF and Expand too.
@@ -324,12 +417,12 @@ class WindowAggregateTest(aggPhaseEnforcer: AggregatePhaseStrategy) extends Tabl
     util.verifyRelPlan(sql)
   }
 
-  @Test
+  @TestTemplate
   def testTumble_DoNotSplitProcessingTimeWindow(): Unit = {
-    assumeTrue(isTwoPhase)
+    assumeThat(isTwoPhase).isTrue
     // the processing-time window aggregate with distinct shouldn't be split into two-level agg
-    util.tableEnv.getConfig.getConfiguration.setBoolean(
-      OptimizerConfigOptions.TABLE_OPTIMIZER_DISTINCT_AGG_SPLIT_ENABLED, true)
+    util.tableEnv.getConfig
+      .set(OptimizerConfigOptions.TABLE_OPTIMIZER_DISTINCT_AGG_SPLIT_ENABLED, Boolean.box(true))
     val sql =
       """
         |SELECT
@@ -346,7 +439,7 @@ class WindowAggregateTest(aggPhaseEnforcer: AggregatePhaseStrategy) extends Tabl
     util.verifyRelPlan(sql)
   }
 
-  @Test
+  @TestTemplate
   def testTumble_NotOutputWindowColumns(): Unit = {
     val sql =
       """
@@ -362,9 +455,9 @@ class WindowAggregateTest(aggPhaseEnforcer: AggregatePhaseStrategy) extends Tabl
     util.verifyRelPlan(sql)
   }
 
-  @Test
+  @TestTemplate
   def testTumble_UdafWithoutMerge(): Unit = {
-    assumeTrue(isTwoPhase)
+    assumeThat(isTwoPhase).isTrue
     // the window aggregation shouldn't be split into local-global window aggregation
     val sql =
       """
@@ -383,7 +476,7 @@ class WindowAggregateTest(aggPhaseEnforcer: AggregatePhaseStrategy) extends Tabl
     util.verifyRelPlan(sql)
   }
 
-  @Test
+  @TestTemplate
   def testCumulate_OnRowtime(): Unit = {
     val sql =
       """
@@ -403,9 +496,29 @@ class WindowAggregateTest(aggPhaseEnforcer: AggregatePhaseStrategy) extends Tabl
     util.verifyRelPlan(sql)
   }
 
-  @Test
+  @TestTemplate
+  def testCumulate_OnRowtimeWithCDCSource(): Unit = {
+    val sql =
+      """
+        |SELECT
+        |   a,
+        |   window_start,
+        |   window_end,
+        |   count(*),
+        |   sum(d),
+        |   max(d) filter (where b > 1000),
+        |   weightedAvg(b, e) AS wAvg,
+        |   count(distinct c) AS uv
+        |FROM TABLE(
+        |  CUMULATE(TABLE MyCDCTable, DESCRIPTOR(rowtime), INTERVAL '10' MINUTE, INTERVAL '1' HOUR))
+        |GROUP BY a, window_start, window_end
+      """.stripMargin
+    util.verifyRelPlan(sql, ExplainDetail.CHANGELOG_MODE)
+  }
+
+  @TestTemplate
   def testCumulate_OnProctime(): Unit = {
-    assumeTrue(isTwoPhase)
+    assumeThat(isTwoPhase).isTrue
     val sql =
       """
         |SELECT
@@ -424,10 +537,31 @@ class WindowAggregateTest(aggPhaseEnforcer: AggregatePhaseStrategy) extends Tabl
     util.verifyRelPlan(sql)
   }
 
-  @Test
+  @TestTemplate
+  def testCumulate_OnProctimeWithCDCSource(): Unit = {
+    assumeThat(isTwoPhase).isTrue
+    val sql =
+      """
+        |SELECT
+        |   a,
+        |   window_start,
+        |   window_end,
+        |   count(*),
+        |   sum(d),
+        |   max(d) filter (where b > 1000),
+        |   weightedAvg(b, e) AS wAvg,
+        |   count(distinct c) AS uv
+        |FROM TABLE(
+        |  CUMULATE(TABLE MyCDCTable, DESCRIPTOR(proctime), INTERVAL '10' MINUTE, INTERVAL '1' HOUR))
+        |GROUP BY a, window_start, window_end
+      """.stripMargin
+    util.verifyRelPlan(sql, ExplainDetail.CHANGELOG_MODE)
+  }
+
+  @TestTemplate
   def testCumulate_DistinctSplitEnabled(): Unit = {
-    util.tableEnv.getConfig.getConfiguration.setBoolean(
-      OptimizerConfigOptions.TABLE_OPTIMIZER_DISTINCT_AGG_SPLIT_ENABLED, true)
+    util.tableEnv.getConfig
+      .set(OptimizerConfigOptions.TABLE_OPTIMIZER_DISTINCT_AGG_SPLIT_ENABLED, Boolean.box(true))
     val sql =
       """
         |SELECT
@@ -445,7 +579,7 @@ class WindowAggregateTest(aggPhaseEnforcer: AggregatePhaseStrategy) extends Tabl
     util.verifyRelPlan(sql)
   }
 
-  @Test
+  @TestTemplate
   def testHop_OnRowtime(): Unit = {
     val sql =
       """
@@ -465,9 +599,29 @@ class WindowAggregateTest(aggPhaseEnforcer: AggregatePhaseStrategy) extends Tabl
     util.verifyRelPlan(sql)
   }
 
-  @Test
+  @TestTemplate
+  def testHop_OnRowtimeWithCDCSource(): Unit = {
+    val sql =
+      """
+        |SELECT
+        |   a,
+        |   window_start,
+        |   window_end,
+        |   count(*),
+        |   sum(d),
+        |   max(d) filter (where b > 1000),
+        |   weightedAvg(b, e) AS wAvg,
+        |   count(distinct c) AS uv
+        |FROM TABLE(
+        |   HOP(TABLE MyCDCTable, DESCRIPTOR(rowtime), INTERVAL '5' MINUTE, INTERVAL '10' MINUTE))
+        |GROUP BY a, window_start, window_end
+      """.stripMargin
+    util.verifyRelPlan(sql, ExplainDetail.CHANGELOG_MODE)
+  }
+
+  @TestTemplate
   def testHop_OnProctime(): Unit = {
-    assumeTrue(isTwoPhase)
+    assumeThat(isTwoPhase).isTrue
     val sql =
       """
         |SELECT
@@ -486,10 +640,31 @@ class WindowAggregateTest(aggPhaseEnforcer: AggregatePhaseStrategy) extends Tabl
     util.verifyRelPlan(sql)
   }
 
-  @Test
+  @TestTemplate
+  def testHop_OnProctimeWithCDCSource(): Unit = {
+    assumeThat(isTwoPhase).isTrue
+    val sql =
+      """
+        |SELECT
+        |   a,
+        |   window_start,
+        |   window_end,
+        |   count(*),
+        |   sum(d),
+        |   max(d) filter (where b > 1000),
+        |   weightedAvg(b, e) AS wAvg,
+        |   count(distinct c) AS uv
+        |FROM TABLE(
+        |   HOP(TABLE MyCDCTable, DESCRIPTOR(proctime), INTERVAL '5' MINUTE, INTERVAL '10' MINUTE))
+        |GROUP BY a, window_start, window_end
+      """.stripMargin
+    util.verifyRelPlan(sql, ExplainDetail.CHANGELOG_MODE)
+  }
+
+  @TestTemplate
   def testHop_DistinctSplitEnabled(): Unit = {
-    util.tableEnv.getConfig.getConfiguration.setBoolean(
-      OptimizerConfigOptions.TABLE_OPTIMIZER_DISTINCT_AGG_SPLIT_ENABLED, true)
+    util.tableEnv.getConfig
+      .set(OptimizerConfigOptions.TABLE_OPTIMIZER_DISTINCT_AGG_SPLIT_ENABLED, Boolean.box(true))
     val sql =
       """
         |SELECT
@@ -507,7 +682,7 @@ class WindowAggregateTest(aggPhaseEnforcer: AggregatePhaseStrategy) extends Tabl
     util.verifyRelPlan(sql)
   }
 
-  @Test
+  @TestTemplate
   def testMultipleAggregateOnSameWindowTVF(): Unit = {
     util.tableEnv.executeSql(
       """
@@ -515,38 +690,35 @@ class WindowAggregateTest(aggPhaseEnforcer: AggregatePhaseStrategy) extends Tabl
         |SELECT * FROM TABLE(TUMBLE(TABLE MyTable, DESCRIPTOR(rowtime), INTERVAL '15' MINUTE))
         |""".stripMargin)
     val statementSet = util.tableEnv.createStatementSet()
-    util.tableEnv.executeSql(
-      """
-        |CREATE TABLE s1 (
-        |  wstart TIMESTAMP(3),
-        |  wend TIMESTAMP(3),
-        |  `result` BIGINT
-        |) WITH (
-        |  'connector' = 'values'
-        |)
-        |""".stripMargin)
+    util.tableEnv.executeSql("""
+                               |CREATE TABLE s1 (
+                               |  wstart TIMESTAMP(3),
+                               |  wend TIMESTAMP(3),
+                               |  `result` BIGINT
+                               |) WITH (
+                               |  'connector' = 'values'
+                               |)
+                               |""".stripMargin)
 
-    statementSet.addInsertSql(
-      """
-        |INSERT INTO s1
-        |SELECT
-        |   window_start,
-        |   window_end,
-        |   weightedAvg(b, e) AS wAvg
-        |FROM tvf
-        |GROUP BY window_start, window_end
-        |""".stripMargin)
+    statementSet.addInsertSql("""
+                                |INSERT INTO s1
+                                |SELECT
+                                |   window_start,
+                                |   window_end,
+                                |   weightedAvg(b, e) AS wAvg
+                                |FROM tvf
+                                |GROUP BY window_start, window_end
+                                |""".stripMargin)
 
-    statementSet.addInsertSql(
-      """
-        |INSERT INTO s1
-        |SELECT
-        |   window_start,
-        |   window_end,
-        |   count(*)
-        |FROM tvf
-        |GROUP BY window_start, window_end
-        |""".stripMargin)
+    statementSet.addInsertSql("""
+                                |INSERT INTO s1
+                                |SELECT
+                                |   window_start,
+                                |   window_end,
+                                |   count(*)
+                                |FROM tvf
+                                |GROUP BY window_start, window_end
+                                |""".stripMargin)
 
     util.verifyExecPlan(statementSet)
   }
@@ -555,7 +727,7 @@ class WindowAggregateTest(aggPhaseEnforcer: AggregatePhaseStrategy) extends Tabl
   // Tests for queries can't be translated to window aggregate for now
   // ----------------------------------------------------------------------------------------
 
-  @Test
+  @TestTemplate
   def testCantMergeWindowTVF_FilterOnWindowStart(): Unit = {
     val sql =
       """
@@ -577,7 +749,7 @@ class WindowAggregateTest(aggPhaseEnforcer: AggregatePhaseStrategy) extends Tabl
     util.verifyRelPlan(sql)
   }
 
-  @Test
+  @TestTemplate
   def testCantMergeWindowTVF_UdtfOnWindowTVF(): Unit = {
     util.tableEnv.createTemporaryFunction("len_udtf", classOf[JavaTableFunc1])
     val sql =
@@ -600,9 +772,9 @@ class WindowAggregateTest(aggPhaseEnforcer: AggregatePhaseStrategy) extends Tabl
     util.verifyRelPlan(sql)
   }
 
-  @Test
+  @TestTemplate
   def testCantTranslateToWindowAgg_GroupOnOnlyStart(): Unit = {
-    assumeTrue(isTwoPhase)
+    assumeThat(isTwoPhase).isTrue
     val sql =
       """
         |SELECT
@@ -618,9 +790,9 @@ class WindowAggregateTest(aggPhaseEnforcer: AggregatePhaseStrategy) extends Tabl
     util.verifyRelPlan(sql)
   }
 
-  @Test
+  @TestTemplate
   def testCantTranslateToWindowAgg_PythonAggregateCall(): Unit = {
-    assumeTrue(isTwoPhase)
+    assumeThat(isTwoPhase).isTrue
     util.tableEnv.createTemporaryFunction("python_agg", classOf[TestPythonAggregateFunction])
     val sql =
       """
@@ -634,7 +806,7 @@ class WindowAggregateTest(aggPhaseEnforcer: AggregatePhaseStrategy) extends Tabl
     util.verifyRelPlan(sql)
   }
 
-  @Test
+  @TestTemplate
   def testUnsupportedException_EarlyFire(): Unit = {
     val conf = new Configuration()
     conf.setString(TABLE_EXEC_EMIT_EARLY_FIRE_ENABLED.key(), "true")
@@ -656,14 +828,15 @@ class WindowAggregateTest(aggPhaseEnforcer: AggregatePhaseStrategy) extends Tabl
         |GROUP BY a, window_start, window_end
       """.stripMargin
 
-    thrown.expect(classOf[TableException])
-    thrown.expectMessage("Currently, window table function based aggregate doesn't support " +
-      "early-fire and late-fire configuration 'table.exec.emit.early-fire.enabled' and " +
-      "'table.exec.emit.late-fire.enabled'.")
-    util.verifyExecPlan(sql)
+    assertThatThrownBy(() => util.verifyExecPlan(sql))
+      .hasMessageContaining(
+        "Currently, window table function based aggregate doesn't support " +
+          "early-fire and late-fire configuration 'table.exec.emit.early-fire.enabled' and " +
+          "'table.exec.emit.late-fire.enabled'.")
+      .isInstanceOf[TableException]
   }
 
-  @Test
+  @TestTemplate
   def testUnsupportedException_LateFire(): Unit = {
     val conf = new Configuration()
     conf.setString(TABLE_EXEC_EMIT_LATE_FIRE_ENABLED.key(), "true")
@@ -685,14 +858,15 @@ class WindowAggregateTest(aggPhaseEnforcer: AggregatePhaseStrategy) extends Tabl
         |GROUP BY a, window_start, window_end
       """.stripMargin
 
-    thrown.expect(classOf[TableException])
-    thrown.expectMessage("Currently, window table function based aggregate doesn't support " +
-      "early-fire and late-fire configuration 'table.exec.emit.early-fire.enabled' and " +
-      "'table.exec.emit.late-fire.enabled'.")
-    util.verifyExecPlan(sql)
+    assertThatThrownBy(() => util.verifyExecPlan(sql))
+      .hasMessageContaining(
+        "Currently, window table function based aggregate doesn't support " +
+          "early-fire and late-fire configuration 'table.exec.emit.early-fire.enabled' and " +
+          "'table.exec.emit.late-fire.enabled'.")
+      .isInstanceOf[TableException]
   }
 
-  @Test
+  @TestTemplate
   def testUnsupportedException_HopSizeNonDivisible(): Unit = {
     val sql =
       """
@@ -706,13 +880,13 @@ class WindowAggregateTest(aggPhaseEnforcer: AggregatePhaseStrategy) extends Tabl
         |GROUP BY a, window_start, window_end
       """.stripMargin
 
-    thrown.expect(classOf[TableException])
-    thrown.expectMessage("HOP table function based aggregate requires size must be an " +
-      "integral multiple of slide, but got size 600000 ms and slide 240000 ms")
-    util.verifyExplain(sql)
+    assertThatThrownBy(() => util.verifyExplain(sql))
+      .hasMessageContaining("HOP table function based aggregate requires size must be an " +
+        "integral multiple of slide, but got size 600000 ms and slide 240000 ms")
+      .isInstanceOf[TableException]
   }
 
-  @Test
+  @TestTemplate
   def testUnsupportedException_CumulateSizeNonDivisible(): Unit = {
     val sql =
       """
@@ -726,15 +900,15 @@ class WindowAggregateTest(aggPhaseEnforcer: AggregatePhaseStrategy) extends Tabl
         |GROUP BY a, window_start, window_end
       """.stripMargin
 
-    thrown.expect(classOf[TableException])
-    thrown.expectMessage("CUMULATE table function based aggregate requires maxSize " +
-      "must be an integral multiple of step, but got maxSize 3600000 ms and step 1500000 ms")
-    util.verifyExplain(sql)
+    assertThatThrownBy(() => util.verifyExplain(sql))
+      .hasMessageContaining("CUMULATE table function based aggregate requires maxSize " +
+        "must be an integral multiple of step, but got maxSize 3600000 ms and step 1500000 ms")
+      .isInstanceOf[TableException]
   }
 
-  @Test
+  @TestTemplate
   def testCantTranslateToWindowAgg_GroupingSetsWithoutWindowStartEnd(): Unit = {
-    assumeTrue(isTwoPhase)
+    assumeThat(isTwoPhase).isTrue
     // Cannot translate to window aggregate because group keys don't contain both window_start
     // and window_end
     val sql =
@@ -748,9 +922,9 @@ class WindowAggregateTest(aggPhaseEnforcer: AggregatePhaseStrategy) extends Tabl
     util.verifyRelPlan(sql)
   }
 
-  @Test
+  @TestTemplate
   def testCantTranslateToWindowAgg_GroupingSetsOnlyWithWindowStart(): Unit = {
-    assumeTrue(isTwoPhase)
+    assumeThat(isTwoPhase).isTrue
     val sql =
       """
         |SELECT
@@ -762,7 +936,7 @@ class WindowAggregateTest(aggPhaseEnforcer: AggregatePhaseStrategy) extends Tabl
     util.verifyRelPlan(sql)
   }
 
-  @Test
+  @TestTemplate
   def testTumble_GroupingSets(): Unit = {
     val sql =
       """
@@ -776,7 +950,7 @@ class WindowAggregateTest(aggPhaseEnforcer: AggregatePhaseStrategy) extends Tabl
     util.verifyRelPlan(sql)
   }
 
-  @Test
+  @TestTemplate
   def testTumble_GroupingSets1(): Unit = {
     val sql =
       """
@@ -790,10 +964,10 @@ class WindowAggregateTest(aggPhaseEnforcer: AggregatePhaseStrategy) extends Tabl
     util.verifyRelPlan(sql)
   }
 
-  @Test
+  @TestTemplate
   def testTumble_GroupingSetsDistinctSplitEnabled(): Unit = {
-    util.tableEnv.getConfig.getConfiguration.setBoolean(
-      OptimizerConfigOptions.TABLE_OPTIMIZER_DISTINCT_AGG_SPLIT_ENABLED, true)
+    util.tableEnv.getConfig
+      .set(OptimizerConfigOptions.TABLE_OPTIMIZER_DISTINCT_AGG_SPLIT_ENABLED, Boolean.box(true))
     val sql =
       """
         |SELECT
@@ -809,9 +983,9 @@ class WindowAggregateTest(aggPhaseEnforcer: AggregatePhaseStrategy) extends Tabl
     util.verifyRelPlan(sql)
   }
 
-  @Test
+  @TestTemplate
   def testCantTranslateToWindowAgg_CubeWithoutWindowStartEnd(): Unit = {
-    assumeTrue(isTwoPhase)
+    assumeThat(isTwoPhase).isTrue
     val sql =
       """
         |SELECT
@@ -824,9 +998,9 @@ class WindowAggregateTest(aggPhaseEnforcer: AggregatePhaseStrategy) extends Tabl
     util.verifyRelPlan(sql)
   }
 
-  @Test
+  @TestTemplate
   def testCantTranslateToWindowAgg_RollupWithoutWindowStartEnd(): Unit = {
-    assumeTrue(isTwoPhase)
+    assumeThat(isTwoPhase).isTrue
     val sql =
       """
         |SELECT
@@ -839,7 +1013,7 @@ class WindowAggregateTest(aggPhaseEnforcer: AggregatePhaseStrategy) extends Tabl
     util.verifyRelPlan(sql)
   }
 
-  @Test
+  @TestTemplate
   def testTumble_Rollup(): Unit = {
     val sql =
       """
@@ -853,28 +1027,28 @@ class WindowAggregateTest(aggPhaseEnforcer: AggregatePhaseStrategy) extends Tabl
     util.verifyRelPlan(sql)
   }
 
-  @Test
+  @TestTemplate
   def testCantMergeWindowTVF_GroupingSetsDistinctOnWindowColumns(): Unit = {
-    util.tableEnv.getConfig.getConfiguration.setBoolean(
-      OptimizerConfigOptions.TABLE_OPTIMIZER_DISTINCT_AGG_SPLIT_ENABLED, true)
+    util.tableEnv.getConfig
+      .set(OptimizerConfigOptions.TABLE_OPTIMIZER_DISTINCT_AGG_SPLIT_ENABLED, Boolean.box(true))
     // window_time is used in agg arg, thus we shouldn't merge WindowTVF into WindowAggregate.
     // actually, after expanded, there's HASH_CODE(window_time),
     // and thus we shouldn't transpose WindowTVF and Expand too.
     val sql =
-    """
-      |SELECT
-      |   a,
-      |   b,
-      |   count(*),
-      |   max(d) filter (where b > 1000),
-      |   count(distinct window_time) AS uv
-      |FROM TABLE(TUMBLE(TABLE MyTable, DESCRIPTOR(rowtime), INTERVAL '15' MINUTE))
-      |GROUP BY GROUPING SETS ((a), (b)), window_start, window_end
+      """
+        |SELECT
+        |   a,
+        |   b,
+        |   count(*),
+        |   max(d) filter (where b > 1000),
+        |   count(distinct window_time) AS uv
+        |FROM TABLE(TUMBLE(TABLE MyTable, DESCRIPTOR(rowtime), INTERVAL '15' MINUTE))
+        |GROUP BY GROUPING SETS ((a), (b)), window_start, window_end
       """.stripMargin
     util.verifyRelPlan(sql)
   }
 
-  @Test
+  @TestTemplate
   def testHop_GroupingSets(): Unit = {
     val sql =
       """
@@ -889,10 +1063,10 @@ class WindowAggregateTest(aggPhaseEnforcer: AggregatePhaseStrategy) extends Tabl
     util.verifyRelPlan(sql)
   }
 
-  @Test
+  @TestTemplate
   def testHop_GroupingSets_DistinctSplitEnabled(): Unit = {
-    util.tableEnv.getConfig.getConfiguration.setBoolean(
-      OptimizerConfigOptions.TABLE_OPTIMIZER_DISTINCT_AGG_SPLIT_ENABLED, true)
+    util.tableEnv.getConfig
+      .set(OptimizerConfigOptions.TABLE_OPTIMIZER_DISTINCT_AGG_SPLIT_ENABLED, Boolean.box(true))
     val sql =
       """
         |SELECT
@@ -907,7 +1081,7 @@ class WindowAggregateTest(aggPhaseEnforcer: AggregatePhaseStrategy) extends Tabl
     util.verifyRelPlan(sql)
   }
 
-  @Test
+  @TestTemplate
   def testHop_Cube(): Unit = {
     val sql =
       """
@@ -922,7 +1096,7 @@ class WindowAggregateTest(aggPhaseEnforcer: AggregatePhaseStrategy) extends Tabl
     util.verifyRelPlan(sql)
   }
 
-  @Test
+  @TestTemplate
   def testHop_Rollup(): Unit = {
     val sql =
       """
@@ -937,7 +1111,7 @@ class WindowAggregateTest(aggPhaseEnforcer: AggregatePhaseStrategy) extends Tabl
     util.verifyRelPlan(sql)
   }
 
-  @Test
+  @TestTemplate
   def testCumulate_GroupingSets(): Unit = {
     val sql =
       """
@@ -946,16 +1120,16 @@ class WindowAggregateTest(aggPhaseEnforcer: AggregatePhaseStrategy) extends Tabl
         |   b,
         |   count(distinct c) AS uv
         |FROM TABLE(
-        |   CUMULATE(TABLE MyTable, DESCRIPTOR(rowtime), INTERVAL '25' MINUTE, INTERVAL '1' HOUR))
+        |   CUMULATE(TABLE MyTable, DESCRIPTOR(rowtime), INTERVAL '20' MINUTE, INTERVAL '1' HOUR))
         |GROUP BY GROUPING SETS ((a), (b)), window_start, window_end
       """.stripMargin
     util.verifyRelPlan(sql)
   }
 
-  @Test
+  @TestTemplate
   def testCumulate_GroupingSets_DistinctSplitEnabled(): Unit = {
-    util.tableEnv.getConfig.getConfiguration.setBoolean(
-      OptimizerConfigOptions.TABLE_OPTIMIZER_DISTINCT_AGG_SPLIT_ENABLED, true)
+    util.tableEnv.getConfig
+      .set(OptimizerConfigOptions.TABLE_OPTIMIZER_DISTINCT_AGG_SPLIT_ENABLED, Boolean.box(true))
     val sql =
       """
         |SELECT
@@ -970,7 +1144,7 @@ class WindowAggregateTest(aggPhaseEnforcer: AggregatePhaseStrategy) extends Tabl
     util.verifyRelPlan(sql)
   }
 
-  @Test
+  @TestTemplate
   def testCumulate_Cube(): Unit = {
     val sql =
       """
@@ -985,7 +1159,7 @@ class WindowAggregateTest(aggPhaseEnforcer: AggregatePhaseStrategy) extends Tabl
     util.verifyRelPlan(sql)
   }
 
-  @Test
+  @TestTemplate
   def testCumulate_Rollup(): Unit = {
     val sql =
       """
@@ -1000,7 +1174,7 @@ class WindowAggregateTest(aggPhaseEnforcer: AggregatePhaseStrategy) extends Tabl
     util.verifyRelPlan(sql)
   }
 
-  @Test
+  @TestTemplate
   def testFieldNameConflict(): Unit = {
     val sql =
       """
@@ -1012,10 +1186,609 @@ class WindowAggregateTest(aggPhaseEnforcer: AggregatePhaseStrategy) extends Tabl
       """.stripMargin
     util.verifyRelPlan(sql)
   }
+
+  @TestTemplate
+  def testProctimeWindowWithFilter(): Unit = {
+    util.tableEnv.executeSql(s"""
+                                |CREATE TEMPORARY TABLE source (
+                                |  a INT,
+                                |  b BIGINT,
+                                |  c STRING NOT NULL,
+                                |  d BIGINT,
+                                |  proctime as PROCTIME()
+                                |) with (
+                                |  'connector' = 'values'
+                                |)
+                                |""".stripMargin)
+
+    util.tableEnv.executeSql("""
+                               |CREATE TEMPORARY TABLE sink(
+                               |    ws TIMESTAMP,
+                               |    we TIMESTAMP,
+                               |    b bigint,
+                               |    c bigint
+                               |)
+                               |WITH (
+                               |    'connector' = 'values'
+                               |)
+                               |""".stripMargin)
+
+    util.verifyExecPlanInsert(
+      """
+        |insert into sink
+        |    select
+        |        window_start,
+        |        window_end,
+        |        b,
+        |        COALESCE(sum(case
+        |            when a = 11
+        |            then 1
+        |        end), 0) c
+        |    from
+        |        TABLE(
+        |            TUMBLE(TABLE source, DESCRIPTOR(proctime), INTERVAL '10' SECONDS)
+        |        )
+        |    where
+        |        a in (1, 5, 7, 9, 11)
+        |    GROUP BY
+        |        window_start, window_end, b
+        |""".stripMargin)
+  }
+
+  @TestTemplate
+  def testTumble_CascadingWindow_OnIndividualProctime(): Unit = {
+    assumeThat(isTwoPhase).isFalse
+    // a standard cascaded proctime window
+    util.verifyExecPlan(
+      """
+        |SELECT
+        |  window_start,
+        |  window_end,
+        |  sum(cnt),
+        |  count(*)
+        |FROM TABLE(TUMBLE(TABLE proctime_win, DESCRIPTOR(new_proctime), INTERVAL '10' MINUTE))
+        |GROUP BY a, window_start, window_end
+        |""".stripMargin)
+  }
+
+  @TestTemplate
+  def testTumble_CascadingWindow_OnInheritProctime(): Unit = {
+    assumeThat(isTwoPhase).isFalse
+    // a standard cascaded proctime window
+    util.verifyExecPlan(
+      """
+        |SELECT
+        |  window_start,
+        |  window_end,
+        |  sum(cnt),
+        |  count(*)
+        |FROM TABLE(TUMBLE(TABLE proctime_win, DESCRIPTOR(wt), INTERVAL '10' MINUTE))
+        |GROUP BY a, window_start, window_end
+        |""".stripMargin)
+  }
+
+  @TestTemplate
+  def testInvalidRelaxFormCascadeProctimeWindow(): Unit = {
+    assumeThat(isTwoPhase).isFalse
+    // a relax form of cascaded proctime window unsupported for now, will be translated to group agg
+    util.verifyRelPlan("""
+                         |SELECT
+                         |  a,
+                         |  ws,
+                         |  we,
+                         |  COUNT(*)
+                         |FROM proctime_win
+                         |GROUP BY a, ws, we
+      """.stripMargin)
+  }
+
+  @TestTemplate
+  def testTumble_CascadeProctimeWindow_OnWindowRank(): Unit = {
+    assumeThat(isTwoPhase).isFalse
+    // create window top10
+    createProctimeWindowTopN("proctime_winrank", 10)
+
+    util.verifyRelPlan(
+      """
+        |SELECT
+        |  a,
+        |  window_start,
+        |  window_end,
+        |  COUNT(*)
+        |FROM TABLE(TUMBLE(TABLE proctime_winrank, DESCRIPTOR(new_proctime), INTERVAL '5' MINUTE))
+        |GROUP BY a, window_start, window_end
+      """.stripMargin)
+  }
+
+  private def createProctimeWindowTopN(viewName: String, topNum: Int): Unit = {
+    util.tableEnv.executeSql(
+      s"""
+         |CREATE VIEW $viewName AS
+         |SELECT *
+         |FROM(
+         | SELECT
+         |    a,
+         |    b,
+         |    window_start as ws,
+         |    window_end as we,
+         |    window_time as wt,
+         |    proctime() as new_proctime,
+         |    ROW_NUMBER() OVER (PARTITION BY window_start, window_end ORDER BY proctime DESC) AS rn
+         | FROM TABLE(TUMBLE(TABLE MyTable, DESCRIPTOR(proctime), INTERVAL '5' MINUTE))
+         |) WHERE rn <= $topNum
+     """.stripMargin)
+  }
+
+  @TestTemplate
+  def testInvalidRelaxFormCascadeProctimeWindow_OnWindowRank(): Unit = {
+    assumeThat(isTwoPhase).isFalse
+    // create window top10
+    createProctimeWindowTopN("proctime_winrank", 10)
+
+    // a relax form of cascaded proctime window on a window rank is unsupported for now, will be translated to group agg
+    util.verifyRelPlan("""
+                         |SELECT
+                         |  a,
+                         |  ws,
+                         |  we,
+                         |  COUNT(*)
+                         |FROM proctime_winrank
+                         |GROUP BY a, ws, we
+      """.stripMargin)
+  }
+
+  @TestTemplate
+  def testTumble_CascadeProctimeWindow_OnWindowDedup(): Unit = {
+    assumeThat(isTwoPhase).isFalse
+    // create window dedup(top1)
+    createProctimeWindowTopN("proctime_windedup", 1)
+
+    // a relax form of cascaded proctime window on a window dedup is unsupported for now, will be translated to group agg
+    util.verifyRelPlan(
+      """
+        |SELECT
+        |  a,
+        |  window_start,
+        |  window_end,
+        |  COUNT(*)
+        |FROM TABLE(TUMBLE(TABLE proctime_windedup, DESCRIPTOR(new_proctime), INTERVAL '5' MINUTE))
+        |GROUP BY a, window_start, window_end
+  """.stripMargin)
+  }
+
+  @TestTemplate
+  def testInvalidRelaxFormCascadeProctimeWindow_OnWindowDedup(): Unit = {
+    assumeThat(isTwoPhase).isFalse
+    // create window dedup(top1)
+    createProctimeWindowTopN("proctime_windedup", 1)
+
+    // a relax form of cascaded proctime window unsupported for now, will be translated to group agg
+    util.verifyRelPlan("""
+                         |SELECT
+                         |  a,
+                         |  ws,
+                         |  we,
+                         |  COUNT(*)
+                         |FROM proctime_windedup
+                         |GROUP BY a, ws, we
+      """.stripMargin)
+  }
+
+  @TestTemplate
+  def testTumble_CascadeProctimeWindow_OnWindowJoin(): Unit = {
+    assumeThat(isTwoPhase).isFalse
+    createWindowJoin
+
+    util.verifyRelPlan(
+      """
+        |SELECT
+        |  a,
+        |  window_start,
+        |  window_end,
+        |  COUNT(*)
+        |FROM TABLE(TUMBLE(TABLE win_join, DESCRIPTOR(new_proctime), INTERVAL '5' MINUTE))
+        |GROUP BY a, window_start, window_end
+      """.stripMargin)
+  }
+
+  private def createWindowJoin(): Unit = {
+    util.tableEnv.executeSql(
+      """
+        |CREATE VIEW proctime_window AS
+        |SELECT
+        |   a,
+        |   b,
+        |   window_start,
+        |   window_end
+        |FROM TABLE(TUMBLE(TABLE MyTable, DESCRIPTOR(proctime), INTERVAL '5' MINUTE))
+    """.stripMargin)
+
+    util.tableEnv.executeSql(
+      """
+        |CREATE VIEW win_join AS
+        |SELECT
+        |   w1.a as a,
+        |   w1.b as b,
+        |   COALESCE(w1.window_start, w2.window_start) as ws,
+        |   COALESCE(w1.window_end, w2.window_end) as we,
+        |   proctime() as new_proctime
+        |FROM proctime_window w1 join proctime_window w2
+        |ON w1.window_start = w2.window_start AND w1.window_end = w2.window_end
+    """.stripMargin)
+  }
+
+  @TestTemplate
+  def testInvalidRelaxFormCascadeProctimeWindow_OnWindowJoin(): Unit = {
+    assumeThat(isTwoPhase).isFalse
+    createWindowJoin
+
+    // a relax form of cascaded proctime window on a window join is unsupported for now, will be translated to group agg
+    util.verifyRelPlan("""
+                         |SELECT
+                         |  a,
+                         |  ws,
+                         |  we,
+                         |  COUNT(*)
+                         |FROM win_join
+                         |GROUP BY a, ws, we
+      """.stripMargin)
+  }
+
+  @TestTemplate
+  def testSession_OnRowtime(): Unit = {
+    // Session window does not support two-phase optimization
+    val sql =
+      """
+        |SELECT
+        |   a,
+        |   window_start,
+        |   window_end,
+        |   count(*),
+        |   sum(d),
+        |   max(d) filter (where b > 1000),
+        |   weightedAvg(b, e) AS wAvg,
+        |   count(distinct c) AS uv
+        |FROM TABLE(
+        |  SESSION(TABLE MyTable PARTITION BY a, DESCRIPTOR(rowtime), INTERVAL '5' MINUTE))
+        |GROUP BY a, window_start, window_end
+      """.stripMargin
+    util.verifyRelPlan(sql)
+  }
+
+  @TestTemplate
+  def testSession_OnProctime(): Unit = {
+    assumeThat(isTwoPhase).isTrue
+    val sql =
+      """
+        |SELECT
+        |   a,
+        |   window_start,
+        |   window_end,
+        |   count(*),
+        |   sum(d),
+        |   max(d) filter (where b > 1000),
+        |   weightedAvg(b, e) AS wAvg,
+        |   count(distinct c) AS uv
+        |FROM TABLE(
+        |  SESSION(TABLE MyTable PARTITION BY a, DESCRIPTOR(proctime), INTERVAL '5' MINUTE))
+        |GROUP BY a, window_start, window_end
+      """.stripMargin
+    util.verifyRelPlan(sql)
+  }
+
+  @TestTemplate
+  def testSession_DistinctSplitEnabled(): Unit = {
+    // Session window does not support split-distinct optimization
+    util.tableEnv.getConfig.getConfiguration
+      .set(
+        OptimizerConfigOptions.TABLE_OPTIMIZER_DISTINCT_AGG_SPLIT_ENABLED
+          .asInstanceOf[ConfigOption[Any]],
+        true)
+    val sql =
+      """
+        |SELECT
+        |   a,
+        |   window_start,
+        |   window_end,
+        |   count(*),
+        |   sum(d),
+        |   max(d) filter (where b > 1000),
+        |   count(distinct c) AS uv
+        |FROM TABLE(
+        |  SESSION(TABLE MyTable PARTITION BY a, DESCRIPTOR(proctime), INTERVAL '5' MINUTE))
+        |GROUP BY a, window_start, window_end
+      """.stripMargin
+    util.verifyRelPlan(sql)
+  }
+
+  @TestTemplate
+  def testSessionWindowWithTwoPartitionKeys(): Unit = {
+    val sql =
+      """
+        |SELECT
+        |   a,
+        |   b,
+        |   window_start,
+        |   window_end,
+        |   count(*),
+        |   sum(d),
+        |   max(d) filter (where b > 1000),
+        |   weightedAvg(b, e) AS wAvg,
+        |   count(distinct c) AS uv
+        |FROM TABLE(
+        |  SESSION(TABLE MyTable PARTITION BY (b, a), DESCRIPTOR(rowtime), INTERVAL '5' MINUTE))
+        |GROUP BY b, a, window_start, window_end
+      """.stripMargin
+
+    util.verifyExplain(sql)
+  }
+
+  @TestTemplate
+  def testGroupKeyMoreThanPartitionKeyInSessionWindow(): Unit = {
+    // the aggregate will not be converted to window aggregate
+    // TODO Support session window table function in ExecWindowTableFunction. See
+    //  more at FLINK-34100
+    val sql =
+      """
+        |SELECT
+        |   a,
+        |   window_start,
+        |   window_end,
+        |   count(*),
+        |   sum(d),
+        |   max(d) filter (where b > 1000),
+        |   weightedAvg(b, e) AS wAvg,
+        |   count(distinct c) AS uv
+        |FROM TABLE(
+        |  SESSION(TABLE MyTable, DESCRIPTOR(rowtime), INTERVAL '5' MINUTE))
+        |GROUP BY a, window_start, window_end
+      """.stripMargin
+
+    util.verifyExplain(sql)
+  }
+
+  @TestTemplate
+  def testGroupKeyLessThanPartitionKeyInSessionWindow(): Unit = {
+    val sql = {
+      """
+        |SELECT
+        |   window_start,
+        |   window_end,
+        |   count(*),
+        |   sum(d),
+        |   max(d) filter (where b > 1000),
+        |   weightedAvg(b, e) AS wAvg,
+        |   count(distinct c) AS uv
+        |FROM TABLE(
+        |  SESSION(TABLE MyTable PARTITION BY (b, a), DESCRIPTOR(rowtime), INTERVAL '5' MINUTE))
+        |GROUP BY b, window_start, window_end
+      """.stripMargin
+    }
+
+    util.verifyExplain(sql)
+  }
+
+  @TestTemplate
+  def testDeprecatedSyntaxAboutPartitionKeyInSessionWindow(): Unit = {
+    // Session window does not support two-phase optimization
+    val sql =
+      """
+        |SELECT
+        |   a,
+        |   window_start,
+        |   window_end,
+        |   count(*),
+        |   sum(d),
+        |   max(d) filter (where b > 1000),
+        |   weightedAvg(b, e) AS wAvg,
+        |   count(distinct c) AS uv
+        |FROM TABLE(
+        |  SESSION(TABLE MyTable, DESCRIPTOR(proctime), DESCRIPTOR(a), INTERVAL '5' MINUTE))
+        |GROUP BY a, window_start, window_end
+      """.stripMargin
+
+    assertThatThrownBy(() => util.verifyExplain(sql))
+      .hasMessageContaining(
+        "Invalid number of arguments to function 'SESSION'. Was expecting 3 arguments")
+      .isInstanceOf[ValidationException]
+  }
+
+  @TestTemplate
+  def testGroupKeysIndicesChangesInSessionWindow(): Unit = {
+    val sql =
+      """
+        |SELECT
+        |   window_start,
+        |   window_end,
+        |   count(*),
+        |   a
+        |FROM TABLE(
+        |  SESSION(TABLE MyTable partition by a, DESCRIPTOR(proctime), INTERVAL '10' MINUTE))
+        |GROUP BY window_start, window_end, a
+      """.stripMargin
+
+    util.verifyExplain(sql)
+  }
+
+  @TestTemplate
+  def testSessionWindowTVFWithPartitionKeyWhenCantMerge(): Unit = {
+    val sql =
+      """
+        |SELECT
+        |   window_start,
+        |   window_end,
+        |   a,
+        |   count(*),
+        |   sum(d),
+        |   max(d) filter (where b > 1000),
+        |   weightedAvg(b, e) AS wAvg,
+        |   count(distinct c) AS uv
+        |FROM (
+        |  SELECT window_start, rowtime, d, proctime, e, b, c, window_end, window_time, a
+        |  FROM TABLE(SESSION(TABLE MyTable PARTITION BY a, DESCRIPTOR(rowtime), INTERVAL '5' MINUTE))
+        |  WHERE window_start >= TIMESTAMP '2021-01-01 10:10:00.000'
+        |)
+        |GROUP BY a, window_start, window_end
+      """.stripMargin
+    util.verifyRelPlan(sql)
+  }
+
+  @TestTemplate
+  def testSessionWindowTVFWithoutPartitionKeyWhenCantMerge(): Unit = {
+    val sql =
+      """
+        |SELECT
+        |   window_start,
+        |   window_end,
+        |   count(*),
+        |   sum(d),
+        |   max(d) filter (where b > 1000),
+        |   weightedAvg(b, e) AS wAvg,
+        |   count(distinct c) AS uv
+        |FROM (
+        |  SELECT window_start, rowtime, d, proctime, e, b, c, window_end, window_time, a
+        |  FROM TABLE(SESSION(TABLE MyTable, DESCRIPTOR(rowtime), INTERVAL '5' MINUTE))
+        |  WHERE window_start >= TIMESTAMP '2021-01-01 10:10:00.000'
+        |)
+        |GROUP BY window_start, window_end
+      """.stripMargin
+    util.verifyRelPlan(sql)
+  }
+
+  @TestTemplate
+  def testProctimeWindowTVFWithCalcOnWindowColumnWhenCantMerge(): Unit = {
+    util.verifyRelPlan(
+      """
+        |select c, count(a)
+        |from
+        | TABLE(CUMULATE(table MyTable, DESCRIPTOR(proctime), interval '10' seconds, interval '5' minutes))
+        |where window_start <> '123'
+        |group by window_start, window_end, c, window_time
+        |""".stripMargin)
+  }
+
+  @TestTemplate
+  def testProctimeWindowTVFWithRankWhenCantMerge(): Unit = {
+    util.verifyRelPlan(
+      """
+        |select c, count(a)
+        |from (
+        | select *, row_number() over (partition by c order by proctime desc) as rn
+        | from
+        |  TABLE(CUMULATE(table MyTable, DESCRIPTOR(proctime), interval '10' seconds, interval '5' minutes))
+        |)
+        |where rn = 2
+        |group by window_start, window_end, c, window_time
+        |""".stripMargin)
+  }
+
+  @TestTemplate
+  def testProctimeWindowTVFWithDedupWhenCantMerge(): Unit = {
+    util.verifyExecPlan(
+      """
+        |select c, count(a)
+        |from (
+        | select *, row_number() over (partition by c order by proctime desc) as rn
+        | from
+        |  TABLE(CUMULATE(table MyTable, DESCRIPTOR(proctime), interval '10' seconds, interval '5' minutes))
+        |)
+        |where rn = 1
+        |group by window_start, window_end, c, window_time
+        |""".stripMargin)
+  }
+
+  @TestTemplate
+  def testProctimeWindowTVFWithOverAggWhenCantMerge(): Unit = {
+    util.verifyRelPlan(
+      """
+        |select c, max(c1), count(a)
+        |from (
+        | select *, count(*) over (partition by c order by proctime desc) as c1
+        | from
+        |  TABLE(CUMULATE(table MyTable, DESCRIPTOR(proctime), interval '10' seconds, interval '5' minutes))
+        |)
+        |group by window_start, window_end, c, window_time
+        |""".stripMargin)
+  }
+
+  @TestTemplate
+  def testProctimeWindowTVFWithJoinWhenCantMerge(): Unit = {
+    util.verifyRelPlan(
+      """
+        |select t.c, max(t2.e), count(t.a)
+        |from (
+        |  TABLE(CUMULATE(table MyTable, DESCRIPTOR(proctime), interval '10' seconds, interval '5' minutes)) AS t
+        |  join MyTable t2 on t2.a = t.a
+        |)
+        |group by window_start, window_end, t.c, window_time
+        |""".stripMargin)
+  }
+
+  @TestTemplate
+  def testProctimeWindowTVFWithCorrelateWhenCantMerge(): Unit = {
+    util.addTemporarySystemFunction("str_split", new StringSplit())
+    util.verifyRelPlan(
+      """
+        |select t.c, max(t2.x), count(t.a)
+        |from (
+        |  TABLE(CUMULATE(table MyTable, DESCRIPTOR(proctime), interval '10' seconds, interval '5' minutes)) AS t
+        |  Left JOIN LATERAL TABLE(str_split('Jack,John', ',')) AS t2(x) ON TRUE
+        |)
+        |group by window_start, window_end, t.c, window_time
+        |""".stripMargin)
+  }
+
+  @TestTemplate
+  def testProctimeWindowTVFWithUnionWhenCantMerge(): Unit = {
+    util.verifyRelPlan(
+      """
+        |select c, count(a)
+        |from (
+        |  select * from
+        |  TABLE(TUMBLE(table MyTable, DESCRIPTOR(proctime), interval '10' seconds))
+        |  union all
+        |  select * from
+        |  TABLE(TUMBLE(table MyTable, DESCRIPTOR(proctime), interval '5' seconds))
+        |) t
+        |group by window_start, window_end, c, window_time
+        |""".stripMargin)
+  }
+
+  @TestTemplate
+  def testOnPreservedSideOfOuterWindowJoin(): Unit = {
+    assumeThat(isTwoPhase).isTrue
+    val sql =
+      """
+        |SELECT preserved_side.window_start, preserved_side.window_end, COUNT(*) AS cnt
+        |FROM TUMBLE(TABLE MyTable, DESCRIPTOR(rowtime), INTERVAL '15' MINUTE) preserved_side
+        |LEFT JOIN TUMBLE(TABLE MyTable, DESCRIPTOR(rowtime), INTERVAL '15' MINUTE) null_side
+        |ON preserved_side.window_start = null_side.window_start
+        |  AND preserved_side.window_end = null_side.window_end
+        |  AND preserved_side.a = null_side.a
+        |GROUP BY preserved_side.window_start, preserved_side.window_end
+      """.stripMargin
+    util.verifyRelPlan(sql)
+  }
+
+  @TestTemplate
+  def testOnNullSideOfOuterWindowJoin(): Unit = {
+    assumeThat(isTwoPhase).isTrue
+    val sql =
+      """
+        |SELECT null_side.window_start, null_side.window_end, COUNT(*) AS cnt
+        |FROM TUMBLE(TABLE MyTable, DESCRIPTOR(rowtime), INTERVAL '15' MINUTE) preserved_side
+        |LEFT JOIN TUMBLE(TABLE MyTable, DESCRIPTOR(rowtime), INTERVAL '15' MINUTE) null_side
+        |ON preserved_side.window_start = null_side.window_start
+        |  AND preserved_side.window_end = null_side.window_end
+        |  AND preserved_side.a = null_side.a
+        |GROUP BY null_side.window_start, null_side.window_end
+      """.stripMargin
+    util.verifyRelPlan(sql)
+  }
 }
 
 object WindowAggregateTest {
-  @Parameterized.Parameters(name = "aggPhaseEnforcer={0}")
+  @Parameters(name = "aggPhaseEnforcer={0}")
   def parameters(): util.Collection[Array[Any]] = {
     util.Arrays.asList(
       Array(AggregatePhaseStrategy.ONE_PHASE),

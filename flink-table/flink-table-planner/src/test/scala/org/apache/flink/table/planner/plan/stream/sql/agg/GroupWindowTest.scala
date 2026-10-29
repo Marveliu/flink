@@ -15,112 +15,113 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.planner.plan.stream.sql.agg
 
-import org.apache.flink.api.common.time.Time
-import org.apache.flink.api.scala._
 import org.apache.flink.table.api._
 import org.apache.flink.table.planner.plan.utils.JavaUserDefinedAggFunctions.WeightedAvgWithMerge
-import org.apache.flink.table.planner.plan.utils.WindowEmitStrategy.{TABLE_EXEC_EMIT_LATE_FIRE_DELAY, TABLE_EXEC_EMIT_LATE_FIRE_ENABLED, TABLE_EXEC_EMIT_ALLOW_LATENESS}
+import org.apache.flink.table.planner.plan.utils.WindowEmitStrategy.{TABLE_EXEC_EMIT_ALLOW_LATENESS, TABLE_EXEC_EMIT_LATE_FIRE_DELAY, TABLE_EXEC_EMIT_LATE_FIRE_ENABLED}
 import org.apache.flink.table.planner.utils.TableTestBase
 
-import java.time.Duration
+import org.assertj.core.api.Assertions.assertThatExceptionOfType
+import org.junit.jupiter.api.Test
 
-import org.junit.Test
+import java.time.Duration
 
 class GroupWindowTest extends TableTestBase {
 
   private val util = streamTestUtil()
-  util.addDataStream[(Int, String, Long)](
-    "MyTable", 'a, 'b, 'c, 'proctime.proctime, 'rowtime.rowtime)
+  util
+    .addDataStream[(Int, String, Long)]("MyTable", 'a, 'b, 'c, 'proctime.proctime, 'rowtime.rowtime)
   util.addTemporarySystemFunction("weightedAvg", classOf[WeightedAvgWithMerge])
-  util.tableEnv.executeSql(
-    s"""
-       |create table MyTable1 (
-       |  a int,
-       |  b bigint,
-       |  c as proctime()
-       |) with (
-       |  'connector' = 'COLLECTION'
-       |)
-       |""".stripMargin)
+  util.tableEnv.executeSql(s"""
+                              |create table MyTable1 (
+                              |  a int,
+                              |  b bigint,
+                              |  c as proctime()
+                              |) with (
+                              |  'connector' = 'COLLECTION'
+                              |)
+                              |""".stripMargin)
 
-  @Test(expected = classOf[TableException])
+  @Test
   def testTumbleWindowNoOffset(): Unit = {
     val sqlQuery =
       "SELECT SUM(a) AS sumA, COUNT(b) AS cntB FROM MyTable " +
         "GROUP BY TUMBLE(proctime, INTERVAL '2' HOUR, TIME '10:00:00')"
-    util.verifyExecPlan(sqlQuery)
+    assertThatExceptionOfType(classOf[TableException])
+      .isThrownBy(() => util.verifyExecPlan(sqlQuery))
   }
 
-  @Test(expected = classOf[TableException])
+  @Test
   def testHopWindowNoOffset(): Unit = {
     val sqlQuery =
       "SELECT SUM(a) AS sumA, COUNT(b) AS cntB FROM MyTable " +
         "GROUP BY HOP(proctime, INTERVAL '1' HOUR, INTERVAL '2' HOUR, TIME '10:00:00')"
-    util.verifyExecPlan(sqlQuery)
+    assertThatExceptionOfType(classOf[TableException])
+      .isThrownBy(() => util.verifyExecPlan(sqlQuery))
   }
 
-  @Test(expected = classOf[TableException])
+  @Test
   def testSessionWindowNoOffset(): Unit = {
     val sqlQuery =
       "SELECT SUM(a) AS sumA, COUNT(b) AS cntB FROM MyTable " +
         "GROUP BY SESSION(proctime, INTERVAL '2' HOUR, TIME '10:00:00')"
-    util.verifyExecPlan(sqlQuery)
+    assertThatExceptionOfType(classOf[TableException])
+      .isThrownBy(() => util.verifyExecPlan(sqlQuery))
   }
 
-  @Test(expected = classOf[TableException])
+  @Test
   def testVariableWindowSize(): Unit = {
     val sql = "SELECT COUNT(*) FROM MyTable GROUP BY TUMBLE(proctime, c * INTERVAL '1' MINUTE)"
-    util.verifyExecPlan(sql)
+    assertThatExceptionOfType(classOf[TableException])
+      .isThrownBy(() => util.verifyExecPlan(sql))
   }
 
-  @Test(expected = classOf[ValidationException])
+  @Test
   def testWindowUdAggInvalidArgs(): Unit = {
     val sqlQuery = "SELECT SUM(a) AS sumA, weightedAvg(a, b) AS wAvg FROM MyTable " +
       "GROUP BY TUMBLE(proctime(), INTERVAL '2' HOUR, TIME '10:00:00')"
-    util.verifyExecPlan(sqlQuery)
+    assertThatExceptionOfType(classOf[ValidationException])
+      .isThrownBy(() => util.verifyExecPlan(sqlQuery))
   }
 
-  @Test(expected = classOf[AssertionError])
+  @Test
   def testWindowAggWithGroupSets(): Unit = {
     // TODO supports group sets
     // currently, the optimized plan is not collect, and an exception will be thrown in code-gen
     val sql =
-    """
-      |SELECT COUNT(*),
-      |    TUMBLE_END(rowtime, INTERVAL '15' MINUTE) + INTERVAL '1' MINUTE
-      |FROM MyTable
-      |    GROUP BY rollup(TUMBLE(rowtime, INTERVAL '15' MINUTE), b)
+      """
+        |SELECT COUNT(*),
+        |    TUMBLE_END(rowtime, INTERVAL '15' MINUTE) + INTERVAL '1' MINUTE
+        |FROM MyTable
+        |    GROUP BY rollup(TUMBLE(rowtime, INTERVAL '15' MINUTE), b)
     """.stripMargin
-    util.verifyRelPlanNotExpected(sql, "TUMBLE(rowtime")
+    assertThatExceptionOfType(classOf[AssertionError])
+      .isThrownBy(() => util.verifyRelPlanNotExpected(sql, "TUMBLE(rowtime"))
   }
 
   @Test
   def testWindowWrongWindowParameter1(): Unit = {
-    expectedException.expect(classOf[TableException])
-    expectedException.expectMessage(
-      "Window aggregate only support SECOND, MINUTE, HOUR, DAY as the time unit. " +
-        "MONTH and YEAR time unit are not supported yet.")
-
     val sqlQuery =
       "SELECT COUNT(*) FROM MyTable GROUP BY TUMBLE(proctime, INTERVAL '1' MONTH)"
 
-    util.verifyExecPlan(sqlQuery)
+    assertThatExceptionOfType(classOf[TableException])
+      .isThrownBy(() => util.verifyExecPlan(sqlQuery))
+      .withMessageContaining(
+        "Window aggregate only support SECOND, MINUTE, HOUR, DAY as the time unit. " +
+          "MONTH and YEAR time unit are not supported yet.")
   }
 
   @Test
   def testWindowWrongWindowParameter2(): Unit = {
-    expectedException.expect(classOf[TableException])
-    expectedException.expectMessage(
-      "Window aggregate only support SECOND, MINUTE, HOUR, DAY as the time unit. " +
-        "MONTH and YEAR time unit are not supported yet.")
-
     val sqlQuery =
       "SELECT COUNT(*) FROM MyTable GROUP BY TUMBLE(proctime, INTERVAL '2-10' YEAR TO MONTH)"
 
-    util.verifyExecPlan(sqlQuery)
+    assertThatExceptionOfType(classOf[TableException])
+      .isThrownBy(() => util.verifyExecPlan(sqlQuery))
+      .withMessageContaining(
+        "Window aggregate only support SECOND, MINUTE, HOUR, DAY as the time unit. " +
+          "MONTH and YEAR time unit are not supported yet.")
   }
 
   @Test
@@ -410,32 +411,32 @@ class GroupWindowTest extends TableTestBase {
     // This allows the planner to make the distinction between similar aggregations using different
     // windows (see FLINK-15577).
     val sql =
-    """
-      |WITH window_1h AS (
-      |    SELECT 1
-      |    FROM MyTable
-      |    GROUP BY HOP(`rowtime`, INTERVAL '1' HOUR, INTERVAL '1' HOUR)
-      |),
-      |
-      |window_2h AS (
-      |    SELECT 1
-      |    FROM MyTable
-      |    GROUP BY HOP(`rowtime`, INTERVAL '1' HOUR, INTERVAL '2' HOUR)
-      |)
-      |
-      |(SELECT * FROM window_1h)
-      |UNION ALL
-      |(SELECT * FROM window_2h)
-      |""".stripMargin
+      """
+        |WITH window_1h AS (
+        |    SELECT 1
+        |    FROM MyTable
+        |    GROUP BY HOP(`rowtime`, INTERVAL '1' HOUR, INTERVAL '1' HOUR)
+        |),
+        |
+        |window_2h AS (
+        |    SELECT 1
+        |    FROM MyTable
+        |    GROUP BY HOP(`rowtime`, INTERVAL '1' HOUR, INTERVAL '2' HOUR)
+        |)
+        |
+        |(SELECT * FROM window_1h)
+        |UNION ALL
+        |(SELECT * FROM window_2h)
+        |""".stripMargin
 
     util.verifyExecPlan(sql)
   }
 
   @Test
   def testWindowAggregateWithLateFire(): Unit = {
-    util.conf.getConfiguration.setBoolean(TABLE_EXEC_EMIT_LATE_FIRE_ENABLED, true)
-    util.conf.getConfiguration.set(TABLE_EXEC_EMIT_LATE_FIRE_DELAY, Duration.ofSeconds(5))
-    util.conf.setIdleStateRetentionTime(Time.hours(1), Time.hours(2))
+    util.tableConfig.set(TABLE_EXEC_EMIT_LATE_FIRE_ENABLED, Boolean.box(true))
+    util.tableConfig.set(TABLE_EXEC_EMIT_LATE_FIRE_DELAY, Duration.ofSeconds(5))
+    util.tableConfig.setIdleStateRetention(Duration.ofHours(1))
     val sql =
       """
         |SELECT TUMBLE_START(`rowtime`, INTERVAL '1' SECOND), COUNT(*) cnt
@@ -447,9 +448,9 @@ class GroupWindowTest extends TableTestBase {
 
   @Test
   def testWindowAggregateWithAllowLateness(): Unit = {
-    util.conf.getConfiguration.setBoolean(TABLE_EXEC_EMIT_LATE_FIRE_ENABLED, true)
-    util.conf.getConfiguration.set(TABLE_EXEC_EMIT_LATE_FIRE_DELAY, Duration.ofSeconds(5))
-    util.conf.getConfiguration.set(TABLE_EXEC_EMIT_ALLOW_LATENESS, Duration.ofHours(1))
+    util.tableConfig.set(TABLE_EXEC_EMIT_LATE_FIRE_ENABLED, Boolean.box(true))
+    util.tableConfig.set(TABLE_EXEC_EMIT_LATE_FIRE_DELAY, Duration.ofSeconds(5))
+    util.tableConfig.set(TABLE_EXEC_EMIT_ALLOW_LATENESS, Duration.ofHours(1))
     val sql =
       """
         |SELECT TUMBLE_START(`rowtime`, INTERVAL '1' SECOND), COUNT(*) cnt
@@ -461,24 +462,25 @@ class GroupWindowTest extends TableTestBase {
 
   @Test
   def testWindowAggregateWithInvalidAllowLateness(): Unit = {
-    util.conf.getConfiguration.setBoolean(TABLE_EXEC_EMIT_LATE_FIRE_ENABLED, true)
-    util.conf.getConfiguration.set(TABLE_EXEC_EMIT_LATE_FIRE_DELAY, Duration.ofSeconds(5))
-    util.conf.getConfiguration.set(TABLE_EXEC_EMIT_ALLOW_LATENESS, Duration.ofSeconds(1))
+    util.tableConfig.set(TABLE_EXEC_EMIT_LATE_FIRE_ENABLED, Boolean.box(true))
+    util.tableConfig.set(TABLE_EXEC_EMIT_LATE_FIRE_DELAY, Duration.ofSeconds(5))
+    util.tableConfig.set(TABLE_EXEC_EMIT_ALLOW_LATENESS, Duration.ofSeconds(1))
     val sql =
       """
         |SELECT TUMBLE_START(`rowtime`, INTERVAL '1' SECOND), COUNT(*) cnt
         |FROM MyTable
         |GROUP BY TUMBLE(`rowtime`, INTERVAL '1' SECOND)
         |""".stripMargin
-    thrown.expect(classOf[TableException])
-    thrown.expectMessage("Allow-lateness [1000ms] should not be smaller than " +
-      "Late-fire delay [5000ms] when enable late-fire emit strategy.")
-    util.verifyRelPlan(sql, ExplainDetail.CHANGELOG_MODE)
+
+    assertThatExceptionOfType(classOf[TableException])
+      .isThrownBy(() => util.verifyRelPlan(sql, ExplainDetail.CHANGELOG_MODE))
+      .withMessageContaining("Allow-lateness [1000ms] should not be smaller than " +
+        "Late-fire delay [5000ms] when enable late-fire emit strategy.")
   }
 
   @Test
   def testWindowAggregateWithAllowLatenessOnly(): Unit = {
-    util.conf.setIdleStateRetentionTime(Time.hours(1), Time.hours(2))
+    util.tableConfig.setIdleStateRetention(Duration.ofHours(1))
     val sql =
       """
         |SELECT TUMBLE_START(`rowtime`, INTERVAL '1' SECOND), COUNT(*) cnt
@@ -509,17 +511,16 @@ class GroupWindowTest extends TableTestBase {
 
   @Test
   def testWindowAggregateOnUpsertSource(): Unit = {
-    util.addTable(
-      """
-        |CREATE TABLE src (
-        |  ts AS PROCTIME(),
-        |  a INT,
-        |  b DOUBLE,
-        |  PRIMARY KEY (a) NOT ENFORCED
-        |) WITH (
-        |  'connector' = 'values',
-        |  'changelog-mode' = 'UA,D'
-        |)
+    util.addTable("""
+                    |CREATE TABLE src (
+                    |  ts AS PROCTIME(),
+                    |  a INT,
+                    |  b DOUBLE,
+                    |  PRIMARY KEY (a) NOT ENFORCED
+                    |) WITH (
+                    |  'connector' = 'values',
+                    |  'changelog-mode' = 'UA,D'
+                    |)
       """.stripMargin)
     val query =
       """

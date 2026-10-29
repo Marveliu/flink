@@ -29,7 +29,17 @@ under the License.
 # High Availability
 
 JobManager High Availability (HA) hardens a Flink cluster against JobManager failures.
-This feature ensures that a Flink cluster will always continue executing your submitted jobs.
+This feature ensures that a Flink cluster will always re-execute your submitted applications that were running at the time of a failure.
+
+{{< hint warning >}}
+After recovery, the jobs running in the application before the failure may either resume execution (from the latest checkpoint) 
+or be abandoned (transitioned to a FAILED state and properly cleaned up),
+depending on the execution path taken in the application's main() method.
+
+Jobs before and after a failure are matched by name, and those with identical names are further matched based on their submission order.
+To avoid mismatches—especially when job submission order is non-deterministic—we recommend assigning each job a unique name via `execute(jobName)`.
+{{< /hint >}}
+
 
 ## JobManager High Availability
 
@@ -74,22 +84,39 @@ Kubernetes HA services only work when running on Kubernetes.
 
 ## High Availability data lifecycle
 
-In order to recover submitted jobs, Flink persists metadata and the job artifacts.
-The HA data will be kept until the respective job either succeeds, is cancelled or fails terminally.
-Once this happens, all the HA data, including the metadata stored in the HA services, will be deleted.  
+In order to recover submitted applications, Flink persists metadata for the applications.
+The HA data will be kept until the respective application reaches a terminal state (i.e. finished, cancelled or failed).
+Once this happens, all the HA data, including the metadata stored in the HA services, will be deleted.
+Similar lifecycle applies to the HA data for individual jobs.
+
+{{< top >}}
+
+## ApplicationResultStore
+
+The ApplicationResultStore is used to archive the final result of an application that reached a terminal
+state (i.e. finished, cancelled or failed). The data is stored on a file system (see
+[application-result-store.storage-path]({{< ref "docs/deployment/config#application-result-store-storage-path" >}})).
+Entries in this store are marked as dirty as long as the corresponding application wasn't cleaned up properly
+(artifacts are found in the application's subfolder in [high-availability.storageDir]({{< ref "docs/deployment/config#high-availability-storagedir" >}})).
+
+Dirty entries are subject to cleanup, i.e. the corresponding application is either cleaned up by Flink at
+the moment or will be picked up for cleanup as part of a recovery. The entries will be deleted as
+soon as the cleanup succeeds. Check the ApplicationResultStore configuration parameters under
+[HA configuration options]({{< ref "docs/deployment/config#high-availability" >}}) for further
+details on how to adapt the behavior.
 
 {{< top >}}
 
 ## JobResultStore
 
-In order to preserve a job's scheduling status across failover events and prevent erroneous
-re-execution of globally terminated (i.e. finished, cancelled or failed) jobs, Flink persists
-status of terminated jobs to a filesystem using the JobResultStore.
-The JobResultStore allows job results to outlive a finished job, and can be used by
-Flink components involved in the recovery of a highly-available cluster in order to
-determine whether a job should be subject to recovery.
+The JobResultStore is used to archive the final result of a job that reached a globally-terminal 
+state (i.e. finished, cancelled or failed). The data is stored on a file system (see 
+[job-result-store.storage-path]({{< ref "docs/deployment/config#job-result-store-storage-path" >}})).
+Entries in this store are marked as dirty as long as the corresponding job wasn't cleaned up properly 
+(artifacts are found in the job's subfolder in [high-availability.storageDir]({{< ref "docs/deployment/config#high-availability-storagedir" >}})).
 
-The JobResultStore has sensible defaults for its behaviour, such as result storage
-location, but these can be [configured]({{< ref "docs/deployment/config#high-availability" >}}).
+Dirty entries are subject to cleanup, i.e. the corresponding job is either cleaned up by Flink at 
+the moment or will be picked up for cleanup as part of a recovery. The entries will be deleted
+once the cleanup succeeds and the corresponding application has created a dirty entry.
 
 {{< top >}}

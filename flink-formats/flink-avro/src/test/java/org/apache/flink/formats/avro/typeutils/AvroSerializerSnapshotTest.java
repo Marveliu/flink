@@ -18,6 +18,7 @@
 
 package org.apache.flink.formats.avro.typeutils;
 
+import org.apache.flink.api.common.typeutils.CustomRestoreSerializerFactory;
 import org.apache.flink.api.common.typeutils.TypeSerializer;
 import org.apache.flink.api.common.typeutils.TypeSerializerSnapshot;
 import org.apache.flink.api.common.typeutils.TypeSerializerSnapshotSerializationUtil;
@@ -41,11 +42,11 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.Random;
 
-import static org.apache.flink.api.common.typeutils.TypeSerializerMatchers.isCompatibleAfterMigration;
-import static org.apache.flink.api.common.typeutils.TypeSerializerMatchers.isCompatibleAsIs;
-import static org.apache.flink.api.common.typeutils.TypeSerializerMatchers.isIncompatible;
+import static org.apache.flink.api.common.typeutils.TypeSerializerConditions.isCompatibleAfterMigration;
+import static org.apache.flink.api.common.typeutils.TypeSerializerConditions.isCompatibleAsIs;
+import static org.apache.flink.api.common.typeutils.TypeSerializerConditions.isIncompatible;
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.HamcrestCondition.matching;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** Test {@link AvroSerializerSnapshot}. */
 class AvroSerializerSnapshotTest {
@@ -78,7 +79,7 @@ class AvroSerializerSnapshotTest {
     @Test
     void sameSchemaShouldBeCompatibleAsIs() {
         assertThat(AvroSerializerSnapshot.resolveSchemaCompatibility(FIRST_NAME, FIRST_NAME))
-                .is(matching(isCompatibleAsIs()));
+                .is(isCompatibleAsIs());
     }
 
     @Test
@@ -86,7 +87,7 @@ class AvroSerializerSnapshotTest {
         assertThat(
                         AvroSerializerSnapshot.resolveSchemaCompatibility(
                                 FIRST_REQUIRED_LAST_OPTIONAL, FIRST_NAME))
-                .is(matching(isCompatibleAfterMigration()));
+                .is(isCompatibleAfterMigration());
     }
 
     @Test
@@ -94,7 +95,7 @@ class AvroSerializerSnapshotTest {
         assertThat(
                         AvroSerializerSnapshot.resolveSchemaCompatibility(
                                 FIRST_NAME, FIRST_REQUIRED_LAST_OPTIONAL))
-                .is(matching(isCompatibleAfterMigration()));
+                .is(isCompatibleAfterMigration());
     }
 
     @Test
@@ -102,7 +103,7 @@ class AvroSerializerSnapshotTest {
         assertThat(
                         AvroSerializerSnapshot.resolveSchemaCompatibility(
                                 FIRST_REQUIRED_LAST_OPTIONAL, BOTH_REQUIRED))
-                .is(matching(isIncompatible()));
+                .is(isIncompatible());
     }
 
     @Test
@@ -112,8 +113,8 @@ class AvroSerializerSnapshotTest {
 
         TypeSerializerSnapshot<GenericRecord> snapshot = serializer.snapshotConfiguration();
 
-        assertThat(snapshot.resolveSchemaCompatibility(serializer))
-                .is(matching(isCompatibleAsIs()));
+        assertThat(serializer.snapshotConfiguration().resolveSchemaCompatibility(snapshot))
+                .is(isCompatibleAsIs());
     }
 
     @Test
@@ -124,8 +125,8 @@ class AvroSerializerSnapshotTest {
         AvroSerializerSnapshot<GenericRecord> restored =
                 roundTrip(serializer.snapshotConfiguration());
 
-        assertThat(restored.resolveSchemaCompatibility(serializer))
-                .is(matching(isCompatibleAsIs()));
+        assertThat(serializer.snapshotConfiguration().resolveSchemaCompatibility(restored))
+                .is(isCompatibleAsIs());
     }
 
     @Test
@@ -135,8 +136,8 @@ class AvroSerializerSnapshotTest {
 
         AvroSerializerSnapshot<User> restored = roundTrip(serializer.snapshotConfiguration());
 
-        assertThat(restored.resolveSchemaCompatibility(serializer))
-                .is(matching(isCompatibleAsIs()));
+        assertThat(serializer.snapshotConfiguration().resolveSchemaCompatibility(restored))
+                .is(isCompatibleAsIs());
     }
 
     @Test
@@ -145,8 +146,8 @@ class AvroSerializerSnapshotTest {
 
         AvroSerializerSnapshot<Pojo> restored = roundTrip(serializer.snapshotConfiguration());
 
-        assertThat(restored.resolveSchemaCompatibility(serializer))
-                .is(matching(isCompatibleAsIs()));
+        assertThat(serializer.snapshotConfiguration().resolveSchemaCompatibility(restored))
+                .is(isCompatibleAsIs());
     }
 
     @Test
@@ -169,8 +170,8 @@ class AvroSerializerSnapshotTest {
         AvroSerializerSnapshot<GenericRecord> restored =
                 roundTrip(serializer.snapshotConfiguration());
 
-        assertThat(restored.resolveSchemaCompatibility(serializer))
-                .is(matching(isCompatibleAsIs()));
+        assertThat(serializer.snapshotConfiguration().resolveSchemaCompatibility(restored))
+                .is(isCompatibleAsIs());
     }
 
     @Test
@@ -205,8 +206,11 @@ class AvroSerializerSnapshotTest {
         TypeSerializerSnapshot<GenericRecord> originalSnapshot =
                 originalSerializer.snapshotConfiguration();
 
-        assertThat(originalSnapshot.resolveSchemaCompatibility(newSerializer))
-                .is(matching(isCompatibleAfterMigration()));
+        assertThat(
+                        newSerializer
+                                .snapshotConfiguration()
+                                .resolveSchemaCompatibility(originalSnapshot))
+                .is(isCompatibleAfterMigration());
     }
 
     @Test
@@ -219,8 +223,11 @@ class AvroSerializerSnapshotTest {
         TypeSerializerSnapshot<GenericRecord> originalSnapshot =
                 originalSerializer.snapshotConfiguration();
 
-        assertThat(originalSnapshot.resolveSchemaCompatibility(newSerializer))
-                .is(matching(isIncompatible()));
+        assertThat(
+                        newSerializer
+                                .snapshotConfiguration()
+                                .resolveSchemaCompatibility(originalSnapshot))
+                .is(isIncompatible());
     }
 
     @Test
@@ -235,8 +242,11 @@ class AvroSerializerSnapshotTest {
         AvroSerializer<Object> specificSerializer = new AvroSerializer(User.class);
         specificSerializer.snapshotConfiguration();
 
-        assertThat(genericSnapshot.resolveSchemaCompatibility(specificSerializer))
-                .is(matching(isCompatibleAsIs()));
+        assertThat(
+                        specificSerializer
+                                .snapshotConfiguration()
+                                .resolveSchemaCompatibility(genericSnapshot))
+                .is(isCompatibleAsIs());
     }
 
     @Test
@@ -251,11 +261,83 @@ class AvroSerializerSnapshotTest {
 
             TypeSerializerSnapshot<GenericRecord> restored =
                     TypeSerializerSnapshotSerializationUtil.readSerializerSnapshot(
-                            in, AvroSerializer.class.getClassLoader(), null);
+                            in, AvroSerializer.class.getClassLoader());
 
-            assertThat(restored.resolveSchemaCompatibility(currentSerializer))
-                    .is(matching(isCompatibleAsIs()));
+            assertThat(
+                            currentSerializer
+                                    .snapshotConfiguration()
+                                    .resolveSchemaCompatibility(restored))
+                    .is(isCompatibleAsIs());
         }
+    }
+
+    /**
+     * V1 snapshots predate {@code CustomRestoreSerializerFactory} support and must keep their
+     * original behavior of falling back to {@link GenericRecord} rather than failing when the
+     * runtime type is missing from the classpath (regression test for a fallback that was
+     * accidentally dropped while adding lenient reading for the State Processing API).
+     */
+    @Test
+    void restoringV1SnapshotWithMissingRuntimeTypeFallsBackToGenericRecord() throws IOException {
+        DataOutputSerializer out = new DataOutputSerializer(256);
+        out.writeUTF(Address.getClassSchema().toString(false));
+
+        AvroSerializerSnapshot<Address> restored = new AvroSerializerSnapshot<>();
+        ClassLoader withoutAddress = classLoaderHiding(Address.class.getSimpleName());
+        restored.readSnapshot(1, new DataInputDeserializer(out.getCopyOfBuffer()), withoutAddress);
+
+        @SuppressWarnings("unchecked")
+        AvroSerializer<Address> serializer = (AvroSerializer<Address>) restored.restoreSerializer();
+        assertThat(serializer.getType()).isEqualTo(GenericRecord.class);
+    }
+
+    /**
+     * Regular job restores (i.e. without a {@link CustomRestoreSerializerFactory} registered, as is
+     * always the case outside of the State Processing API) must still fail fast when a V2/V3
+     * snapshot's runtime type is genuinely missing.
+     */
+    @Test
+    void restoringV3SnapshotWithMissingRuntimeTypeFailsFastWithoutFallbackFactory()
+            throws IOException {
+        DataOutputSerializer out = new DataOutputSerializer(256);
+        new AvroSerializerSnapshot<>(Address.getClassSchema(), Address.class).writeSnapshot(out);
+        ClassLoader withoutAddress = classLoaderHiding(Address.class.getSimpleName());
+
+        assertThatThrownBy(
+                        () ->
+                                new AvroSerializerSnapshot<Address>()
+                                        .readSnapshot(
+                                                3,
+                                                new DataInputDeserializer(out.getCopyOfBuffer()),
+                                                withoutAddress))
+                .isInstanceOf(NoClassDefFoundError.class)
+                .hasCauseInstanceOf(ClassNotFoundException.class);
+    }
+
+    /**
+     * With a {@link CustomRestoreSerializerFactory} registered, a V2/V3 snapshot must be readable
+     * even when the runtime type is missing from the classpath.
+     */
+    @Test
+    void restoringV3SnapshotWithMissingRuntimeTypeReadsLenientlyWithFallbackFactory()
+            throws IOException {
+        DataOutputSerializer out = new DataOutputSerializer(256);
+        new AvroSerializerSnapshot<>(Address.getClassSchema(), Address.class).writeSnapshot(out);
+        ClassLoader withoutAddress = classLoaderHiding(Address.class.getSimpleName());
+
+        AvroSerializerSnapshot<Address> restored = new AvroSerializerSnapshot<>();
+        CustomRestoreSerializerFactory.set(
+                snapshot -> {
+                    throw new UnsupportedOperationException("not exercised in this test");
+                });
+        try {
+            restored.readSnapshot(
+                    3, new DataInputDeserializer(out.getCopyOfBuffer()), withoutAddress);
+        } finally {
+            CustomRestoreSerializerFactory.remove();
+        }
+
+        assertThat(restored.getSchema()).isEqualTo(Address.getClassSchema());
     }
 
     /**
@@ -271,7 +353,7 @@ class AvroSerializerSnapshotTest {
         DataOutputSerializer out = new DataOutputSerializer(1024);
 
         TypeSerializerSnapshotSerializationUtil.writeSerializerSnapshot(
-                out, serializer.snapshotConfiguration(), serializer);
+                out, serializer.snapshotConfiguration());
 
         Path snapshotPath =
                 getSerializerSnapshotFilePath(new AvroSerializerSnapshot<>().getCurrentVersion());
@@ -319,6 +401,20 @@ class AvroSerializerSnapshotTest {
             throws IOException {
         DataInputView in = new DataInputDeserializer(serializedRecord);
         return serializer.deserialize(in);
+    }
+
+    /** Returns a class loader that fails to find any class whose simple name is {@code hidden}. */
+    private static ClassLoader classLoaderHiding(String hidden) {
+        return new ClassLoader(AvroSerializerSnapshotTest.class.getClassLoader()) {
+            @Override
+            protected Class<?> loadClass(String name, boolean resolve)
+                    throws ClassNotFoundException {
+                if (name.contains(hidden)) {
+                    throw new ClassNotFoundException(name);
+                }
+                return super.loadClass(name, resolve);
+            }
+        };
     }
 
     // ---------------------------------------------------------------------------------------------------------------

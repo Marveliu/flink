@@ -15,63 +15,59 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.planner.plan.rules.physical.stream
 
-import org.apache.flink.api.common.time.Time
-import org.apache.flink.table.api.{ExplainDetail, _}
-import org.apache.flink.table.api.config.OptimizerConfigOptions
-import org.apache.flink.table.planner.plan.optimize.RelNodeBlockPlanBuilder
+import org.apache.flink.table.api.ExplainDetail
+import org.apache.flink.table.api.config.{AggregatePhaseStrategy, OptimizerConfigOptions}
+import org.apache.flink.table.planner.plan.nodes.exec.stream.ProcessTableFunctionTestUtils.UpdatingJoinFunction
 import org.apache.flink.table.planner.plan.optimize.program.FlinkChangelogModeInferenceProgram
-import org.apache.flink.table.planner.utils.{AggregatePhaseStrategy, TableTestBase}
+import org.apache.flink.table.planner.utils.ImmutableColConstraintTestUtils.addImmutableColConstraint
+import org.apache.flink.table.planner.utils.TableTestBase
 
-import org.junit.{Before, Test}
+import org.junit.jupiter.api.{BeforeEach, Test}
 
-/**
- * Tests for [[FlinkChangelogModeInferenceProgram]].
- */
+import java.time.Duration
+
+/** Tests for [[FlinkChangelogModeInferenceProgram]]. */
 class ChangelogModeInferenceTest extends TableTestBase {
 
   private val util = streamTestUtil()
 
-  @Before
+  @BeforeEach
   def before(): Unit = {
-    util.addTable(
-      """
-        |CREATE TABLE MyTable (
-        | word STRING,
-        | number INT
-        |) WITH (
-        | 'connector' = 'COLLECTION',
-        | 'is-bounded' = 'false'
-        |)
+    util.addTable("""
+                    |CREATE TABLE MyTable (
+                    | word STRING,
+                    | number INT
+                    |) WITH (
+                    | 'connector' = 'COLLECTION',
+                    | 'is-bounded' = 'false'
+                    |)
       """.stripMargin)
 
-    util.addTable(
-      """
-        |CREATE TABLE Orders (
-        | amount INT,
-        | currency STRING,
-        | rowtime TIMESTAMP(3),
-        | proctime AS PROCTIME(),
-        | WATERMARK FOR rowtime AS rowtime
-        |) WITH (
-        | 'connector' = 'COLLECTION',
-        | 'is-bounded' = 'false'
-        |)
+    util.addTable("""
+                    |CREATE TABLE Orders (
+                    | amount INT,
+                    | currency STRING,
+                    | rowtime TIMESTAMP(3),
+                    | proctime AS PROCTIME(),
+                    | WATERMARK FOR rowtime AS rowtime
+                    |) WITH (
+                    | 'connector' = 'COLLECTION',
+                    | 'is-bounded' = 'false'
+                    |)
       """.stripMargin)
-    util.addTable(
-      """
-        |CREATE TABLE ratesHistory (
-        | currency STRING,
-        | rate INT,
-        | rowtime TIMESTAMP(3),
-        | WATERMARK FOR rowtime AS rowtime
-        |) WITH (
-        |  'connector' = 'COLLECTION',
-        |  'is-bounded' = 'false',
-        |  'changelog-mode' = 'I'
-        |)
+    util.addTable("""
+                    |CREATE TABLE ratesHistory (
+                    | currency STRING,
+                    | rate INT,
+                    | rowtime TIMESTAMP(3),
+                    | WATERMARK FOR rowtime AS rowtime
+                    |) WITH (
+                    |  'connector' = 'COLLECTION',
+                    |  'is-bounded' = 'false',
+                    |  'changelog-mode' = 'I'
+                    |)
       """.stripMargin)
     util.addTable(
       " CREATE VIEW DeduplicatedView AS SELECT currency, rate, rowtime FROM " +
@@ -81,56 +77,28 @@ class ChangelogModeInferenceTest extends TableTestBase {
         "  ) T " +
         "  WHERE rowNum = 1")
 
-    util.addTable(
-      """
-        |CREATE TABLE ratesChangelogStream (
-        | currency STRING,
-        | rate INT,
-        | rowtime TIMESTAMP(3),
-        | WATERMARK FOR rowtime as rowtime,
-        | PRIMARY KEY(currency) NOT ENFORCED
-        |) WITH (
-        |  'connector' = 'values',
-        |  'changelog-mode' = 'I,UA,UB,D'
-        |)
+    util.addTable("""
+                    |CREATE TABLE ratesChangelogStream (
+                    | currency STRING,
+                    | rate INT,
+                    | rowtime TIMESTAMP(3),
+                    | WATERMARK FOR rowtime as rowtime,
+                    | PRIMARY KEY(currency) NOT ENFORCED
+                    |) WITH (
+                    |  'connector' = 'values',
+                    |  'changelog-mode' = 'I,UA,UB,D'
+                    |)
       """.stripMargin)
 
-    util.addTable(
-      """
-        |CREATE TABLE upsert_managed_table (
-        | id INT,
-        | col1 INT,
-        | col2 STRING,
-        | PRIMARY KEY(id) NOT ENFORCED
-        |) WITH (
-        |  'changelog-mode' = 'I,UA,D'
-        |)
-      """.stripMargin)
-
-    util.addTable(
-      """
-        |CREATE TABLE upsert_sink_table (
-        | id INT,
-        | col1 INT,
-        | col2 STRING,
-        | PRIMARY KEY(id) NOT ENFORCED
-        |) WITH (
-        |  'connector' = 'values',
-        |  'sink-changelog-mode-enforced' = 'I,UA,D'
-        |)
-      """.stripMargin)
-
-    util.addTable(
-      """
-        |CREATE TABLE all_change_sink_table (
-        | id INT,
-        | col1 INT,
-        | col2 STRING,
-        | PRIMARY KEY(id) NOT ENFORCED
-        |) WITH (
-        |  'connector' = 'values',
-        |  'sink-changelog-mode-enforced' = 'I,UA,UB,D'
-        |)
+    util.addTable("""
+                    |CREATE TABLE LookupDim (
+                    | id BIGINT,
+                    | v STRING,
+                    | PRIMARY KEY (id) NOT ENFORCED
+                    |) WITH (
+                    | 'connector' = 'values',
+                    | 'bounded' = 'true'
+                    |)
       """.stripMargin)
   }
 
@@ -143,7 +111,8 @@ class ChangelogModeInferenceTest extends TableTestBase {
   def testOneLevelGroupBy(): Unit = {
     // one level unbounded groupBy
     util.verifyRelPlan(
-      "SELECT COUNT(number) FROM MyTable GROUP BY word", ExplainDetail.CHANGELOG_MODE)
+      "SELECT COUNT(number) FROM MyTable GROUP BY word",
+      ExplainDetail.CHANGELOG_MODE)
   }
 
   @Test
@@ -160,11 +129,11 @@ class ChangelogModeInferenceTest extends TableTestBase {
 
   @Test
   def testTwoLevelGroupByLocalGlobalOn(): Unit = {
-      util.enableMiniBatch()
-      util.tableEnv.getConfig.setIdleStateRetentionTime(Time.hours(1), Time.hours(2))
-      util.tableEnv.getConfig.getConfiguration.setString(
-        OptimizerConfigOptions.TABLE_OPTIMIZER_AGG_PHASE_STRATEGY,
-        AggregatePhaseStrategy.TWO_PHASE.toString)
+    util.enableMiniBatch()
+    util.tableEnv.getConfig.setIdleStateRetention(Duration.ofHours(1))
+    util.tableEnv.getConfig.set(
+      OptimizerConfigOptions.TABLE_OPTIMIZER_AGG_PHASE_STRATEGY,
+      AggregatePhaseStrategy.TWO_PHASE)
     // two level unbounded groupBy
     val sql =
       """
@@ -198,16 +167,48 @@ class ChangelogModeInferenceTest extends TableTestBase {
   }
 
   @Test
-  def testGroupByWithUnion(): Unit = {
-    util.addTable(
+  def testTemporalJoinWithNonEqualConditionOnKey(): Unit = {
+    val sql =
       """
-        |CREATE TABLE MyTable2 (
-        | word STRING,
-        | cnt INT
-        |) WITH (
-        | 'connector' = 'COLLECTION',
-        | 'is-bounded' = 'false'
-        |)
+        |SELECT * FROM Orders AS o
+        | JOIN ratesChangelogStream FOR SYSTEM_TIME AS OF o.rowtime AS r
+        | ON o.currency = r.currency and o.currency < 5
+      """.stripMargin
+    util.verifyRelPlan(sql, ExplainDetail.CHANGELOG_MODE)
+  }
+
+  @Test
+  def testTemporalJoinWithEqualConditionOnKey(): Unit = {
+    val sql =
+      """
+        |SELECT * FROM Orders AS o
+        | JOIN ratesChangelogStream FOR SYSTEM_TIME AS OF o.rowtime AS r
+        | ON o.currency = r.currency and o.currency = 5
+      """.stripMargin
+    util.verifyRelPlan(sql, ExplainDetail.CHANGELOG_MODE)
+  }
+
+  @Test
+  def testTemporalJoinWithNonEqualCondition(): Unit = {
+    val sql =
+      """
+        |SELECT * FROM Orders AS o
+        | JOIN ratesChangelogStream FOR SYSTEM_TIME AS OF o.rowtime AS r
+        | ON o.currency = r.currency and o.amount > 5 and r.rate > 100
+      """.stripMargin
+    util.verifyRelPlan(sql, ExplainDetail.CHANGELOG_MODE)
+  }
+
+  @Test
+  def testGroupByWithUnion(): Unit = {
+    util.addTable("""
+                    |CREATE TABLE MyTable2 (
+                    | word STRING,
+                    | cnt INT
+                    |) WITH (
+                    | 'connector' = 'COLLECTION',
+                    | 'is-bounded' = 'false'
+                    |)
       """.stripMargin)
 
     val sql =
@@ -223,107 +224,467 @@ class ChangelogModeInferenceTest extends TableTestBase {
 
   @Test
   def testPropagateUpdateKindAmongRelNodeBlocks(): Unit = {
-    util.tableEnv.getConfig.getConfiguration.setBoolean(
-      RelNodeBlockPlanBuilder.TABLE_OPTIMIZER_REUSE_OPTIMIZE_BLOCK_WITH_DIGEST_ENABLED,
-      true)
-    util.addTable(
-      """
-        |create table sink1 (
-        |  a INT,
-        |  b VARCHAR
-        |) with (
-        |  'connector' = 'values',
-        |  'sink-insert-only' = 'false'
-        |)
-        |""".stripMargin)
-    util.addTable(
-      """
-        |create table sink2 (
-        |  a INT,
-        |  b VARCHAR,
-        |  primary key (b) not enforced
-        |) with (
-        |  'connector' = 'values',
-        |  'sink-insert-only' = 'false'
-        |)
-        |""".stripMargin)
+    util.tableEnv.getConfig.set(
+      OptimizerConfigOptions.TABLE_OPTIMIZER_REUSE_OPTIMIZE_BLOCK_WITH_DIGEST_ENABLED,
+      Boolean.box(true))
+    util.addTable("""
+                    |create table sink1 (
+                    |  a INT,
+                    |  b VARCHAR
+                    |) with (
+                    |  'connector' = 'values',
+                    |  'sink-insert-only' = 'false'
+                    |)
+                    |""".stripMargin)
+    util.addTable("""
+                    |create table sink2 (
+                    |  a INT,
+                    |  b VARCHAR,
+                    |  primary key (b) not enforced
+                    |) with (
+                    |  'connector' = 'values',
+                    |  'sink-insert-only' = 'false'
+                    |)
+                    |""".stripMargin)
 
-    util.tableEnv.executeSql(
-      """
-        |CREATE VIEW v1 AS
-        |SELECT
-        |  SUM(number) AS number, word
-        |FROM MyTable
-        |GROUP BY word
-        |""".stripMargin)
+    util.tableEnv.executeSql("""
+                               |CREATE VIEW v1 AS
+                               |SELECT
+                               |  SUM(number) AS number, word
+                               |FROM MyTable
+                               |GROUP BY word
+                               |""".stripMargin)
 
-    util.tableEnv.executeSql(
-      """
-        |CREATE VIEW v2 AS
-        |SELECT number + 1 AS number, word FROM v1
-        |UNION ALL
-        |SELECT number - 1 AS number, word FROM v1
-        |""".stripMargin)
+    util.tableEnv.executeSql("""
+                               |CREATE VIEW v2 AS
+                               |SELECT number + 1 AS number, word FROM v1
+                               |UNION ALL
+                               |SELECT number - 1 AS number, word FROM v1
+                               |""".stripMargin)
 
     val statementSet = util.tableEnv.createStatementSet()
     // sink1 requires UB
-    statementSet.addInsertSql(
-      """
-        |INSERT INTO sink1 SELECT number, word FROM v2 WHERE word > 'a'
-        |""".stripMargin)
+    statementSet.addInsertSql("""
+                                |INSERT INTO sink1 SELECT number, word FROM v2 WHERE word > 'a'
+                                |""".stripMargin)
     // sink2 requires UB
-    statementSet.addInsertSql(
-      """
-        |INSERT INTO sink1 SELECT number, word FROM v2 WHERE word < 'a'
-        |""".stripMargin)
+    statementSet.addInsertSql("""
+                                |INSERT INTO sink1 SELECT number, word FROM v2 WHERE word < 'a'
+                                |""".stripMargin)
     // sink3 does not require UB
-    statementSet.addInsertSql(
-      """
-        |INSERT INTO sink2 SELECT * FROM v1
-        |""".stripMargin)
+    statementSet.addInsertSql("""
+                                |INSERT INTO sink2 SELECT * FROM v1
+                                |""".stripMargin)
     util.verifyRelPlan(statementSet, ExplainDetail.CHANGELOG_MODE)
   }
 
   @Test
-  def testEliminateChangelogNormalizedOnUpsertSink: Unit = {
-    upsertManagedTableWithChangelogNormalizeTestOnSink(isUpsert = true)
+  def testFilterSubsetOfUpsertKey(): Unit = {
+    util.tableEnv.executeSql("""
+                               |create table src (
+                               | name string,
+                               | score int,
+                               | id int primary key not enforced
+                               |) with (
+                               | 'connector' = 'values',
+                               | 'changelog-mode' = 'I,UA,UB'
+                               |)
+                               |""".stripMargin)
+
+    val catalog = util.tableEnv.getCatalog(util.tableEnv.getCurrentCatalog).get()
+    addImmutableColConstraint(catalog, util.tableEnv.getCurrentDatabase, "src", "name")
+
+    val sql =
+      """
+        |select * from src where name <> 'Tom'
+        |""".stripMargin
+
+    // upsert keys: {{name, id}, {id}}
+    // filter references: {name}
+    // upsert key {name, id} contains {name}, so UB can be dropped
+    util.verifyRelPlan(sql, ExplainDetail.CHANGELOG_MODE)
   }
 
   @Test
-  def testKeepChangelogNormalizedOnNonUpsertSink: Unit = {
-    upsertManagedTableWithChangelogNormalizeTestOnSink(isUpsert = false)
+  def testFilterSubsetOfUpsertKey2(): Unit = {
+    util.tableEnv.executeSql("""
+                               |create table src (
+                               | score int,
+                               | note string,
+                               | name string,
+                               | id int,
+                               | primary key (name, id) not enforced
+                               |) with (
+                               | 'connector' = 'values',
+                               | 'changelog-mode' = 'I,UA,UB'
+                               |)
+                               |""".stripMargin)
+
+    val catalog = util.tableEnv.getCatalog(util.tableEnv.getCurrentCatalog).get()
+    addImmutableColConstraint(catalog, util.tableEnv.getCurrentDatabase, "src", "score")
+
+    val sql =
+      """
+        |select * from src where name <> 'Tom' and score > 90
+        |""".stripMargin
+
+    // upsert keys: {{score, name, id}, {name, id}}
+    // filter references: {score, name}
+    // upsert key {score, name, id} contains {score, name}, so UB can be dropped
+    util.verifyRelPlan(sql, ExplainDetail.CHANGELOG_MODE)
   }
 
   @Test
-  def testEliminateChangelogNormalizedOnUpsertJoin(): Unit = {
-    upsertManagedTableWithChangelogNormalizeTestOnJoin(isUpsert = true)
+  def testFilterNotContainedByAnyUpsertKey(): Unit = {
+    util.tableEnv.executeSql("""
+                               |create table src (
+                               | score int,
+                               | note string,
+                               | name string,
+                               | id int,
+                               | primary key (id) not enforced
+                               |) with (
+                               | 'connector' = 'values',
+                               | 'changelog-mode' = 'I,UA,UB'
+                               |)
+                               |""".stripMargin)
+
+    val catalog = util.tableEnv.getCatalog(util.tableEnv.getCurrentCatalog).get()
+    addImmutableColConstraint(catalog, util.tableEnv.getCurrentDatabase, "src", "score")
+
+    val sql =
+      """
+        |select * from src where name <> 'Tom' and score > 90
+        |""".stripMargin
+
+    // upsert keys: {{score, id}, {id}}
+    // filter references: {score, name}
+    // upsert key {score, id} or {id} does not contain {score, name}, so UB cannot be dropped
+    util.verifyRelPlan(sql, ExplainDetail.CHANGELOG_MODE)
   }
 
   @Test
-  def testKeepChangelogNormalizedOnNonUpsertJoin(): Unit = {
-    upsertManagedTableWithChangelogNormalizeTestOnJoin(isUpsert = false)
+  def testFilterOneEntireUpsertKey(): Unit = {
+    util.tableEnv.executeSql("""
+                               |create table src (
+                               | score int,
+                               | note string,
+                               | name string,
+                               | id int,
+                               | primary key (name, id) not enforced
+                               |) with (
+                               | 'connector' = 'values',
+                               | 'changelog-mode' = 'I,UA,UB'
+                               |)
+                               |""".stripMargin)
+
+    val catalog = util.tableEnv.getCatalog(util.tableEnv.getCurrentCatalog).get()
+    addImmutableColConstraint(catalog, util.tableEnv.getCurrentDatabase, "src", "score")
+
+    val sql =
+      """
+        |select * from src where score > 90 and name = 'Tom' and id > 0
+        |""".stripMargin
+
+    // upsert keys: {{score, name, id}, {name, id}}
+    // filter references: {score, name, id}
+    // upsert key {score, name, id} fully contains {score, name, id}, so UB can be dropped
+    util.verifyRelPlan(sql, ExplainDetail.CHANGELOG_MODE)
   }
 
-  private def upsertManagedTableWithChangelogNormalizeTestOnSink(isUpsert: Boolean): Unit = {
-    val sinkTableName = if (isUpsert) {
-      "upsert_sink_table"
-    } else {
-      "all_change_sink_table"
-    }
-    val sql = s"INSERT INTO $sinkTableName SELECT * FROM upsert_managed_table"
+  @Test
+  def testFilterOnPrimaryKeyOnly(): Unit = {
+    util.tableEnv.executeSql("""
+                               |create table src (
+                               | name string,
+                               | score int,
+                               | id int primary key not enforced
+                               |) with (
+                               | 'connector' = 'values',
+                               | 'changelog-mode' = 'I,UA,UB'
+                               |)
+                               |""".stripMargin)
+
+    val sql =
+      """
+        |select * from src where id > 5
+        |""".stripMargin
+
+    // upsert keys: {{id}}
+    // filter references: {id}
+    // upsert key {id} fully contains {id}, so UB can be dropped
+    util.verifyRelPlan(sql, ExplainDetail.CHANGELOG_MODE)
+  }
+
+  @Test
+  def testFilterOnNonUpsertKeyColOnly(): Unit = {
+    util.tableEnv.executeSql("""
+                               |create table src (
+                               | name string,
+                               | score int,
+                               | id int primary key not enforced
+                               |) with (
+                               | 'connector' = 'values',
+                               | 'changelog-mode' = 'I,UA,UB'
+                               |)
+                               |""".stripMargin)
+
+    val sql =
+      """
+        |select * from src where name <> 'Tom'
+        |""".stripMargin
+
+    // upsert keys: {{id}}
+    // filter references: {name}
+    // upsert key {id} does not contain {name}, so UB cannot be dropped
+    util.verifyRelPlan(sql, ExplainDetail.CHANGELOG_MODE)
+  }
+
+  @Test
+  def testSinkPkCoveredByUpsertKeyAndImmutableCols(): Unit = {
+    util.tableEnv.executeSql("""
+                               |create table src (
+                               | name string,
+                               | score int,
+                               | detail string,
+                               | id int primary key not enforced
+                               |) with (
+                               | 'connector' = 'values',
+                               | 'changelog-mode' = 'I,UA,UB'
+                               |)
+                               |""".stripMargin)
+
+    val catalog = util.tableEnv.getCatalog(util.tableEnv.getCurrentCatalog).get()
+    addImmutableColConstraint(catalog, util.tableEnv.getCurrentDatabase, "src", "name", "score")
+
+    util.tableEnv.executeSql("""
+                               |create table sink (
+                               | name string,
+                               | score int,
+                               | detail string,
+                               | id int,
+                               | primary key (id, name) not enforced
+                               |) with (
+                               | 'connector' = 'values',
+                               | 'sink-insert-only' = 'false'
+                               |)
+                               |""".stripMargin)
+
+    val statementSet = util.tableEnv.createStatementSet()
+    statementSet.addInsertSql("INSERT INTO sink SELECT * FROM src")
+
+    // upsert keys of input: {{id}, {id, name, score}}
+    // immutable cols of input: {id, name , score}
+    // sink pk: {id, name}
+    // upsert key {id} is subset of sink pk, and {id} union immutable cols covers sink pk
+    // so ONLY_UPDATE_AFTER is safe
+    util.verifyRelPlan(statementSet, ExplainDetail.CHANGELOG_MODE)
+  }
+
+  @Test
+  def testSinkPkNotCoveredByUpsertKeyAndImmutableCols(): Unit = {
+    util.tableEnv.executeSql("""
+                               |create table src (
+                               | name string,
+                               | score int,
+                               | detail string,
+                               | id int primary key not enforced
+                               |) with (
+                               | 'connector' = 'values',
+                               | 'changelog-mode' = 'I,UA,UB'
+                               |)
+                               |""".stripMargin)
+
+    val catalog = util.tableEnv.getCatalog(util.tableEnv.getCurrentCatalog).get()
+    addImmutableColConstraint(catalog, util.tableEnv.getCurrentDatabase, "src", "name")
+
+    util.tableEnv.executeSql("""
+                               |create table sink (
+                               | name string,
+                               | score int,
+                               | detail string,
+                               | id int,
+                               | primary key (id, name, score) not enforced
+                               |) with (
+                               | 'connector' = 'values',
+                               | 'sink-insert-only' = 'false'
+                               |)
+                               |""".stripMargin)
+
+    val statementSet = util.tableEnv.createStatementSet()
+    statementSet.addInsertSql("INSERT INTO sink SELECT * FROM src")
+
+    // upsert keys of input: {{id}, {id, name}}
+    // sink pk: {id, name, score}
+    // {id} union immutable {name} = {id, name}, does NOT cover {id, name, score}
+    // so BEFORE_AND_AFTER is required
+    util.verifyRelPlan(statementSet, ExplainDetail.CHANGELOG_MODE)
+  }
+
+  @Test
+  def testUpsertKeyExceedsSinkPk(): Unit = {
+    util.tableEnv.executeSql("""
+                               |create table src (
+                               | name string,
+                               | score int,
+                               | id int,
+                               | primary key (id, name) not enforced
+                               |) with (
+                               | 'connector' = 'values',
+                               | 'changelog-mode' = 'I,UA,UB'
+                               |)
+                               |""".stripMargin)
+
+    val catalog = util.tableEnv.getCatalog(util.tableEnv.getCurrentCatalog).get()
+    addImmutableColConstraint(catalog, util.tableEnv.getCurrentDatabase, "src", "score")
+
+    util.tableEnv.executeSql("""
+                               |create table sink (
+                               | name string,
+                               | score int,
+                               | id int,
+                               | primary key (id) not enforced
+                               |) with (
+                               | 'connector' = 'values',
+                               | 'sink-insert-only' = 'false'
+                               |)
+                               |""".stripMargin)
+
+    val statementSet = util.tableEnv.createStatementSet()
+    statementSet.addInsertSql("INSERT INTO sink SELECT * FROM src ON CONFLICT DO DEDUPLICATE")
+
+    // upsert keys of input: {{id, name}, {id, name, score}}
+    // sink pk: {id}
+    // upsert key {id, name} is NOT a subset of sink pk {id}, so BEFORE_AND_AFTER is required
+    util.verifyRelPlan(statementSet, ExplainDetail.CHANGELOG_MODE)
+  }
+
+  @Test
+  def testKeylessUpsertSinkKeepsUpsertWhenInputHasUpsertKey(): Unit = {
+    // Input keeps its upsert key (currency), so a keyless upsert-only sink stays upsert.
+    util.addTable("""
+                    |CREATE TABLE keyless_upsert_sink (
+                    |  currency STRING,
+                    |  rate INT
+                    |) WITH (
+                    |  'connector' = 'values',
+                    |  'sink-insert-only' = 'false',
+                    |  'sink-changelog-mode-enforced' = 'I,UA,D'
+                    |)
+                    |""".stripMargin)
+    util.verifyRelPlanInsert(
+      "INSERT INTO keyless_upsert_sink SELECT currency, rate FROM DeduplicatedView",
+      ExplainDetail.CHANGELOG_MODE)
+  }
+
+  @Test
+  def testKeylessUpsertSinkFallsBackToRetractWhenUpsertKeyProjectedAway(): Unit = {
+    // The input upsert key (currency) is projected away, so a keyless upsert-only sink cannot
+    // upsert and the planner falls back to retract; the deduplicate's ChangelogNormalize supplies
+    // UPDATE_BEFORE.
+    util.addTable("""
+                    |CREATE TABLE keyless_upsert_sink_no_key (
+                    |  rate INT
+                    |) WITH (
+                    |  'connector' = 'values',
+                    |  'sink-insert-only' = 'false',
+                    |  'sink-changelog-mode-enforced' = 'I,UA,D'
+                    |)
+                    |""".stripMargin)
+    util.verifyRelPlanInsert(
+      "INSERT INTO keyless_upsert_sink_no_key SELECT rate FROM DeduplicatedView",
+      ExplainDetail.CHANGELOG_MODE)
+  }
+
+  @Test
+  def testKeylessUpsertSinkFallsBackToRetractOnGlobalAggregate(): Unit = {
+    // A global aggregation reports an empty upsert key, meaning "at most one row" rather than a
+    // set of columns. The keyless sink must fall back to retract, or consumers receive bare
+    // UPDATE_AFTER rows with no key to apply them by.
+    util.addTable("""
+                    |CREATE TABLE keyless_upsert_sink_count (
+                    |  cnt BIGINT
+                    |) WITH (
+                    |  'connector' = 'values',
+                    |  'sink-insert-only' = 'false',
+                    |  'sink-changelog-mode-enforced' = 'I,UA,D'
+                    |)
+                    |""".stripMargin)
+    util.verifyRelPlanInsert(
+      "INSERT INTO keyless_upsert_sink_count SELECT COUNT(*) FROM MyTable",
+      ExplainDetail.CHANGELOG_MODE)
+  }
+
+  @Test
+  def testKeylessUpsertSinkWithLookupJoinOnGlobalAggregateProbeSide(): Unit = {
+    // The reported key (dim.id) isn't invariant across updates - it really tracks the volatile
+    // join value (cnt) - but lookup joins don't filter that out, unlike regular joins.
+    util.addTable("""
+                    |CREATE TABLE lookup_sink (
+                    |  id BIGINT,
+                    |  v STRING
+                    |) WITH (
+                    |  'connector' = 'values',
+                    |  'sink-insert-only' = 'false',
+                    |  'sink-changelog-mode-enforced' = 'I,UA,D'
+                    |)
+                    |""".stripMargin)
+    val sql =
+      """
+        |INSERT INTO lookup_sink
+        |SELECT dim.id, dim.v
+        |FROM (SELECT COUNT(*) AS cnt, PROCTIME() AS pt FROM MyTable) g
+        |JOIN LookupDim FOR SYSTEM_TIME AS OF g.pt AS dim
+        |ON g.cnt = dim.id
+      """.stripMargin
     util.verifyRelPlanInsert(sql, ExplainDetail.CHANGELOG_MODE)
   }
 
-  private def upsertManagedTableWithChangelogNormalizeTestOnJoin(isUpsert: Boolean): Unit = {
-    val sinkTableName = if (isUpsert) {
-      "upsert_sink_table"
-    } else {
-      "all_change_sink_table"
-    }
-    val sql = s"""
-                |INSERT INTO $sinkTableName SELECT a.* FROM upsert_managed_table a
-                |join upsert_managed_table b on a.id = b.id
-                |""".stripMargin
-    util.verifyRelPlanInsert(sql, ExplainDetail.CHANGELOG_MODE)
+  @Test
+  def testKeylessUpsertSinkWithMultiTableArgUpsertPtfComputesDistinctKeyPerArg(): Unit = {
+    // Multi-arg PTF with a partitioned table argument after the first: the 2nd+ arg's partition
+    // columns must not collapse to an empty key, or a real key gets mixed with a spurious empty
+    // candidate and the sink would wrongly stay upsert.
+    util.addTemporarySystemFunction("f", classOf[UpdatingJoinFunction])
+    util.addTable("""
+                    |CREATE TABLE scores_ptf_probe (
+                    |  name STRING,
+                    |  score INT,
+                    |  PRIMARY KEY(name) NOT ENFORCED
+                    |) WITH (
+                    |  'connector' = 'values',
+                    |  'changelog-mode' = 'I,UA,D',
+                    |  'source.produces-delete-by-key' = 'true'
+                    |)
+                    |""".stripMargin)
+    util.addTable("""
+                    |CREATE TABLE city_ptf_probe (
+                    |  name STRING,
+                    |  city STRING,
+                    |  PRIMARY KEY(name) NOT ENFORCED
+                    |) WITH (
+                    |  'connector' = 'values',
+                    |  'changelog-mode' = 'I,UA,D',
+                    |  'source.produces-delete-by-key' = 'true'
+                    |)
+                    |""".stripMargin)
+    util.addTable("""
+                    |CREATE TABLE keyless_upsert_sink_ptf_probe (
+                    |  name STRING,
+                    |  name0 STRING,
+                    |  `out` STRING
+                    |) WITH (
+                    |  'connector' = 'values',
+                    |  'sink-insert-only' = 'false',
+                    |  'sink-changelog-mode-enforced' = 'I,UA,D',
+                    |  'sink.supports-delete-by-key' = 'true'
+                    |)
+                    |""".stripMargin)
+    util.verifyRelPlanInsert(
+      "INSERT INTO keyless_upsert_sink_ptf_probe SELECT `name`, name0, `out` FROM f("
+        + "scoreTable => TABLE scores_ptf_probe PARTITION BY name, "
+        + "cityTable => TABLE city_ptf_probe PARTITION BY name)",
+      ExplainDetail.CHANGELOG_MODE
+    )
   }
 }

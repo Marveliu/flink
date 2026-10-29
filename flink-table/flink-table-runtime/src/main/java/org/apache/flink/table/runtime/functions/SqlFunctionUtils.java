@@ -20,14 +20,18 @@ package org.apache.flink.table.runtime.functions;
 
 import org.apache.flink.table.data.DecimalData;
 import org.apache.flink.table.data.DecimalDataUtils;
+import org.apache.flink.table.data.StringData;
 import org.apache.flink.table.data.binary.BinaryStringData;
 import org.apache.flink.table.data.binary.BinaryStringDataUtil;
 import org.apache.flink.table.utils.EncodingUtils;
 import org.apache.flink.table.utils.ThreadLocalCache;
+import org.apache.flink.util.CollectionUtil;
 
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import javax.annotation.Nullable;
 
 import java.io.UnsupportedEncodingException;
 import java.math.BigDecimal;
@@ -38,13 +42,14 @@ import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.util.Arrays;
 import java.util.Base64;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
-import java.util.regex.MatchResult;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.regex.PatternSyntaxException;
 
 import static org.apache.flink.table.data.DecimalDataUtils.castFrom;
 import static org.apache.flink.table.data.DecimalDataUtils.castToIntegral;
@@ -306,26 +311,25 @@ public class SqlFunctionUtils {
             return "";
         }
 
-        char[] data = new char[len];
-        char[] baseChars = base.toCharArray();
-        char[] padChars = pad.toCharArray();
-
-        // the length of the padding needed
-        int pos = Math.max(len - base.length(), 0);
-
-        // copy the padding
-        for (int i = 0; i < pos; i += pad.length()) {
-            for (int j = 0; j < pad.length() && j < pos - i; j++) {
-                data[i + j] = padChars[j];
-            }
+        final int length = base.length();
+        int baseEnd = 0;
+        int baseCodePoints = 0;
+        while (baseCodePoints < len && baseEnd < length) {
+            baseEnd += Character.charCount(base.codePointAt(baseEnd));
+            baseCodePoints++;
         }
 
-        // copy the base
-        int i = 0;
-        while (pos + i < len && i < base.length()) {
-            data[pos + i] = baseChars[i];
-            i += 1;
+        final int padCount = len - baseCodePoints;
+        if (padCount == 0) {
+            // The base already holds len code points, so it only needs truncating.
+            return base.substring(0, baseEnd);
         }
+
+        final int padChars = padLength(pad, padCount);
+        final char[] data = new char[Math.addExact(padChars, baseEnd)];
+
+        writePad(data, 0, pad, padChars);
+        base.getChars(0, baseEnd, data, padChars);
 
         return new String(data);
     }
@@ -341,29 +345,58 @@ public class SqlFunctionUtils {
             return "";
         }
 
-        char[] data = new char[len];
-        char[] baseChars = base.toCharArray();
-        char[] padChars = pad.toCharArray();
-
-        int pos = 0;
-
-        // copy the base
-        while (pos < base.length() && pos < len) {
-            data[pos] = baseChars[pos];
-            pos += 1;
+        final int length = base.length();
+        int baseEnd = 0;
+        int baseCodePoints = 0;
+        while (baseCodePoints < len && baseEnd < length) {
+            baseEnd += Character.charCount(base.codePointAt(baseEnd));
+            baseCodePoints++;
         }
 
-        // copy the padding
-        while (pos < len) {
-            int i = 0;
-            while (i < pad.length() && i < len - pos) {
-                data[pos + i] = padChars[i];
-                i += 1;
-            }
-            pos += pad.length();
+        final int padCount = len - baseCodePoints;
+        if (padCount == 0) {
+            // The base already holds len code points, so it only needs truncating.
+            return base.substring(0, baseEnd);
         }
+
+        final int padChars = padLength(pad, padCount);
+        final char[] data = new char[Math.addExact(baseEnd, padChars)];
+
+        base.getChars(0, baseEnd, data, 0);
+        writePad(data, baseEnd, pad, padChars);
 
         return new String(data);
+    }
+
+    /** Number of chars taken by count code points of pad repeated cyclically. */
+    private static int padLength(String pad, int count) {
+        final int padLen = pad.length();
+        final int cycle = pad.codePointCount(0, padLen);
+        return Math.addExact(
+                Math.multiplyExact(count / cycle, padLen),
+                pad.offsetByCodePoints(0, count % cycle));
+    }
+
+    /** Writes chars characters into data at pos, repeating pad cyclically. */
+    private static void writePad(char[] data, int pos, String pad, int chars) {
+        final int padLen = pad.length();
+        if (padLen == 1) {
+            // A single char fills directly, which is faster than the doubling copy below.
+            Arrays.fill(data, pos, pos + chars, pad.charAt(0));
+            return;
+        }
+
+        // Arrays.fill can only repeat a single char, so a longer pad is replicated by copying:
+        // each pass doubles the region written, taking log2(chars) copies not one per cycle.
+        final int first = Math.min(padLen, chars);
+        pad.getChars(0, first, data, pos);
+
+        int written = first;
+        while (written < chars) {
+            final int next = Math.min(written, chars - written);
+            System.arraycopy(data, pos, data, pos + written, next);
+            written += next;
+        }
     }
 
     /** Returns a string that repeats the base string n times. */
@@ -418,47 +451,43 @@ public class SqlFunctionUtils {
 
     /**
      * Returns a string resulting from replacing all substrings that match the regular expression
-     * with replacement.
+     * with replacement. Literal regexes are validated at planning time by the input type strategy.
      */
     public static String regexpReplace(String str, String regex, String replacement) {
         if (str == null || regex == null || replacement == null) {
             return null;
         }
         try {
-            return str.replaceAll(regex, Matcher.quoteReplacement(replacement));
-        } catch (Exception e) {
-            LOG.error(
-                    String.format(
-                            "Exception in regexpReplace('%s', '%s', '%s')",
-                            str, regex, replacement),
-                    e);
-            // return null if exception in regex replace
+            return REGEXP_PATTERN_CACHE
+                    .get(regex)
+                    .matcher(str)
+                    .replaceAll(Matcher.quoteReplacement(replacement));
+        } catch (PatternSyntaxException e) {
+            // Literals are rejected at planning time; non-literal invalid regex
+            // returns null to preserve the prior runtime contract.
             return null;
         }
     }
 
     /**
      * Returns a string extracted with a specified regular expression and a regex match group index.
+     * Literal regexes are validated at planning time by the input type strategy.
      */
     public static String regexpExtract(String str, String regex, int extractIndex) {
-        if (str == null || regex == null) {
+        if (str == null || regex == null || extractIndex < 0) {
             return null;
         }
-
         try {
-            Matcher m = Pattern.compile(regex).matcher(str);
-            if (m.find()) {
-                MatchResult mr = m.toMatchResult();
-                return mr.group(extractIndex);
+            final Matcher m = REGEXP_PATTERN_CACHE.get(regex).matcher(str);
+            if (m.groupCount() < extractIndex) {
+                return null;
             }
-        } catch (Exception e) {
-            LOG.error(
-                    String.format(
-                            "Exception in regexpExtract('%s', '%s', '%d')",
-                            str, regex, extractIndex),
-                    e);
+            if (m.find()) {
+                return m.group(extractIndex);
+            }
+        } catch (PatternSyntaxException e) {
+            // non-literal invalid regex returns null.
         }
-
         return null;
     }
 
@@ -472,57 +501,16 @@ public class SqlFunctionUtils {
     }
 
     /**
-     * Parse string as key-value string and return the value matches key name. example:
-     * keyvalue('k1=v1;k2=v2', ';', '=', 'k2') = 'v2' keyvalue('k1:v1,k2:v2', ',', ':', 'k3') = NULL
-     *
-     * @param str target string.
-     * @param pairSeparator separator between key-value tuple.
-     * @param kvSeparator separator between key and value.
-     * @param keyName name of the key whose value you want return.
-     * @return target value.
+     * Returns a Matcher object that represents the result of matching given StringData against a
+     * specified regular expression pattern.
      */
-    public static BinaryStringData keyValue(
-            BinaryStringData str,
-            BinaryStringData pairSeparator,
-            BinaryStringData kvSeparator,
-            BinaryStringData keyName) {
-        if (str == null || str.getSizeInBytes() == 0) {
+    public static Matcher getRegexpMatcher(@Nullable StringData str, @Nullable StringData regex) {
+        if (str == null || regex == null) {
             return null;
         }
-        if (pairSeparator != null
-                && pairSeparator.getSizeInBytes() == 1
-                && kvSeparator != null
-                && kvSeparator.getSizeInBytes() == 1) {
-            return BinaryStringDataUtil.keyValue(
-                    str, pairSeparator.byteAt(0), kvSeparator.byteAt(0), keyName);
-        } else {
-            return BinaryStringData.fromString(
-                    keyValue(
-                            BinaryStringDataUtil.safeToString(str),
-                            BinaryStringDataUtil.safeToString(pairSeparator),
-                            BinaryStringDataUtil.safeToString(kvSeparator),
-                            BinaryStringDataUtil.safeToString(keyName)));
-        }
-    }
-
-    private static String keyValue(
-            String str, String pairSeparator, String kvSeparator, String keyName) {
         try {
-            if (StringUtils.isEmpty(str)) {
-                return null;
-            }
-            String[] values = StringUtils.split(str, pairSeparator);
-            for (String value : values) {
-                if (!StringUtils.isEmpty(value)) {
-                    String[] kv = StringUtils.split(kvSeparator);
-                    if (kv != null && kv.length == 2 && kv[0].equals(keyName)) {
-                        return kv[1];
-                    }
-                }
-            }
-            return null;
-        } catch (Exception e) {
-            LOG.error("Exception when parse key-value", e);
+            return REGEXP_PATTERN_CACHE.get(regex.toString()).matcher(str.toString());
+        } catch (PatternSyntaxException e) {
             return null;
         }
     }
@@ -588,7 +576,6 @@ public class SqlFunctionUtils {
         try {
             url = URL_CACHE.get(urlStr);
         } catch (Exception e) {
-            LOG.error("Parse URL error: " + urlStr, e);
             return null;
         }
         if ("HOST".equals(partToExtract)) {
@@ -651,16 +638,9 @@ public class SqlFunctionUtils {
 
     public static String subString(String str, long start, long len) {
         if (len < 0) {
-            LOG.error(
-                    "len of 'substring(str, start, len)' must be >= 0 and Int type, but len = {}",
-                    len);
             return null;
         }
         if (len > Integer.MAX_VALUE || start > Integer.MAX_VALUE) {
-            LOG.error(
-                    "len or start of 'substring(str, start, len)' must be Int type, but len = {}, start = {}",
-                    len,
-                    start);
             return null;
         }
         int length = (int) len;
@@ -812,7 +792,7 @@ public class SqlFunctionUtils {
         }
 
         String[] keyValuePairs = text.split(listDelimiter);
-        Map<String, String> ret = new HashMap<>(keyValuePairs.length);
+        Map<String, String> ret = CollectionUtil.newHashMapWithExpectedSize(keyValuePairs.length);
         for (String keyValuePair : keyValuePairs) {
             String[] keyValue = keyValuePair.split(keyValueDelimiter, 2);
             if (keyValue.length < 2) {
@@ -1000,14 +980,19 @@ public class SqlFunctionUtils {
         return Math.abs(str.hashCode());
     }
 
-    public static Boolean regExp(String s, String regex) {
-        if (regex.length() == 0) {
+    /**
+     * Returns whether {@code s} contains a match for the regular expression {@code regex}. Literal
+     * regexes are validated at planning time by the input type strategy.
+     */
+    public static boolean regExp(String s, String regex) {
+        if (regex.isEmpty()) {
             return false;
         }
         try {
-            return (REGEXP_PATTERN_CACHE.get(regex)).matcher(s).find(0);
-        } catch (Exception e) {
-            LOG.error("Exception when compile and match regex:" + regex + " on: " + s, e);
+            return REGEXP_PATTERN_CACHE.get(regex).matcher(s).find(0);
+        } catch (PatternSyntaxException e) {
+            // Literals are rejected at planning time; non-literal invalid regex
+            // returns false to preserve the prior runtime contract.
             return false;
         }
     }

@@ -21,7 +21,11 @@ package org.apache.flink.table.planner.plan.nodes.exec.stream;
 
 import org.apache.flink.FlinkVersion;
 import org.apache.flink.api.dag.Transformation;
+import org.apache.flink.configuration.ReadableConfig;
+import org.apache.flink.streaming.api.operators.TwoInputStreamOperator;
 import org.apache.flink.streaming.api.transformations.TwoInputTransformation;
+import org.apache.flink.table.api.config.ExecutionConfigOptions;
+import org.apache.flink.table.connector.ChangelogMode;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.planner.delegation.PlannerBase;
 import org.apache.flink.table.planner.plan.nodes.exec.ExecEdge;
@@ -31,25 +35,33 @@ import org.apache.flink.table.planner.plan.nodes.exec.ExecNodeContext;
 import org.apache.flink.table.planner.plan.nodes.exec.ExecNodeMetadata;
 import org.apache.flink.table.planner.plan.nodes.exec.InputProperty;
 import org.apache.flink.table.planner.plan.nodes.exec.SingleTransformationTranslator;
+import org.apache.flink.table.planner.plan.nodes.exec.StateMetadata;
 import org.apache.flink.table.planner.plan.nodes.exec.spec.JoinSpec;
 import org.apache.flink.table.planner.plan.nodes.exec.utils.ExecNodeUtil;
 import org.apache.flink.table.planner.plan.utils.JoinUtil;
 import org.apache.flink.table.planner.plan.utils.KeySelectorUtil;
+import org.apache.flink.table.planner.plan.utils.MinibatchUtil;
 import org.apache.flink.table.runtime.generated.GeneratedJoinCondition;
 import org.apache.flink.table.runtime.keyselector.RowDataKeySelector;
 import org.apache.flink.table.runtime.operators.join.FlinkJoinType;
-import org.apache.flink.table.runtime.operators.join.stream.AbstractStreamingJoinOperator;
+import org.apache.flink.table.runtime.operators.join.stream.MiniBatchStreamingJoinOperator;
 import org.apache.flink.table.runtime.operators.join.stream.StreamingJoinOperator;
 import org.apache.flink.table.runtime.operators.join.stream.StreamingSemiAntiJoinOperator;
-import org.apache.flink.table.runtime.operators.join.stream.state.JoinInputSideSpec;
+import org.apache.flink.table.runtime.operators.join.stream.asyncprocessing.AsyncStateStreamingJoinOperator;
+import org.apache.flink.table.runtime.operators.join.stream.utils.JoinInputSideSpec;
 import org.apache.flink.table.runtime.typeutils.InternalTypeInfo;
+import org.apache.flink.table.runtime.util.RuntimeChangelogMode;
 import org.apache.flink.table.types.logical.RowType;
 
-import org.apache.flink.shaded.guava30.com.google.common.collect.Lists;
+import org.apache.flink.shaded.guava33.com.google.common.collect.Lists;
 import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.annotation.JsonCreator;
+import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.annotation.JsonInclude;
 import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.annotation.JsonProperty;
 
+import javax.annotation.Nullable;
+
 import java.util.List;
+import java.util.Map;
 
 import static org.apache.flink.util.Preconditions.checkArgument;
 import static org.apache.flink.util.Preconditions.checkNotNull;
@@ -71,33 +83,65 @@ public class StreamExecJoin extends ExecNodeBase<RowData>
 
     public static final String JOIN_TRANSFORMATION = "join";
 
+    public static final String LEFT_STATE_NAME = "leftState";
+
+    public static final String RIGHT_STATE_NAME = "rightState";
+
     public static final String FIELD_NAME_JOIN_SPEC = "joinSpec";
-    public static final String FIELD_NAME_LEFT_UNIQUE_KEYS = "leftUniqueKeys";
-    public static final String FIELD_NAME_RIGHT_UNIQUE_KEYS = "rightUniqueKeys";
+    public static final String FIELD_NAME_LEFT_UPSERT_KEYS = "leftUpsertKeys";
+    public static final String FIELD_NAME_RIGHT_UPSERT_KEYS = "rightUpsertKeys";
+    public static final String FIELD_NAME_LEFT_INPUT_CHANGELOG_MODE = "leftInputChangelogMode";
+    public static final String FIELD_NAME_RIGHT_INPUT_CHANGELOG_MODE = "rightInputChangelogMode";
 
     @JsonProperty(FIELD_NAME_JOIN_SPEC)
     private final JoinSpec joinSpec;
 
-    @JsonProperty(FIELD_NAME_LEFT_UNIQUE_KEYS)
-    private final List<int[]> leftUniqueKeys;
+    @JsonProperty(FIELD_NAME_LEFT_UPSERT_KEYS)
+    @JsonInclude(JsonInclude.Include.NON_DEFAULT)
+    private final List<int[]> leftUpsertKeys;
 
-    @JsonProperty(FIELD_NAME_RIGHT_UNIQUE_KEYS)
-    private final List<int[]> rightUniqueKeys;
+    @JsonProperty(FIELD_NAME_RIGHT_UPSERT_KEYS)
+    @JsonInclude(JsonInclude.Include.NON_DEFAULT)
+    private final List<int[]> rightUpsertKeys;
+
+    @Nullable
+    @JsonProperty(FIELD_NAME_LEFT_INPUT_CHANGELOG_MODE)
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    private final ChangelogMode leftInputChangelogMode;
+
+    @Nullable
+    @JsonProperty(FIELD_NAME_RIGHT_INPUT_CHANGELOG_MODE)
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    private final ChangelogMode rightInputChangelogMode;
+
+    @Nullable
+    @JsonProperty(FIELD_NAME_STATE)
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    private final List<StateMetadata> stateMetadataList;
 
     public StreamExecJoin(
+            ReadableConfig tableConfig,
             JoinSpec joinSpec,
-            List<int[]> leftUniqueKeys,
-            List<int[]> rightUniqueKeys,
+            List<int[]> leftUpsertKeys,
+            List<int[]> rightUpsertKeys,
+            ChangelogMode leftInputChangelogMode,
+            ChangelogMode rightInputChangelogMode,
             InputProperty leftInputProperty,
             InputProperty rightInputProperty,
+            Map<Integer, Long> stateTtlFromHint,
             RowType outputType,
             String description) {
         this(
                 ExecNodeContext.newNodeId(),
                 ExecNodeContext.newContext(StreamExecJoin.class),
+                ExecNodeContext.newPersistedConfig(StreamExecJoin.class, tableConfig),
                 joinSpec,
-                leftUniqueKeys,
-                rightUniqueKeys,
+                leftUpsertKeys,
+                rightUpsertKeys,
+                leftInputChangelogMode,
+                rightInputChangelogMode,
+                StateMetadata.getMultiInputOperatorDefaultMeta(
+                        stateTtlFromHint, tableConfig, LEFT_STATE_NAME, RIGHT_STATE_NAME),
                 Lists.newArrayList(leftInputProperty, rightInputProperty),
                 outputType,
                 description);
@@ -107,17 +151,26 @@ public class StreamExecJoin extends ExecNodeBase<RowData>
     public StreamExecJoin(
             @JsonProperty(FIELD_NAME_ID) int id,
             @JsonProperty(FIELD_NAME_TYPE) ExecNodeContext context,
+            @JsonProperty(FIELD_NAME_CONFIGURATION) ReadableConfig persistedConfig,
             @JsonProperty(FIELD_NAME_JOIN_SPEC) JoinSpec joinSpec,
-            @JsonProperty(FIELD_NAME_LEFT_UNIQUE_KEYS) List<int[]> leftUniqueKeys,
-            @JsonProperty(FIELD_NAME_RIGHT_UNIQUE_KEYS) List<int[]> rightUniqueKeys,
+            @JsonProperty(FIELD_NAME_LEFT_UPSERT_KEYS) List<int[]> leftUpsertKeys,
+            @JsonProperty(FIELD_NAME_RIGHT_UPSERT_KEYS) List<int[]> rightUpsertKeys,
+            @Nullable @JsonProperty(FIELD_NAME_LEFT_INPUT_CHANGELOG_MODE)
+                    ChangelogMode leftInputChangelogMode,
+            @Nullable @JsonProperty(FIELD_NAME_RIGHT_INPUT_CHANGELOG_MODE)
+                    ChangelogMode rightInputChangelogMode,
+            @Nullable @JsonProperty(FIELD_NAME_STATE) List<StateMetadata> stateMetadataList,
             @JsonProperty(FIELD_NAME_INPUT_PROPERTIES) List<InputProperty> inputProperties,
             @JsonProperty(FIELD_NAME_OUTPUT_TYPE) RowType outputType,
             @JsonProperty(FIELD_NAME_DESCRIPTION) String description) {
-        super(id, context, inputProperties, outputType, description);
+        super(id, context, persistedConfig, inputProperties, outputType, description);
         checkArgument(inputProperties.size() == 2);
         this.joinSpec = checkNotNull(joinSpec);
-        this.leftUniqueKeys = leftUniqueKeys;
-        this.rightUniqueKeys = rightUniqueKeys;
+        this.leftUpsertKeys = leftUpsertKeys;
+        this.rightUpsertKeys = rightUpsertKeys;
+        this.leftInputChangelogMode = leftInputChangelogMode;
+        this.rightInputChangelogMode = rightInputChangelogMode;
+        this.stateMetadataList = stateMetadataList;
     }
 
     @Override
@@ -141,20 +194,36 @@ public class StreamExecJoin extends ExecNodeBase<RowData>
 
         final InternalTypeInfo<RowData> leftTypeInfo = InternalTypeInfo.of(leftType);
         final JoinInputSideSpec leftInputSpec =
-                JoinUtil.analyzeJoinInput(leftTypeInfo, leftJoinKey, leftUniqueKeys);
+                JoinUtil.analyzeJoinInput(
+                        planner.getFlinkContext().getClassLoader(),
+                        leftTypeInfo,
+                        leftJoinKey,
+                        leftUpsertKeys);
 
         final InternalTypeInfo<RowData> rightTypeInfo = InternalTypeInfo.of(rightType);
         final JoinInputSideSpec rightInputSpec =
-                JoinUtil.analyzeJoinInput(rightTypeInfo, rightJoinKey, rightUniqueKeys);
+                JoinUtil.analyzeJoinInput(
+                        planner.getFlinkContext().getClassLoader(),
+                        rightTypeInfo,
+                        rightJoinKey,
+                        rightUpsertKeys);
 
         GeneratedJoinCondition generatedCondition =
                 JoinUtil.generateConditionFunction(
-                        config.getTableConfig(), joinSpec, leftType, rightType);
+                        config,
+                        planner.getFlinkContext().getClassLoader(),
+                        joinSpec,
+                        leftType,
+                        rightType);
 
-        long minRetentionTime = config.getStateRetentionTime();
+        List<Long> leftAndRightStateRetentionTime =
+                StateMetadata.getStateTtlForMultiInputOperator(config, 2, stateMetadataList);
+        long leftStateRetentionTime = leftAndRightStateRetentionTime.get(0);
+        long rightStateRetentionTime = leftAndRightStateRetentionTime.get(1);
 
-        AbstractStreamingJoinOperator operator;
+        TwoInputStreamOperator<RowData, RowData, RowData> operator;
         FlinkJoinType joinType = joinSpec.getJoinType();
+        final boolean isMiniBatchEnabled = MinibatchUtil.isMiniBatchEnabled(config);
         if (joinType == FlinkJoinType.ANTI || joinType == FlinkJoinType.SEMI) {
             operator =
                     new StreamingSemiAntiJoinOperator(
@@ -165,22 +234,67 @@ public class StreamExecJoin extends ExecNodeBase<RowData>
                             leftInputSpec,
                             rightInputSpec,
                             joinSpec.getFilterNulls(),
-                            minRetentionTime);
+                            leftStateRetentionTime,
+                            rightStateRetentionTime);
         } else {
             boolean leftIsOuter = joinType == FlinkJoinType.LEFT || joinType == FlinkJoinType.FULL;
             boolean rightIsOuter =
                     joinType == FlinkJoinType.RIGHT || joinType == FlinkJoinType.FULL;
-            operator =
-                    new StreamingJoinOperator(
-                            leftTypeInfo,
-                            rightTypeInfo,
-                            generatedCondition,
-                            leftInputSpec,
-                            rightInputSpec,
-                            leftIsOuter,
-                            rightIsOuter,
-                            joinSpec.getFilterNulls(),
-                            minRetentionTime);
+            final RuntimeChangelogMode leftRuntimeChangelogMode =
+                    toRuntimeChangelogMode(leftInputChangelogMode);
+            final RuntimeChangelogMode rightRuntimeChangelogMode =
+                    toRuntimeChangelogMode(rightInputChangelogMode);
+            final boolean hasNonEquiCondition = joinSpec.getNonEquiCondition().isPresent();
+            if (isMiniBatchEnabled) {
+                operator =
+                        MiniBatchStreamingJoinOperator.newMiniBatchStreamJoinOperator(
+                                joinType,
+                                leftTypeInfo,
+                                rightTypeInfo,
+                                generatedCondition,
+                                leftInputSpec,
+                                rightInputSpec,
+                                leftIsOuter,
+                                rightIsOuter,
+                                leftRuntimeChangelogMode,
+                                rightRuntimeChangelogMode,
+                                hasNonEquiCondition,
+                                joinSpec.getFilterNulls(),
+                                leftStateRetentionTime,
+                                rightStateRetentionTime,
+                                MinibatchUtil.createMiniBatchCoTrigger(config));
+            } else {
+                if (config.get(ExecutionConfigOptions.TABLE_EXEC_ASYNC_STATE_ENABLED)) {
+                    operator =
+                            new AsyncStateStreamingJoinOperator(
+                                    leftTypeInfo,
+                                    rightTypeInfo,
+                                    generatedCondition,
+                                    leftInputSpec,
+                                    rightInputSpec,
+                                    leftIsOuter,
+                                    rightIsOuter,
+                                    joinSpec.getFilterNulls(),
+                                    leftStateRetentionTime,
+                                    rightStateRetentionTime);
+                } else {
+                    operator =
+                            new StreamingJoinOperator(
+                                    leftTypeInfo,
+                                    rightTypeInfo,
+                                    generatedCondition,
+                                    leftInputSpec,
+                                    rightInputSpec,
+                                    leftIsOuter,
+                                    rightIsOuter,
+                                    leftRuntimeChangelogMode,
+                                    rightRuntimeChangelogMode,
+                                    hasNonEquiCondition,
+                                    joinSpec.getFilterNulls(),
+                                    leftStateRetentionTime,
+                                    rightStateRetentionTime);
+                }
+            }
         }
 
         final RowType returnType = (RowType) getOutputType();
@@ -191,15 +305,26 @@ public class StreamExecJoin extends ExecNodeBase<RowData>
                         createTransformationMeta(JOIN_TRANSFORMATION, config),
                         operator,
                         InternalTypeInfo.of(returnType),
-                        leftTransform.getParallelism());
+                        leftTransform.getParallelism(),
+                        false);
 
         // set KeyType and Selector for state
         RowDataKeySelector leftSelect =
-                KeySelectorUtil.getRowDataSelector(leftJoinKey, leftTypeInfo);
+                KeySelectorUtil.getRowDataSelector(
+                        planner.getFlinkContext().getClassLoader(), leftJoinKey, leftTypeInfo);
         RowDataKeySelector rightSelect =
-                KeySelectorUtil.getRowDataSelector(rightJoinKey, rightTypeInfo);
+                KeySelectorUtil.getRowDataSelector(
+                        planner.getFlinkContext().getClassLoader(), rightJoinKey, rightTypeInfo);
         transform.setStateKeySelectors(leftSelect, rightSelect);
         transform.setStateKeyType(leftSelect.getProducedType());
         return transform;
+    }
+
+    /** Compiled plans before Flink 2.4 do not contain the changelog modes of the inputs. */
+    private static @Nullable RuntimeChangelogMode toRuntimeChangelogMode(
+            @Nullable ChangelogMode inputChangelogMode) {
+        return inputChangelogMode == null
+                ? null
+                : RuntimeChangelogMode.serialize(inputChangelogMode);
     }
 }

@@ -15,23 +15,30 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.planner.plan.metadata
 
 import org.apache.flink.table.planner.plan.`trait`.RelModifiedMonotonicity
 import org.apache.flink.table.planner.plan.nodes.logical.{FlinkLogicalRank, FlinkLogicalTableAggregate}
 import org.apache.flink.table.runtime.operators.rank.{ConstantRankRange, RankType}
 
+import org.apache.calcite.rel.`type`.{RelDataTypeField, RelDataTypeFieldImpl, RelRecordType}
 import org.apache.calcite.rel.RelCollations
-import org.apache.calcite.rel.`type`.RelDataTypeFieldImpl
 import org.apache.calcite.rel.core.JoinRelType
+import org.apache.calcite.rel.hint.RelHint
+import org.apache.calcite.rel.logical.LogicalCalc
+import org.apache.calcite.rex.{RexInputRef, RexNode, RexProgram}
 import org.apache.calcite.sql.fun.SqlStdOperatorTable._
+import org.apache.calcite.sql.validate.SqlMonotonicity
 import org.apache.calcite.sql.validate.SqlMonotonicity._
 import org.apache.calcite.util.ImmutableBitSet
-import org.junit.Assert._
-import org.junit.Test
+import org.junit.jupiter.api.Assertions._
+import org.junit.jupiter.api.Test
 
-import scala.collection.JavaConversions._
+import java.util
+import java.util.stream.Collectors
+
+import scala.collection.JavaConverters.seqAsJavaListConverter
+import scala.language.postfixOps
 
 class FlinkRelMdModifiedMonotonicityTest extends FlinkRelMdHandlerTestBase {
 
@@ -43,15 +50,114 @@ class FlinkRelMdModifiedMonotonicityTest extends FlinkRelMdHandlerTestBase {
   }
 
   @Test
+  def testMonotonicityWithCondition(): Unit = {
+    // select id, age, count() from student group by id, age
+    val inputAgg = relBuilder
+      .scan("student")
+      .aggregate(
+        relBuilder.groupKey(relBuilder.field("id"), relBuilder.field("age")),
+        relBuilder.count().as("count"))
+      .build()
+    relBuilder.push(inputAgg)
+
+    // project `age` field and corresponding output type
+    val projection = java.util.List.of[RexInputRef](relBuilder.field("age"))
+    val ageFieldType =
+      inputAgg.getRowType.getFieldList
+        .stream()
+        .filter(x => x.getName.equals("age"))
+        .collect(Collectors.toList[RelDataTypeField]())
+    val outputType = new RelRecordType(ageFieldType)
+
+    // select age from (select id, age, count() from student by id, age) where ...
+    // sub-query monotonicity is [CONSTANT, CONSTANT, INCREASING]
+    // some condition can broke monotonicity cause agg func
+    // like max/min depends on input monotonicity
+    def createCalc(condition: RexNode): LogicalCalc = {
+      val program =
+        RexProgram.create(inputAgg.getRowType, projection, condition, outputType, rexBuilder)
+      new LogicalCalc(cluster, logicalTraits, new util.ArrayList[RelHint](), inputAgg, program)
+    }
+    def assertMonotonicity(monotonicity: SqlMonotonicity, condition: RexNode): Unit =
+      assertEquals(
+        new RelModifiedMonotonicity(Array(monotonicity)),
+        mq.getRelModifiedMonotonicity(createCalc(condition))
+      )
+
+    // where count > 1 and count < 3
+    var condition = relBuilder
+      .and(
+        relBuilder.greaterThan(relBuilder.field("count"), relBuilder.literal(1)),
+        relBuilder.lessThan(relBuilder.field("count"), relBuilder.literal(3))
+      )
+    assertMonotonicity(NOT_MONOTONIC, condition)
+
+    // where count > 1
+    condition = relBuilder.greaterThan(relBuilder.field("count"), relBuilder.literal(1))
+    assertMonotonicity(CONSTANT, condition)
+
+    // where count < 3
+    condition = relBuilder.lessThan(relBuilder.field("count"), relBuilder.literal(3))
+    assertMonotonicity(NOT_MONOTONIC, condition)
+
+    // where count > 1 or count < 3
+    condition = relBuilder
+      .or(
+        relBuilder.greaterThan(relBuilder.field("count"), relBuilder.literal(1)),
+        relBuilder.lessThan(relBuilder.field("count"), relBuilder.literal(3))
+      )
+    // correct answer CONSTANT, but this condition must be
+    // destroyed by SimplifyFilterConditionRule and answer is null
+    assertMonotonicity(NOT_MONOTONIC, condition)
+    assertMonotonicity(CONSTANT, null)
+
+    // where count in (1,2,3)
+    // where count not in (1,2,3)
+    condition = relBuilder
+      .in(
+        relBuilder.field("count"),
+        relBuilder.literal(1),
+        relBuilder.literal(2),
+        relBuilder.literal(3))
+    assertMonotonicity(NOT_MONOTONIC, condition)
+    assertMonotonicity(NOT_MONOTONIC, relBuilder.not(condition))
+
+    // where count = 10
+    condition = relBuilder
+      .equals(relBuilder.field("count"), relBuilder.literal(10))
+    assertMonotonicity(NOT_MONOTONIC, condition)
+
+    // where count <> 10
+    condition = relBuilder
+      .notEquals(relBuilder.field("count"), relBuilder.literal(10))
+    assertMonotonicity(NOT_MONOTONIC, condition)
+
+    // where count > 5 or count < 2
+    condition = relBuilder
+      .or(
+        relBuilder.greaterThan(relBuilder.field("count"), relBuilder.literal(5)),
+        relBuilder.lessThan(relBuilder.field("count"), relBuilder.literal(2))
+      )
+    assertMonotonicity(NOT_MONOTONIC, condition)
+
+    // where age is not null
+    condition = relBuilder
+      .isNotNull(relBuilder.field("age"))
+    assertMonotonicity(CONSTANT, condition)
+  }
+
+  @Test
   def testGetRelMonotonicityOnProject(): Unit = {
     // test monotonicity pass on
     // select max_c, b from
     //   (select a, b, max(c) as max_c, sum(d) as sum_d from MyTable4 group by a, b) t
-    val projectWithMaxAgg = relBuilder.scan("MyTable4")
+    val projectWithMaxAgg = relBuilder
+      .scan("MyTable4")
       .aggregate(
         relBuilder.groupKey(relBuilder.field("a"), relBuilder.field("b")),
         relBuilder.max("max_c", relBuilder.field("c")),
-        relBuilder.sum(false, "sum_d", relBuilder.field("d")))
+        relBuilder.sum(false, "sum_d", relBuilder.field("d"))
+      )
       .project(relBuilder.field(2), relBuilder.field(1))
       .build()
 
@@ -65,11 +171,13 @@ class FlinkRelMdModifiedMonotonicityTest extends FlinkRelMdHandlerTestBase {
     // select max_c, b from
     //   (select a, b, max(c) as max_c, sum(d) as sum_d from MyTable4 group by a, b) t
     // ) group by b
-    val aggWithMaxMax = relBuilder.scan("MyTable4")
+    val aggWithMaxMax = relBuilder
+      .scan("MyTable4")
       .aggregate(
         relBuilder.groupKey(relBuilder.field("a"), relBuilder.field("b")),
         relBuilder.max("max_c", relBuilder.field("c")),
-        relBuilder.sum(false, "sum_d", relBuilder.field("d")))
+        relBuilder.sum(false, "sum_d", relBuilder.field("d"))
+      )
       .project(relBuilder.field(2), relBuilder.field(1))
       .aggregate(
         relBuilder.groupKey(relBuilder.field("b")),
@@ -86,11 +194,13 @@ class FlinkRelMdModifiedMonotonicityTest extends FlinkRelMdHandlerTestBase {
     // select max_c, b from
     //   (select a, b, max(c) as max_c, sum(d) as sum_d from MyTable4 group by a, b) t
     // ) group by b
-    val aggWithMaxMin = relBuilder.scan("MyTable4")
+    val aggWithMaxMin = relBuilder
+      .scan("MyTable4")
       .aggregate(
         relBuilder.groupKey(relBuilder.field("a"), relBuilder.field("b")),
         relBuilder.max("max_c", relBuilder.field("c")),
-        relBuilder.sum(false, "sum_d", relBuilder.field("d")))
+        relBuilder.sum(false, "sum_d", relBuilder.field("d"))
+      )
       .project(relBuilder.field(2), relBuilder.field(1))
       .aggregate(
         relBuilder.groupKey(relBuilder.field("b")),
@@ -129,11 +239,13 @@ class FlinkRelMdModifiedMonotonicityTest extends FlinkRelMdHandlerTestBase {
 
   @Test
   def testGetRelMonotonicityOnTableAggregateAfterAggregate(): Unit = {
-    val projectWithMaxAgg = relBuilder.scan("MyTable4")
+    val projectWithMaxAgg = relBuilder
+      .scan("MyTable4")
       .aggregate(
         relBuilder.groupKey(relBuilder.field("a"), relBuilder.field("b")),
         relBuilder.max("max_c", relBuilder.field("c")),
-        relBuilder.sum(false, "sum_d", relBuilder.field("d")))
+        relBuilder.sum(false, "sum_d", relBuilder.field("d"))
+      )
       .project(relBuilder.field(2), relBuilder.field(1))
       .build()
 
@@ -143,7 +255,7 @@ class FlinkRelMdModifiedMonotonicityTest extends FlinkRelMdHandlerTestBase {
       projectWithMaxAgg,
       ImmutableBitSet.of(0),
       null,
-      Seq(tableAggCall)
+      Seq(tableAggCall).toList.asJava
     )
     assertEquals(null, mq.getRelModifiedMonotonicity(tableAggregate))
   }
@@ -161,13 +273,15 @@ class FlinkRelMdModifiedMonotonicityTest extends FlinkRelMdHandlerTestBase {
   @Test
   def testGetRelMonotonicityOnAggregate(): Unit = {
     // select b, sum(a) from (select a + 10 as a, b from MyTable3) t group by b
-    val aggWithSum = relBuilder.scan("MyTable3")
+    val aggWithSum = relBuilder
+      .scan("MyTable3")
       .project(
         relBuilder.alias(relBuilder.call(PLUS, relBuilder.field(0), relBuilder.literal(10)), "a"),
         relBuilder.field(1))
       .aggregate(
         relBuilder.groupKey(relBuilder.field("b")),
-        relBuilder.sum(false, "sum_a", relBuilder.field("a"))).build()
+        relBuilder.sum(false, "sum_a", relBuilder.field("a")))
+      .build()
     // sum increasing
     assertEquals(
       new RelModifiedMonotonicity(Array(CONSTANT, INCREASING)),
@@ -175,36 +289,48 @@ class FlinkRelMdModifiedMonotonicityTest extends FlinkRelMdHandlerTestBase {
     )
 
     // select b, count(a) from MyTable3 group by b
-    val aggWithCount = relBuilder.scan("MyTable3").aggregate(
-      relBuilder.groupKey(relBuilder.field("b")),
-      relBuilder.count(false, "count_a", relBuilder.field("a"))).build()
+    val aggWithCount = relBuilder
+      .scan("MyTable3")
+      .aggregate(
+        relBuilder.groupKey(relBuilder.field("b")),
+        relBuilder.count(false, "count_a", relBuilder.field("a")))
+      .build()
     assertEquals(
       new RelModifiedMonotonicity(Array(CONSTANT, INCREASING)),
       mq.getRelModifiedMonotonicity(aggWithCount)
     )
 
     // select b, max(a) from MyTable3 group by b
-    val aggWithMax = relBuilder.scan("MyTable3").aggregate(
-      relBuilder.groupKey(relBuilder.field("b")),
-      relBuilder.max("max_a", relBuilder.field("a"))).build()
+    val aggWithMax = relBuilder
+      .scan("MyTable3")
+      .aggregate(
+        relBuilder.groupKey(relBuilder.field("b")),
+        relBuilder.max("max_a", relBuilder.field("a")))
+      .build()
     assertEquals(
       new RelModifiedMonotonicity(Array(CONSTANT, INCREASING)),
       mq.getRelModifiedMonotonicity(aggWithMax)
     )
 
     // select b, min(a) from MyTable3 group by b
-    val aggWithMin = relBuilder.scan("MyTable3").aggregate(
-      relBuilder.groupKey(relBuilder.field("b")),
-      relBuilder.min("min_a", relBuilder.field("a"))).build()
+    val aggWithMin = relBuilder
+      .scan("MyTable3")
+      .aggregate(
+        relBuilder.groupKey(relBuilder.field("b")),
+        relBuilder.min("min_a", relBuilder.field("a")))
+      .build()
     assertEquals(
       new RelModifiedMonotonicity(Array(CONSTANT, DECREASING)),
       mq.getRelModifiedMonotonicity(aggWithMin)
     )
 
     // select a, avg(b) from MyTable3 group by a
-    val aggWithAvg = relBuilder.scan("MyTable3").aggregate(
-      relBuilder.groupKey(relBuilder.field("a")),
-      relBuilder.avg(false, "avg_b", relBuilder.field("b"))).build()
+    val aggWithAvg = relBuilder
+      .scan("MyTable3")
+      .aggregate(
+        relBuilder.groupKey(relBuilder.field("a")),
+        relBuilder.avg(false, "avg_b", relBuilder.field("b")))
+      .build()
     assertEquals(
       new RelModifiedMonotonicity(Array(CONSTANT, NOT_MONOTONIC)),
       mq.getRelModifiedMonotonicity(aggWithAvg)
@@ -214,11 +340,13 @@ class FlinkRelMdModifiedMonotonicityTest extends FlinkRelMdHandlerTestBase {
     // select max_c, max(sum_d) as max_sum_d from (
     //   select a, b, max(c) as max_c, sum(d) as sum_d from MyTable4 group by a, b
     // ) group by max_c
-    val aggWithMaxSum = relBuilder.scan("MyTable4")
+    val aggWithMaxSum = relBuilder
+      .scan("MyTable4")
       .aggregate(
         relBuilder.groupKey(relBuilder.field("a"), relBuilder.field("b")),
         relBuilder.max("max_c", relBuilder.field("c")),
-        relBuilder.sum(false, "sum_d", relBuilder.field("d")))
+        relBuilder.sum(false, "sum_d", relBuilder.field("d"))
+      )
       .aggregate(
         relBuilder.groupKey(relBuilder.field("max_c")),
         relBuilder.max("max_sum_d", relBuilder.field("sum_d")))
@@ -230,11 +358,13 @@ class FlinkRelMdModifiedMonotonicityTest extends FlinkRelMdHandlerTestBase {
     // select b, min(max_c) as min_max_c from (
     //   select a, b, max(c) as max_c, sum(d) as sum_d from MyTable4 group by a, b
     // ) group by b
-    val aggWithMaxSumMin = relBuilder.scan("MyTable4")
+    val aggWithMaxSumMin = relBuilder
+      .scan("MyTable4")
       .aggregate(
         relBuilder.groupKey(relBuilder.field("a"), relBuilder.field("b")),
         relBuilder.max("max_c", relBuilder.field("c")),
-        relBuilder.sum(false, "sum_d", relBuilder.field("d")))
+        relBuilder.sum(false, "sum_d", relBuilder.field("d"))
+      )
       .aggregate(
         relBuilder.groupKey(relBuilder.field("b")),
         relBuilder.min("min_max_c", relBuilder.field("max_c")))
@@ -249,11 +379,13 @@ class FlinkRelMdModifiedMonotonicityTest extends FlinkRelMdHandlerTestBase {
     // select b, max(max_c) as max_max_c from (
     //   select a, b, max(c) as max_c, sum(d) as sum_d from MyTable4 group by a, b
     // ) group by b
-    val aggWithMaxSumMax = relBuilder.scan("MyTable4")
+    val aggWithMaxSumMax = relBuilder
+      .scan("MyTable4")
       .aggregate(
         relBuilder.groupKey(relBuilder.field("a"), relBuilder.field("b")),
         relBuilder.max("max_c", relBuilder.field("c")),
-        relBuilder.sum(false, "max_d", relBuilder.field("d")))
+        relBuilder.sum(false, "max_d", relBuilder.field("d"))
+      )
       .aggregate(
         relBuilder.groupKey(relBuilder.field("b")),
         relBuilder.max("max_max_c", relBuilder.field("max_c")))
@@ -268,47 +400,68 @@ class FlinkRelMdModifiedMonotonicityTest extends FlinkRelMdHandlerTestBase {
   @Test
   def testGetRelMonotonicityOnJoin(): Unit = {
     // both input is CONSTANT
-    val left1 = relBuilder.scan("MyTable4")
+    val left1 = relBuilder
+      .scan("MyTable4")
       .project(relBuilder.field(2), relBuilder.field(1))
       .build()
-    val right1 = relBuilder.scan("MyTable4")
+    val right1 = relBuilder
+      .scan("MyTable4")
       .project(relBuilder.field(2), relBuilder.field(1))
       .build()
-    val join1 = relBuilder.push(left1).push(right1).join(JoinRelType.LEFT,
-      relBuilder.call(EQUALS, relBuilder.field(2, 0, 1), relBuilder.field(2, 1, 1))).build()
+    val join1 = relBuilder
+      .push(left1)
+      .push(right1)
+      .join(
+        JoinRelType.LEFT,
+        relBuilder.call(EQUALS, relBuilder.field(2, 0, 1), relBuilder.field(2, 1, 1)))
+      .build()
     assertEquals(
       new RelModifiedMonotonicity(Array(CONSTANT, CONSTANT, CONSTANT, CONSTANT)),
       mq.getRelModifiedMonotonicity(join1)
     )
 
     // both input is update
-    val left = relBuilder.scan("MyTable4")
+    val left = relBuilder
+      .scan("MyTable4")
       .aggregate(
         relBuilder.groupKey(relBuilder.field("a"), relBuilder.field("b")),
         relBuilder.max("max_c", relBuilder.field("c")),
-        relBuilder.sum(false, "sum_d", relBuilder.field("d")))
+        relBuilder.sum(false, "sum_d", relBuilder.field("d"))
+      )
       .project(relBuilder.field(2), relBuilder.field(1))
       .build()
 
-    val right = relBuilder.scan("MyTable4")
+    val right = relBuilder
+      .scan("MyTable4")
       .aggregate(
         relBuilder.groupKey(relBuilder.field("a"), relBuilder.field("b")),
         relBuilder.min("min_c", relBuilder.field("c")),
-        relBuilder.sum(false, "sum_d", relBuilder.field("d")))
+        relBuilder.sum(false, "sum_d", relBuilder.field("d"))
+      )
       .project(relBuilder.field(2), relBuilder.field(1))
       .build()
 
     // join condition is left.b=right.b
-    val join2 = relBuilder.push(left).push(right).join(JoinRelType.INNER,
-      relBuilder.call(EQUALS, relBuilder.field(2, 0, 1), relBuilder.field(2, 1, 1))).build()
+    val join2 = relBuilder
+      .push(left)
+      .push(right)
+      .join(
+        JoinRelType.INNER,
+        relBuilder.call(EQUALS, relBuilder.field(2, 0, 1), relBuilder.field(2, 1, 1)))
+      .build()
     assertEquals(
       new RelModifiedMonotonicity(Array(INCREASING, CONSTANT, DECREASING, CONSTANT)),
       mq.getRelModifiedMonotonicity(join2)
     )
 
     // input contains delete
-    val join3 = relBuilder.push(left).push(right).join(JoinRelType.INNER,
-      relBuilder.call(EQUALS, relBuilder.field(2, 0, 0), relBuilder.field(2, 1, 1))).build()
+    val join3 = relBuilder
+      .push(left)
+      .push(right)
+      .join(
+        JoinRelType.INNER,
+        relBuilder.call(EQUALS, relBuilder.field(2, 0, 0), relBuilder.field(2, 1, 1)))
+      .build()
     assertEquals(null, mq.getRelModifiedMonotonicity(join3))
 
     assertNull(mq.getRelModifiedMonotonicity(logicalAntiJoinNotOnUniqueKeys))
@@ -326,21 +479,36 @@ class FlinkRelMdModifiedMonotonicityTest extends FlinkRelMdHandlerTestBase {
       mq.getRelModifiedMonotonicity(streamProcTimeDeduplicateLastRow))
 
     assertEquals(
-      new RelModifiedMonotonicity(Array(
-        NOT_MONOTONIC, CONSTANT, NOT_MONOTONIC)),
+      new RelModifiedMonotonicity(Array(NOT_MONOTONIC, CONSTANT, NOT_MONOTONIC)),
       mq.getRelModifiedMonotonicity(streamRowTimeDeduplicateFirstRow))
 
     assertEquals(
-      new RelModifiedMonotonicity(Array(
-        NOT_MONOTONIC, CONSTANT, CONSTANT)),
+      new RelModifiedMonotonicity(Array(NOT_MONOTONIC, CONSTANT, CONSTANT)),
       mq.getRelModifiedMonotonicity(streamRowTimeDeduplicateLastRow))
+  }
+
+  @Test
+  def testGetRelMonotonicityOnRankNotConvertibleToDeduplicate(): Unit = {
+    // A Top-1 ROW_NUMBER whose ORDER BY is not a single time attribute is logically a
+    // deduplication but cannot be converted to a Deduplicate operator (see
+    // RankUtil.canConvertToDeduplicate). It is a regular Top-1 Rank that retracts and re-emits the
+    // kept row when a new winner arrives, so it must NOT be reported as all-CONSTANT (insert-only).
+    // Instead it falls through to the generic Rank monotonicity logic, which derives the order-by
+    // field from the input monotonicity and the sort direction (CONSTANT input + ASC => DECREASING,
+    // CONSTANT input + DESC => INCREASING). Guards against the FLINK-34702 dispatch regression.
+    assertEquals(
+      new RelModifiedMonotonicity(Array(DECREASING, CONSTANT, NOT_MONOTONIC)),
+      mq.getRelModifiedMonotonicity(streamTop1RankOnNonTimeAttribute))
+
+    assertEquals(
+      new RelModifiedMonotonicity(Array(INCREASING, CONSTANT, NOT_MONOTONIC)),
+      mq.getRelModifiedMonotonicity(streamTop1RankOnMultipleColumns))
   }
 
   @Test
   def testGetRelMonotonicityOnChangelogNormalize(): Unit = {
     assertEquals(
-      new RelModifiedMonotonicity(Array(
-        CONSTANT, CONSTANT, NOT_MONOTONIC, NOT_MONOTONIC)),
+      new RelModifiedMonotonicity(Array(CONSTANT, CONSTANT, NOT_MONOTONIC, NOT_MONOTONIC)),
       mq.getRelModifiedMonotonicity(streamChangelogNormalize))
   }
 
@@ -354,10 +522,19 @@ class FlinkRelMdModifiedMonotonicityTest extends FlinkRelMdHandlerTestBase {
   @Test
   def testGetRelMonotonicityOnLookupJoin(): Unit = {
     assertEquals(
-      new RelModifiedMonotonicity(Array(
-        CONSTANT,CONSTANT,CONSTANT,CONSTANT,CONSTANT,
-        CONSTANT,CONSTANT,CONSTANT,CONSTANT,CONSTANT)),
-      mq.getRelModifiedMonotonicity(streamLookupJoin))
+      new RelModifiedMonotonicity(
+        Array(
+          CONSTANT,
+          CONSTANT,
+          CONSTANT,
+          CONSTANT,
+          CONSTANT,
+          CONSTANT,
+          CONSTANT,
+          CONSTANT,
+          CONSTANT,
+          CONSTANT)),
+      mq.getRelModifiedMonotonicity(streamLookupJoin)
+    )
   }
 }
-

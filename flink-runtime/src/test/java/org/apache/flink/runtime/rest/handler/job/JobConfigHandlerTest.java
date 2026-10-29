@@ -33,23 +33,21 @@ import org.apache.flink.runtime.rest.messages.JobConfigInfo;
 import org.apache.flink.runtime.rest.messages.JobIDPathParameter;
 import org.apache.flink.runtime.rest.messages.JobMessageParameters;
 import org.apache.flink.testutils.TestingUtils;
-import org.apache.flink.util.TestLogger;
+import org.apache.flink.util.concurrent.Executors;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 
-import static org.hamcrest.CoreMatchers.equalTo;
-import static org.hamcrest.CoreMatchers.is;
-import static org.hamcrest.MatcherAssert.assertThat;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /** Test for the {@link JobConfigHandler}. */
-public class JobConfigHandlerTest extends TestLogger {
+class JobConfigHandlerTest {
 
     @Test
-    public void handleRequest_executionConfigWithSecretValues_excludesSecretValuesFromResponse()
+    void handleRequest_executionConfigWithSecretValues_excludesSecretValuesFromResponse()
             throws HandlerRequestException {
         final JobConfigHandler jobConfigHandler =
                 new JobConfigHandler(
@@ -58,7 +56,8 @@ public class JobConfigHandlerTest extends TestLogger {
                         Collections.emptyMap(),
                         JobConfigHeaders.getInstance(),
                         new DefaultExecutionGraphCache(TestingUtils.TIMEOUT, TestingUtils.TIMEOUT),
-                        TestingUtils.defaultExecutor());
+                        Executors.directExecutor(),
+                        Collections.emptyList());
 
         final Map<String, String> globalJobParameters = new HashMap<>();
         globalJobParameters.put("foobar", "barfoo");
@@ -82,13 +81,12 @@ public class JobConfigHandlerTest extends TestLogger {
         final Map<String, String> filteredGlobalJobParameters =
                 filterSecretValues(globalJobParameters);
 
-        assertThat(
-                jobConfigInfoResponse.getExecutionConfigInfo().getGlobalJobParameters(),
-                is(equalTo(filteredGlobalJobParameters)));
+        assertThat(jobConfigInfoResponse.getExecutionConfigInfo().getGlobalJobParameters())
+                .isEqualTo(filteredGlobalJobParameters);
     }
 
     private Map<String, String> filterSecretValues(Map<String, String> globalJobParameters) {
-        return ConfigurationUtils.hideSensitiveValues(globalJobParameters);
+        return ConfigurationUtils.hideSensitiveValues(globalJobParameters, Collections.emptyList());
     }
 
     private HandlerRequest<EmptyRequestBody> createRequest(JobID jobId)

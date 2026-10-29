@@ -18,16 +18,12 @@
 package org.apache.flink.metrics.prometheus;
 
 import org.apache.flink.metrics.MetricConfig;
-import org.apache.flink.metrics.reporter.InterceptInstantiationViaReflection;
 import org.apache.flink.metrics.reporter.MetricReporterFactory;
-import org.apache.flink.util.NetUtils;
+import org.apache.flink.util.PortRange;
 
-import java.util.Iterator;
 import java.util.Properties;
 
 /** {@link MetricReporterFactory} for {@link PrometheusReporter}. */
-@InterceptInstantiationViaReflection(
-        reporterClassName = "org.apache.flink.metrics.prometheus.PrometheusReporter")
 public class PrometheusReporterFactory implements MetricReporterFactory {
 
     static final String ARG_PORT = "port";
@@ -37,8 +33,8 @@ public class PrometheusReporterFactory implements MetricReporterFactory {
     public PrometheusReporter createMetricReporter(Properties properties) {
         MetricConfig metricConfig = (MetricConfig) properties;
         String portsConfig = metricConfig.getString(ARG_PORT, DEFAULT_PORT);
-        Iterator<Integer> ports = NetUtils.getPortRangeFromString(portsConfig);
+        PortRange portRange = new PortRange(portsConfig);
 
-        return new PrometheusReporter(ports);
+        return new PrometheusReporter(portRange);
     }
 }

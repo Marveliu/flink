@@ -24,17 +24,21 @@ import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.types.logical.RowType;
 import org.apache.flink.util.Preconditions;
+import org.apache.flink.util.jackson.JacksonMapperFactory;
 
 import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.databind.JsonNode;
 import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.databind.ObjectReader;
 import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.dataformat.csv.CsvMapper;
+import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.dataformat.csv.CsvParser;
 import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.dataformat.csv.CsvSchema;
 
 import javax.annotation.Nullable;
 
 import java.io.IOException;
 import java.util.Arrays;
+import java.util.EnumSet;
 import java.util.Objects;
+import java.util.Set;
 
 /**
  * Deserialization schema from CSV to Flink Table & SQL internal data structures.
@@ -59,41 +63,86 @@ public final class CsvRowDataDeserializationSchema implements DeserializationSch
     private final CsvSchema csvSchema;
 
     /** Object reader used to read rows. It is configured by {@link CsvSchema}. */
-    private final ObjectReader objectReader;
+    private transient ObjectReader objectReader;
 
     /** Flag indicating whether to ignore invalid fields/rows (default: throw an exception). */
     private final boolean ignoreParseErrors;
 
+    /** Set of CsvParser.Feature to explicitly enable. */
+    private final Set<CsvParser.Feature> enabledFeatures;
+
+    /** Set of CsvParser.Feature to explicitly disable. */
+    private final Set<CsvParser.Feature> disabledFeatures;
+
     private CsvRowDataDeserializationSchema(
-            RowType rowType,
             TypeInformation<RowData> resultTypeInfo,
             CsvSchema csvSchema,
-            boolean ignoreParseErrors) {
+            CsvToRowDataConverters.CsvToRowDataConverter runtimeConverter,
+            boolean ignoreParseErrors,
+            Set<CsvParser.Feature> enabledFeatures,
+            Set<CsvParser.Feature> disabledFeatures) {
         this.resultTypeInfo = resultTypeInfo;
-        this.runtimeConverter =
-                new CsvToRowDataConverters(ignoreParseErrors).createRowConverter(rowType, true);
-        this.csvSchema = CsvRowSchemaConverter.convert(rowType);
-        this.objectReader = new CsvMapper().readerFor(JsonNode.class).with(csvSchema);
+        this.runtimeConverter = runtimeConverter;
+        this.csvSchema = csvSchema;
         this.ignoreParseErrors = ignoreParseErrors;
+        this.enabledFeatures = enabledFeatures;
+        this.disabledFeatures = disabledFeatures;
+    }
+
+    @Override
+    public void open(InitializationContext context) {
+        CsvMapper csvMapper = JacksonMapperFactory.createCsvMapper();
+        for (CsvParser.Feature feature : enabledFeatures) {
+            csvMapper.enable(feature);
+        }
+        for (CsvParser.Feature feature : disabledFeatures) {
+            csvMapper.disable(feature);
+        }
+        this.objectReader = csvMapper.readerFor(JsonNode.class).with(csvSchema);
     }
 
     /** A builder for creating a {@link CsvRowDataDeserializationSchema}. */
     @Internal
     public static class Builder {
 
-        private final RowType rowType;
+        private final RowType rowResultType;
         private final TypeInformation<RowData> resultTypeInfo;
         private CsvSchema csvSchema;
         private boolean ignoreParseErrors;
+        private final Set<CsvParser.Feature> enabledFeatures =
+                EnumSet.noneOf(CsvParser.Feature.class);
+        private final Set<CsvParser.Feature> disabledFeatures =
+                EnumSet.noneOf(CsvParser.Feature.class);
+
+        /**
+         * Creates a CSV deserialization schema for the given {@link TypeInformation} with optional
+         * parameters.
+         *
+         * @param rowReadType The {@link RowType} used for reading CSV rows.
+         * @param rowResultType The {@link RowType} of the produced results. It can be different
+         *     from the {@code rowReadType} if the underlying converter supports the discrepancy
+         *     (for instance for filtering/projection pushdown).
+         * @param resultTypeInfo The result type info.
+         */
+        public Builder(
+                RowType rowReadType,
+                RowType rowResultType,
+                TypeInformation<RowData> resultTypeInfo) {
+            Preconditions.checkNotNull(rowReadType, "RowType must not be null.");
+            Preconditions.checkNotNull(rowResultType, "RowType must not be null.");
+            Preconditions.checkNotNull(resultTypeInfo, "Result type information must not be null.");
+            this.rowResultType = rowResultType;
+            this.resultTypeInfo = resultTypeInfo;
+            this.csvSchema = CsvRowSchemaConverter.convert(rowReadType);
+        }
 
         /**
          * Creates a CSV deserialization schema for the given {@link TypeInformation} with optional
          * parameters.
          */
         public Builder(RowType rowType, TypeInformation<RowData> resultTypeInfo) {
-            Preconditions.checkNotNull(rowType, "RowType must not be null.");
             Preconditions.checkNotNull(resultTypeInfo, "Result type information must not be null.");
-            this.rowType = rowType;
+            this.rowResultType = rowType;
             this.resultTypeInfo = resultTypeInfo;
             this.csvSchema = CsvRowSchemaConverter.convert(rowType);
         }
@@ -140,9 +189,56 @@ public final class CsvRowDataDeserializationSchema implements DeserializationSch
             return this;
         }
 
+        public Builder setTrimSpaces(boolean trimSpaces) {
+            setFeature(CsvParser.Feature.TRIM_SPACES, trimSpaces);
+            return this;
+        }
+
+        public Builder setIgnoreTrailingUnmappable(boolean ignore) {
+            setFeature(CsvParser.Feature.IGNORE_TRAILING_UNMAPPABLE, ignore);
+            return this;
+        }
+
+        public Builder setAllowTrailingComma(boolean allow) {
+            setFeature(CsvParser.Feature.ALLOW_TRAILING_COMMA, allow);
+            return this;
+        }
+
+        public Builder setFailOnMissingColumns(boolean fail) {
+            setFeature(CsvParser.Feature.FAIL_ON_MISSING_COLUMNS, fail);
+            return this;
+        }
+
+        public Builder setEmptyStringAsNull(boolean emptyAsNull) {
+            setFeature(CsvParser.Feature.EMPTY_STRING_AS_NULL, emptyAsNull);
+            return this;
+        }
+
+        private void setFeature(CsvParser.Feature feature, boolean enabled) {
+            if (enabled) {
+                enabledFeatures.add(feature);
+                disabledFeatures.remove(feature);
+            } else {
+                disabledFeatures.add(feature);
+                enabledFeatures.remove(feature);
+            }
+        }
+
         public CsvRowDataDeserializationSchema build() {
+            CsvToRowDataConverters.CsvToRowDataConverter runtimeConverter =
+                    new CsvToRowDataConverters(ignoreParseErrors)
+                            .createRowConverter(rowResultType, true);
             return new CsvRowDataDeserializationSchema(
-                    rowType, resultTypeInfo, csvSchema, ignoreParseErrors);
+                    resultTypeInfo,
+                    csvSchema,
+                    runtimeConverter,
+                    ignoreParseErrors,
+                    enabledFeatures.isEmpty()
+                            ? EnumSet.noneOf(CsvParser.Feature.class)
+                            : EnumSet.copyOf(enabledFeatures),
+                    disabledFeatures.isEmpty()
+                            ? EnumSet.noneOf(CsvParser.Feature.class)
+                            : EnumSet.copyOf(disabledFeatures));
         }
     }
 
@@ -193,7 +289,9 @@ public final class CsvRowDataDeserializationSchema implements DeserializationSch
                         .equals(otherSchema.getArrayElementSeparator())
                 && csvSchema.getQuoteChar() == otherSchema.getQuoteChar()
                 && csvSchema.getEscapeChar() == otherSchema.getEscapeChar()
-                && Arrays.equals(csvSchema.getNullValue(), otherSchema.getNullValue());
+                && Arrays.equals(csvSchema.getNullValue(), otherSchema.getNullValue())
+                && enabledFeatures.equals(that.enabledFeatures)
+                && disabledFeatures.equals(that.disabledFeatures);
     }
 
     @Override
@@ -206,6 +304,8 @@ public final class CsvRowDataDeserializationSchema implements DeserializationSch
                 csvSchema.getArrayElementSeparator(),
                 csvSchema.getQuoteChar(),
                 csvSchema.getEscapeChar(),
-                csvSchema.getNullValue());
+                Arrays.hashCode(csvSchema.getNullValue()),
+                enabledFeatures,
+                disabledFeatures);
     }
 }

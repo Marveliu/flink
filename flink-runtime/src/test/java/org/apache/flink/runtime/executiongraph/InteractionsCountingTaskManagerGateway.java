@@ -18,11 +18,11 @@
 
 package org.apache.flink.runtime.executiongraph;
 
-import org.apache.flink.api.common.time.Time;
 import org.apache.flink.runtime.deployment.TaskDeploymentDescriptor;
 import org.apache.flink.runtime.executiongraph.utils.SimpleAckingTaskManagerGateway;
 import org.apache.flink.runtime.messages.Acknowledge;
 
+import java.time.Duration;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -33,27 +33,29 @@ class InteractionsCountingTaskManagerGateway extends SimpleAckingTaskManagerGate
 
     private final AtomicInteger submitTaskCount = new AtomicInteger(0);
 
-    private CountDownLatch submitLatch;
+    private final CountDownLatch submitOrCancelLatch;
 
     public InteractionsCountingTaskManagerGateway() {
-        submitLatch = new CountDownLatch(0);
+        submitOrCancelLatch = new CountDownLatch(0);
     }
 
     public InteractionsCountingTaskManagerGateway(final int expectedSubmitCount) {
-        this.submitLatch = new CountDownLatch(expectedSubmitCount);
+        this.submitOrCancelLatch = new CountDownLatch(expectedSubmitCount);
     }
 
     @Override
     public CompletableFuture<Acknowledge> cancelTask(
-            ExecutionAttemptID executionAttemptID, Time timeout) {
+            ExecutionAttemptID executionAttemptID, Duration timeout) {
         cancelTaskCount.incrementAndGet();
+        submitOrCancelLatch.countDown();
         return CompletableFuture.completedFuture(Acknowledge.get());
     }
 
     @Override
-    public CompletableFuture<Acknowledge> submitTask(TaskDeploymentDescriptor tdd, Time timeout) {
+    public CompletableFuture<Acknowledge> submitTask(
+            TaskDeploymentDescriptor tdd, Duration timeout) {
         submitTaskCount.incrementAndGet();
-        submitLatch.countDown();
+        submitOrCancelLatch.countDown();
         return CompletableFuture.completedFuture(Acknowledge.get());
     }
 
@@ -76,7 +78,7 @@ class InteractionsCountingTaskManagerGateway extends SimpleAckingTaskManagerGate
 
     void waitUntilAllTasksAreSubmitted() {
         try {
-            submitLatch.await();
+            submitOrCancelLatch.await();
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }

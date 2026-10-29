@@ -32,9 +32,13 @@ import org.apache.flink.runtime.jobgraph.DistributionPattern;
 import org.apache.flink.runtime.jobgraph.JobVertex;
 import org.apache.flink.runtime.jobgraph.JobVertexID;
 import org.apache.flink.runtime.testtasks.NoOpInvokable;
+import org.apache.flink.testutils.TestingUtils;
+import org.apache.flink.testutils.executor.TestExecutorExtension;
 
-import org.hamcrest.CoreMatchers;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.RegisterExtension;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -46,15 +50,14 @@ import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
 import static java.util.EnumSet.complementOf;
-import static org.hamcrest.Matchers.containsInAnyOrder;
-import static org.hamcrest.Matchers.instanceOf;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertThat;
-import static org.junit.Assert.fail;
+import static org.apache.flink.core.testutils.FlinkAssertions.assertThatFuture;
+import static org.apache.flink.runtime.util.JobVertexConnectionUtils.connectNewDataSetAsInput;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Declarative tests for {@link DefaultCheckpointPlanCalculator}.
@@ -62,10 +65,14 @@ import static org.junit.Assert.fail;
  * <p>This test contains a framework for declaring vertex and edge states to then assert the
  * calculator behavior.
  */
-public class DefaultCheckpointPlanCalculatorTest {
+class DefaultCheckpointPlanCalculatorTest {
+
+    @RegisterExtension
+    static final TestExecutorExtension<ScheduledExecutorService> EXECUTOR_EXTENSION =
+            TestingUtils.defaultExecutorExtension();
 
     @Test
-    public void testComputeAllRunningGraph() throws Exception {
+    void testComputeAllRunningGraph() throws Exception {
         runSingleTest(
                 Arrays.asList(
                         new VertexDeclaration(3, Collections.emptySet()),
@@ -81,7 +88,7 @@ public class DefaultCheckpointPlanCalculatorTest {
     }
 
     @Test
-    public void testAllToAllEdgeWithSomeSourcesFinished() throws Exception {
+    void testAllToAllEdgeWithSomeSourcesFinished() throws Exception {
         runSingleTest(
                 Arrays.asList(
                         new VertexDeclaration(3, range(0, 2)),
@@ -92,7 +99,7 @@ public class DefaultCheckpointPlanCalculatorTest {
     }
 
     @Test
-    public void testOneToOneEdgeWithSomeSourcesFinished() throws Exception {
+    void testOneToOneEdgeWithSomeSourcesFinished() throws Exception {
         runSingleTest(
                 Arrays.asList(
                         new VertexDeclaration(4, range(0, 2)),
@@ -103,7 +110,7 @@ public class DefaultCheckpointPlanCalculatorTest {
     }
 
     @Test
-    public void testOneToOnEdgeWithSomeSourcesAndTargetsFinished() throws Exception {
+    void testOneToOnEdgeWithSomeSourcesAndTargetsFinished() throws Exception {
         runSingleTest(
                 Arrays.asList(
                         new VertexDeclaration(4, range(0, 2)), new VertexDeclaration(4, of(0))),
@@ -113,7 +120,7 @@ public class DefaultCheckpointPlanCalculatorTest {
     }
 
     @Test
-    public void testComputeWithMultipleInputs() throws Exception {
+    void testComputeWithMultipleInputs() throws Exception {
         runSingleTest(
                 Arrays.asList(
                         new VertexDeclaration(3, range(0, 3)),
@@ -129,7 +136,7 @@ public class DefaultCheckpointPlanCalculatorTest {
     }
 
     @Test
-    public void testComputeWithMultipleLevels() throws Exception {
+    void testComputeWithMultipleLevels() throws Exception {
         runSingleTest(
                 Arrays.asList(
                         new VertexDeclaration(16, range(0, 4)),
@@ -151,7 +158,7 @@ public class DefaultCheckpointPlanCalculatorTest {
     }
 
     @Test
-    public void testPlanCalculationWhenOneTaskNotRunning() throws Exception {
+    void testPlanCalculationWhenOneTaskNotRunning() throws Exception {
         // when: All combinations of Source/Not Source for one RUNNING and one NOT RUNNING tasks.
         runWithNotRunningTask(true, true);
         runWithNotRunningTask(true, false);
@@ -159,6 +166,37 @@ public class DefaultCheckpointPlanCalculatorTest {
         runWithNotRunningTask(false, true);
 
         // then: The plan failed because one task didn't have RUNNING state.
+    }
+
+    @ParameterizedTest
+    @EnumSource(
+            value = ExecutionState.class,
+            names = {"FAILED", "CANCELED", "CANCELING"})
+    void testPlanAbortedWhenTaskIsFailingOverWhileOthersFinished(ExecutionState failoverState)
+            throws Exception {
+        ExecutionGraph graph =
+                createExecutionGraph(
+                        Arrays.asList(
+                                new VertexDeclaration(1, of(0)), new VertexDeclaration(1, of())),
+                        Collections.emptyList());
+
+        chooseJobVertex(graph, 1)
+                .getTaskVertices()[0]
+                .getCurrentExecutionAttempt()
+                .transitionState(failoverState);
+
+        DefaultCheckpointPlanCalculator planCalculator = createCheckpointPlanCalculator(graph);
+
+        assertThatFuture(planCalculator.calculateCheckpointPlan())
+                .eventuallyFailsWith(ExecutionException.class)
+                .havingCause()
+                .isInstanceOfSatisfying(
+                        CheckpointException.class,
+                        e ->
+                                assertThat(e.getCheckpointFailureReason())
+                                        .isEqualTo(
+                                                CheckpointFailureReason
+                                                        .NOT_ALL_REQUIRED_TASKS_RUNNING));
     }
 
     private void runWithNotRunningTask(
@@ -172,7 +210,7 @@ public class DefaultCheckpointPlanCalculatorTest {
                             .addJobVertex(runningVertex, isRunningVertexSource)
                             .addJobVertex(notRunningVertex, isNotRunningVertexSource)
                             .setTransitToRunning(false)
-                            .build();
+                            .build(EXECUTOR_EXTENSION.getExecutor());
 
             // The first vertex is always RUNNING.
             transitVertexToState(graph, runningVertex, ExecutionState.RUNNING);
@@ -182,19 +220,19 @@ public class DefaultCheckpointPlanCalculatorTest {
             DefaultCheckpointPlanCalculator checkpointPlanCalculator =
                     createCheckpointPlanCalculator(graph);
 
-            try {
-                checkpointPlanCalculator.calculateCheckpointPlan().get();
-                fail(
-                        "The computation should fail since some tasks to trigger are in "
-                                + notRunningState
-                                + " state");
-            } catch (ExecutionException e) {
-                Throwable cause = e.getCause();
-                assertThat(cause, instanceOf(CheckpointException.class));
-                assertEquals(
-                        CheckpointFailureReason.NOT_ALL_REQUIRED_TASKS_RUNNING,
-                        ((CheckpointException) cause).getCheckpointFailureReason());
-            }
+            assertThatFuture(checkpointPlanCalculator.calculateCheckpointPlan())
+                    .withFailMessage(
+                            "The computation should fail since some tasks to trigger are in %s state",
+                            notRunningState)
+                    .eventuallyFailsWith(ExecutionException.class)
+                    .havingCause()
+                    .isInstanceOfSatisfying(
+                            CheckpointException.class,
+                            e ->
+                                    assertThat(e.getCheckpointFailureReason())
+                                            .isEqualTo(
+                                                    CheckpointFailureReason
+                                                            .NOT_ALL_REQUIRED_TASKS_RUNNING));
         }
     }
 
@@ -292,13 +330,16 @@ public class DefaultCheckpointPlanCalculatorTest {
         }
 
         for (EdgeDeclaration edgeDeclaration : edgeDeclarations) {
-            jobVertices[edgeDeclaration.target].connectNewDataSetAsInput(
+            connectNewDataSetAsInput(
+                    jobVertices[edgeDeclaration.target],
                     jobVertices[edgeDeclaration.source],
                     edgeDeclaration.distributionPattern,
                     ResultPartitionType.PIPELINED);
         }
 
-        ExecutionGraph graph = ExecutionGraphTestUtils.createSimpleTestGraph(jobVertices);
+        ExecutionGraph graph =
+                ExecutionGraphTestUtils.createExecutionGraph(
+                        EXECUTOR_EXTENSION.getExecutor(), jobVertices);
         graph.start(ComponentMainThreadExecutorServiceAdapter.forMainThread());
         graph.transitionToRunning();
         graph.getAllExecutionVertices()
@@ -325,13 +366,11 @@ public class DefaultCheckpointPlanCalculatorTest {
     }
 
     private DefaultCheckpointPlanCalculator createCheckpointPlanCalculator(ExecutionGraph graph) {
-        DefaultCheckpointPlanCalculator checkpointPlanCalculator =
-                new DefaultCheckpointPlanCalculator(
-                        graph.getJobID(),
-                        new ExecutionGraphCheckpointPlanCalculatorContext(graph),
-                        graph.getVerticesTopologically(),
-                        true);
-        return checkpointPlanCalculator;
+        return new DefaultCheckpointPlanCalculator(
+                graph.getJobID(),
+                new ExecutionGraphCheckpointPlanCalculatorContext(graph),
+                graph.getVerticesTopologically(),
+                true);
     }
 
     private void checkCheckpointPlan(
@@ -380,13 +419,7 @@ public class DefaultCheckpointPlanCalculatorTest {
 
     private <T> void assertSameInstancesWithoutOrder(
             String comment, Collection<T> expected, Collection<T> actual) {
-        assertThat(
-                comment,
-                expected,
-                containsInAnyOrder(
-                        actual.stream()
-                                .map(CoreMatchers::sameInstance)
-                                .collect(Collectors.toList())));
+        assertThat(expected).as(comment).containsExactlyInAnyOrderElementsOf(actual);
     }
 
     private List<ExecutionVertex> chooseTasks(

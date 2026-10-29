@@ -20,7 +20,7 @@ package org.apache.flink.runtime.scheduler.benchmark.partitionrelease;
 
 import org.apache.flink.runtime.execution.ExecutionState;
 import org.apache.flink.runtime.executiongraph.ExecutionGraph;
-import org.apache.flink.runtime.executiongraph.failover.flip1.partitionrelease.RegionPartitionGroupReleaseStrategy;
+import org.apache.flink.runtime.executiongraph.failover.partitionrelease.RegionPartitionGroupReleaseStrategy;
 import org.apache.flink.runtime.jobgraph.JobVertex;
 import org.apache.flink.runtime.jobmaster.TestingLogicalSlotBuilder;
 import org.apache.flink.runtime.scheduler.benchmark.JobConfiguration;
@@ -56,11 +56,11 @@ public class PartitionReleaseInBatchJobBenchmark extends SchedulerBenchmarkBase 
 
         final TestingLogicalSlotBuilder slotBuilder = new TestingLogicalSlotBuilder();
 
-        deployTasks(executionGraph, source.getID(), slotBuilder, true);
+        deployTasks(executionGraph, source.getID(), slotBuilder);
 
         transitionTaskStatus(executionGraph, source.getID(), ExecutionState.FINISHED);
 
-        deployTasks(executionGraph, sink.getID(), slotBuilder, true);
+        deployTasks(executionGraph, sink.getID(), slotBuilder);
     }
 
     public void partitionRelease() {

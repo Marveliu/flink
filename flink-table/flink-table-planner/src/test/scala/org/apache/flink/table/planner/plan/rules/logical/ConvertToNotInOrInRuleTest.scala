@@ -15,25 +15,21 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.planner.plan.rules.logical
 
-import org.apache.flink.api.scala._
 import org.apache.flink.table.api._
 import org.apache.flink.table.planner.plan.optimize.program._
 import org.apache.flink.table.planner.utils.TableTestBase
 
 import org.apache.calcite.plan.hep.HepMatchOrder
 import org.apache.calcite.tools.RuleSets
-import org.junit.{Before, Test}
+import org.junit.jupiter.api.{BeforeEach, Test}
 
-/**
-  * Test for [[ConvertToNotInOrInRule]].
-  */
+/** Test for [[ConvertToNotInOrInRule]]. */
 class ConvertToNotInOrInRuleTest extends TableTestBase {
   private val util = batchTestUtil()
 
-  @Before
+  @BeforeEach
   def setup(): Unit = {
     val programs = new FlinkChainedProgram[BatchOptimizeContext]()
     programs.addLast(
@@ -42,7 +38,8 @@ class ConvertToNotInOrInRuleTest extends TableTestBase {
         .setHepRulesExecutionType(HEP_RULES_EXECUTION_TYPE.RULE_SEQUENCE)
         .setHepMatchOrder(HepMatchOrder.BOTTOM_UP)
         .add(RuleSets.ofList(ConvertToNotInOrInRule.INSTANCE))
-        .build())
+        .build()
+    )
     util.replaceBatchProgram(programs)
 
     util.addTableSource[(Int, Long, Float, Double, String)]("MyTable", 'a, 'b, 'c, 'd, 'e)
@@ -125,8 +122,9 @@ class ConvertToNotInOrInRuleTest extends TableTestBase {
 
   @Test
   def testConvertToNotIn_WithOr1(): Unit = {
-    util.verifyRelPlan("" +
-      "SELECT * FROM MyTable WHERE (a <> 1 AND a <> 2 AND a <> 3 AND a <> 4) OR b = 1")
+    util.verifyRelPlan(
+      "" +
+        "SELECT * FROM MyTable WHERE (a <> 1 AND a <> 2 AND a <> 3 AND a <> 4) OR b = 1")
   }
 
   @Test
@@ -154,21 +152,23 @@ class ConvertToNotInOrInRuleTest extends TableTestBase {
 
   @Test
   def testConvertToInAndNotIn1(): Unit = {
-    util.verifyRelPlan("SELECT * FROM MyTable WHERE a = 1 OR a = 2 OR a = 3 OR a = 4 OR b = 1 " +
-      "OR (a <> 1 AND a <> 2 AND a <> 3 AND a <> 4)")
+    util.verifyRelPlan(
+      "SELECT * FROM MyTable WHERE a = 1 OR a = 2 OR a = 3 OR a = 4 OR b = 1 " +
+        "OR (a <> 1 AND a <> 2 AND a <> 3 AND a <> 4)")
   }
 
   @Test
   def testConvertToInAndNotIn2(): Unit = {
-    util.verifyRelPlan("SELECT * FROM MyTable WHERE b = 1 OR a = 1 OR a = 2 OR a = 3 OR a = 4  " +
-      "AND (a <> 1 AND a <> 2 AND a <> 3 AND a <> 4)")
+    util.verifyRelPlan(
+      "SELECT * FROM MyTable WHERE b = 1 OR a = 1 OR a = 2 OR a = 3 OR a = 4  " +
+        "AND (a <> 1 AND a <> 2 AND a <> 3 AND a <> 4)")
   }
 
   @Test
   def testConvertToInAndNotIn3(): Unit = {
     util.verifyRelPlan(
       "SELECT * FROM MyTable WHERE b = 1 OR b = 2 OR (a <> 1 AND a <> 2 AND a <> 3 " +
-      "AND a <> 4 AND c = 1) OR b = 3 OR b = 4 OR c = 1")
+        "AND a <> 4 AND c = 1) OR b = 3 OR b = 4 OR c = 1")
   }
 
   @Test

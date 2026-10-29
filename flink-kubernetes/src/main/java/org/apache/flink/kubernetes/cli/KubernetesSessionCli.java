@@ -36,7 +36,7 @@ import org.apache.flink.configuration.UnmodifiableConfiguration;
 import org.apache.flink.kubernetes.executors.KubernetesSessionClusterExecutor;
 import org.apache.flink.kubernetes.kubeclient.FlinkKubeClient;
 import org.apache.flink.kubernetes.kubeclient.FlinkKubeClientFactory;
-import org.apache.flink.kubernetes.kubeclient.resources.KubernetesService;
+import org.apache.flink.kubernetes.kubeclient.decorators.ExternalServiceDecorator;
 import org.apache.flink.runtime.security.SecurityUtils;
 import org.apache.flink.util.FlinkException;
 
@@ -102,14 +102,13 @@ public class KubernetesSessionCli {
         try {
             final ClusterClient<String> clusterClient;
             String clusterId = kubernetesClusterClientFactory.getClusterId(configuration);
-            final boolean detached = !configuration.get(DeploymentOptions.ATTACHED);
             final FlinkKubeClient kubeClient =
                     FlinkKubeClientFactory.getInstance().fromConfiguration(configuration, "client");
 
             // Retrieve or create a session cluster.
             if (clusterId != null
                     && kubeClient
-                            .getService(KubernetesService.ServiceType.REST_SERVICE, clusterId)
+                            .getService(ExternalServiceDecorator.getExternalServiceName(clusterId))
                             .isPresent()) {
                 clusterClient = kubernetesClusterDescriptor.retrieve(clusterId).getClusterClient();
             } else {
@@ -123,7 +122,7 @@ public class KubernetesSessionCli {
             }
 
             try {
-                if (!detached) {
+                if (configuration.get(DeploymentOptions.ATTACHED)) {
                     Tuple2<Boolean, Boolean> continueRepl = new Tuple2<>(true, false);
                     try (BufferedReader in = new BufferedReader(new InputStreamReader(System.in))) {
                         while (continueRepl.f0) {

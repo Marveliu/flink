@@ -34,6 +34,7 @@ import java.time.Instant;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
+import java.util.Collections;
 import java.util.List;
 import java.util.Properties;
 
@@ -67,7 +68,9 @@ public class EnvironmentInformation {
         return getVersionsInstance().scalaVersion;
     }
 
-    /** @return The Instant this version of the software was built. */
+    /**
+     * @return The Instant this version of the software was built.
+     */
     public static Instant getBuildTime() {
         return getVersionsInstance().gitBuildTime;
     }
@@ -80,17 +83,23 @@ public class EnvironmentInformation {
         return getVersionsInstance().gitBuildTimeStr;
     }
 
-    /** @return The last known commit id of this version of the software. */
+    /**
+     * @return The last known commit id of this version of the software.
+     */
     public static String getGitCommitId() {
         return getVersionsInstance().gitCommitId;
     }
 
-    /** @return The last known abbreviated commit id of this version of the software. */
+    /**
+     * @return The last known abbreviated commit id of this version of the software.
+     */
     public static String getGitCommitIdAbbrev() {
         return getVersionsInstance().gitCommitIdAbbrev;
     }
 
-    /** @return The Instant of the last commit of this code. */
+    /**
+     * @return The Instant of the last commit of this code.
+     */
     public static Instant getGitCommitTime() {
         return getVersionsInstance().gitCommitTime;
     }
@@ -458,7 +467,7 @@ public class EnvironmentInformation {
             } else {
                 log.info(" Program Arguments:");
                 for (String s : commandLineArgs) {
-                    if (GlobalConfiguration.isSensitive(s)) {
+                    if (GlobalConfiguration.isSensitive(s, Collections.emptyList())) {
                         log.info(
                                 "    "
                                         + GlobalConfiguration.HIDDEN_CONTENT

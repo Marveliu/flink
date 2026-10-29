@@ -15,34 +15,49 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.planner.codegen.sort
 
-import org.apache.flink.table.api.TableConfig
-import org.apache.flink.table.data.binary.BinaryRowData
+import org.apache.flink.configuration.ReadableConfig
 import org.apache.flink.table.data.{DecimalData, TimestampData}
-import org.apache.flink.table.planner.codegen.CodeGenUtils.{ROW_DATA, SEGMENT, newName}
+import org.apache.flink.table.data.binary.BinaryRowData
+import org.apache.flink.table.planner.codegen.CodeGeneratorContext
+import org.apache.flink.table.planner.codegen.CodeGenUtils.{newName, ROW_DATA, SEGMENT}
 import org.apache.flink.table.planner.codegen.Indenter.toISC
 import org.apache.flink.table.planner.plan.nodes.exec.spec.SortSpec
 import org.apache.flink.table.runtime.generated.{GeneratedNormalizedKeyComputer, GeneratedRecordComparator, NormalizedKeyComputer, RecordComparator}
 import org.apache.flink.table.runtime.operators.sort.SortUtil
 import org.apache.flink.table.runtime.types.PlannerTypeUtils
+import org.apache.flink.table.types.logical.{DecimalType, LogicalType, RowType, TimestampType, UuidType}
 import org.apache.flink.table.types.logical.LogicalTypeRoot._
-import org.apache.flink.table.types.logical.{DecimalType, LogicalType, RowType, TimestampType}
 
 import scala.collection.mutable
 
 /**
-  * A code generator for generating [[NormalizedKeyComputer]] and [[RecordComparator]].
-  *
-  * @param tableConfig  config of the planner.
-  * @param input        input type.
-  * @param sortSpec     sort specification.
-  */
+ * A code generator for generating [[NormalizedKeyComputer]] and [[RecordComparator]].
+ *
+ * @param tableConfig
+ *   config of the planner.
+ * @param input
+ *   input type.
+ * @param sortSpec
+ *   sort specification.
+ * @param parentCtx
+ *   parent CodeGeneratorContext to avoid name conflicts. If the generated [[NormalizedKeyComputer]]
+ *   and [[RecordComparator]] will be used as inner classes, a non-null value must be set.
+ */
 class SortCodeGenerator(
-    tableConfig: TableConfig,
+    tableConfig: ReadableConfig,
+    classLoader: ClassLoader,
     val input: RowType,
-    val sortSpec: SortSpec) {
+    val sortSpec: SortSpec,
+    parentCtx: CodeGeneratorContext) {
+
+  def this(
+      tableConfig: ReadableConfig,
+      classLoader: ClassLoader,
+      input: RowType,
+      sortSpec: SortSpec) =
+    this(tableConfig, classLoader, input, sortSpec, null)
 
   private val MAX_NORMALIZED_KEY_LEN = 16
 
@@ -117,15 +132,17 @@ class SortCodeGenerator(
   }
 
   /**
-    * Generates a [[NormalizedKeyComputer]] that can be passed to a Java compiler.
-    *
-    * @param name Class name of the function.
-    *             Does not need to be unique but has to be a valid Java class identifier.
-    * @return A GeneratedNormalizedKeyComputer
-    */
+   * Generates a [[NormalizedKeyComputer]] that can be passed to a Java compiler.
+   *
+   * @param name
+   *   Class name of the function. Does not need to be unique but has to be a valid Java class
+   *   identifier.
+   * @return
+   *   A GeneratedNormalizedKeyComputer
+   */
   def generateNormalizedKeyComputer(name: String): GeneratedNormalizedKeyComputer = {
-
-    val className = newName(name)
+    val ctx = new CodeGeneratorContext(tableConfig, classLoader, parentCtx)
+    val className = newName(ctx, name)
 
     val (keyFullyDetermines, numKeyBytes) = getKeyFullyDeterminesAndBytes
 
@@ -183,7 +200,7 @@ class SortCodeGenerator(
       }
     """.stripMargin
 
-    new GeneratedNormalizedKeyComputer(className, code, tableConfig.getConfiguration)
+    new GeneratedNormalizedKeyComputer(className, code, tableConfig)
   }
 
   def generatePutNormalizedKeys(numKeyBytes: Int): mutable.ArrayBuffer[String] = {
@@ -249,9 +266,9 @@ class SortCodeGenerator(
   }
 
   /**
-    * In order to better performance and not use MemorySegment's compare() and swap(),
-    * we CodeGen more efficient chunk method.
-    */
+   * In order to improve performance and not use MemorySegment's compare() and swap(), we CodeGen
+   * more efficient chunk method.
+   */
   def calculateChunks(numKeyBytes: Int): Array[Int] = {
     /* Example chunks, for int:
       calculateChunks(5) = Array(4, 1)
@@ -272,9 +289,9 @@ class SortCodeGenerator(
   }
 
   /**
-    * Because we put normalizedKeys in big endian way, if we are the little endian,
-    * we need to reverse these data with chunks for comparation.
-    */
+   * Because we put normalizedKeys in big endian way, if we are the little endian, we need to
+   * reverse these data with chunks for comparation.
+   */
   def generateReverseNormalizedKeys(chunks: Array[Int]): mutable.ArrayBuffer[String] = {
     /* Example generated code, for int:
     target.putInt(offset+0, Integer.reverseBytes(target.getInt(offset+0)));
@@ -301,9 +318,7 @@ class SortCodeGenerator(
     reverseKeys
   }
 
-  /**
-    * Compare bytes with chunks and nsigned.
-    */
+  /** Compare bytes with chunks and nsigned. */
   def generateCompareNormalizedKeys(chunks: Array[Int]): mutable.ArrayBuffer[String] = {
     /* Example generated code, for int:
     int l_0_1 = segI.getInt(offsetI+0);
@@ -343,9 +358,7 @@ class SortCodeGenerator(
     compareKeys
   }
 
-  /**
-    * Swap bytes with chunks.
-    */
+  /** Swap bytes with chunks. */
   def generateSwapNormalizedKeys(chunks: Array[Int]): mutable.ArrayBuffer[String] = {
     /* Example generated code, for int:
     int temp0 = segI.getInt(offsetI+0);
@@ -375,18 +388,16 @@ class SortCodeGenerator(
   }
 
   /**
-    * Generates a [[RecordComparator]] that can be passed to a Java compiler.
-    *
-    * @param name Class name of the function.
-    *             Does not need to be unique but has to be a valid Java class identifier.
-    * @return A GeneratedRecordComparator
-    */
+   * Generates a [[RecordComparator]] that can be passed to a Java compiler.
+   *
+   * @param name
+   *   Class name of the function. Does not need to be unique but has to be a valid Java class
+   *   identifier.
+   * @return
+   *   A GeneratedRecordComparator
+   */
   def generateRecordComparator(name: String): GeneratedRecordComparator = {
-    ComparatorCodeGenerator.gen(
-        tableConfig,
-        name,
-        input,
-        sortSpec)
+    ComparatorCodeGenerator.gen(tableConfig, classLoader, name, input, sortSpec, parentCtx)
   }
 
   def getter(t: LogicalType, index: Int): String = {
@@ -401,14 +412,10 @@ class SortCodeGenerator(
     }
   }
 
-  /**
-    * For put${prefix}NormalizedKey() and compare$prefix() of [[SortUtil]].
-    */
+  /** For put${prefix}NormalizedKey() and compare$prefix() of [[SortUtil]]. */
   def prefixPutNormalizedKey(t: LogicalType): String = prefixGetFromBinaryRow(t)
 
-  /**
-    * For get$prefix() of [[org.apache.flink.table.dataformat.TypeGetterSetters]].
-    */
+  /** For get$prefix() of [[org.apache.flink.table.dataformat.TypeGetterSetters]]. */
   def prefixGetFromBinaryRow(t: LogicalType): String = t.getTypeRoot match {
     case INTEGER => "Int"
     case BIGINT => "Long"
@@ -418,7 +425,8 @@ class SortCodeGenerator(
     case DOUBLE => "Double"
     case BOOLEAN => "Boolean"
     case VARCHAR | CHAR => "String"
-    case VARBINARY | BINARY => "Binary"
+    // UUID is backed by its 16-byte big-endian encoding, so it reuses the binary accessors.
+    case VARBINARY | BINARY | UUID => "Binary"
     case DECIMAL => "Decimal"
     case DATE => "Int"
     case TIME_WITHOUT_TIME_ZONE => "Int"
@@ -428,9 +436,7 @@ class SortCodeGenerator(
     case _ => null
   }
 
-  /**
-    * Preventing overflow.
-    */
+  /** Preventing overflow. */
   def safeAddLength(i: Int, j: Int): Int = {
     val sum = i + j
     if (sum < i || sum < j) {
@@ -443,8 +449,7 @@ class SortCodeGenerator(
   def supportNormalizedKey(t: LogicalType): Boolean = {
     t.getTypeRoot match {
       case _ if PlannerTypeUtils.isPrimitive(t) => true
-      case VARCHAR | CHAR | VARBINARY | BINARY |
-           DATE | TIME_WITHOUT_TIME_ZONE => true
+      case VARCHAR | CHAR | VARBINARY | BINARY | UUID | DATE | TIME_WITHOUT_TIME_ZONE => true
       case TIMESTAMP_WITHOUT_TIME_ZONE =>
         // TODO: support normalize key for non-compact timestamp
         TimestampData.isCompact(t.asInstanceOf[TimestampType].getPrecision)
@@ -463,12 +468,14 @@ class SortCodeGenerator(
       case DOUBLE => 8
       case BIGINT => 8
       case TIMESTAMP_WITHOUT_TIME_ZONE
-        if TimestampData.isCompact(t.asInstanceOf[TimestampType].getPrecision) => 8
+          if TimestampData.isCompact(t.asInstanceOf[TimestampType].getPrecision) =>
+        8
       case INTERVAL_YEAR_MONTH => 4
       case INTERVAL_DAY_TIME => 8
       case DATE => 4
       case TIME_WITHOUT_TIME_ZONE => 4
       case DECIMAL if DecimalData.isCompact(t.asInstanceOf[DecimalType].getPrecision) => 8
+      case UUID => UuidType.BYTE_LENGTH
       case VARCHAR | CHAR | VARBINARY | BINARY => Int.MaxValue
     }
   }

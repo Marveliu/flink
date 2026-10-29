@@ -23,7 +23,9 @@ import org.apache.flink.table.expressions.CallExpression;
 import org.apache.flink.table.expressions.Expression;
 import org.apache.flink.table.expressions.UnresolvedReferenceExpression;
 import org.apache.flink.table.expressions.ValueLiteralExpression;
+import org.apache.flink.table.functions.DeclarativeAggregateFunction;
 import org.apache.flink.table.types.DataType;
+import org.apache.flink.table.types.logical.CharType;
 import org.apache.flink.table.types.logical.DecimalType;
 import org.apache.flink.table.types.logical.LocalZonedTimestampType;
 import org.apache.flink.table.types.logical.TimeType;
@@ -72,7 +74,7 @@ public abstract class SingleValueAggFunction extends DeclarativeAggregateFunctio
     @Override
     public Expression[] initialValuesExpressions() {
         return new Expression[] {
-            /* value = */ nullOf(getResultType()), /* count = */ ZERO,
+            /* value= */ nullOf(getResultType()), /* count= */ ZERO,
         };
     }
 
@@ -226,6 +228,23 @@ public abstract class SingleValueAggFunction extends DeclarativeAggregateFunctio
         }
     }
 
+    /** Built-in char single value aggregate function. */
+    public static final class CharSingleValueAggFunction extends SingleValueAggFunction {
+
+        private static final long serialVersionUID = 320495723666949978L;
+
+        private final CharType type;
+
+        public CharSingleValueAggFunction(CharType type) {
+            this.type = type;
+        }
+
+        @Override
+        public DataType getResultType() {
+            return DataTypes.CHAR(type.getLength());
+        }
+    }
+
     /** Built-in string single value aggregate function. */
     public static final class StringSingleValueAggFunction extends SingleValueAggFunction {
 
@@ -253,9 +272,15 @@ public abstract class SingleValueAggFunction extends DeclarativeAggregateFunctio
 
         private static final long serialVersionUID = 320495723666949978L;
 
+        private final TimeType type;
+
+        public TimeSingleValueAggFunction(TimeType type) {
+            this.type = type;
+        }
+
         @Override
         public DataType getResultType() {
-            return DataTypes.TIME(TimeType.DEFAULT_PRECISION);
+            return DataTypes.TIME(type.getPrecision());
         }
     }
 

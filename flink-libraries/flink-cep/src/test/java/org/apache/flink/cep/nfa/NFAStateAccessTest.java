@@ -27,18 +27,18 @@ import org.apache.flink.cep.utils.NFATestHarness;
 import org.apache.flink.cep.utils.TestSharedBuffer;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
 
-import static org.junit.Assert.assertEquals;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /** Tests that check if we do not degrade NFA computation in case of State accesses. */
-public class NFAStateAccessTest {
+class NFAStateAccessTest {
 
     @Test
-    public void testComplexBranchingAfterZeroOrMore() throws Exception {
+    void testComplexBranchingAfterZeroOrMore() throws Exception {
         List<StreamRecord<Event>> inputEvents = new ArrayList<>();
 
         Event startEvent = new Event(40, "c", 1.0);
@@ -61,63 +61,18 @@ public class NFAStateAccessTest {
 
         Pattern<Event, ?> pattern =
                 Pattern.<Event>begin("start")
-                        .where(
-                                new SimpleCondition<Event>() {
-                                    private static final long serialVersionUID =
-                                            5726188262756267490L;
-
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getName().equals("c");
-                                    }
-                                })
+                        .where(SimpleCondition.of(value -> value.getName().equals("c")))
                         .followedByAny("middle")
-                        .where(
-                                new SimpleCondition<Event>() {
-                                    private static final long serialVersionUID =
-                                            5726188262756267490L;
-
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getName().equals("a");
-                                    }
-                                })
+                        .where(SimpleCondition.of(value -> value.getName().equals("a")))
                         .oneOrMore()
                         .allowCombinations()
                         .optional()
                         .followedByAny("end1")
-                        .where(
-                                new SimpleCondition<Event>() {
-                                    private static final long serialVersionUID =
-                                            5726188262756267490L;
-
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getName().equals("b");
-                                    }
-                                })
+                        .where(SimpleCondition.of(value -> value.getName().equals("b")))
                         .followedByAny("end2")
-                        .where(
-                                new SimpleCondition<Event>() {
-                                    private static final long serialVersionUID =
-                                            5726188262756267490L;
-
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getName().equals("d");
-                                    }
-                                })
+                        .where(SimpleCondition.of(value -> value.getName().equals("d")))
                         .followedByAny("end3")
-                        .where(
-                                new SimpleCondition<Event>() {
-                                    private static final long serialVersionUID =
-                                            5726188262756267490L;
-
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getName().equals("e");
-                                    }
-                                });
+                        .where(SimpleCondition.of(value -> value.getName().equals("e")));
 
         TestSharedBuffer<Event> sharedBuffer =
                 TestSharedBuffer.createTestBuffer(Event.createTypeSerializer());
@@ -125,13 +80,13 @@ public class NFAStateAccessTest {
                 NFATestHarness.forPattern(pattern).withSharedBuffer(sharedBuffer).build();
         nfaTestHarness.consumeRecords(inputEvents);
 
-        assertEquals(58, sharedBuffer.getStateReads());
-        assertEquals(33, sharedBuffer.getStateWrites());
-        assertEquals(91, sharedBuffer.getStateAccesses());
+        assertThat(sharedBuffer.getStateReads()).isEqualTo(58);
+        assertThat(sharedBuffer.getStateWrites()).isEqualTo(41);
+        assertThat(sharedBuffer.getStateAccesses()).isEqualTo(99);
     }
 
     @Test
-    public void testIterativeWithABACPattern() throws Exception {
+    void testIterativeWithABACPattern() throws Exception {
         List<StreamRecord<Event>> inputEvents = new ArrayList<>();
 
         final Event startEvent1 = new Event(40, "start", 1.0);
@@ -158,28 +113,10 @@ public class NFAStateAccessTest {
 
         Pattern<Event, ?> pattern =
                 Pattern.<Event>begin("start")
-                        .where(
-                                new SimpleCondition<Event>() {
-                                    private static final long serialVersionUID =
-                                            6215754202506583964L;
-
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getName().equals("start");
-                                    }
-                                })
+                        .where(SimpleCondition.of(value -> value.getName().equals("start")))
                         .followedByAny("middle1")
                         .subtype(SubEvent.class)
-                        .where(
-                                new SimpleCondition<SubEvent>() {
-                                    private static final long serialVersionUID =
-                                            2178338526904474690L;
-
-                                    @Override
-                                    public boolean filter(SubEvent value) throws Exception {
-                                        return value.getName().startsWith("foo");
-                                    }
-                                })
+                        .where(SimpleCondition.of(value -> value.getName().startsWith("foo")))
                         .followedBy("middle2")
                         .where(
                                 new IterativeCondition<Event>() {
@@ -203,16 +140,7 @@ public class NFAStateAccessTest {
                                 })
                         .oneOrMore()
                         .followedBy("end")
-                        .where(
-                                new SimpleCondition<Event>() {
-                                    private static final long serialVersionUID =
-                                            562590474115118323L;
-
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getName().equals("end");
-                                    }
-                                });
+                        .where(SimpleCondition.of(value -> value.getName().equals("end")));
 
         TestSharedBuffer<Event> sharedBuffer =
                 TestSharedBuffer.createTestBuffer(Event.createTypeSerializer());
@@ -220,8 +148,8 @@ public class NFAStateAccessTest {
                 NFATestHarness.forPattern(pattern).withSharedBuffer(sharedBuffer).build();
         nfaTestHarness.consumeRecords(inputEvents);
 
-        assertEquals(90, sharedBuffer.getStateReads());
-        assertEquals(31, sharedBuffer.getStateWrites());
-        assertEquals(121, sharedBuffer.getStateAccesses());
+        assertThat(sharedBuffer.getStateReads()).isEqualTo(90);
+        assertThat(sharedBuffer.getStateWrites()).isEqualTo(34);
+        assertThat(sharedBuffer.getStateAccesses()).isEqualTo(124);
     }
 }

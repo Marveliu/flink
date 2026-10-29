@@ -18,59 +18,331 @@
 
 package org.apache.flink.connector.base.source.reader.fetcher;
 
+import org.apache.flink.api.common.JobID;
+import org.apache.flink.api.common.JobInfo;
+import org.apache.flink.api.common.JobInfoImpl;
 import org.apache.flink.api.connector.source.SourceSplit;
+import org.apache.flink.configuration.Configuration;
+import org.apache.flink.connector.base.source.reader.RecordsBySplits;
 import org.apache.flink.connector.base.source.reader.RecordsWithSplitIds;
+import org.apache.flink.connector.base.source.reader.SourceReaderOptions;
 import org.apache.flink.connector.base.source.reader.mocks.TestingRecordsWithSplitIds;
 import org.apache.flink.connector.base.source.reader.mocks.TestingSourceSplit;
 import org.apache.flink.connector.base.source.reader.mocks.TestingSplitReader;
 import org.apache.flink.connector.base.source.reader.splitreader.SplitReader;
 import org.apache.flink.connector.base.source.reader.splitreader.SplitsChange;
+import org.apache.flink.connector.base.source.reader.splitreader.SplitsRemoval;
 import org.apache.flink.connector.base.source.reader.synchronization.FutureCompletingBlockingQueue;
+import org.apache.flink.connector.base.source.reader.synchronization.QueueProbe;
 import org.apache.flink.core.testutils.OneShotLatch;
+import org.apache.flink.util.MdcUtils;
 
-import org.apache.commons.lang3.exception.ExceptionUtils;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+import org.slf4j.MDC;
+
+import javax.annotation.Nullable;
 
 import java.io.IOException;
+import java.lang.reflect.Field;
+import java.time.Duration;
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.Collections;
+import java.util.List;
+import java.util.Map;
 import java.util.Queue;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertSame;
-import static org.junit.Assert.fail;
+import static org.apache.flink.test.util.TestUtils.waitUntil;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.fail;
 
 /** Unit tests for the {@link SplitFetcherManager}. */
-public class SplitFetcherManagerTest {
+class SplitFetcherManagerTest {
 
     @Test
-    public void testExceptionPropagationFirstFetch() throws Exception {
+    void testExceptionPropagationFirstFetch() throws Exception {
         testExceptionPropagation();
     }
 
     @Test
-    public void testExceptionPropagationSuccessiveFetch() throws Exception {
+    void testExceptionPropagationSuccessiveFetch() throws Exception {
         testExceptionPropagation(
                 new TestingRecordsWithSplitIds<>("testSplit", 1, 2, 3, 4),
                 new TestingRecordsWithSplitIds<>("testSplit", 5, 6, 7, 8));
     }
 
     @Test
-    public void testCloseFetcherWithException() throws Exception {
+    void testCloseFetcherWithException() throws Exception {
         TestingSplitReader<Object, TestingSourceSplit> reader = new TestingSplitReader<>();
         reader.setCloseWithException();
         SplitFetcherManager<Object, TestingSourceSplit> fetcherManager =
-                createFetcher("test-split", new FutureCompletingBlockingQueue<>(), reader);
-        fetcherManager.close(1000L);
+                createFetcher("test-split", reader, new Configuration());
+        fetcherManager.close(30000L);
+        assertThatThrownBy(fetcherManager::checkErrors)
+                .hasRootCauseMessage("Artificial exception on closing the split reader.");
+    }
+
+    /**
+     * The exact suffix format is covered by {@code MdcUtilsTest#testJobThreadNameSuffix}; this only
+     * has to show that a fetcher thread is seeded with the job MDC and named after the job at all.
+     */
+    @Test
+    void testFetcherThreadCarriesJobIdInMdcAndThreadName() throws Exception {
+        final JobID jobId = new JobID();
+        final JobInfo jobInfo = new JobInfoImpl(jobId, "my-test-job");
+        final String taskThreadName = Thread.currentThread().getName();
+
+        final FetcherThreadInfo fetcherThread = captureFetcherThread(jobInfo);
+
+        assertThat(fetcherThread.mdcJobId).isEqualTo(jobId.toHexString());
+        assertThat(fetcherThread.threadName)
+                .startsWith(SplitFetcherManager.THREAD_NAME_PREFIX)
+                .contains(taskThreadName)
+                .endsWith(MdcUtils.jobThreadNameSuffix(jobInfo));
+    }
+
+    @Test
+    void testFetcherThreadWithoutJobInfoKeepsHistoricalNameAndNoJobIdInMdc() throws Exception {
+        final FetcherThreadInfo fetcherThread = captureFetcherThread(null);
+
+        // Fetcher threads are named after the thread creating the manager, i.e. this test thread.
+        assertThat(fetcherThread.threadName)
+                .isEqualTo(
+                        SplitFetcherManager.THREAD_NAME_PREFIX + Thread.currentThread().getName());
+        assertThat(fetcherThread.mdcJobId).isNull();
+    }
+
+    @Test
+    @Timeout(value = 30000, unit = TimeUnit.MILLISECONDS)
+    void testCloseCleansUpPreviouslyClosedFetcher() throws Exception {
+        final String splitId = "testSplit";
+        // Set the queue capacity to 1 to make sure in this case the
+        // fetcher shutdown won't block on putting the batches into the queue.
+        Configuration config = new Configuration();
+        config.set(SourceReaderOptions.ELEMENT_QUEUE_CAPACITY, 1);
+        final AwaitingReader<Integer, TestingSourceSplit> reader =
+                new AwaitingReader<>(
+                        new IOException("Should not happen"),
+                        new RecordsBySplits<>(
+                                Collections.emptyMap(), Collections.singleton(splitId)));
+        final SplitFetcherManager<Integer, TestingSourceSplit> fetcherManager =
+                createFetcher(splitId, reader, config);
+        // Ensure the fetcher has emitted an element into the queue.
+        fetcherManager.getQueue().getAvailabilityFuture().get();
+        waitUntil(
+                () -> {
+                    fetcherManager.maybeShutdownFinishedFetchers();
+                    return fetcherManager.fetchers.isEmpty();
+                },
+                "The idle fetcher should have been removed.");
+        // Now close the fetcher manager. The fetcher manager closing should not block.
+        fetcherManager.close(Long.MAX_VALUE);
+    }
+
+    /**
+     * Each completed fetcher lifecycle must release its queue state, so monotonically increasing
+     * fetcher ids do not accumulate historical state.
+     */
+    @Test
+    void testFetcherShutdownReleasesWakeupStateAcrossLifecycles() throws Exception {
+        final String splitId = "testSplit";
+        final Configuration config = new Configuration();
+        config.set(SourceReaderOptions.ELEMENT_QUEUE_CAPACITY, 1);
+
+        final SplitFetcherManager<Integer, TestingSourceSplit> fetcherManager =
+                new SingleThreadFetcherManager<>(
+                        () ->
+                                new AwaitingReader<>(
+                                        new IOException("Should not happen"),
+                                        new RecordsBySplits<>(
+                                                Collections.emptyMap(),
+                                                Collections.singleton(splitId))),
+                        config);
+        final FutureCompletingBlockingQueue<RecordsWithSplitIds<Integer>> queue =
+                fetcherManager.getQueue();
+
         try {
-            fetcherManager.checkErrors();
-        } catch (Exception e) {
-            assertEquals(
-                    "Artificial exception on closing the split reader.",
-                    ExceptionUtils.getRootCause(e).getMessage());
+            for (int expectedFetcherId = 0; expectedFetcherId < 3; expectedFetcherId++) {
+                fetcherManager.addSplits(
+                        Collections.singletonList(new TestingSourceSplit(splitId)));
+                assertThat(fetcherManager.fetchers).hasSize(1);
+                assertThat(fetcherManager.fetchers.keySet().iterator().next())
+                        .isEqualTo(expectedFetcherId);
+
+                waitUntil(
+                        () -> queue.size() == 1,
+                        Duration.ofSeconds(10),
+                        "The data batch should have filled the element queue.");
+                waitUntil(
+                        () -> {
+                            fetcherManager.maybeShutdownFinishedFetchers();
+                            return fetcherManager.fetchers.isEmpty();
+                        },
+                        Duration.ofSeconds(10),
+                        "The idle fetcher should have been removed.");
+                waitUntil(
+                        () -> QueueProbe.liveProducerStates(queue) == 1,
+                        Duration.ofSeconds(10),
+                        "The final synchronization batch should have registered producer state while waiting for queue capacity.");
+
+                assertThat(QueueProbe.liveProducerStates(queue)).isOne();
+
+                final RecordsWithSplitIds<Integer> dataBatch = queue.poll();
+                assertThat(dataBatch).isNotNull();
+                dataBatch.recycle();
+
+                waitUntil(
+                        () -> queue.size() == 1,
+                        Duration.ofSeconds(10),
+                        "The final synchronization batch should have been enqueued.");
+                final RecordsWithSplitIds<Integer> synchronizationBatch = queue.poll();
+                assertThat(synchronizationBatch).isNotNull();
+                synchronizationBatch.recycle();
+
+                waitUntil(
+                        () -> QueueProbe.liveProducerStates(queue) == 0,
+                        Duration.ofSeconds(10),
+                        "The shutdown hook should release the fetcher's queue state.");
+            }
+        } finally {
+            RecordsWithSplitIds<Integer> batch;
+            while ((batch = queue.poll()) != null) {
+                batch.recycle();
+            }
+            fetcherManager.close(10_000L);
         }
+    }
+
+    /**
+     * This test is somewhat testing the implementation instead of contract. This is because the
+     * test is trying to make sure the element queue draining thread is not tight looping.
+     */
+    @Test
+    public void testCloseBlockingWaitingForFetcherShutdown() throws Exception {
+        final String splitId = "testSplit";
+        // create a reader which blocks on close().
+        final AwaitingReader<Integer, TestingSourceSplit> reader = new AwaitingReader<>();
+        final SplitFetcherManager<Integer, TestingSourceSplit> fetcherManager =
+                createFetcher(splitId, reader, new Configuration());
+        // Now close the fetcher manager. The fetcher should still be running when the fetcher
+        // manager returns.
+        Thread closingThread =
+                new Thread(
+                        () -> {
+                            try {
+                                fetcherManager.close(Long.MAX_VALUE);
+                            } catch (Exception e) {
+                                fail("failed.");
+                                throw new RuntimeException(e);
+                            }
+                        },
+                        "closingThread");
+        closingThread.start();
+
+        waitUntil(
+                () -> findThread(SplitFetcherManager.THREAD_NAME_PREFIX).size() == 2,
+                Duration.ofSeconds(60),
+                "The element queue draining thread should have started.");
+        for (Thread t : findThread(SplitFetcherManager.THREAD_NAME_PREFIX)) {
+            waitUntil(
+                    () ->
+                            t.getState().equals(Thread.State.WAITING)
+                                    || t.getState().equals(Thread.State.TIMED_WAITING),
+                    Duration.ofSeconds(30),
+                    "All the executor threads should be in waiting status.");
+        }
+
+        assertThat(fetcherManager.getQueue().getAvailabilityFuture().getNumberOfDependents())
+                .as("The future should have just one dependent stage")
+                .isLessThanOrEqualTo(1);
+        assertThat(fetcherManager.fetchers.size()).isEqualTo(1);
+        reader.triggerThrowException();
+        reader.triggerClose();
+        waitUntil(fetcherManager.fetchers::isEmpty, "The fetcher should be closed now.");
+        closingThread.join();
+    }
+
+    @Test
+    void testIdleShutdownSplitFetcherWaitsUntilRecordProcessed() throws Exception {
+        final String splitId = "testSplit";
+        final AwaitingReader<Integer, TestingSourceSplit> reader =
+                new AwaitingReader<>(
+                        new IOException("Should not happen"),
+                        new RecordsBySplits<>(
+                                Collections.emptyMap(), Collections.singleton(splitId)));
+        final SplitFetcherManager<Integer, TestingSourceSplit> fetcherManager =
+                createFetcher(splitId, reader, new Configuration());
+        try {
+            FutureCompletingBlockingQueue<RecordsWithSplitIds<Integer>> queue =
+                    fetcherManager.getQueue();
+            // Wait util the data batch is emitted.
+            queue.getAvailabilityFuture().get();
+            waitUntil(
+                    () -> {
+                        fetcherManager.maybeShutdownFinishedFetchers();
+                        return fetcherManager.getNumAliveFetchers() == 0;
+                    },
+                    Duration.ofSeconds(1),
+                    "The fetcher should have already been removed from the alive fetchers.");
+
+            // There should be two fetches available, one for data (although empty), one for the
+            // shutdown synchronization (also empty).
+            waitUntil(
+                    () -> queue.size() == 2,
+                    Duration.ofSeconds(1),
+                    "The element queue should have 2 batches when the fetcher is closed.");
+
+            // Finish the first batch (data batch).
+            queue.poll().recycle();
+            assertThat(reader.isClosed).as("The reader should have not been closed.").isFalse();
+            // Finish the second batch (synchronization batch).
+            queue.poll().recycle();
+            waitUntil(
+                    () -> reader.isClosed,
+                    Duration.ofSeconds(1),
+                    "The reader should hava been closed.");
+        } finally {
+            fetcherManager.close(30_000);
+        }
+    }
+
+    @Test
+    void testGetRunningFetcherSurvivesFetcherRemovalInToctouWindow() throws Exception {
+        final SingleThreadFetcherManager<Object, TestingSourceSplit> fetcherManager =
+                new SingleThreadFetcherManager<>(TestingSplitReader::new, new Configuration());
+
+        final SplitFetcher<Object, TestingSourceSplit> fetcher =
+                fetcherManager.createSplitFetcher();
+
+        final Map<Integer, SplitFetcher<Object, TestingSourceSplit>> racyFetchers =
+                new ConcurrentHashMap<Integer, SplitFetcher<Object, TestingSourceSplit>>() {
+                    private boolean removed;
+
+                    @Override
+                    public Collection<SplitFetcher<Object, TestingSourceSplit>> values() {
+                        // The shutdown callback (fetchers.remove(...)) fires here: after
+                        // getRunningFetcher()'s isEmpty() check saw the entry, before it is read.
+                        if (!removed) {
+                            removed = true;
+                            clear();
+                        }
+                        return super.values();
+                    }
+                };
+        racyFetchers.put(0, fetcher);
+
+        final Field fetchersField = SplitFetcherManager.class.getDeclaredField("fetchers");
+        fetchersField.setAccessible(true);
+        fetchersField.set(fetcherManager, racyFetchers);
+
+        assertThat(fetcherManager.getRunningFetcher()).isNull();
     }
 
     // the final modifier is important so that '@SafeVarargs' is accepted on Java 8
@@ -80,29 +352,94 @@ public class SplitFetcherManagerTest {
             final RecordsWithSplitIds<Integer>... fetchesBeforeError) throws Exception {
         final IOException testingException = new IOException("test");
 
-        final FutureCompletingBlockingQueue<RecordsWithSplitIds<Integer>> queue =
-                new FutureCompletingBlockingQueue<>(10);
         final AwaitingReader<Integer, TestingSourceSplit> reader =
                 new AwaitingReader<>(testingException, fetchesBeforeError);
+        final Configuration configuration = new Configuration();
+        configuration.set(SourceReaderOptions.ELEMENT_QUEUE_CAPACITY, 10);
         final SplitFetcherManager<Integer, TestingSourceSplit> fetcher =
-                createFetcher("testSplit", queue, reader);
+                createFetcher("testSplit", reader, configuration);
 
         reader.awaitAllRecordsReturned();
-        drainQueue(queue);
+        drainQueue(fetcher.getQueue());
 
-        assertFalse(queue.getAvailabilityFuture().isDone());
+        assertThat(fetcher.getQueue().getAvailabilityFuture().isDone()).isFalse();
         reader.triggerThrowException();
 
         // await the error propagation
-        queue.getAvailabilityFuture().get();
+        fetcher.getQueue().getAvailabilityFuture().get();
 
         try {
             fetcher.checkErrors();
             fail("expected exception");
         } catch (Exception e) {
-            assertSame(testingException, e.getCause().getCause());
+            assertThat(e.getCause().getCause()).isSameAs(testingException);
         } finally {
             fetcher.close(20_000L);
+        }
+    }
+
+    /**
+     * A fetcher whose current task failed never enqueues the shutdown synchronization batch. The
+     * failed task remains published as its running task, keeping the fetcher non-idle and reachable
+     * by {@link SplitFetcherManager#close(long)}, which releases its {@code recordsProcessedLatch}.
+     * Otherwise the thread would remain stranded with its {@link SplitReader} unclosed and its
+     * queue state unreleased.
+     */
+    @Test
+    void testFailedFetcherIsNotReapedAndIsCleanedUpOnClose() throws Exception {
+        final String splitId = "testSplit";
+        final FailOnRemoveReader<Integer> reader = new FailOnRemoveReader<>();
+        final SingleThreadFetcherManager<Integer, TestingSourceSplit> fetcherManager =
+                new SingleThreadFetcherManager<>(() -> reader, new Configuration());
+
+        boolean closed = false;
+        try {
+            fetcherManager.addSplits(Collections.singletonList(new TestingSourceSplit(splitId)));
+
+            // Drive the fetcher into the failure path with nothing left assigned: RemoveSplitsTask
+            // drops the split from assignedSplits before handing the change to the reader, which
+            // throws. assignedSplits and taskQueue are then empty, but the failed task remains
+            // published as runningTask and prevents the fetcher from being reported idle.
+            fetcherManager.removeSplits(Collections.singletonList(new TestingSourceSplit(splitId)));
+
+            // Wait for the failure to reach the error handler. There is no window to hit here: the
+            // state under test is the fetcher's terminal state, not a transient one.
+            waitUntil(
+                    () -> {
+                        try {
+                            fetcherManager.checkErrors();
+                            return false;
+                        } catch (RuntimeException expected) {
+                            return true;
+                        }
+                    },
+                    Duration.ofSeconds(30),
+                    "The fetcher failure should have been reported to the error handler.");
+
+            fetcherManager.maybeShutdownFinishedFetchers();
+            assertThat(fetcherManager.getNumAliveFetchers())
+                    .as("A failed fetcher must not be reaped as idle.")
+                    .isOne();
+
+            final FutureCompletingBlockingQueue<RecordsWithSplitIds<Integer>> queue =
+                    fetcherManager.getQueue();
+            final int fetcherId = fetcherManager.fetchers.keySet().iterator().next();
+            queue.wakeUpPuttingThread(fetcherId);
+            assertThat(QueueProbe.liveProducerStates(queue))
+                    .as(
+                            "The failed fetcher should have queue state for its shutdown hook to release.")
+                    .isOne();
+
+            fetcherManager.close(30_000L);
+            closed = true;
+            assertThat(reader.isClosed()).as("The split reader should have been closed.").isTrue();
+            assertThat(QueueProbe.liveProducerStates(queue))
+                    .as("The shutdown hook should have released the fetcher's queue state.")
+                    .isZero();
+        } finally {
+            if (!closed) {
+                fetcherManager.close(30_000L);
+            }
         }
     }
 
@@ -112,13 +449,38 @@ public class SplitFetcherManagerTest {
 
     private static <E> SplitFetcherManager<E, TestingSourceSplit> createFetcher(
             final String splitId,
-            final FutureCompletingBlockingQueue<RecordsWithSplitIds<E>> queue,
-            final SplitReader<E, TestingSourceSplit> reader) {
+            final SplitReader<E, TestingSourceSplit> reader,
+            final Configuration configuration) {
 
         final SingleThreadFetcherManager<E, TestingSourceSplit> fetcher =
-                new SingleThreadFetcherManager<>(queue, () -> reader);
+                new SingleThreadFetcherManager<>(() -> reader, configuration);
         fetcher.addSplits(Collections.singletonList(new TestingSourceSplit(splitId)));
         return fetcher;
+    }
+
+    /**
+     * Runs a fetcher for the given job identity ({@code null} exercising the constructors without
+     * {@link JobInfo}) and returns what its fetcher thread saw. The fetcher manager is closed again
+     * before returning.
+     */
+    private static FetcherThreadInfo captureFetcherThread(@Nullable JobInfo jobInfo)
+            throws Exception {
+        final ThreadInfoCapturingSplitReader<Integer> reader =
+                new ThreadInfoCapturingSplitReader<>();
+        final SingleThreadFetcherManager<Integer, TestingSourceSplit> fetcherManager =
+                jobInfo == null
+                        ? new SingleThreadFetcherManager<>(() -> reader, new Configuration())
+                        : new SingleThreadFetcherManager<>(
+                                () -> reader, new Configuration(), (ignore) -> {}, jobInfo);
+        try {
+            fetcherManager.addSplits(Collections.singletonList(new TestingSourceSplit("split-0")));
+            assertThat(reader.threadInfo)
+                    .as("The fetcher thread should have started fetching.")
+                    .succeedsWithin(Duration.ofSeconds(60));
+            return reader.threadInfo.get();
+        } finally {
+            fetcherManager.close(30_000L);
+        }
     }
 
     private static void drainQueue(FutureCompletingBlockingQueue<?> queue) {
@@ -126,9 +488,107 @@ public class SplitFetcherManagerTest {
         while (queue.poll() != null) {}
     }
 
+    private static List<Thread> findThread(String keyword) {
+        List<Thread> threads = new ArrayList<>();
+        for (Thread t : Thread.getAllStackTraces().keySet()) {
+            if (t.getName().contains(keyword)) {
+                threads.add(t);
+            }
+        }
+        return threads;
+    }
+
     // ------------------------------------------------------------------------
     //  test mocks
     // ------------------------------------------------------------------------
+
+    /** Thread name and {@value MdcUtils#JOB_ID} MDC value observed on a fetcher thread. */
+    private static final class FetcherThreadInfo {
+
+        private final String threadName;
+        @Nullable private final String mdcJobId;
+
+        private FetcherThreadInfo(String threadName, @Nullable String mdcJobId) {
+            this.threadName = threadName;
+            this.mdcJobId = mdcJobId;
+        }
+    }
+
+    /** A {@link SplitReader} that reports the fetcher thread it is executed on. */
+    private static final class ThreadInfoCapturingSplitReader<E>
+            implements SplitReader<E, TestingSourceSplit> {
+
+        private final CompletableFuture<FetcherThreadInfo> threadInfo = new CompletableFuture<>();
+        private final OneShotLatch fetchBlocker = new OneShotLatch();
+
+        @Override
+        public RecordsWithSplitIds<E> fetch() {
+            threadInfo.complete(
+                    new FetcherThreadInfo(
+                            Thread.currentThread().getName(), MDC.get(MdcUtils.JOB_ID)));
+            // Stay inside fetch() until woken up, so the fetcher does not spin on empty fetches.
+            try {
+                fetchBlocker.await();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            return new RecordsBySplits<>(Collections.emptyMap(), Collections.emptySet());
+        }
+
+        @Override
+        public void handleSplitsChanges(SplitsChange<TestingSourceSplit> splitsChanges) {}
+
+        @Override
+        public void wakeUp() {
+            fetchBlocker.trigger();
+        }
+
+        @Override
+        public void close() {}
+    }
+
+    /**
+     * Accepts a split assignment but throws when asked to remove one, mirroring the many {@link
+     * SplitReader} implementations that do not support removal. {@code RemoveSplitsTask} empties
+     * {@code assignedSplits} before delegating here, so the fetcher fails with nothing assigned.
+     */
+    private static final class FailOnRemoveReader<E> implements SplitReader<E, TestingSourceSplit> {
+
+        private final OneShotLatch fetchBlocker = new OneShotLatch();
+        private volatile boolean closed;
+
+        @Override
+        public RecordsWithSplitIds<E> fetch() {
+            // Stay inside fetch() until woken up, so the fetcher does not spin on empty fetches.
+            try {
+                fetchBlocker.await();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            return new RecordsBySplits<>(Collections.emptyMap(), Collections.emptySet());
+        }
+
+        @Override
+        public void handleSplitsChanges(SplitsChange<TestingSourceSplit> splitsChanges) {
+            if (splitsChanges instanceof SplitsRemoval) {
+                throw new UnsupportedOperationException("Split removal is not supported.");
+            }
+        }
+
+        @Override
+        public void wakeUp() {
+            fetchBlocker.trigger();
+        }
+
+        @Override
+        public void close() {
+            closed = true;
+        }
+
+        boolean isClosed() {
+            return closed;
+        }
+    }
 
     private static final class AwaitingReader<E, SplitT extends SourceSplit>
             implements SplitReader<E, SplitT> {
@@ -138,11 +598,19 @@ public class SplitFetcherManagerTest {
 
         private final OneShotLatch inBlocking = new OneShotLatch();
         private final OneShotLatch throwError = new OneShotLatch();
+        private final OneShotLatch closeBlocker = new OneShotLatch();
+        private volatile boolean isClosed = false;
 
         @SafeVarargs
         AwaitingReader(IOException testError, RecordsWithSplitIds<E>... fetches) {
             this.testError = testError;
             this.fetches = new ArrayDeque<>(Arrays.asList(fetches));
+            this.closeBlocker.trigger();
+        }
+
+        AwaitingReader() {
+            this.testError = new IOException("DummyException");
+            this.fetches = new ArrayDeque<>(Collections.emptyList());
         }
 
         @Override
@@ -168,7 +636,10 @@ public class SplitFetcherManagerTest {
         public void wakeUp() {}
 
         @Override
-        public void close() throws Exception {}
+        public void close() throws Exception {
+            closeBlocker.await();
+            isClosed = true;
+        }
 
         public void awaitAllRecordsReturned() throws InterruptedException {
             inBlocking.await();
@@ -176,6 +647,10 @@ public class SplitFetcherManagerTest {
 
         public void triggerThrowException() {
             throwError.trigger();
+        }
+
+        public void triggerClose() {
+            closeBlocker.trigger();
         }
     }
 }

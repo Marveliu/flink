@@ -24,14 +24,13 @@ import org.apache.flink.cep.functions.TimedOutPartialMatchHandler;
 import org.apache.flink.cep.nfa.NFA;
 import org.apache.flink.cep.nfa.compiler.NFACompiler;
 import org.apache.flink.cep.pattern.Pattern;
-import org.apache.flink.streaming.api.windowing.time.Time;
 import org.apache.flink.streaming.util.OneInputStreamOperatorTestHarness;
 import org.apache.flink.util.Collector;
 import org.apache.flink.util.OutputTag;
-import org.apache.flink.util.TestLogger;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Function;
@@ -43,13 +42,13 @@ import static org.apache.flink.cep.utils.OutputAsserter.assertOutput;
 /**
  * Tests for {@link CepOperator} which check proper setting {@link PatternProcessFunction.Context}.
  */
-public class CepProcessFunctionContextTest extends TestLogger {
+class CepProcessFunctionContextTest {
 
     private static final boolean PROCESSING_TIME = true;
     private static final boolean EVENT_TIME = false;
 
     @Test
-    public void testTimestampPassingInEventTime() throws Exception {
+    void testTimestampPassingInEventTime() throws Exception {
 
         try (OneInputStreamOperatorTestHarness<Event, String> harness =
                 getCepTestHarness(
@@ -74,7 +73,7 @@ public class CepProcessFunctionContextTest extends TestLogger {
     }
 
     @Test
-    public void testTimestampPassingInProcessingTime() throws Exception {
+    void testTimestampPassingInProcessingTime() throws Exception {
 
         try (OneInputStreamOperatorTestHarness<Event, String> harness =
                 getCepTestHarness(
@@ -98,7 +97,7 @@ public class CepProcessFunctionContextTest extends TestLogger {
     }
 
     @Test
-    public void testCurrentProcessingTimeInProcessingTime() throws Exception {
+    void testCurrentProcessingTimeInProcessingTime() throws Exception {
 
         try (OneInputStreamOperatorTestHarness<Event, String> harness =
                 getCepTestHarness(
@@ -121,7 +120,7 @@ public class CepProcessFunctionContextTest extends TestLogger {
     }
 
     @Test
-    public void testCurrentProcessingTimeInEventTime() throws Exception {
+    void testCurrentProcessingTimeInEventTime() throws Exception {
 
         try (OneInputStreamOperatorTestHarness<Event, String> harness =
                 getCepTestHarness(
@@ -144,7 +143,7 @@ public class CepProcessFunctionContextTest extends TestLogger {
     }
 
     @Test
-    public void testTimestampPassingForTimedOutInEventTime() throws Exception {
+    void testTimestampPassingForTimedOutInEventTime() throws Exception {
 
         OutputTag<String> timedOut = new OutputTag<String>("timedOut") {};
 
@@ -175,7 +174,7 @@ public class CepProcessFunctionContextTest extends TestLogger {
     }
 
     @Test
-    public void testTimestampPassingForTimedOutInProcessingTime() throws Exception {
+    void testTimestampPassingForTimedOutInProcessingTime() throws Exception {
 
         OutputTag<String> timedOut = new OutputTag<String>("timedOut") {};
 
@@ -203,7 +202,7 @@ public class CepProcessFunctionContextTest extends TestLogger {
     }
 
     @Test
-    public void testCurrentProcessingTimeForTimedOutInEventTime() throws Exception {
+    void testCurrentProcessingTimeForTimedOutInEventTime() throws Exception {
 
         OutputTag<String> sideOutputTag = new OutputTag<String>("timedOut") {};
 
@@ -235,7 +234,7 @@ public class CepProcessFunctionContextTest extends TestLogger {
     }
 
     @Test
-    public void testCurrentProcessingTimeForTimedOutInProcessingTime() throws Exception {
+    void testCurrentProcessingTimeForTimedOutInProcessingTime() throws Exception {
 
         OutputTag<String> sideOutputTag = new OutputTag<String>("timedOut") {};
 
@@ -418,7 +417,7 @@ public class CepProcessFunctionContextTest extends TestLogger {
         public NFA<Event> createNFA() {
 
             Pattern<Event, ?> pattern =
-                    Pattern.<Event>begin("1").next("2").within(Time.milliseconds(10));
+                    Pattern.<Event>begin("1").next("2").within(Duration.ofMillis(10));
 
             return NFACompiler.compileFactory(pattern, true).createNFA();
         }

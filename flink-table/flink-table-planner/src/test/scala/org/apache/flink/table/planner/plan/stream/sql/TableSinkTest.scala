@@ -15,21 +15,22 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.planner.plan.stream.sql
 
-import org.apache.flink.api.scala._
 import org.apache.flink.configuration.ConfigOption
-import org.apache.flink.streaming.api.functions.source.{ParallelSourceFunction, SourceFunction}
+import org.apache.flink.legacy.table.connector.source.SourceFunctionProvider
+import org.apache.flink.streaming.api.functions.source.legacy.{ParallelSourceFunction, SourceFunction}
 import org.apache.flink.table.api._
 import org.apache.flink.table.api.config.ExecutionConfigOptions
 import org.apache.flink.table.connector.ChangelogMode
-import org.apache.flink.table.connector.source.{DynamicTableSource, ScanTableSource, SourceFunctionProvider}
+import org.apache.flink.table.connector.source.{DynamicTableSource, ScanTableSource}
 import org.apache.flink.table.data.RowData
 import org.apache.flink.table.factories.{DynamicTableFactory, DynamicTableSourceFactory}
 import org.apache.flink.table.planner.utils.{TableTestBase, TestingTableEnvironment}
 
-import org.junit.Test
+import org.assertj.core.api.Assertions
+import org.assertj.core.api.Assertions.assertThatThrownBy
+import org.junit.jupiter.api.Test
 
 import java.util
 
@@ -38,12 +39,11 @@ class TableSinkTest extends TableTestBase {
   private val util = streamTestUtil()
   util.addDataStream[(Int, Long, String)]("MyTable", 'a, 'b, 'c)
 
-  util.tableEnv.executeSql(
-    """
-      |CREATE TABLE src (person String, votes BIGINT) WITH(
-      |  'connector' = 'values'
-      |)
-      |""".stripMargin)
+  util.tableEnv.executeSql("""
+                             |CREATE TABLE src (person String, votes BIGINT) WITH(
+                             |  'connector' = 'values'
+                             |)
+                             |""".stripMargin)
 
   util.tableEnv.executeSql(
     """
@@ -60,67 +60,82 @@ class TableSinkTest extends TableTestBase {
       |""".stripMargin)
 
   @Test
-  def testInsertMismatchTypeForEmptyChar(): Unit = {
-    util.addTable(
-      s"""
-         |CREATE TABLE my_sink (
-         |  name STRING,
-         |  email STRING,
-         |  message_offset BIGINT
-         |) WITH (
-         |  'connector' = 'values'
-         |)
-         |""".stripMargin)
-    thrown.expect(classOf[ValidationException])
-    thrown.expectMessage(
-      "Query schema: [a: INT, EXPR$1: CHAR(0) NOT NULL, EXPR$2: CHAR(0) NOT NULL]\n" +
-      "Sink schema:  [name: STRING, email: STRING, message_offset: BIGINT]")
-    util.verifyExecPlanInsert("INSERT INTO my_sink SELECT a, '', '' FROM MyTable")
-  }
-
-  @Test
-  def testExceptionForAppendSink(): Unit = {
-    util.addTable(
-      s"""
-         |CREATE TABLE appendSink (
-         |  `a` BIGINT
-         |) WITH (
-         |  'connector' = 'values',
-         |  'sink-insert-only' = 'true'
-         |)
-         |""".stripMargin)
+  def testInsertWithTargetColumnsAndSqlHint(): Unit = {
+    util.addTable(s"""
+                     |CREATE TABLE appendSink (
+                     |  `a` BIGINT,
+                     |  `b` STRING
+                     |) WITH (
+                     |  'connector' = 'values',
+                     |  'sink-insert-only' = 'false'
+                     |)
+                     |""".stripMargin)
     val stmtSet = util.tableEnv.createStatementSet()
     stmtSet.addInsertSql(
-      "INSERT INTO appendSink SELECT COUNT(*) AS cnt FROM MyTable GROUP BY a")
-
-    thrown.expect(classOf[TableException])
-    thrown.expectMessage("Table sink 'default_catalog.default_database.appendSink' doesn't " +
-      "support consuming update changes which is produced by node " +
-      "GroupAggregate(groupBy=[a], select=[a, COUNT(*) AS cnt])")
+      "INSERT INTO appendSink /*+ OPTIONS('sink.parallelism' = '1') */(a, b) SELECT a + b, c FROM MyTable")
     util.verifyRelPlan(stmtSet, ExplainDetail.CHANGELOG_MODE)
   }
 
   @Test
+  def testInsertMismatchTypeForEmptyChar(): Unit = {
+    util.addTable(s"""
+                     |CREATE TABLE my_sink (
+                     |  name STRING,
+                     |  email STRING,
+                     |  message_offset BIGINT
+                     |) WITH (
+                     |  'connector' = 'values'
+                     |)
+                     |""".stripMargin)
+
+    assertThatThrownBy(
+      () => util.verifyExecPlanInsert("INSERT INTO my_sink SELECT a, '', '' FROM MyTable"))
+      .hasMessageContaining(
+        "Query schema: [a: INT, EXPR$1: CHAR(0) NOT NULL, EXPR$2: CHAR(0) NOT NULL]\n" +
+          "Sink schema:  [name: STRING, email: STRING, message_offset: BIGINT]")
+      .isInstanceOf[ValidationException]
+  }
+
+  @Test
+  def testExceptionForAppendSink(): Unit = {
+    util.addTable(s"""
+                     |CREATE TABLE appendSink (
+                     |  `a` BIGINT
+                     |) WITH (
+                     |  'connector' = 'values',
+                     |  'sink-insert-only' = 'true'
+                     |)
+                     |""".stripMargin)
+    val stmtSet = util.tableEnv.createStatementSet()
+    stmtSet.addInsertSql("INSERT INTO appendSink SELECT COUNT(*) AS cnt FROM MyTable GROUP BY a")
+
+    assertThatThrownBy(() => util.verifyRelPlan(stmtSet, ExplainDetail.CHANGELOG_MODE))
+      .hasMessageContaining(
+        "Table sink 'default_catalog.default_database.appendSink' doesn't " +
+          "support consuming update changes which is produced by node " +
+          "GroupAggregate(groupBy=[a], select=[a, COUNT(*) AS cnt])")
+      .isInstanceOf[TableException]
+  }
+
+  @Test
   def testExceptionForOverAggregate(): Unit = {
-    util.addTable(
-      s"""
-         |CREATE TABLE retractSink1 (
-         |  `cnt` BIGINT
-         |) WITH (
-         |  'connector' = 'values',
-         |  'sink-insert-only' = 'false'
-         |)
-         |""".stripMargin)
-    util.addTable(
-      s"""
-         |CREATE TABLE retractSink2 (
-         |  `cnt` BIGINT,
-         |  `total` BIGINT
-         |) WITH (
-         |  'connector' = 'values',
-         |  'sink-insert-only' = 'false'
-         |)
-         |""".stripMargin)
+    util.addTable(s"""
+                     |CREATE TABLE retractSink1 (
+                     |  `cnt` BIGINT
+                     |) WITH (
+                     |  'connector' = 'values',
+                     |  'sink-insert-only' = 'false'
+                     |)
+                     |""".stripMargin)
+    util.addTable(s"""
+                     |CREATE TABLE retractSink2 (
+                     |  `cnt` BIGINT,
+                     |  `total` BIGINT
+                     |) WITH (
+                     |  'connector' = 'values',
+                     |  'sink-insert-only' = 'false'
+                     |)
+                     |""".stripMargin)
     val table = util.tableEnv.sqlQuery("SELECT COUNT(*) AS cnt FROM MyTable GROUP BY a")
     util.tableEnv.createTemporaryView("TempTable", table)
     val stmtSet = util.tableEnv.createStatementSet()
@@ -129,24 +144,23 @@ class TableSinkTest extends TableTestBase {
     stmtSet.addInsertSql(
       "INSERT INTO retractSink2 SELECT cnt, SUM(cnt) OVER (ORDER BY PROCTIME()) FROM TempTable")
 
-    thrown.expect(classOf[TableException])
-    thrown.expectMessage("OverAggregate doesn't support consuming update changes " +
-      "which is produced by node GroupAggregate(groupBy=[a], select=[a, COUNT(*) AS cnt])")
-    util.verifyRelPlan(stmtSet, ExplainDetail.CHANGELOG_MODE)
+    assertThatThrownBy(() => util.verifyRelPlan(stmtSet, ExplainDetail.CHANGELOG_MODE))
+      .hasMessageContaining("OverAggregate doesn't support consuming update changes " +
+        "which is produced by node Calc(select=[cnt])")
+      .isInstanceOf[TableException]
   }
 
   @Test
   def testAppendSink(): Unit = {
-    util.addTable(
-      s"""
-         |CREATE TABLE appendSink (
-         |  `a` BIGINT,
-         |  `b` STRING
-         |) WITH (
-         |  'connector' = 'values',
-         |  'sink-insert-only' = 'true'
-         |)
-         |""".stripMargin)
+    util.addTable(s"""
+                     |CREATE TABLE appendSink (
+                     |  `a` BIGINT,
+                     |  `b` STRING
+                     |) WITH (
+                     |  'connector' = 'values',
+                     |  'sink-insert-only' = 'true'
+                     |)
+                     |""".stripMargin)
     val stmtSet = util.tableEnv.createStatementSet()
     stmtSet.addInsertSql("INSERT INTO appendSink SELECT a + b, c FROM MyTable")
     util.verifyRelPlan(stmtSet, ExplainDetail.CHANGELOG_MODE)
@@ -154,16 +168,15 @@ class TableSinkTest extends TableTestBase {
 
   @Test
   def testRetractSink1(): Unit = {
-    util.addTable(
-      s"""
-         |CREATE TABLE retractSink (
-         |  `a` INT,
-         |  `cnt` BIGINT
-         |) WITH (
-         |  'connector' = 'values',
-         |  'sink-insert-only' = 'false'
-         |)
-         |""".stripMargin)
+    util.addTable(s"""
+                     |CREATE TABLE retractSink (
+                     |  `a` INT,
+                     |  `cnt` BIGINT
+                     |) WITH (
+                     |  'connector' = 'values',
+                     |  'sink-insert-only' = 'false'
+                     |)
+                     |""".stripMargin)
     val stmtSet = util.tableEnv.createStatementSet()
     stmtSet.addInsertSql(
       "INSERT INTO retractSink SELECT a, COUNT(*) AS cnt FROM MyTable GROUP BY a")
@@ -172,16 +185,39 @@ class TableSinkTest extends TableTestBase {
 
   @Test
   def testRetractSink2(): Unit = {
-    util.addTable(
-      s"""
-         |CREATE TABLE retractSink (
-         |  `cnt` BIGINT,
-         |  `a` BIGINT
-         |) WITH (
-         |  'connector' = 'values',
-         |  'sink-insert-only' = 'false'
-         |)
-         |""".stripMargin)
+    util.addTable(s"""
+                     |CREATE TABLE retractSink (
+                     |  `cnt` BIGINT,
+                     |  `a` BIGINT
+                     |) WITH (
+                     |  'connector' = 'values',
+                     |  'sink-insert-only' = 'false'
+                     |)
+                     |""".stripMargin)
+    val dml =
+      """
+        |INSERT INTO retractSink
+        |SELECT cnt, COUNT(a) AS a FROM (
+        |    SELECT a, COUNT(*) AS cnt FROM MyTable GROUP BY a) t
+        |GROUP BY cnt
+      """.stripMargin
+    val stmtSet = util.tableEnv.createStatementSet()
+    stmtSet.addInsertSql(dml)
+    util.verifyRelPlan(stmtSet, ExplainDetail.CHANGELOG_MODE)
+  }
+
+  @Test
+  def testRetractSinkWithPrimaryKey(): Unit = {
+    util.addTable(s"""
+                     |CREATE TABLE retractSink (
+                     |  `cnt` BIGINT,
+                     |  `a` BIGINT,
+                     |  PRIMARY KEY (a) NOT ENFORCED
+                     |) WITH (
+                     |  'connector' = 'values',
+                     |  'sink-changelog-mode-enforced' = 'I,UB,UA,D'
+                     |)
+                     |""".stripMargin)
     val dml =
       """
         |INSERT INTO retractSink
@@ -196,36 +232,33 @@ class TableSinkTest extends TableTestBase {
 
   @Test
   def testUpsertSink(): Unit = {
-    util.addTable(
-      s"""
-         |CREATE TABLE upsertSink (
-         |  `a` INT,
-         |  `cnt` BIGINT,
-         |  PRIMARY KEY (a) NOT ENFORCED
-         |) WITH (
-         |  'connector' = 'values',
-         |  'sink-insert-only' = 'false'
-         |)
-         |""".stripMargin)
+    util.addTable(s"""
+                     |CREATE TABLE upsertSink (
+                     |  `a` INT,
+                     |  `cnt` BIGINT,
+                     |  PRIMARY KEY (a) NOT ENFORCED
+                     |) WITH (
+                     |  'connector' = 'values',
+                     |  'sink-insert-only' = 'false'
+                     |)
+                     |""".stripMargin)
     val stmtSet = util.tableEnv.createStatementSet()
-    stmtSet.addInsertSql(
-      "INSERT INTO upsertSink SELECT a, COUNT(*) AS cnt FROM MyTable GROUP BY a")
+    stmtSet.addInsertSql("INSERT INTO upsertSink SELECT a, COUNT(*) AS cnt FROM MyTable GROUP BY a")
     util.verifyRelPlan(stmtSet, ExplainDetail.CHANGELOG_MODE)
   }
 
   @Test
   def testUpsertSinkWithFilter(): Unit = {
-    util.addTable(
-      s"""
-         |CREATE TABLE upsertSink (
-         |  `a` INT,
-         |  `cnt` BIGINT,
-         |  PRIMARY KEY (a) NOT ENFORCED
-         |) WITH (
-         |  'connector' = 'values',
-         |  'sink-insert-only' = 'false'
-         |)
-         |""".stripMargin)
+    util.addTable(s"""
+                     |CREATE TABLE upsertSink (
+                     |  `a` INT,
+                     |  `cnt` BIGINT,
+                     |  PRIMARY KEY (a) NOT ENFORCED
+                     |) WITH (
+                     |  'connector' = 'values',
+                     |  'sink-insert-only' = 'false'
+                     |)
+                     |""".stripMargin)
     val sql =
       """
         |INSERT INTO upsertSink
@@ -241,34 +274,31 @@ class TableSinkTest extends TableTestBase {
 
   @Test
   def testRetractAndUpsertSink(): Unit = {
-    util.addTable(
-      s"""
-         |CREATE TABLE retractSink (
-         |  `b` BIGINT,
-         |  `cnt` BIGINT
-         |) WITH (
-         |  'connector' = 'values',
-         |  'sink-insert-only' = 'false'
-         |)
-         |""".stripMargin)
-    util.addTable(
-      s"""
-         |CREATE TABLE upsertSink (
-         |  `b` BIGINT,
-         |  `cnt` BIGINT,
-         |  PRIMARY KEY (b) NOT ENFORCED
-         |) WITH (
-         |  'connector' = 'values',
-         |  'sink-insert-only' = 'false'
-         |)
-         |""".stripMargin)
+    util.addTable(s"""
+                     |CREATE TABLE retractSink (
+                     |  `b` BIGINT,
+                     |  `cnt` BIGINT
+                     |) WITH (
+                     |  'connector' = 'values',
+                     |  'sink-insert-only' = 'false'
+                     |)
+                     |""".stripMargin)
+    util.addTable(s"""
+                     |CREATE TABLE upsertSink (
+                     |  `b` BIGINT,
+                     |  `cnt` BIGINT,
+                     |  PRIMARY KEY (b) NOT ENFORCED
+                     |) WITH (
+                     |  'connector' = 'values',
+                     |  'sink-insert-only' = 'false'
+                     |)
+                     |""".stripMargin)
 
     val table = util.tableEnv.sqlQuery("SELECT b, COUNT(a) AS cnt FROM MyTable GROUP BY b")
     util.tableEnv.createTemporaryView("TempTable", table)
 
     val stmtSet = util.tableEnv.createStatementSet()
-    stmtSet.addInsertSql(
-      "INSERT INTO retractSink SELECT b, cnt FROM TempTable WHERE b < 4")
+    stmtSet.addInsertSql("INSERT INTO retractSink SELECT b, cnt FROM TempTable WHERE b < 4")
     stmtSet.addInsertSql(
       "INSERT INTO upsertSink SELECT b, cnt FROM TempTable WHERE b >= 4 AND b < 6")
     stmtSet.addInsertSql(
@@ -282,49 +312,46 @@ class TableSinkTest extends TableTestBase {
   def testAppendUpsertAndRetractSink(): Unit = {
     util.addDataStream[(Int, Long, String)]("MyTable2", 'd, 'e, 'f)
     util.addDataStream[(Int, Long, String)]("MyTable3", 'i, 'j, 'k)
-    util.addTable(
-      s"""
-         |CREATE TABLE appendSink (
-         |  `a` INT,
-         |  `b` BIGINT
-         |) WITH (
-         |  'connector' = 'values',
-         |  'sink-insert-only' = 'true'
-         |)
-         |""".stripMargin)
+    util.addTable(s"""
+                     |CREATE TABLE appendSink (
+                     |  `a` INT,
+                     |  `b` BIGINT
+                     |) WITH (
+                     |  'connector' = 'values',
+                     |  'sink-insert-only' = 'true'
+                     |)
+                     |""".stripMargin)
 
-    val table = util.tableEnv.sqlQuery(
-      "SELECT a, b FROM MyTable UNION ALL SELECT d, e FROM MyTable2")
+    val table =
+      util.tableEnv.sqlQuery("SELECT a, b FROM MyTable UNION ALL SELECT d, e FROM MyTable2")
     util.tableEnv.createTemporaryView("TempTable", table)
     val stmtSet = util.tableEnv.createStatementSet()
 
     stmtSet.addInsertSql("INSERT INTO appendSink SELECT * FROM TempTable")
 
-    util.addTable(
-      s"""
-         |CREATE TABLE retractSink (
-         |  `total_sum` INT
-         |) WITH (
-         |  'connector' = 'values',
-         |  'sink-insert-only' = 'false'
-         |)
-         |""".stripMargin)
-    val table1 = util.tableEnv.sqlQuery(
-      "SELECT a, b FROM TempTable UNION ALL SELECT i, j FROM MyTable3")
+    util.addTable(s"""
+                     |CREATE TABLE retractSink (
+                     |  `total_sum` INT
+                     |) WITH (
+                     |  'connector' = 'values',
+                     |  'sink-insert-only' = 'false'
+                     |)
+                     |""".stripMargin)
+    val table1 =
+      util.tableEnv.sqlQuery("SELECT a, b FROM TempTable UNION ALL SELECT i, j FROM MyTable3")
     util.tableEnv.createTemporaryView("TempTable1", table1)
     stmtSet.addInsertSql("INSERT INTO retractSink SELECT SUM(a) AS total_sum FROM TempTable1")
 
-    util.addTable(
-      s"""
-         |CREATE TABLE upsertSink (
-         |  `a` INT,
-         |  `total_min` BIGINT,
-         |  PRIMARY KEY (a) NOT ENFORCED
-         |) WITH (
-         |  'connector' = 'values',
-         |  'sink-insert-only' = 'false'
-         |)
-         |""".stripMargin)
+    util.addTable(s"""
+                     |CREATE TABLE upsertSink (
+                     |  `a` INT,
+                     |  `total_min` BIGINT,
+                     |  PRIMARY KEY (a) NOT ENFORCED
+                     |) WITH (
+                     |  'connector' = 'values',
+                     |  'sink-insert-only' = 'false'
+                     |)
+                     |""".stripMargin)
     stmtSet.addInsertSql(
       "INSERT INTO upsertSink SELECT a, MIN(b) AS total_min FROM TempTable1 GROUP BY a")
 
@@ -359,26 +386,24 @@ class TableSinkTest extends TableTestBase {
     val stmtSet = util.tableEnv.createStatementSet()
     stmtSet.addInsertSql(sql)
 
-    thrown.expect(classOf[ValidationException])
-    thrown.expectMessage(
-      "Query schema: [a: INT, m_3: INT, m_2: INT, b: BIGINT, c: INT, metadata_1: STRING]\n" +
-      "Sink schema:  [a: INT, m_2: INT, b: BIGINT, c: INT, metadata_1: STRING]")
-
-    util.verifyRelPlan(stmtSet)
+    assertThatThrownBy(() => util.verifyRelPlan(stmtSet))
+      .hasMessageContaining(
+        "Query schema: [a: INT, m_3: INT, m_2: INT, b: BIGINT, c: INT, metadata_1: STRING]\n" +
+          "Sink schema:  [a: INT, m_2: INT, b: BIGINT, c: INT, metadata_1: STRING]")
+      .isInstanceOf[ValidationException]
   }
 
   @Test
   def testExceptionForWritingInvalidMetadataColumn(): Unit = {
     // test casting of metadata columns
-    util.addTable(
-      s"""
-         |CREATE TABLE MetadataTable (
-         |  `a` INT,
-         |  `metadata_1` TIMESTAMP(3) METADATA
-         |) WITH (
-         |  'connector' = 'values',
-         |  'writable-metadata' = 'metadata_1:BOOLEAN'
-         |)
+    util.addTable(s"""
+                     |CREATE TABLE MetadataTable (
+                     |  `a` INT,
+                     |  `metadata_1` TIMESTAMP(3) METADATA
+                     |) WITH (
+                     |  'connector' = 'values',
+                     |  'writable-metadata' = 'metadata_1:BOOLEAN'
+                     |)
        """.stripMargin)
 
     val sql =
@@ -389,13 +414,12 @@ class TableSinkTest extends TableTestBase {
     val stmtSet = util.tableEnv.createStatementSet()
     stmtSet.addInsertSql(sql)
 
-    thrown.expect(classOf[ValidationException])
-    thrown.expectMessage(
-      "Invalid data type for metadata column 'metadata_1' of table " +
-      "'default_catalog.default_database.MetadataTable'. The column cannot be declared as " +
-      "'TIMESTAMP(3)' because the type must be castable to metadata type 'BOOLEAN'.")
-
-    util.verifyRelPlan(stmtSet)
+    assertThatThrownBy(() => util.verifyRelPlan(stmtSet))
+      .hasMessageContaining(
+        "Invalid data type for metadata column 'metadata_1' of table " +
+          "'default_catalog.default_database.MetadataTable'. The column cannot be declared as " +
+          "'TIMESTAMP(3)' because the type must be castable to metadata type 'BOOLEAN'.")
+      .isInstanceOf[ValidationException]
   }
 
   @Test
@@ -430,16 +454,43 @@ class TableSinkTest extends TableTestBase {
   }
 
   @Test
-  def testSinkDisorderChangeLogWithJoin(): Unit = {
-    util.tableEnv.executeSql(
+  def testMetadataColumnThatConflictsWithPhysicalColumn(): Unit = {
+    util.addTable(s"""
+                     |CREATE TABLE MetadataTable (
+                     |  `metadata_1` DOUBLE,
+                     |  `m_1` STRING METADATA FROM 'metadata_1' VIRTUAL,
+                     |  `m_2` BIGINT METADATA FROM 'metadata_2',
+                     |  `metadata_2` DOUBLE,
+                     |  `other` STRING
+                     |) WITH (
+                     |  'connector' = 'values',
+                     |  'readable-metadata' = 'metadata_1:STRING, metadata_2:BIGINT',
+                     |  'writable-metadata' = 'metadata_1:STRING, metadata_2:BIGINT'
+                     |)
+       """.stripMargin)
+
+    val sql =
       """
-        |CREATE TABLE SinkJoinChangeLog (
-        |  person STRING, votes BIGINT, prize DOUBLE,
-        |  PRIMARY KEY(person) NOT ENFORCED) WITH(
-        |  'connector' = 'values',
-        |  'sink-insert-only' = 'false'
-        |)
-        |""".stripMargin)
+        |INSERT INTO MetadataTable
+        |SELECT `metadata_1`, `m_2`, `metadata_2`, `other`
+        |FROM MetadataTable
+        |""".stripMargin
+    val stmtSet = util.tableEnv.createStatementSet()
+    stmtSet.addInsertSql(sql)
+
+    util.verifyRelPlan(stmtSet)
+  }
+
+  @Test
+  def testSinkDisorderChangeLogWithJoin(): Unit = {
+    util.tableEnv.executeSql("""
+                               |CREATE TABLE SinkJoinChangeLog (
+                               |  person STRING, votes BIGINT, prize DOUBLE,
+                               |  PRIMARY KEY(person) NOT ENFORCED) WITH(
+                               |  'connector' = 'values',
+                               |  'sink-insert-only' = 'false'
+                               |)
+                               |""".stripMargin)
 
     util.verifyExecPlanInsert(
       """
@@ -447,20 +498,21 @@ class TableSinkTest extends TableTestBase {
         |SELECT T.person, T.sum_votes, award.prize FROM
         |   (SELECT person, SUM(votes) AS sum_votes FROM src GROUP BY person) T, award
         |   WHERE T.sum_votes = award.votes
+        |ON CONFLICT
+        |DO DEDUPLICATE
         |""".stripMargin)
   }
 
   @Test
   def testSinkDisorderChangeLogWithRank(): Unit = {
-    util.tableEnv.executeSql(
-      """
-        |CREATE TABLE SinkRankChangeLog (
-        |  person STRING, votes BIGINT,
-        |  PRIMARY KEY(person) NOT ENFORCED) WITH(
-        |  'connector' = 'values',
-        |  'sink-insert-only' = 'false'
-        |)
-        |""".stripMargin)
+    util.tableEnv.executeSql("""
+                               |CREATE TABLE SinkRankChangeLog (
+                               |  person STRING, votes BIGINT,
+                               |  PRIMARY KEY(person) NOT ENFORCED) WITH(
+                               |  'connector' = 'values',
+                               |  'sink-insert-only' = 'false'
+                               |)
+                               |""".stripMargin)
 
     util.verifyExecPlanInsert(
       """
@@ -471,63 +523,61 @@ class TableSinkTest extends TableTestBase {
         |   FROM (SELECT person, SUM(votes) AS sum_votes, SUM(votes) / 2 AS vote_section FROM src
         |      GROUP BY person))
         |   WHERE rank_number < 10
+        |ON CONFLICT DO DEDUPLICATE
         |""".stripMargin)
   }
 
   @Test def testAppendStreamToSinkWithPkAutoKeyBy(): Unit = {
     val tEnv = util.tableEnv
-    tEnv.executeSql(
-      """
-        |create table source (
-        | id varchar,
-        | city_name varchar
-        |) with (
-        | 'connector' = 'values',
-        | 'changelog-mode' = 'I'
-        |)""".stripMargin)
-    tEnv.executeSql(
-      """
-        |create table sink (
-        | id varchar,
-        | city_name varchar,
-        | primary key (id) not enforced
-        |) with (
-        | 'connector' = 'values',
-        | 'sink-insert-only' = 'false',
-        | 'sink.parallelism' = '9'
-        |)""".stripMargin)
+    tEnv.executeSql("""
+                      |create table source (
+                      | id varchar,
+                      | city_name varchar
+                      |) with (
+                      | 'connector' = 'values',
+                      | 'changelog-mode' = 'I'
+                      |)""".stripMargin)
+    tEnv.executeSql("""
+                      |create table sink (
+                      | id varchar,
+                      | city_name varchar,
+                      | primary key (id) not enforced
+                      |) with (
+                      | 'connector' = 'values',
+                      | 'sink-insert-only' = 'false',
+                      | 'sink.parallelism' = '9'
+                      |)""".stripMargin)
     val stmtSet = tEnv.asInstanceOf[TestingTableEnvironment].createStatementSet
-    stmtSet.addInsertSql("insert into sink select * from source")
+    stmtSet.addInsertSql("insert into sink select * from source on conflict do deduplicate")
     // we set the sink parallelism to 9 which differs from the source, expect 'keyby' was added.
     util.verifyExplain(stmtSet, ExplainDetail.JSON_EXECUTION_PLAN)
   }
 
   @Test def testAppendStreamToSinkWithPkNoKeyBy(): Unit = {
     val tEnv = util.tableEnv
-    tEnv.getConfig.getConfiguration.set(ExecutionConfigOptions.TABLE_EXEC_SINK_KEYED_SHUFFLE,
+    tEnv.getConfig.set(
+      ExecutionConfigOptions.TABLE_EXEC_SINK_KEYED_SHUFFLE,
       ExecutionConfigOptions.SinkKeyedShuffle.NONE)
-    tEnv.executeSql(
-      """
-        |create table source (
-        | id varchar,
-        | city_name varchar
-        |) with (
-        | 'connector' = 'values',
-        | 'changelog-mode' = 'I'
-        |)""".stripMargin)
-    tEnv.executeSql(
-      """
-        |create table sink (
-        | id varchar,
-        | city_name varchar,
-        | primary key (id) not enforced
-        |) with (
-        | 'connector' = 'values',
-        | 'sink-insert-only' = 'false',
-        | 'sink.parallelism' = '9'
-        |)""".stripMargin)
+    tEnv.executeSql("""
+                      |create table source (
+                      | id varchar,
+                      | city_name varchar
+                      |) with (
+                      | 'connector' = 'values',
+                      | 'changelog-mode' = 'I'
+                      |)""".stripMargin)
+    tEnv.executeSql("""
+                      |create table sink (
+                      | id varchar,
+                      | city_name varchar,
+                      | primary key (id) not enforced
+                      |) with (
+                      | 'connector' = 'values',
+                      | 'sink-insert-only' = 'false',
+                      | 'sink.parallelism' = '9'
+                      |)""".stripMargin)
     val stmtSet = tEnv.asInstanceOf[TestingTableEnvironment].createStatementSet
-    stmtSet.addInsertSql("insert into sink select * from source")
+    stmtSet.addInsertSql("insert into sink select * from source on conflict do deduplicate")
     // we set the sink parallelism to 9 which differs from the source, but disable auto keyby
     util.verifyExplain(stmtSet, ExplainDetail.JSON_EXECUTION_PLAN)
   }
@@ -535,30 +585,29 @@ class TableSinkTest extends TableTestBase {
   @Test def testAppendStreamToSinkWithPkForceKeyBy(): Unit = {
     util.getStreamEnv.setParallelism(4)
     val tEnv = util.tableEnv
-    tEnv.getConfig.getConfiguration.set(ExecutionConfigOptions.TABLE_EXEC_SINK_KEYED_SHUFFLE,
+    tEnv.getConfig.set(
+      ExecutionConfigOptions.TABLE_EXEC_SINK_KEYED_SHUFFLE,
       ExecutionConfigOptions.SinkKeyedShuffle.FORCE)
-    tEnv.executeSql(
-      """
-        |create table source (
-        | id varchar,
-        | city_name varchar
-        |) with (
-        | 'connector' = 'test_source'
-        |)""".stripMargin)
+    tEnv.executeSql("""
+                      |create table source (
+                      | id varchar,
+                      | city_name varchar
+                      |) with (
+                      | 'connector' = 'test_source'
+                      |)""".stripMargin)
 
-    tEnv.executeSql(
-      """
-        |create table sink (
-        | id varchar,
-        | city_name varchar,
-        | primary key (id) not enforced
-        |) with (
-        | 'connector' = 'values',
-        | 'sink-insert-only' = 'false',
-        | 'sink.parallelism' = '4'
-        |)""".stripMargin)
+    tEnv.executeSql("""
+                      |create table sink (
+                      | id varchar,
+                      | city_name varchar,
+                      | primary key (id) not enforced
+                      |) with (
+                      | 'connector' = 'values',
+                      | 'sink-insert-only' = 'false',
+                      | 'sink.parallelism' = '4'
+                      |)""".stripMargin)
     val stmtSet = tEnv.asInstanceOf[TestingTableEnvironment].createStatementSet
-    stmtSet.addInsertSql("insert into sink select * from source")
+    stmtSet.addInsertSql("insert into sink select * from source on conflict do deduplicate")
     // source and sink has same parallelism, but sink shuffle by pk is enforced
     util.verifyExplain(stmtSet, ExplainDetail.JSON_EXECUTION_PLAN)
   }
@@ -566,30 +615,29 @@ class TableSinkTest extends TableTestBase {
   @Test def testSingleParallelismAppendStreamToSinkWithPkForceKeyBy(): Unit = {
     util.getStreamEnv.setParallelism(1)
     val tEnv = util.tableEnv
-    tEnv.getConfig.getConfiguration.set(ExecutionConfigOptions.TABLE_EXEC_SINK_KEYED_SHUFFLE,
+    tEnv.getConfig.set(
+      ExecutionConfigOptions.TABLE_EXEC_SINK_KEYED_SHUFFLE,
       ExecutionConfigOptions.SinkKeyedShuffle.FORCE)
-    tEnv.executeSql(
-      """
-        |create table source (
-        | id varchar,
-        | city_name varchar
-        |) with (
-        | 'connector' = 'test_source'
-        |)""".stripMargin)
+    tEnv.executeSql("""
+                      |create table source (
+                      | id varchar,
+                      | city_name varchar
+                      |) with (
+                      | 'connector' = 'test_source'
+                      |)""".stripMargin)
 
-    tEnv.executeSql(
-      """
-        |create table sink (
-        | id varchar,
-        | city_name varchar,
-        | primary key (id) not enforced
-        |) with (
-        | 'connector' = 'values',
-        | 'sink-insert-only' = 'false',
-        | 'sink.parallelism' = '1'
-        |)""".stripMargin)
+    tEnv.executeSql("""
+                      |create table sink (
+                      | id varchar,
+                      | city_name varchar,
+                      | primary key (id) not enforced
+                      |) with (
+                      | 'connector' = 'values',
+                      | 'sink-insert-only' = 'false',
+                      | 'sink.parallelism' = '1'
+                      |)""".stripMargin)
     val stmtSet = tEnv.asInstanceOf[TestingTableEnvironment].createStatementSet
-    stmtSet.addInsertSql("insert into sink select * from source")
+    stmtSet.addInsertSql("insert into sink select * from source on conflict do deduplicate")
     // source and sink has same parallelism, but sink shuffle by pk is enforced
     util.verifyExplain(stmtSet, ExplainDetail.JSON_EXECUTION_PLAN)
   }
@@ -597,27 +645,26 @@ class TableSinkTest extends TableTestBase {
   @Test def testAppendStreamToSinkWithoutPkForceKeyBy(): Unit = {
     util.getStreamEnv.setParallelism(4)
     val tEnv = util.tableEnv
-    tEnv.getConfig.getConfiguration.set(ExecutionConfigOptions.TABLE_EXEC_SINK_KEYED_SHUFFLE,
+    tEnv.getConfig.set(
+      ExecutionConfigOptions.TABLE_EXEC_SINK_KEYED_SHUFFLE,
       ExecutionConfigOptions.SinkKeyedShuffle.FORCE)
-    tEnv.executeSql(
-      """
-        |create table source (
-        | id varchar,
-        | city_name varchar
-        |) with (
-        | 'connector' = 'test_source'
-        |)""".stripMargin)
+    tEnv.executeSql("""
+                      |create table source (
+                      | id varchar,
+                      | city_name varchar
+                      |) with (
+                      | 'connector' = 'test_source'
+                      |)""".stripMargin)
 
-    tEnv.executeSql(
-      """
-        |create table sink (
-        | id varchar,
-        | city_name varchar
-        |) with (
-        | 'connector' = 'values',
-        | 'sink-insert-only' = 'false',
-        | 'sink.parallelism' = '4'
-        |)""".stripMargin)
+    tEnv.executeSql("""
+                      |create table sink (
+                      | id varchar,
+                      | city_name varchar
+                      |) with (
+                      | 'connector' = 'values',
+                      | 'sink-insert-only' = 'false',
+                      | 'sink.parallelism' = '4'
+                      |)""".stripMargin)
     val stmtSet = tEnv.asInstanceOf[TestingTableEnvironment].createStatementSet
     stmtSet.addInsertSql("insert into sink select * from source")
     // source and sink has same parallelism, but sink shuffle by pk is enforced
@@ -627,27 +674,26 @@ class TableSinkTest extends TableTestBase {
   @Test def testAppendStreamToSinkWithoutPkForceKeyBySingleParallelism(): Unit = {
     util.getStreamEnv.setParallelism(4)
     val tEnv = util.tableEnv
-    tEnv.getConfig.getConfiguration.set(ExecutionConfigOptions.TABLE_EXEC_SINK_KEYED_SHUFFLE,
+    tEnv.getConfig.set(
+      ExecutionConfigOptions.TABLE_EXEC_SINK_KEYED_SHUFFLE,
       ExecutionConfigOptions.SinkKeyedShuffle.FORCE)
-    tEnv.executeSql(
-      """
-        |create table source (
-        | id varchar,
-        | city_name varchar
-        |) with (
-        | 'connector' = 'test_source'
-        |)""".stripMargin)
+    tEnv.executeSql("""
+                      |create table source (
+                      | id varchar,
+                      | city_name varchar
+                      |) with (
+                      | 'connector' = 'test_source'
+                      |)""".stripMargin)
 
-    tEnv.executeSql(
-      """
-        |create table sink (
-        | id varchar,
-        | city_name varchar
-        |) with (
-        | 'connector' = 'values',
-        | 'sink-insert-only' = 'false',
-        | 'sink.parallelism' = '1'
-        |)""".stripMargin)
+    tEnv.executeSql("""
+                      |create table sink (
+                      | id varchar,
+                      | city_name varchar
+                      |) with (
+                      | 'connector' = 'values',
+                      | 'sink-insert-only' = 'false',
+                      | 'sink.parallelism' = '1'
+                      |)""".stripMargin)
     val stmtSet = tEnv.asInstanceOf[TestingTableEnvironment].createStatementSet
     stmtSet.addInsertSql("insert into sink select * from source")
     util.verifyExplain(stmtSet, ExplainDetail.JSON_EXECUTION_PLAN)
@@ -656,120 +702,364 @@ class TableSinkTest extends TableTestBase {
   @Test def testChangelogStreamToSinkWithPkDifferentParallelism(): Unit = {
     util.getStreamEnv.setParallelism(1)
     val tEnv = util.tableEnv
-    tEnv.getConfig.getConfiguration.set(ExecutionConfigOptions.TABLE_EXEC_SINK_KEYED_SHUFFLE,
+    tEnv.getConfig.set(
+      ExecutionConfigOptions.TABLE_EXEC_SINK_KEYED_SHUFFLE,
       ExecutionConfigOptions.SinkKeyedShuffle.AUTO)
-    tEnv.executeSql(
-      """
-        |create table source (
-        | id varchar,
-        | city_name varchar,
-        | primary key(id) not enforced
-        |) with (
-        | 'connector' = 'values',
-        | 'changelog-mode' = 'I,UB,UA,D'
-        |)""".stripMargin)
+    tEnv.executeSql("""
+                      |create table source (
+                      | id varchar,
+                      | city_name varchar,
+                      | primary key(id) not enforced
+                      |) with (
+                      | 'connector' = 'values',
+                      | 'changelog-mode' = 'I,UB,UA,D'
+                      |)""".stripMargin)
 
-    tEnv.executeSql(
-      """
-        |create table sink (
-        | id varchar,
-        | city_name varchar,
-        | primary key(id) not enforced
-        |) with (
-        | 'connector' = 'values',
-        | 'sink-insert-only' = 'false',
-        | 'sink.parallelism' = '2'
-        |)""".stripMargin)
+    tEnv.executeSql("""
+                      |create table sink (
+                      | id varchar,
+                      | city_name varchar,
+                      | primary key(id) not enforced
+                      |) with (
+                      | 'connector' = 'values',
+                      | 'sink-insert-only' = 'false',
+                      | 'sink.parallelism' = '2'
+                      |)""".stripMargin)
     val stmtSet = tEnv.asInstanceOf[TestingTableEnvironment].createStatementSet
     stmtSet.addInsertSql("insert into sink select * from source")
     util.verifyExplain(stmtSet, ExplainDetail.JSON_EXECUTION_PLAN)
   }
 
-  @Test def testChangelogStreamToSinkWithPkSingleParallelism(): Unit = {
+  @Test
+  def testChangelogStreamToSinkWithPkSingleParallelism(): Unit = {
     util.getStreamEnv.setParallelism(4)
     val tEnv = util.tableEnv
-    tEnv.getConfig.getConfiguration.set(ExecutionConfigOptions.TABLE_EXEC_SINK_KEYED_SHUFFLE,
+    tEnv.getConfig.set(
+      ExecutionConfigOptions.TABLE_EXEC_SINK_KEYED_SHUFFLE,
       ExecutionConfigOptions.SinkKeyedShuffle.FORCE)
-    tEnv.executeSql(
-      """
-        |create table source (
-        | id varchar,
-        | city_name varchar,
-        | ts bigint
-        |) with (
-        | 'connector' = 'test_source'
-        |)""".stripMargin)
+    tEnv.executeSql("""
+                      |create table source (
+                      | id varchar,
+                      | city_name varchar,
+                      | ts bigint
+                      |) with (
+                      | 'connector' = 'test_source'
+                      |)""".stripMargin)
 
-    tEnv.executeSql(
-      """
-        |create table sink (
-        | id varchar,
-        | city_name varchar,
-        | ts bigint,
-        | rn bigint,
-        | primary key(id) not enforced
-        |) with (
-        | 'connector' = 'values',
-        | 'sink-insert-only' = 'false',
-        | 'sink.parallelism' = '1'
-        |)""".stripMargin)
+    tEnv.executeSql("""
+                      |create table sink (
+                      | id varchar,
+                      | city_name varchar,
+                      | ts bigint,
+                      | rn bigint,
+                      | primary key(id) not enforced
+                      |) with (
+                      | 'connector' = 'values',
+                      | 'sink-insert-only' = 'false',
+                      | 'sink.parallelism' = '1'
+                      |)""".stripMargin)
     val stmtSet = tEnv.asInstanceOf[TestingTableEnvironment].createStatementSet
-    stmtSet.addInsertSql(
-      s"""
-         |insert into sink
-         |select * from (
-         |  select *, row_number() over (partition by id order by ts desc) rn
-         |  from source
-         |) where rn=1""".stripMargin)
+    stmtSet.addInsertSql(s"""
+                            |insert into sink
+                            |select * from (
+                            |  select *, row_number() over (partition by id order by ts desc) rn
+                            |  from source
+                            |) where rn=1""".stripMargin)
     util.verifyExplain(stmtSet, ExplainDetail.JSON_EXECUTION_PLAN)
   }
 
   @Test
-  def testManagedTableSinkWithDisableCheckpointing(): Unit = {
-    util.addTable(
-      s"""
-         |CREATE TABLE sink (
-         |  `a` INT,
-         |  `b` BIGINT,
-         |  `c` STRING
-         |) WITH(
-         |)
-         |""".stripMargin)
+  def testInsertPartColumn(): Unit = {
+    util.addTable(s"""
+                     |CREATE TABLE zm_test (
+                     |  `a` BIGINT,
+                     |  `m1` MAP<STRING, BIGINT>,
+                     |  `m2` MAP<STRING NOT NULL, BIGINT>,
+                     |  `m3` MAP<STRING, BIGINT NOT NULL>,
+                     |  `m4` MAP<STRING NOT NULL, BIGINT NOT NULL>
+                     |) WITH (
+                     |  'connector' = 'values',
+                     |  'sink-insert-only' = 'true'
+                     |)
+                     |""".stripMargin)
     val stmtSet = util.tableEnv.createStatementSet()
-    stmtSet.addInsertSql("INSERT INTO sink SELECT * FROM MyTable")
-
-    expectedException.expect(classOf[TableException])
-    expectedException.expectMessage(
-      s"You should enable the checkpointing for sinking to managed table " +
-        s"'default_catalog.default_database.sink', " +
-        s"managed table relies on checkpoint to commit and " +
-        s"the data is visible only after commit.")
-    util.verifyAstPlan(stmtSet, ExplainDetail.CHANGELOG_MODE)
+    stmtSet.addInsertSql("INSERT INTO zm_test(`a`) SELECT `a` FROM MyTable")
+    util.verifyRelPlan(stmtSet, ExplainDetail.CHANGELOG_MODE)
   }
 
   @Test
-  def testManagedTableSinkWithEnableCheckpointing(): Unit = {
-    util.getStreamEnv.enableCheckpointing(10)
-    util.addTable(
-      s"""
-         |CREATE TABLE sink (
-         |  `a` INT,
-         |  `b` BIGINT,
-         |  `c` STRING
-         |) WITH(
-         |)
-         |""".stripMargin)
+  def testDistribution(): Unit = {
+    util.addTable(s"""
+                     |CREATE TABLE sink (
+                     |  `a` INT,
+                     |  `b` BIGINT
+                     |) DISTRIBUTED BY (
+                     |  `b`
+                     |) WITH (
+                     |  'connector' = 'values'
+                     |)
+                     |""".stripMargin)
     val stmtSet = util.tableEnv.createStatementSet()
-    stmtSet.addInsertSql("INSERT INTO sink SELECT * FROM MyTable")
-
-    util.verifyAstPlan(stmtSet, ExplainDetail.CHANGELOG_MODE)
+    stmtSet.addInsertSql("INSERT INTO sink SELECT a,b FROM MyTable")
+    util.verifyExecPlan(stmtSet)
   }
+
+  @Test
+  def testDistributionWithRequiredBucketCount(): Unit = {
+    util.addTable(s"""
+                     |CREATE TABLE sink (
+                     |  `a` INT,
+                     |  `b` BIGINT
+                     |) DISTRIBUTED BY (
+                     |  `b`
+                     |) WITH (
+                     |  'connector' = 'values',
+                     |  'sink.bucket-count-required' = 'true'
+                     |)
+                     |""".stripMargin)
+    val stmtSet = util.tableEnv.createStatementSet()
+    stmtSet.addInsertSql("INSERT INTO sink SELECT a,b FROM MyTable ORDER BY a")
+
+    Assertions
+      .assertThatThrownBy(() => util.verifyExecPlan(stmtSet))
+      .hasMessageContaining(
+        "Table 'default_catalog.default_database.sink' is a bucketed table, but the underlying DynamicTableSink requires the number of buckets to be set.")
+  }
+
+  @Test
+  def testDistributionWithUnsupportedDistributionAlgorithm(): Unit = {
+    util.addTable(s"""
+                     |CREATE TABLE sink (
+                     |  `a` INT,
+                     |  `b` BIGINT
+                     |) DISTRIBUTED BY RANGE (
+                     |  `b`
+                     |) WITH (
+                     |  'connector' = 'values'
+                     |)
+                     |""".stripMargin)
+    val stmtSet = util.tableEnv.createStatementSet()
+    stmtSet.addInsertSql("INSERT INTO sink SELECT a,b FROM MyTable ORDER BY a")
+    Assertions
+      .assertThatThrownBy(() => util.verifyExecPlan(stmtSet))
+      .hasMessageContaining(
+        "Table 'default_catalog.default_database.sink' is a bucketed table and it supports [HASH, UNKNOWN], but algorithm RANGE was requested.")
+  }
+
+  @Test
+  def testInsertOnConflictDoDeduplicate(): Unit = {
+    util.addTable(s"""
+                     |CREATE TABLE conflictSink3 (
+                     |  `a` INT,
+                     |  `b` BIGINT,
+                     |  PRIMARY KEY (a) NOT ENFORCED
+                     |) WITH (
+                     |  'connector' = 'values',
+                     |  'sink-insert-only' = 'false'
+                     |)
+                     |""".stripMargin)
+    val stmtSet = util.tableEnv.createStatementSet()
+    stmtSet.addInsertSql(
+      "INSERT INTO conflictSink3 SELECT a, b FROM MyTable ON CONFLICT DO DEDUPLICATE")
+    util.verifyRelPlan(stmtSet, ExplainDetail.CHANGELOG_MODE)
+  }
+
+  @Test
+  def testAppendOnlyInputWithoutOnConflict(): Unit = {
+    util.tableEnv.getConfig
+      .set(ExecutionConfigOptions.TABLE_EXEC_SINK_REQUIRE_ON_CONFLICT, Boolean.box(false))
+    util.addTable(s"""
+                     |CREATE TABLE sinkWithPk (
+                     |  `a` INT,
+                     |  `b` BIGINT,
+                     |  PRIMARY KEY (a) NOT ENFORCED
+                     |) WITH (
+                     |  'connector' = 'values',
+                     |  'sink-insert-only' = 'false'
+                     |)
+                     |""".stripMargin)
+    val stmtSet = util.tableEnv.createStatementSet()
+    stmtSet.addInsertSql("INSERT INTO sinkWithPk SELECT a, b FROM MyTable")
+    util.verifyRelPlan(stmtSet, ExplainDetail.CHANGELOG_MODE)
+  }
+
+  @Test
+  def testUpdatingInputWithoutOnConflict(): Unit = {
+    util.tableEnv.getConfig
+      .set(ExecutionConfigOptions.TABLE_EXEC_SINK_REQUIRE_ON_CONFLICT, Boolean.box(false))
+    util.addTable(s"""
+                     |CREATE TABLE updatingSinkWithPk (
+                     |  `id` INT,
+                     |  `cnt` BIGINT,
+                     |  PRIMARY KEY (id) NOT ENFORCED
+                     |) WITH (
+                     |  'connector' = 'values',
+                     |  'sink-insert-only' = 'false'
+                     |)
+                     |""".stripMargin)
+    val stmtSet = util.tableEnv.createStatementSet()
+    // The upsert key is the grouping key c, which is not written to the sink, so it can never
+    // match the primary key.
+    stmtSet.addInsertSql(
+      "INSERT INTO updatingSinkWithPk SELECT MAX(a), COUNT(*) FROM MyTable GROUP BY c")
+    util.verifyRelPlan(stmtSet, ExplainDetail.CHANGELOG_MODE)
+  }
+
+  @Test
+  def testOnConflictIsRequiredWithForcedMaterialize(): Unit = {
+    util.tableEnv.getConfig.set(
+      ExecutionConfigOptions.TABLE_EXEC_SINK_UPSERT_MATERIALIZE,
+      ExecutionConfigOptions.UpsertMaterialize.FORCE)
+    util.addTable(s"""
+                     |CREATE TABLE sinkWithPkForcedMaterialize (
+                     |  `id` INT,
+                     |  `cnt` BIGINT,
+                     |  PRIMARY KEY (id) NOT ENFORCED
+                     |) WITH (
+                     |  'connector' = 'values',
+                     |  'sink-insert-only' = 'false'
+                     |)
+                     |""".stripMargin)
+    val stmtSet = util.tableEnv.createStatementSet()
+    // The upsert key is the grouping key c, which is not written to the sink, so it can never
+    // match the primary key. FORCE adds the materializer, so the clause takes effect and is
+    // required here for the same reason it is under AUTO.
+    stmtSet.addInsertSql(
+      "INSERT INTO sinkWithPkForcedMaterialize SELECT MAX(a), COUNT(*) FROM MyTable GROUP BY c")
+    assertThatThrownBy(() => util.verifyRelPlan(stmtSet, ExplainDetail.CHANGELOG_MODE))
+      .isInstanceOf(classOf[ValidationException])
+      .hasMessageContaining(
+        "The query has an upsert key that differs from the primary key of the sink table")
+  }
+
+  @Test
+  def testOnConflictIsNotRequiredWithoutMaterialize(): Unit = {
+    util.tableEnv.getConfig.set(
+      ExecutionConfigOptions.TABLE_EXEC_SINK_UPSERT_MATERIALIZE,
+      ExecutionConfigOptions.UpsertMaterialize.NONE)
+    util.addTable(s"""
+                     |CREATE TABLE sinkWithPkNoMaterialize (
+                     |  `id` INT,
+                     |  `cnt` BIGINT,
+                     |  PRIMARY KEY (id) NOT ENFORCED
+                     |) WITH (
+                     |  'connector' = 'values',
+                     |  'sink-insert-only' = 'false'
+                     |)
+                     |""".stripMargin)
+    val stmtSet = util.tableEnv.createStatementSet()
+    // NONE removes the materializer, the only thing that would apply a conflict strategy, so the
+    // clause stays optional under it. Keep this behaviour, it is documented with the option.
+    stmtSet.addInsertSql(
+      "INSERT INTO sinkWithPkNoMaterialize SELECT MAX(a), COUNT(*) FROM MyTable GROUP BY c")
+    util.verifyRelPlan(stmtSet, ExplainDetail.CHANGELOG_MODE)
+  }
+
+  @Test
+  def testForcedMaterializeWithAppendOnlyInput(): Unit = {
+    util.getStreamEnv.setParallelism(1)
+    util.tableEnv.getConfig.set(
+      ExecutionConfigOptions.TABLE_EXEC_SINK_UPSERT_MATERIALIZE,
+      ExecutionConfigOptions.UpsertMaterialize.FORCE)
+    // This test covers what FORCE materializes, not ON CONFLICT enforcement. The input is append
+    // only and carries no upsert key, so the clause would otherwise be required, exactly as it
+    // already is under AUTO in testAppendOnlyInputWithoutOnConflict.
+    util.tableEnv.getConfig
+      .set(ExecutionConfigOptions.TABLE_EXEC_SINK_REQUIRE_ON_CONFLICT, Boolean.box(false))
+    util.addTable(s"""
+                     |CREATE TABLE forcedSink (
+                     |  `a` INT,
+                     |  `b` BIGINT,
+                     |  PRIMARY KEY (a) NOT ENFORCED
+                     |) WITH (
+                     |  'connector' = 'values',
+                     |  'sink-insert-only' = 'false'
+                     |)
+                     |""".stripMargin)
+    val stmtSet = util.tableEnv.createStatementSet()
+    stmtSet.addInsertSql("INSERT INTO forcedSink SELECT a, b FROM MyTable")
+    // There is nothing to materialize, so the plan must not contain a SinkMaterializer.
+    util.verifyExplain(stmtSet, ExplainDetail.JSON_EXECUTION_PLAN)
+  }
+
+  @Test
+  def testForcedMaterializeWithUpdatingInput(): Unit = {
+    util.getStreamEnv.setParallelism(1)
+    util.tableEnv.getConfig.set(
+      ExecutionConfigOptions.TABLE_EXEC_SINK_UPSERT_MATERIALIZE,
+      ExecutionConfigOptions.UpsertMaterialize.FORCE)
+    util.addTable(s"""
+                     |CREATE TABLE forcedSinkWithCount (
+                     |  `c` STRING,
+                     |  `cnt` BIGINT,
+                     |  PRIMARY KEY (c) NOT ENFORCED
+                     |) WITH (
+                     |  'connector' = 'values',
+                     |  'sink-insert-only' = 'false'
+                     |)
+                     |""".stripMargin)
+    val stmtSet = util.tableEnv.createStatementSet()
+    stmtSet.addInsertSql(
+      "INSERT INTO forcedSinkWithCount SELECT c, COUNT(*) FROM MyTable GROUP BY c")
+    // The upsert key already matches the primary key, so only FORCE asks for a SinkMaterializer.
+    util.verifyExplain(stmtSet, ExplainDetail.JSON_EXECUTION_PLAN)
+  }
+
+  @Test
+  def testInjectiveCastPreservesUpsertKey(): Unit = {
+    // Aggregation produces upsert stream with key (a).
+    // Sink expects STRING primary key.
+    // CAST(INT AS STRING) is injective, so the upsert key is preserved - no materializer needed.
+    util.tableEnv.executeSql("""
+                               |CREATE TABLE sink_agg_with_string_pk (
+                               |  id STRING NOT NULL,
+                               |  cnt BIGINT,
+                               |  PRIMARY KEY (id) NOT ENFORCED
+                               |) WITH (
+                               |  'connector' = 'values',
+                               |  'sink-insert-only' = 'false'
+                               |)
+                               |""".stripMargin)
+    val stmtSet = util.tableEnv.createStatementSet()
+    // GROUP BY a produces upsert key (a), then CAST(a AS STRING) preserves it
+    stmtSet.addInsertSql(
+      "INSERT INTO sink_agg_with_string_pk SELECT CAST(a AS STRING), COUNT(*) FROM MyTable GROUP BY a")
+    // The plan should NOT contain upsertMaterialize=[true] because INT->STRING is injective
+    util.verifyRelPlan(stmtSet, ExplainDetail.CHANGELOG_MODE)
+  }
+
+  @Test
+  def testNonInjectiveCastLosesUpsertKey(): Unit = {
+    // Aggregation produces upsert stream with key (c) which is STRING.
+    // Sink expects INT primary key.
+    // CAST(STRING AS INT) is NOT injective ("1" and "01" both become 1), so key is lost.
+    util.tableEnv.executeSql("""
+                               |CREATE TABLE sink_agg_with_int_pk (
+                               |  id INT NOT NULL,
+                               |  cnt BIGINT,
+                               |  PRIMARY KEY (id) NOT ENFORCED
+                               |) WITH (
+                               |  'connector' = 'values',
+                               |  'sink-insert-only' = 'false'
+                               |)
+                               |""".stripMargin)
+    // GROUP BY c (STRING) produces upsert key (c), then CAST(c AS INT) loses it
+    util.verifyExplainInsert(
+      """
+        |INSERT INTO sink_agg_with_int_pk
+        |SELECT CAST(c AS INT), COUNT(*) FROM MyTable GROUP BY c
+        |ON CONFLICT DO DEDUPLICATE
+        |""".stripMargin,
+      ExplainDetail.CHANGELOG_MODE
+    )
+  }
+
 }
 
-/** tests table factory use ParallelSourceFunction which support parallelism by env*/
+/** tests table factory use ParallelSourceFunction which support parallelism by env */
 class TestTableFactory extends DynamicTableSourceFactory {
-  override def createDynamicTableSource(context: DynamicTableFactory.Context):
-    DynamicTableSource = {
+  override def createDynamicTableSource(
+      context: DynamicTableFactory.Context): DynamicTableSource = {
     new TestParallelSource()
   }
 
@@ -791,11 +1081,13 @@ class TestParallelSource() extends ScanTableSource {
 
   override def getChangelogMode: ChangelogMode = ChangelogMode.insertOnly()
 
-  override def getScanRuntimeProvider(runtimeProviderContext: ScanTableSource.ScanContext):
-    ScanTableSource.ScanRuntimeProvider = {
-    SourceFunctionProvider.of(new ParallelSourceFunction[RowData] {
-      override def run(ctx: SourceFunction.SourceContext[RowData]): Unit = ???
-      override def cancel(): Unit = ???
-    }, false)
+  override def getScanRuntimeProvider(
+      runtimeProviderContext: ScanTableSource.ScanContext): ScanTableSource.ScanRuntimeProvider = {
+    SourceFunctionProvider.of(
+      new ParallelSourceFunction[RowData] {
+        override def run(ctx: SourceFunction.SourceContext[RowData]): Unit = ???
+        override def cancel(): Unit = ???
+      },
+      false)
   }
 }

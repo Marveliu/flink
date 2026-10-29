@@ -26,20 +26,21 @@ import org.apache.flink.runtime.checkpoint.CheckpointFailureReason;
 import org.apache.flink.runtime.checkpoint.CheckpointMetaData;
 import org.apache.flink.runtime.checkpoint.CheckpointOptions;
 import org.apache.flink.runtime.checkpoint.CheckpointType;
+import org.apache.flink.runtime.checkpoint.channel.ChannelStateWriter;
 import org.apache.flink.runtime.deployment.InputGateDeploymentDescriptor;
 import org.apache.flink.runtime.deployment.ResultPartitionDeploymentDescriptor;
+import org.apache.flink.runtime.deployment.TaskDeploymentDescriptorFactory.ShuffleDescriptorAndIndex;
 import org.apache.flink.runtime.execution.CancelTaskException;
 import org.apache.flink.runtime.execution.Environment;
 import org.apache.flink.runtime.execution.ExecutionState;
 import org.apache.flink.runtime.execution.librarycache.TestingClassLoaderLease;
 import org.apache.flink.runtime.io.network.NettyShuffleEnvironmentBuilder;
-import org.apache.flink.runtime.io.network.partition.NoOpResultPartitionConsumableNotifier;
-import org.apache.flink.runtime.io.network.partition.ResultPartitionConsumableNotifier;
 import org.apache.flink.runtime.io.network.partition.ResultPartitionID;
 import org.apache.flink.runtime.io.network.partition.ResultPartitionType;
 import org.apache.flink.runtime.io.network.partition.consumer.RemoteChannelStateChecker;
 import org.apache.flink.runtime.jobgraph.IntermediateDataSetID;
 import org.apache.flink.runtime.jobgraph.tasks.AbstractInvokable;
+import org.apache.flink.runtime.jobgraph.tasks.TaskInvokable;
 import org.apache.flink.runtime.jobmanager.PartitionProducerDisposedException;
 import org.apache.flink.runtime.operators.testutils.ExpectedTestException;
 import org.apache.flink.runtime.shuffle.PartitionDescriptor;
@@ -49,22 +50,24 @@ import org.apache.flink.runtime.shuffle.ShuffleEnvironment;
 import org.apache.flink.runtime.state.CheckpointStorageLocationReference;
 import org.apache.flink.runtime.taskexecutor.PartitionProducerStateChecker;
 import org.apache.flink.runtime.util.NettyShuffleDescriptorBuilder;
+import org.apache.flink.testutils.TestingUtils;
+import org.apache.flink.testutils.executor.TestExecutorExtension;
+import org.apache.flink.util.ExceptionUtils;
 import org.apache.flink.util.FlinkException;
-import org.apache.flink.util.TestLogger;
+import org.apache.flink.util.TestLoggerExtension;
 import org.apache.flink.util.WrappingRuntimeException;
 import org.apache.flink.util.concurrent.Executors;
 
-import org.junit.After;
-import org.junit.Before;
-import org.junit.ClassRule;
-import org.junit.Test;
-import org.junit.rules.TemporaryFolder;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.api.extension.RegisterExtension;
 
 import javax.annotation.Nonnull;
 
 import java.io.IOException;
+import java.time.Duration;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
@@ -73,20 +76,14 @@ import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.LinkedBlockingDeque;
 import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
-import static org.hamcrest.CoreMatchers.containsString;
-import static org.hamcrest.CoreMatchers.instanceOf;
-import static org.hamcrest.CoreMatchers.is;
-import static org.hamcrest.CoreMatchers.notNullValue;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertNull;
-import static org.junit.Assert.assertThat;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
+import static org.apache.flink.runtime.testutils.CommonTestUtils.waitUntilCondition;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
@@ -97,110 +94,146 @@ import static org.mockito.Mockito.when;
  * Tests for the Task, which make sure that correct state transitions happen, and failures are
  * correctly handled.
  */
-public class TaskTest extends TestLogger {
+@ExtendWith(TestLoggerExtension.class)
+class TaskTest {
     private static final String RESTORE_EXCEPTION_MSG = "TestExceptionInRestore";
-
-    private static OneShotLatch awaitLatch;
-    private static OneShotLatch triggerLatch;
 
     private ShuffleEnvironment<?, ?> shuffleEnvironment;
 
-    @ClassRule public static final TemporaryFolder TEMPORARY_FOLDER = new TemporaryFolder();
+    @RegisterExtension
+    private static final TestExecutorExtension<ScheduledExecutorService> EXECUTOR_RESOURCE =
+            TestingUtils.defaultExecutorExtension();
 
     private static boolean wasCleanedUp = false;
 
-    @Before
-    public void setup() {
-        awaitLatch = new OneShotLatch();
-        triggerLatch = new OneShotLatch();
-        // Logging is only for debugging FLINK-15550.
-        log.info(
-                "Preparing trigger latch, {}, isTriggered = {}",
-                triggerLatch,
-                triggerLatch.isTriggered());
-
+    @BeforeEach
+    void setup() {
         shuffleEnvironment = new NettyShuffleEnvironmentBuilder().build();
         wasCleanedUp = false;
     }
 
-    @After
-    public void teardown() throws Exception {
+    @AfterEach
+    void teardown() throws Exception {
         if (shuffleEnvironment != null) {
             shuffleEnvironment.close();
         }
     }
 
     @Test
-    public void testCleanupWhenRestoreFails() throws Exception {
-        createTaskBuilder().setInvokable(InvokableWithExceptionInRestore.class).build().run();
-        assertTrue(wasCleanedUp);
+    void testTaskFailedWithCleanupCancelledExternally() throws Exception {
+        testTaskFailedWithCleanupFailingExternally(false);
     }
 
     @Test
-    public void testCleanupWhenInvokeFails() throws Exception {
-        createTaskBuilder().setInvokable(InvokableWithExceptionInInvoke.class).build().run();
-        assertTrue(wasCleanedUp);
+    void testTaskFailedWithCleanupFailingExternally() throws Exception {
+        testTaskFailedWithCleanupFailingExternally(true);
+    }
+
+    void testTaskFailedWithCleanupFailingExternally(boolean cancelled) throws Exception {
+        Task task =
+                createTaskBuilder()
+                        .setInvokable(
+                                cancelled
+                                        ? InvokableWithExceptionAndCleanUpFailingExternallyWithCancel
+                                                .class
+                                        : InvokableWithExceptionAndCleanUpFailingExternally.class)
+                        .build(Executors.directExecutor());
+        task.run();
+
+        assertThat(task.getExecutionState()).isSameAs(ExecutionState.FAILED);
+        assertThat(
+                        ExceptionUtils.findThrowable(
+                                task.getFailureCause(), ExpectedTestException.class))
+                .isPresent();
     }
 
     @Test
-    public void testCleanupWhenCancelledAfterRestore() throws Exception {
-        Task task = createTaskBuilder().setInvokable(InvokableBlockingInRestore.class).build();
+    void testCleanupWhenRestoreFails() throws Exception {
+        createTaskBuilder()
+                .setInvokable(InvokableWithExceptionInRestore.class)
+                .build(Executors.directExecutor())
+                .run();
+        assertThat(wasCleanedUp).isTrue();
+    }
+
+    @Test
+    void testCleanupWhenInvokeFails() throws Exception {
+        createTaskBuilder()
+                .setInvokable(InvokableWithExceptionInInvoke.class)
+                .build(Executors.directExecutor())
+                .run();
+        assertThat(wasCleanedUp).isTrue();
+    }
+
+    @Test
+    void testCleanupWhenCancelledAfterRestore() throws Exception {
+        Task task =
+                createTaskBuilder()
+                        .setInvokable(InvokableBlockingInRestore.class)
+                        .build(Executors.directExecutor());
         task.startTaskThread();
-        awaitLatch.await();
+        awaitInvokableLatch(task);
         task.cancelExecution();
         task.getExecutingThread().join();
-        assertTrue(wasCleanedUp);
+        assertThat(wasCleanedUp).isTrue();
     }
 
     @Test
-    public void testCleanupWhenAfterInvokeSucceeded() throws Exception {
-        createTaskBuilder().setInvokable(TestInvokableCorrect.class).build().run();
-        assertTrue(wasCleanedUp);
+    void testCleanupWhenAfterInvokeSucceeded() throws Exception {
+        Task task =
+                createTaskBuilder()
+                        .setInvokable(TestInvokableCorrect.class)
+                        .build(Executors.directExecutor());
+        task.run();
+        assertThat(wasCleanedUp).isTrue();
+        assertThat(task.isCanceledOrFailed()).isFalse();
     }
 
     @Test
-    public void testCleanupWhenSwitchToInitializationFails() throws Exception {
-        createTaskBuilder()
-                .setInvokable(TestInvokableCorrect.class)
-                .setTaskManagerActions(
-                        new NoOpTaskManagerActions() {
-                            @Override
-                            public void updateTaskExecutionState(
-                                    TaskExecutionState taskExecutionState) {
-                                if (taskExecutionState.getExecutionState()
-                                        == ExecutionState.INITIALIZING) {
-                                    throw new ExpectedTestException();
-                                }
-                            }
-                        })
-                .build()
-                .run();
-        assertTrue(wasCleanedUp);
+    void testCleanupWhenSwitchToInitializationFails() throws Exception {
+        Task task =
+                createTaskBuilder()
+                        .setInvokable(TestInvokableCorrect.class)
+                        .setTaskManagerActions(
+                                new NoOpTaskManagerActions() {
+                                    @Override
+                                    public void updateTaskExecutionState(
+                                            TaskExecutionState taskExecutionState) {
+                                        if (taskExecutionState.getExecutionState()
+                                                == ExecutionState.INITIALIZING) {
+                                            throw new ExpectedTestException();
+                                        }
+                                    }
+                                })
+                        .build(Executors.directExecutor());
+        task.run();
+        assertThat(wasCleanedUp).isTrue();
+        assertThat(task.isCanceledOrFailed()).isTrue();
     }
 
     @Test
-    public void testRegularExecution() throws Exception {
+    void testRegularExecution() throws Exception {
         final QueuedNoOpTaskManagerActions taskManagerActions = new QueuedNoOpTaskManagerActions();
         final Task task =
                 createTaskBuilder()
                         .setInvokable(TestInvokableCorrect.class)
                         .setTaskManagerActions(taskManagerActions)
-                        .build();
+                        .build(Executors.directExecutor());
 
         // task should be new and perfect
-        assertEquals(ExecutionState.CREATED, task.getExecutionState());
-        assertFalse(task.isCanceledOrFailed());
-        assertNull(task.getFailureCause());
+        assertThat(task.getExecutionState()).isSameAs(ExecutionState.CREATED);
+        assertThat(task.isCanceledOrFailed()).isFalse();
+        assertThat(task.getFailureCause()).isNull();
 
         // go into the run method. we should switch to DEPLOYING, RUNNING, then
         // FINISHED, and all should be good
         task.run();
 
         // verify final state
-        assertEquals(ExecutionState.FINISHED, task.getExecutionState());
-        assertFalse(task.isCanceledOrFailed());
-        assertNull(task.getFailureCause());
-        assertNull(task.getInvokable());
+        assertThat(task.getExecutionState()).isSameAs(ExecutionState.FINISHED);
+        assertThat(task.isCanceledOrFailed()).isFalse();
+        assertThat(task.getFailureCause()).isNull();
+        assertThat(task.getInvokable()).isNull();
 
         taskManagerActions.validateListenerMessage(ExecutionState.INITIALIZING, task, null);
         taskManagerActions.validateListenerMessage(ExecutionState.RUNNING, task, null);
@@ -208,35 +241,35 @@ public class TaskTest extends TestLogger {
     }
 
     @Test
-    public void testCancelRightAway() throws Exception {
-        final Task task = createTaskBuilder().build();
+    void testCancelRightAway() throws Exception {
+        final Task task = createTaskBuilder().build(Executors.directExecutor());
         task.cancelExecution();
 
-        assertEquals(ExecutionState.CANCELING, task.getExecutionState());
+        assertThat(task.getExecutionState()).isSameAs(ExecutionState.CANCELING);
 
         task.run();
 
         // verify final state
-        assertEquals(ExecutionState.CANCELED, task.getExecutionState());
+        assertThat(task.getExecutionState()).isSameAs(ExecutionState.CANCELED);
 
-        assertNull(task.getInvokable());
+        assertThat(task.getInvokable()).isNull();
     }
 
     @Test
-    public void testFailExternallyRightAway() throws Exception {
-        final Task task = createTaskBuilder().build();
+    void testFailExternallyRightAway() throws Exception {
+        final Task task = createTaskBuilder().build(Executors.directExecutor());
         task.failExternally(new Exception("fail externally"));
 
-        assertEquals(ExecutionState.FAILED, task.getExecutionState());
+        assertThat(task.getExecutionState()).isSameAs(ExecutionState.FAILED);
 
         task.run();
 
         // verify final state
-        assertEquals(ExecutionState.FAILED, task.getExecutionState());
+        assertThat(task.getExecutionState()).isSameAs(ExecutionState.FAILED);
     }
 
     @Test
-    public void testLibraryCacheRegistrationFailed() throws Exception {
+    void testLibraryCacheRegistrationFailed() throws Exception {
         final QueuedNoOpTaskManagerActions taskManagerActions = new QueuedNoOpTaskManagerActions();
         final IOException testException = new IOException("Could not load classloader");
         final Task task =
@@ -249,41 +282,41 @@ public class TaskTest extends TestLogger {
                                                     throw testException;
                                                 })
                                         .build())
-                        .build();
+                        .build(Executors.directExecutor());
 
         // task should be new and perfect
-        assertEquals(ExecutionState.CREATED, task.getExecutionState());
-        assertFalse(task.isCanceledOrFailed());
-        assertNull(task.getFailureCause());
+        assertThat(task.getExecutionState()).isSameAs(ExecutionState.CREATED);
+        assertThat(task.isCanceledOrFailed()).isFalse();
+        assertThat(task.getFailureCause()).isNull();
 
         // should fail
         task.run();
 
         // verify final state
-        assertEquals(ExecutionState.FAILED, task.getExecutionState());
-        assertTrue(task.isCanceledOrFailed());
-        assertThat(task.getFailureCause(), is(testException));
+        assertThat(task.getExecutionState()).isSameAs(ExecutionState.FAILED);
+        assertThat(task.isCanceledOrFailed()).isTrue();
+        assertThat(task.getFailureCause()).isSameAs(testException);
 
-        assertNull(task.getInvokable());
+        assertThat(task.getInvokable()).isNull();
 
         taskManagerActions.validateListenerMessage(ExecutionState.FAILED, task, testException);
     }
 
     @Test
-    public void testExecutionFailsInNetworkRegistrationForPartitions() throws Exception {
+    void testExecutionFailsInNetworkRegistrationForPartitions() throws Exception {
         final PartitionDescriptor partitionDescriptor =
                 PartitionDescriptorBuilder.newBuilder().build();
         final ShuffleDescriptor shuffleDescriptor =
                 NettyShuffleDescriptorBuilder.newBuilder().buildLocal();
         final ResultPartitionDeploymentDescriptor dummyPartition =
                 new ResultPartitionDeploymentDescriptor(
-                        partitionDescriptor, shuffleDescriptor, 1, false);
+                        partitionDescriptor, shuffleDescriptor, 1, 1);
         testExecutionFailsInNetworkRegistration(
                 Collections.singletonList(dummyPartition), Collections.emptyList());
     }
 
     @Test
-    public void testExecutionFailsInNetworkRegistrationForGates() throws Exception {
+    void testExecutionFailsInNetworkRegistrationForGates() throws Exception {
         final ShuffleDescriptor dummyChannel =
                 NettyShuffleDescriptorBuilder.newBuilder().buildRemote();
         final InputGateDeploymentDescriptor dummyGate =
@@ -291,7 +324,9 @@ public class TaskTest extends TestLogger {
                         new IntermediateDataSetID(),
                         ResultPartitionType.PIPELINED,
                         0,
-                        new ShuffleDescriptor[] {dummyChannel});
+                        new ShuffleDescriptorAndIndex[] {
+                            new ShuffleDescriptorAndIndex(dummyChannel, 0)
+                        });
         testExecutionFailsInNetworkRegistration(
                 Collections.emptyList(), Collections.singletonList(dummyGate));
     }
@@ -302,8 +337,6 @@ public class TaskTest extends TestLogger {
             throws Exception {
         final String errorMessage = "Network buffer pool has already been destroyed.";
 
-        final ResultPartitionConsumableNotifier consumableNotifier =
-                new NoOpResultPartitionConsumableNotifier();
         final PartitionProducerStateChecker partitionProducerStateChecker =
                 mock(PartitionProducerStateChecker.class);
 
@@ -311,11 +344,10 @@ public class TaskTest extends TestLogger {
         final Task task =
                 new TestTaskBuilder(shuffleEnvironment)
                         .setTaskManagerActions(taskManagerActions)
-                        .setConsumableNotifier(consumableNotifier)
                         .setPartitionProducerStateChecker(partitionProducerStateChecker)
                         .setResultPartitions(resultPartitions)
                         .setInputGates(inputGates)
-                        .build();
+                        .build(EXECUTOR_RESOURCE.getExecutor());
 
         // shut down the network to make the following task registration failure
         shuffleEnvironment.close();
@@ -324,30 +356,30 @@ public class TaskTest extends TestLogger {
         task.run();
 
         // verify final state
-        assertEquals(ExecutionState.FAILED, task.getExecutionState());
-        assertTrue(task.isCanceledOrFailed());
-        assertTrue(task.getFailureCause().getMessage().contains(errorMessage));
+        assertThat(task.getExecutionState()).isSameAs(ExecutionState.FAILED);
+        assertThat(task.isCanceledOrFailed()).isTrue();
+        assertThat(task.getFailureCause()).hasMessageContaining(errorMessage);
 
         taskManagerActions.validateListenerMessage(
                 ExecutionState.FAILED, task, new IllegalStateException(errorMessage));
     }
 
     @Test
-    public void testInvokableInstantiationFailed() throws Exception {
+    void testInvokableInstantiationFailed() throws Exception {
         final QueuedNoOpTaskManagerActions taskManagerActions = new QueuedNoOpTaskManagerActions();
         final Task task =
                 createTaskBuilder()
                         .setTaskManagerActions(taskManagerActions)
                         .setInvokable(InvokableNonInstantiable.class)
-                        .build();
+                        .build(Executors.directExecutor());
 
         // should fail
         task.run();
 
         // verify final state
-        assertEquals(ExecutionState.FAILED, task.getExecutionState());
-        assertTrue(task.isCanceledOrFailed());
-        assertTrue(task.getFailureCause().getMessage().contains("instantiate"));
+        assertThat(task.getExecutionState()).isSameAs(ExecutionState.FAILED);
+        assertThat(task.isCanceledOrFailed()).isTrue();
+        assertThat(task.getFailureCause()).hasMessageContaining("instantiate");
 
         taskManagerActions.validateListenerMessage(
                 ExecutionState.FAILED,
@@ -356,21 +388,20 @@ public class TaskTest extends TestLogger {
     }
 
     @Test
-    public void testExecutionFailsInRestore() throws Exception {
+    void testExecutionFailsInRestore() throws Exception {
         final QueuedNoOpTaskManagerActions taskManagerActions = new QueuedNoOpTaskManagerActions();
         final Task task =
                 createTaskBuilder()
                         .setInvokable(InvokableWithExceptionInRestore.class)
                         .setTaskManagerActions(taskManagerActions)
-                        .build();
+                        .build(Executors.directExecutor());
 
         task.run();
 
-        assertEquals(ExecutionState.FAILED, task.getExecutionState());
-        assertTrue(task.isCanceledOrFailed());
-        assertNotNull(task.getFailureCause());
-        assertNotNull(task.getFailureCause().getMessage());
-        assertThat(task.getFailureCause().getMessage(), containsString(RESTORE_EXCEPTION_MSG));
+        assertThat(task.getExecutionState()).isSameAs(ExecutionState.FAILED);
+        assertThat(task.isCanceledOrFailed()).isTrue();
+        assertThat(task.getFailureCause()).isNotNull();
+        assertThat(task.getFailureCause()).hasMessageContaining(RESTORE_EXCEPTION_MSG);
 
         taskManagerActions.validateListenerMessage(ExecutionState.INITIALIZING, task, null);
         taskManagerActions.validateListenerMessage(
@@ -378,21 +409,20 @@ public class TaskTest extends TestLogger {
     }
 
     @Test
-    public void testExecutionFailsInInvoke() throws Exception {
+    void testExecutionFailsInInvoke() throws Exception {
         final QueuedNoOpTaskManagerActions taskManagerActions = new QueuedNoOpTaskManagerActions();
         final Task task =
                 createTaskBuilder()
                         .setInvokable(InvokableWithExceptionInInvoke.class)
                         .setTaskManagerActions(taskManagerActions)
-                        .build();
+                        .build(Executors.directExecutor());
 
         task.run();
 
-        assertEquals(ExecutionState.FAILED, task.getExecutionState());
-        assertTrue(task.isCanceledOrFailed());
-        assertNotNull(task.getFailureCause());
-        assertNotNull(task.getFailureCause().getMessage());
-        assertTrue(task.getFailureCause().getMessage().contains("test"));
+        assertThat(task.getExecutionState()).isSameAs(ExecutionState.FAILED);
+        assertThat(task.isCanceledOrFailed()).isTrue();
+        assertThat(task.getFailureCause()).isNotNull();
+        assertThat(task.getFailureCause()).hasMessageContaining("test");
 
         taskManagerActions.validateListenerMessage(ExecutionState.INITIALIZING, task, null);
         taskManagerActions.validateListenerMessage(ExecutionState.RUNNING, task, null);
@@ -401,21 +431,21 @@ public class TaskTest extends TestLogger {
     }
 
     @Test
-    public void testFailWithWrappedException() throws Exception {
+    void testFailWithWrappedException() throws Exception {
         final QueuedNoOpTaskManagerActions taskManagerActions = new QueuedNoOpTaskManagerActions();
         final Task task =
                 createTaskBuilder()
                         .setInvokable(FailingInvokableWithChainedException.class)
                         .setTaskManagerActions(taskManagerActions)
-                        .build();
+                        .build(Executors.directExecutor());
 
         task.run();
 
-        assertEquals(ExecutionState.FAILED, task.getExecutionState());
-        assertTrue(task.isCanceledOrFailed());
+        assertThat(task.getExecutionState()).isSameAs(ExecutionState.FAILED);
+        assertThat(task.isCanceledOrFailed()).isTrue();
 
         final Throwable cause = task.getFailureCause();
-        assertTrue(cause instanceof IOException);
+        assertThat(cause).isInstanceOf(IOException.class);
 
         taskManagerActions.validateListenerMessage(ExecutionState.INITIALIZING, task, null);
         taskManagerActions.validateListenerMessage(ExecutionState.RUNNING, task, null);
@@ -424,60 +454,58 @@ public class TaskTest extends TestLogger {
     }
 
     @Test
-    public void testCancelDuringRestore() throws Exception {
+    void testCancelDuringRestore() throws Exception {
         final QueuedNoOpTaskManagerActions taskManagerActions = new QueuedNoOpTaskManagerActions();
         final Task task =
                 createTaskBuilder()
                         .setInvokable(InvokableBlockingInRestore.class)
                         .setTaskManagerActions(taskManagerActions)
-                        .build();
+                        .build(Executors.directExecutor());
 
         // run the task asynchronous
         task.startTaskThread();
 
         // wait till the task is in restore
-        awaitLatch.await();
+        awaitInvokableLatch(task);
 
         task.cancelExecution();
-        assertTrue(
-                task.getExecutionState() == ExecutionState.CANCELING
-                        || task.getExecutionState() == ExecutionState.CANCELED);
+        assertThat(task.getExecutionState())
+                .isIn(ExecutionState.CANCELING, ExecutionState.CANCELED);
 
         task.getExecutingThread().join();
 
-        assertEquals(ExecutionState.CANCELED, task.getExecutionState());
-        assertTrue(task.isCanceledOrFailed());
-        assertNull(task.getFailureCause());
+        assertThat(task.getExecutionState()).isSameAs(ExecutionState.CANCELED);
+        assertThat(task.isCanceledOrFailed()).isTrue();
+        assertThat(task.getFailureCause()).isNull();
 
         taskManagerActions.validateListenerMessage(ExecutionState.INITIALIZING, task, null);
         taskManagerActions.validateListenerMessage(ExecutionState.CANCELED, task, null);
     }
 
     @Test
-    public void testCancelDuringInvoke() throws Exception {
+    void testCancelDuringInvoke() throws Exception {
         final QueuedNoOpTaskManagerActions taskManagerActions = new QueuedNoOpTaskManagerActions();
         final Task task =
                 createTaskBuilder()
                         .setInvokable(InvokableBlockingInInvoke.class)
                         .setTaskManagerActions(taskManagerActions)
-                        .build();
+                        .build(Executors.directExecutor());
 
         // run the task asynchronous
         task.startTaskThread();
 
         // wait till the task is in invoke
-        awaitLatch.await();
+        awaitInvokableLatch(task);
 
         task.cancelExecution();
-        assertTrue(
-                task.getExecutionState() == ExecutionState.CANCELING
-                        || task.getExecutionState() == ExecutionState.CANCELED);
+        assertThat(task.getExecutionState())
+                .isIn(ExecutionState.CANCELING, ExecutionState.CANCELED);
 
         task.getExecutingThread().join();
 
-        assertEquals(ExecutionState.CANCELED, task.getExecutionState());
-        assertTrue(task.isCanceledOrFailed());
-        assertNull(task.getFailureCause());
+        assertThat(task.getExecutionState()).isSameAs(ExecutionState.CANCELED);
+        assertThat(task.isCanceledOrFailed()).isTrue();
+        assertThat(task.getFailureCause()).isNull();
 
         taskManagerActions.validateListenerMessage(ExecutionState.INITIALIZING, task, null);
         taskManagerActions.validateListenerMessage(ExecutionState.RUNNING, task, null);
@@ -485,27 +513,27 @@ public class TaskTest extends TestLogger {
     }
 
     @Test
-    public void testFailExternallyDuringRestore() throws Exception {
+    void testFailExternallyDuringRestore() throws Exception {
         final QueuedNoOpTaskManagerActions taskManagerActions = new QueuedNoOpTaskManagerActions();
         final Task task =
                 createTaskBuilder()
                         .setInvokable(InvokableBlockingInRestore.class)
                         .setTaskManagerActions(taskManagerActions)
-                        .build();
+                        .build(Executors.directExecutor());
 
         // run the task asynchronous
         task.startTaskThread();
 
         // wait till the task is in invoke
-        awaitLatch.await();
+        awaitInvokableLatch(task);
 
         task.failExternally(new Exception(RESTORE_EXCEPTION_MSG));
 
         task.getExecutingThread().join();
 
-        assertEquals(ExecutionState.FAILED, task.getExecutionState());
-        assertTrue(task.isCanceledOrFailed());
-        assertThat(task.getFailureCause().getMessage(), containsString(RESTORE_EXCEPTION_MSG));
+        assertThat(task.getExecutionState()).isSameAs(ExecutionState.FAILED);
+        assertThat(task.isCanceledOrFailed()).isTrue();
+        assertThat(task.getFailureCause()).hasMessageContaining(RESTORE_EXCEPTION_MSG);
 
         taskManagerActions.validateListenerMessage(ExecutionState.INITIALIZING, task, null);
         taskManagerActions.validateListenerMessage(
@@ -513,27 +541,27 @@ public class TaskTest extends TestLogger {
     }
 
     @Test
-    public void testFailExternallyDuringInvoke() throws Exception {
+    void testFailExternallyDuringInvoke() throws Exception {
         final QueuedNoOpTaskManagerActions taskManagerActions = new QueuedNoOpTaskManagerActions();
         final Task task =
                 createTaskBuilder()
                         .setInvokable(InvokableBlockingInInvoke.class)
                         .setTaskManagerActions(taskManagerActions)
-                        .build();
+                        .build(Executors.directExecutor());
 
         // run the task asynchronous
         task.startTaskThread();
 
         // wait till the task is in invoke
-        awaitLatch.await();
+        awaitInvokableLatch(task);
 
         task.failExternally(new Exception("test"));
 
         task.getExecutingThread().join();
 
-        assertEquals(ExecutionState.FAILED, task.getExecutionState());
-        assertTrue(task.isCanceledOrFailed());
-        assertTrue(task.getFailureCause().getMessage().contains("test"));
+        assertThat(task.getExecutionState()).isSameAs(ExecutionState.FAILED);
+        assertThat(task.isCanceledOrFailed()).isTrue();
+        assertThat(task.getFailureCause()).hasMessageContaining("test");
 
         taskManagerActions.validateListenerMessage(ExecutionState.INITIALIZING, task, null);
         taskManagerActions.validateListenerMessage(ExecutionState.RUNNING, task, null);
@@ -542,22 +570,22 @@ public class TaskTest extends TestLogger {
     }
 
     @Test
-    public void testCanceledAfterExecutionFailedInInvoke() throws Exception {
+    void testCanceledAfterExecutionFailedInInvoke() throws Exception {
         final QueuedNoOpTaskManagerActions taskManagerActions = new QueuedNoOpTaskManagerActions();
         final Task task =
                 createTaskBuilder()
                         .setInvokable(InvokableWithExceptionInInvoke.class)
                         .setTaskManagerActions(taskManagerActions)
-                        .build();
+                        .build(Executors.directExecutor());
 
         task.run();
 
         // this should not overwrite the failure state
         task.cancelExecution();
 
-        assertEquals(ExecutionState.FAILED, task.getExecutionState());
-        assertTrue(task.isCanceledOrFailed());
-        assertTrue(task.getFailureCause().getMessage().contains("test"));
+        assertThat(task.getExecutionState()).isSameAs(ExecutionState.FAILED);
+        assertThat(task.isCanceledOrFailed()).isTrue();
+        assertThat(task.getFailureCause()).hasMessageContaining("test");
 
         taskManagerActions.validateListenerMessage(ExecutionState.INITIALIZING, task, null);
         taskManagerActions.validateListenerMessage(ExecutionState.RUNNING, task, null);
@@ -566,32 +594,32 @@ public class TaskTest extends TestLogger {
     }
 
     @Test
-    public void testExecutionFailsAfterCanceling() throws Exception {
+    void testExecutionFailsAfterCanceling() throws Exception {
         final QueuedNoOpTaskManagerActions taskManagerActions = new QueuedNoOpTaskManagerActions();
         final Task task =
                 createTaskBuilder()
                         .setInvokable(InvokableWithExceptionOnTrigger.class)
                         .setTaskManagerActions(taskManagerActions)
-                        .build();
+                        .build(Executors.directExecutor());
 
         // run the task asynchronous
         task.startTaskThread();
 
         // wait till the task is in invoke
-        awaitLatch.await();
+        awaitInvokableLatch(task);
 
         task.cancelExecution();
-        assertEquals(ExecutionState.CANCELING, task.getExecutionState());
+        assertThat(task.getExecutionState()).isSameAs(ExecutionState.CANCELING);
 
         // this causes an exception
-        triggerLatch.trigger();
+        triggerInvokableLatch(task);
 
         task.getExecutingThread().join();
 
         // we should still be in state canceled
-        assertEquals(ExecutionState.CANCELED, task.getExecutionState());
-        assertTrue(task.isCanceledOrFailed());
-        assertNull(task.getFailureCause());
+        assertThat(task.getExecutionState()).isSameAs(ExecutionState.CANCELED);
+        assertThat(task.isCanceledOrFailed()).isTrue();
+        assertThat(task.getFailureCause()).isNull();
 
         taskManagerActions.validateListenerMessage(ExecutionState.INITIALIZING, task, null);
         taskManagerActions.validateListenerMessage(ExecutionState.RUNNING, task, null);
@@ -599,31 +627,31 @@ public class TaskTest extends TestLogger {
     }
 
     @Test
-    public void testExecutionFailsAfterTaskMarkedFailed() throws Exception {
+    void testExecutionFailsAfterTaskMarkedFailed() throws Exception {
         final QueuedNoOpTaskManagerActions taskManagerActions = new QueuedNoOpTaskManagerActions();
         final Task task =
                 createTaskBuilder()
                         .setInvokable(InvokableWithExceptionOnTrigger.class)
                         .setTaskManagerActions(taskManagerActions)
-                        .build();
+                        .build(Executors.directExecutor());
 
         // run the task asynchronous
         task.startTaskThread();
 
         // wait till the task is in invoke
-        awaitLatch.await();
+        awaitInvokableLatch(task);
 
         task.failExternally(new Exception("external"));
-        assertEquals(ExecutionState.FAILED, task.getExecutionState());
+        assertThat(task.getExecutionState()).isSameAs(ExecutionState.FAILED);
 
         // this causes an exception
-        triggerLatch.trigger();
+        triggerInvokableLatch(task);
 
         task.getExecutingThread().join();
 
-        assertEquals(ExecutionState.FAILED, task.getExecutionState());
-        assertTrue(task.isCanceledOrFailed());
-        assertTrue(task.getFailureCause().getMessage().contains("external"));
+        assertThat(task.getExecutionState()).isSameAs(ExecutionState.FAILED);
+        assertThat(task.isCanceledOrFailed()).isTrue();
+        assertThat(task.getFailureCause()).hasMessageContaining("external");
 
         taskManagerActions.validateListenerMessage(ExecutionState.INITIALIZING, task, null);
         taskManagerActions.validateListenerMessage(ExecutionState.RUNNING, task, null);
@@ -632,49 +660,49 @@ public class TaskTest extends TestLogger {
     }
 
     @Test
-    public void testCancelTaskException() throws Exception {
+    void testCancelTaskException() throws Exception {
         final Task task =
                 createTaskBuilder()
                         .setInvokable(InvokableWithCancelTaskExceptionInInvoke.class)
-                        .build();
+                        .build(Executors.directExecutor());
+
+        task.startTaskThread();
 
         // Cause CancelTaskException.
-        triggerLatch.trigger();
+        triggerInvokableLatch(task);
 
-        task.run();
-
-        assertEquals(ExecutionState.CANCELED, task.getExecutionState());
+        task.getExecutingThread().join();
+        assertThat(task.getExecutionState()).isSameAs(ExecutionState.CANCELED);
     }
 
     @Test
-    public void testCancelTaskExceptionAfterTaskMarkedFailed() throws Exception {
+    void testCancelTaskExceptionAfterTaskMarkedFailed() throws Exception {
         final Task task =
                 createTaskBuilder()
                         .setInvokable(InvokableWithCancelTaskExceptionInInvoke.class)
-                        .build();
+                        .build(Executors.directExecutor());
 
         task.startTaskThread();
 
         // Wait till the task is in invoke.
-        awaitLatch.await();
+        awaitInvokableLatch(task);
 
         task.failExternally(new Exception("external"));
-        assertFalse(triggerLatch.isTriggered());
-        assertEquals(ExecutionState.FAILED, task.getExecutionState());
+        assertThat(task.getExecutionState()).isSameAs(ExecutionState.FAILED);
 
         // Either we cause the CancelTaskException or the TaskCanceler
         // by interrupting the invokable.
-        triggerLatch.trigger();
+        triggerInvokableLatch(task);
 
         task.getExecutingThread().join();
 
-        assertEquals(ExecutionState.FAILED, task.getExecutionState());
-        assertTrue(task.isCanceledOrFailed());
-        assertTrue(task.getFailureCause().getMessage().contains("external"));
+        assertThat(task.getExecutionState()).isSameAs(ExecutionState.FAILED);
+        assertThat(task.isCanceledOrFailed()).isTrue();
+        assertThat(task.getFailureCause()).hasMessageContaining("external");
     }
 
     @Test
-    public void testOnPartitionStateUpdateWhileRunning() throws Exception {
+    void testOnPartitionStateUpdateWhileRunning() throws Exception {
         testOnPartitionStateUpdate(ExecutionState.RUNNING);
     }
 
@@ -684,14 +712,17 @@ public class TaskTest extends TestLogger {
      * input gates.
      */
     @Test
-    public void testOnPartitionStateUpdateWhileDeploying() throws Exception {
+    void testOnPartitionStateUpdateWhileDeploying() throws Exception {
         testOnPartitionStateUpdate(ExecutionState.DEPLOYING);
     }
 
-    public void testOnPartitionStateUpdate(ExecutionState initialTaskState) throws Exception {
+    void testOnPartitionStateUpdate(ExecutionState initialTaskState) throws Exception {
         final ResultPartitionID partitionId = new ResultPartitionID();
 
-        final Task task = createTaskBuilder().setInvokable(InvokableBlockingInInvoke.class).build();
+        final Task task =
+                createTaskBuilder()
+                        .setInvokable(InvokableBlockingInInvoke.class)
+                        .build(Executors.directExecutor());
 
         RemoteChannelStateChecker checker = new RemoteChannelStateChecker(partitionId, "test task");
 
@@ -725,23 +756,20 @@ public class TaskTest extends TestLogger {
 
             ExecutionState newTaskState = task.getExecutionState();
 
-            assertEquals(expected.get(state), newTaskState);
+            assertThat(newTaskState).isSameAs(expected.get(state));
         }
 
-        assertEquals(5, producingStateCounter);
+        assertThat(producingStateCounter).isEqualTo(5);
     }
 
     /** Tests the trigger partition state update future completions. */
     @Test
-    public void testTriggerPartitionStateUpdate() throws Exception {
+    void testTriggerPartitionStateUpdate() throws Exception {
         final IntermediateDataSetID resultId = new IntermediateDataSetID();
         final ResultPartitionID partitionId = new ResultPartitionID();
 
         final PartitionProducerStateChecker partitionChecker =
                 mock(PartitionProducerStateChecker.class);
-
-        final ResultPartitionConsumableNotifier consumableNotifier =
-                new NoOpResultPartitionConsumableNotifier();
 
         AtomicInteger callCount = new AtomicInteger(0);
 
@@ -757,10 +785,8 @@ public class TaskTest extends TestLogger {
             final Task task =
                     createTaskBuilder()
                             .setInvokable(InvokableBlockingInInvoke.class)
-                            .setConsumableNotifier(consumableNotifier)
                             .setPartitionProducerStateChecker(partitionChecker)
-                            .setExecutor(Executors.directExecutor())
-                            .build();
+                            .build(Executors.directExecutor());
             TestTaskBuilder.setTaskState(task, ExecutionState.RUNNING);
 
             final CompletableFuture<ExecutionState> promise = new CompletableFuture<>();
@@ -773,12 +799,12 @@ public class TaskTest extends TestLogger {
                     partitionId,
                     checkResult ->
                             assertThat(
-                                    remoteChannelStateChecker.isProducerReadyOrAbortConsumption(
-                                            checkResult),
-                                    is(false)));
+                                            remoteChannelStateChecker
+                                                    .isProducerReadyOrAbortConsumption(checkResult))
+                                    .isFalse());
 
             promise.completeExceptionally(new PartitionProducerDisposedException(partitionId));
-            assertEquals(ExecutionState.CANCELING, task.getExecutionState());
+            assertThat(task.getExecutionState()).isSameAs(ExecutionState.CANCELING);
         }
 
         {
@@ -789,10 +815,8 @@ public class TaskTest extends TestLogger {
             final Task task =
                     createTaskBuilder()
                             .setInvokable(InvokableBlockingInInvoke.class)
-                            .setConsumableNotifier(consumableNotifier)
                             .setPartitionProducerStateChecker(partitionChecker)
-                            .setExecutor(Executors.directExecutor())
-                            .build();
+                            .build(Executors.directExecutor());
             TestTaskBuilder.setTaskState(task, ExecutionState.RUNNING);
 
             final CompletableFuture<ExecutionState> promise = new CompletableFuture<>();
@@ -805,13 +829,13 @@ public class TaskTest extends TestLogger {
                     partitionId,
                     checkResult ->
                             assertThat(
-                                    remoteChannelStateChecker.isProducerReadyOrAbortConsumption(
-                                            checkResult),
-                                    is(false)));
+                                            remoteChannelStateChecker
+                                                    .isProducerReadyOrAbortConsumption(checkResult))
+                                    .isFalse());
 
             promise.completeExceptionally(new RuntimeException("Any other exception"));
 
-            assertEquals(ExecutionState.FAILED, task.getExecutionState());
+            assertThat(task.getExecutionState()).isSameAs(ExecutionState.FAILED);
         }
 
         {
@@ -825,14 +849,12 @@ public class TaskTest extends TestLogger {
             final Task task =
                     createTaskBuilder()
                             .setInvokable(InvokableBlockingInInvoke.class)
-                            .setConsumableNotifier(consumableNotifier)
                             .setPartitionProducerStateChecker(partitionChecker)
-                            .setExecutor(Executors.directExecutor())
-                            .build();
+                            .build(Executors.directExecutor());
 
             try {
                 task.startTaskThread();
-                awaitLatch.await();
+                awaitInvokableLatch(task);
 
                 CompletableFuture<ExecutionState> promise = new CompletableFuture<>();
                 when(partitionChecker.requestPartitionProducerState(
@@ -851,9 +873,9 @@ public class TaskTest extends TestLogger {
 
                 promise.completeExceptionally(new TimeoutException());
 
-                assertEquals(ExecutionState.RUNNING, task.getExecutionState());
+                assertThat(task.getExecutionState()).isSameAs(ExecutionState.RUNNING);
 
-                assertEquals(1, callCount.get());
+                assertThat(callCount).hasValue(1);
             } finally {
                 task.getExecutingThread().interrupt();
                 task.getExecutingThread().join();
@@ -870,14 +892,12 @@ public class TaskTest extends TestLogger {
             final Task task =
                     createTaskBuilder()
                             .setInvokable(InvokableBlockingInInvoke.class)
-                            .setConsumableNotifier(consumableNotifier)
                             .setPartitionProducerStateChecker(partitionChecker)
-                            .setExecutor(Executors.directExecutor())
-                            .build();
+                            .build(Executors.directExecutor());
 
             try {
                 task.startTaskThread();
-                awaitLatch.await();
+                awaitInvokableLatch(task);
 
                 CompletableFuture<ExecutionState> promise = new CompletableFuture<>();
                 when(partitionChecker.requestPartitionProducerState(
@@ -896,9 +916,9 @@ public class TaskTest extends TestLogger {
 
                 promise.complete(ExecutionState.RUNNING);
 
-                assertEquals(ExecutionState.RUNNING, task.getExecutionState());
+                assertThat(task.getExecutionState()).isSameAs(ExecutionState.RUNNING);
 
-                assertEquals(1, callCount.get());
+                assertThat(callCount).hasValue(1);
             } finally {
                 task.getExecutingThread().interrupt();
                 task.getExecutingThread().join();
@@ -911,62 +931,92 @@ public class TaskTest extends TestLogger {
      * blocks the task canceller. Interrupt after cancel via cancellation watch dog.
      */
     @Test
-    public void testWatchDogInterruptsTask() throws Exception {
+    void testWatchDogInterruptsTask() throws Exception {
         final TaskManagerActions taskManagerActions = new ProhibitFatalErrorTaskManagerActions();
 
         final Configuration config = new Configuration();
-        config.setLong(TaskManagerOptions.TASK_CANCELLATION_INTERVAL.key(), 5);
-        config.setLong(TaskManagerOptions.TASK_CANCELLATION_TIMEOUT.key(), 60 * 1000);
+        config.set(TaskManagerOptions.TASK_CANCELLATION_INTERVAL, Duration.ofMillis(5));
+        config.set(TaskManagerOptions.TASK_CANCELLATION_TIMEOUT, Duration.ofMillis(60 * 1000));
 
         final Task task =
                 createTaskBuilder()
                         .setInvokable(InvokableBlockingInCancel.class)
                         .setTaskManagerConfig(config)
                         .setTaskManagerActions(taskManagerActions)
-                        .build();
+                        .build(Executors.directExecutor());
 
         task.startTaskThread();
 
-        awaitLatch.await();
+        awaitInvokableLatch(task);
 
         task.cancelExecution();
         task.getExecutingThread().join();
     }
 
     /**
-     * The invoke() method holds a lock (trigger awaitLatch after acquisition) and cancel cannot
+     * Tests that interrupt happens via watch dog if canceller is stuck in cancel. Task cancellation
+     * blocks the task canceller. Interrupt after cancel via cancellation watch dog.
+     */
+    @Test
+    void testWatchDogThrowFatalErrorOnTaskStuckInInstantiation() throws Exception {
+        final InterruptOnFatalErrorTaskManagerActions taskManagerActions =
+                new InterruptOnFatalErrorTaskManagerActions();
+
+        final Configuration config = new Configuration();
+        config.set(TaskManagerOptions.TASK_CANCELLATION_INTERVAL, Duration.ofMillis(5));
+        config.set(TaskManagerOptions.TASK_CANCELLATION_TIMEOUT, Duration.ofMillis(1000L));
+
+        final Task task =
+                createTaskBuilder()
+                        .setInvokable(InvokableBlockingInInstantiation.class)
+                        .setTaskManagerConfig(config)
+                        .setTaskManagerActions(taskManagerActions)
+                        .build(Executors.directExecutor());
+        taskManagerActions.setExecutingThread(task.getExecutingThread());
+
+        task.startTaskThread();
+        InvokableBlockingInInstantiation.await();
+        task.cancelExecution();
+        task.getExecutingThread().join();
+
+        // Expect fatal error to recover
+        assertThat(taskManagerActions.hasFatalError()).isTrue();
+    }
+
+    /**
+     * The 'invoke' method holds a lock (trigger awaitLatch after acquisition) and cancel cannot
      * complete because it also tries to acquire the same lock. This is resolved by the watch dog,
      * no fatal error.
      */
     @Test
-    public void testInterruptibleSharedLockInInvokeAndCancel() throws Exception {
+    void testInterruptibleSharedLockInInvokeAndCancel() throws Exception {
         final TaskManagerActions taskManagerActions = new ProhibitFatalErrorTaskManagerActions();
 
         final Configuration config = new Configuration();
-        config.setLong(TaskManagerOptions.TASK_CANCELLATION_INTERVAL, 5);
-        config.setLong(TaskManagerOptions.TASK_CANCELLATION_TIMEOUT, 50);
+        config.set(TaskManagerOptions.TASK_CANCELLATION_INTERVAL, Duration.ofMillis(5L));
+        config.set(TaskManagerOptions.TASK_CANCELLATION_TIMEOUT, Duration.ofMillis(1000L));
 
         final Task task =
                 createTaskBuilder()
                         .setInvokable(InvokableInterruptibleSharedLockInInvokeAndCancel.class)
                         .setTaskManagerConfig(config)
                         .setTaskManagerActions(taskManagerActions)
-                        .build();
+                        .build(Executors.directExecutor());
 
         task.startTaskThread();
 
-        awaitLatch.await();
+        awaitInvokableLatch(task);
 
         task.cancelExecution();
         task.getExecutingThread().join();
     }
 
     /**
-     * The invoke() method blocks infinitely, but cancel() does not block. Only resolved by a fatal
+     * The 'invoke' method blocks infinitely, but cancel() does not block. Only resolved by a fatal
      * error.
      */
     @Test
-    public void testFatalErrorAfterUnInterruptibleInvoke() throws Exception {
+    void testFatalErrorAfterUnInterruptibleInvoke() throws Exception {
         final CompletableFuture<Throwable> fatalErrorFuture = new CompletableFuture<>();
         final TestingTaskManagerActions taskManagerActions =
                 TestingTaskManagerActions.newBuilder()
@@ -975,28 +1025,28 @@ public class TaskTest extends TestLogger {
                         .build();
 
         final Configuration config = new Configuration();
-        config.setLong(TaskManagerOptions.TASK_CANCELLATION_TIMEOUT, 10);
+        config.set(TaskManagerOptions.TASK_CANCELLATION_TIMEOUT, Duration.ofMillis(10L));
 
         final Task task =
                 createTaskBuilder()
                         .setInvokable(InvokableUnInterruptibleBlockingInvoke.class)
                         .setTaskManagerConfig(config)
                         .setTaskManagerActions(taskManagerActions)
-                        .build();
+                        .build(Executors.directExecutor());
 
         try {
             task.startTaskThread();
 
-            awaitLatch.await();
+            awaitInvokableLatch(task);
 
             task.cancelExecution();
 
             // wait for the notification of notifyFatalError
             final Throwable fatalError = fatalErrorFuture.join();
-            assertThat(fatalError, is(notNullValue()));
+            assertThat(fatalError).isNotNull();
         } finally {
             // Interrupt again to clean up Thread
-            triggerLatch.trigger();
+            triggerInvokableLatch(task);
             task.getExecutingThread().interrupt();
             task.getExecutingThread().join();
         }
@@ -1004,7 +1054,7 @@ public class TaskTest extends TestLogger {
 
     /** Tests that a fatal error gotten from canceling task is notified. */
     @Test
-    public void testFatalErrorOnCanceling() throws Exception {
+    void testFatalErrorOnCanceling() throws Exception {
         final CompletableFuture<Throwable> fatalErrorFuture = new CompletableFuture<>();
         final TestingTaskManagerActions taskManagerActions =
                 TestingTaskManagerActions.newBuilder()
@@ -1013,46 +1063,48 @@ public class TaskTest extends TestLogger {
                         .build();
 
         final Configuration config = new Configuration();
-        config.setLong(TaskManagerOptions.TASK_CANCELLATION_INTERVAL, 5);
-        config.setLong(TaskManagerOptions.TASK_CANCELLATION_TIMEOUT, 50);
+        config.set(TaskManagerOptions.TASK_CANCELLATION_INTERVAL, Duration.ofMillis(5L));
+        config.set(TaskManagerOptions.TASK_CANCELLATION_TIMEOUT, Duration.ofMillis(50L));
 
-        final Task task =
-                spy(
-                        createTaskBuilder()
-                                .setInvokable(InvokableBlockingWithTrigger.class)
-                                .setTaskManagerConfig(config)
-                                .setTaskManagerActions(taskManagerActions)
-                                .build());
+        // We need to remember the original object since all changes in  `startTaskThread` applies
+        // to it rather than to spy object.
+        Task task =
+                createTaskBuilder()
+                        .setInvokable(InvokableBlockingWithTrigger.class)
+                        .setTaskManagerConfig(config)
+                        .setTaskManagerActions(taskManagerActions)
+                        .build(Executors.directExecutor());
+        final Task spyTask = spy(task);
 
         final Class<OutOfMemoryError> fatalErrorType = OutOfMemoryError.class;
         doThrow(fatalErrorType)
-                .when(task)
+                .when(spyTask)
                 .cancelOrFailAndCancelInvokableInternal(eq(ExecutionState.CANCELING), eq(null));
 
         try {
-            task.startTaskThread();
+            spyTask.startTaskThread();
 
-            awaitLatch.await();
+            awaitInvokableLatch(task);
 
-            task.cancelExecution();
+            spyTask.cancelExecution();
 
             // wait for the notification of notifyFatalError
             final Throwable fatalError = fatalErrorFuture.join();
-            assertThat(fatalError, instanceOf(fatalErrorType));
+            assertThat(fatalError).isInstanceOf(fatalErrorType);
         } finally {
-            triggerLatch.trigger();
+            triggerInvokableLatch(task);
         }
     }
 
     /** Tests that the task configuration is respected and overwritten by the execution config. */
     @Test
-    public void testTaskConfig() throws Exception {
+    void testTaskConfig() throws Exception {
         long interval = 28218123;
         long timeout = interval + 19292;
 
         final Configuration config = new Configuration();
-        config.setLong(TaskManagerOptions.TASK_CANCELLATION_INTERVAL, interval);
-        config.setLong(TaskManagerOptions.TASK_CANCELLATION_TIMEOUT, timeout);
+        config.set(TaskManagerOptions.TASK_CANCELLATION_INTERVAL, Duration.ofMillis(interval));
+        config.set(TaskManagerOptions.TASK_CANCELLATION_TIMEOUT, Duration.ofMillis(timeout));
 
         final ExecutionConfig executionConfig = new ExecutionConfig();
         executionConfig.setTaskCancellationInterval(interval + 1337);
@@ -1063,97 +1115,97 @@ public class TaskTest extends TestLogger {
                         .setInvokable(InvokableBlockingInInvoke.class)
                         .setTaskManagerConfig(config)
                         .setExecutionConfig(executionConfig)
-                        .build();
+                        .build(Executors.directExecutor());
 
-        assertEquals(interval, task.getTaskCancellationInterval());
-        assertEquals(timeout, task.getTaskCancellationTimeout());
+        assertThat(task.getTaskCancellationInterval()).isEqualTo(interval);
+        assertThat(task.getTaskCancellationTimeout()).isEqualTo(timeout);
 
         task.startTaskThread();
 
-        awaitLatch.await();
+        awaitInvokableLatch(task);
 
-        assertEquals(
-                executionConfig.getTaskCancellationInterval(), task.getTaskCancellationInterval());
-        assertEquals(
-                executionConfig.getTaskCancellationTimeout(), task.getTaskCancellationTimeout());
+        assertThat(task.getTaskCancellationInterval())
+                .isEqualTo(executionConfig.getTaskCancellationInterval());
+        assertThat(task.getTaskCancellationTimeout())
+                .isEqualTo(executionConfig.getTaskCancellationTimeout());
 
         task.getExecutingThread().interrupt();
         task.getExecutingThread().join();
     }
 
     @Test
-    public void testTerminationFutureCompletesOnNormalExecution() throws Exception {
+    void testTerminationFutureCompletesOnNormalExecution() throws Exception {
         final Task task =
                 createTaskBuilder()
                         .setInvokable(InvokableBlockingWithTrigger.class)
                         .setTaskManagerActions(new NoOpTaskManagerActions())
-                        .build();
+                        .build(Executors.directExecutor());
 
         // run the task asynchronous
         task.startTaskThread();
 
         // wait till the task is in invoke
-        awaitLatch.await();
+        awaitInvokableLatch(task);
 
-        assertFalse(task.getTerminationFuture().isDone());
+        assertThat(task.getTerminationFuture()).isNotDone();
 
-        triggerLatch.trigger();
+        triggerInvokableLatch(task);
 
         task.getExecutingThread().join();
 
-        assertEquals(ExecutionState.FINISHED, task.getTerminationFuture().getNow(null));
+        assertThat(task.getTerminationFuture().getNow(null)).isSameAs(ExecutionState.FINISHED);
     }
 
     @Test
-    public void testTerminationFutureCompletesOnImmediateCancellation() throws Exception {
+    void testTerminationFutureCompletesOnImmediateCancellation() throws Exception {
         final Task task =
                 createTaskBuilder()
                         .setInvokable(InvokableBlockingInInvoke.class)
                         .setTaskManagerActions(new NoOpTaskManagerActions())
-                        .build();
+                        .build(Executors.directExecutor());
 
         task.cancelExecution();
 
-        assertFalse(task.getTerminationFuture().isDone());
+        assertThat(task.getTerminationFuture()).isNotDone();
 
         // run the task asynchronous
         task.startTaskThread();
 
         task.getExecutingThread().join();
 
-        assertEquals(ExecutionState.CANCELED, task.getTerminationFuture().getNow(null));
+        assertThat(task.getTerminationFuture().getNow(null)).isSameAs(ExecutionState.CANCELED);
     }
 
     @Test
-    public void testTerminationFutureCompletesOnErrorInInvoke() throws Exception {
+    void testTerminationFutureCompletesOnErrorInInvoke() throws Exception {
         final Task task =
                 createTaskBuilder()
                         .setInvokable(InvokableWithExceptionInInvoke.class)
                         .setTaskManagerActions(new NoOpTaskManagerActions())
-                        .build();
+                        .build(Executors.directExecutor());
 
         // run the task asynchronous
         task.startTaskThread();
 
         task.getExecutingThread().join();
 
-        assertEquals(ExecutionState.FAILED, task.getTerminationFuture().getNow(null));
+        assertThat(task.getTerminationFuture().getNow(null)).isSameAs(ExecutionState.FAILED);
     }
 
     @Test
-    public void testNoBackPressureIfTaskNotStarted() throws Exception {
-        final Task task = createTaskBuilder().build();
-        assertFalse(task.isBackPressured());
+    void testNoBackPressureIfTaskNotStarted() throws Exception {
+        final Task task = createTaskBuilder().build(Executors.directExecutor());
+        assertThat(task.isBackPressured()).isFalse();
     }
 
     @Test
-    public void testDeclineCheckpoint() throws Exception {
+    void testDeclineCheckpoint() throws Exception {
         TestCheckpointResponder testCheckpointResponder = new TestCheckpointResponder();
         final Task task =
                 createTaskBuilder()
-                        .setInvokable(InvokableDeclingingCheckpoints.class)
+                        .setInvokable(InvokableDecliningCheckpoints.class)
                         .setCheckpointResponder(testCheckpointResponder)
-                        .build();
+                        .build(Executors.directExecutor());
         assertCheckpointDeclined(
                 task,
                 testCheckpointResponder,
@@ -1162,29 +1214,57 @@ public class TaskTest extends TestLogger {
 
         task.startTaskThread();
         try {
-            awaitLatch.await();
-            assertEquals(ExecutionState.RUNNING, task.getExecutionState());
+            awaitInvokableLatch(task);
+            assertThat(task.getExecutionState()).isSameAs(ExecutionState.RUNNING);
 
             assertCheckpointDeclined(
                     task,
                     testCheckpointResponder,
-                    InvokableDeclingingCheckpoints.REJECTED_EXECUTION_CHECKPOINT_ID,
+                    InvokableDecliningCheckpoints.REJECTED_EXECUTION_CHECKPOINT_ID,
                     CheckpointFailureReason.CHECKPOINT_DECLINED_TASK_CLOSING);
             assertCheckpointDeclined(
                     task,
                     testCheckpointResponder,
-                    InvokableDeclingingCheckpoints.THROWING_CHECKPOINT_ID,
+                    InvokableDecliningCheckpoints.THROWING_CHECKPOINT_ID,
                     CheckpointFailureReason.TASK_FAILURE);
             assertCheckpointDeclined(
                     task,
                     testCheckpointResponder,
-                    InvokableDeclingingCheckpoints.TRIGGERING_FAILED_CHECKPOINT_ID,
+                    InvokableDecliningCheckpoints.TRIGGERING_FAILED_CHECKPOINT_ID,
                     CheckpointFailureReason.TASK_FAILURE);
         } finally {
-            triggerLatch.trigger();
+            triggerInvokableLatch(task);
             task.getExecutingThread().join();
         }
-        assertEquals(ExecutionState.FINISHED, task.getTerminationFuture().getNow(null));
+        assertThat(task.getTerminationFuture().getNow(null)).isSameAs(ExecutionState.FINISHED);
+    }
+
+    private void testChannelStateWriterCloses(Class<? extends TriggerLatchInvokable> invokable)
+            throws Exception {
+        final Task task =
+                createTaskBuilder()
+                        .setInvokable(invokable)
+                        .setTaskManagerActions(new NoOpTaskManagerActions())
+                        .build(Executors.directExecutor());
+
+        task.startTaskThread();
+        awaitInvokableLatch(task);
+        ChannelStateWriterWithCloseTracker channelStateWriter =
+                (ChannelStateWriterWithCloseTracker) task.getChannelStateWriter();
+        assertThat(channelStateWriter.isClosed()).isFalse();
+        triggerInvokableLatch(task);
+        task.getExecutingThread().join();
+        assertThat(channelStateWriter.isClosed()).isTrue();
+    }
+
+    @Test
+    void testChannelStateWriterClosesOnSuccess() throws Exception {
+        testChannelStateWriterCloses(ChannelStateWriterSetterInvokable.class);
+    }
+
+    @Test
+    void testChannelStateWriterClosesOnFailure() throws Exception {
+        testChannelStateWriterCloses(FailingChannelStateWriterSetterInvokable.class);
     }
 
     private void assertCheckpointDeclined(
@@ -1197,18 +1277,44 @@ public class TaskTest extends TestLogger {
                         CheckpointType.CHECKPOINT, CheckpointStorageLocationReference.getDefault());
         task.triggerCheckpointBarrier(checkpointId, 1, checkpointOptions);
 
-        assertEquals(1, testCheckpointResponder.getDeclineReports().size());
-        assertEquals(
-                checkpointId, testCheckpointResponder.getDeclineReports().get(0).getCheckpointId());
-        assertEquals(
-                failureReason,
-                testCheckpointResponder
-                        .getDeclineReports()
-                        .get(0)
-                        .getCause()
-                        .getCheckpointFailureReason());
+        assertThat(testCheckpointResponder.getDeclineReports()).hasSize(1);
+        assertThat(testCheckpointResponder.getDeclineReports().get(0).getCheckpointId())
+                .isEqualTo(checkpointId);
+        assertThat(
+                        testCheckpointResponder
+                                .getDeclineReports()
+                                .get(0)
+                                .getCause()
+                                .getCheckpointFailureReason())
+                .isEqualTo(failureReason);
 
         testCheckpointResponder.clear();
+    }
+
+    private TaskInvokable waitForInvokable(Task task) throws Exception {
+        waitUntilCondition(() -> task.getInvokable() != null, 10L);
+
+        return task.getInvokable();
+    }
+
+    private void awaitInvokableLatch(Task task) throws Exception {
+        TaskInvokable taskInvokable = waitForInvokable(task);
+        if (!(taskInvokable instanceof AwaitLatchInvokable)) {
+            throw new Exception(
+                    "Invokable doesn't implement class - " + AwaitLatchInvokable.class.getName());
+        }
+
+        ((AwaitLatchInvokable) taskInvokable).await();
+    }
+
+    private void triggerInvokableLatch(Task task) throws Exception {
+        TaskInvokable taskInvokable = waitForInvokable(task);
+        if (!(taskInvokable instanceof TriggerLatchInvokable)) {
+            throw new Exception(
+                    "Invokable doesn't implement class - " + TriggerLatchInvokable.class.getName());
+        }
+
+        ((TriggerLatchInvokable) taskInvokable).trigger();
     }
 
     // ------------------------------------------------------------------------
@@ -1221,7 +1327,7 @@ public class TaskTest extends TestLogger {
 
         @Override
         public void updateTaskExecutionState(TaskExecutionState taskExecutionState) {
-            queue.offer(taskExecutionState);
+            assertThat(queue.offer(taskExecutionState)).isTrue();
         }
 
         private void validateListenerMessage(ExecutionState state, Task task, Throwable error) {
@@ -1229,16 +1335,16 @@ public class TaskTest extends TestLogger {
                 // we may have to wait for a bit to give the actors time to receive the message
                 // and put it into the queue
                 final TaskExecutionState taskState = queue.take();
-                assertNotNull("There is no additional listener message", state);
+                assertThat(state).as("There is no additional listener message").isNotNull();
 
-                assertEquals(task.getExecutionId(), taskState.getID());
-                assertEquals(state, taskState.getExecutionState());
+                assertThat(taskState.getID()).isEqualTo(task.getExecutionId());
+                assertThat(taskState.getExecutionState()).isSameAs(state);
 
                 final Throwable t = taskState.getError(getClass().getClassLoader());
                 if (error == null) {
-                    assertNull(t);
+                    assertThat(t).isNull();
                 } else {
-                    assertEquals(error.toString(), t.toString());
+                    assertThat(t).hasToString(error.toString());
                 }
             } catch (InterruptedException e) {
                 fail("interrupted");
@@ -1251,6 +1357,26 @@ public class TaskTest extends TestLogger {
         @Override
         public void notifyFatalError(String message, Throwable cause) {
             throw new RuntimeException("Unexpected FatalError notification");
+        }
+    }
+
+    /** Customized TaskManagerActions that interrupts task thread on fatal error. */
+    private static class InterruptOnFatalErrorTaskManagerActions extends NoOpTaskManagerActions {
+        private boolean fatalError = false;
+        private Thread executingThread;
+
+        @Override
+        public void notifyFatalError(String message, Throwable cause) {
+            fatalError = true;
+            executingThread.interrupt();
+        }
+
+        public boolean hasFatalError() {
+            return fatalError;
+        }
+
+        public void setExecutingThread(Thread executingThread) {
+            this.executingThread = executingThread;
         }
     }
 
@@ -1275,9 +1401,7 @@ public class TaskTest extends TestLogger {
         public void invoke() {}
 
         @Override
-        public void cancel() {
-            fail("This should not be called");
-        }
+        public void cancel() {}
 
         @Override
         public void cleanUp(Throwable throwable) throws Exception {
@@ -1309,6 +1433,43 @@ public class TaskTest extends TestLogger {
         }
     }
 
+    private static final class InvokableWithExceptionAndCleanUpFailingExternallyWithCancel
+            extends AbstractInvokable {
+        public InvokableWithExceptionAndCleanUpFailingExternallyWithCancel(
+                Environment environment) {
+            super(environment);
+        }
+
+        @Override
+        public void invoke() throws Exception {
+            throw new ExpectedTestException("THIS!");
+        }
+
+        @Override
+        public void cleanUp(Throwable throwable) throws Exception {
+            getEnvironment().failExternally(new CancelTaskException("NOT THIS!"));
+            super.cleanUp(throwable);
+        }
+    }
+
+    private static final class InvokableWithExceptionAndCleanUpFailingExternally
+            extends AbstractInvokable {
+        public InvokableWithExceptionAndCleanUpFailingExternally(Environment environment) {
+            super(environment);
+        }
+
+        @Override
+        public void invoke() throws Exception {
+            throw new ExpectedTestException("THIS!");
+        }
+
+        @Override
+        public void cleanUp(Throwable throwable) throws Exception {
+            getEnvironment().failExternally(new Exception("NOT THIS!"));
+            super.cleanUp(throwable);
+        }
+    }
+
     static final class InvokableWithExceptionInRestore extends AbstractInvokable {
         public InvokableWithExceptionInRestore(Environment environment) {
             super(environment);
@@ -1320,7 +1481,7 @@ public class TaskTest extends TestLogger {
         }
 
         @Override
-        public void invoke() throws Exception {}
+        public void invoke() {}
 
         @Override
         public void cleanUp(Throwable throwable) throws Exception {
@@ -1343,7 +1504,7 @@ public class TaskTest extends TestLogger {
         public void cancel() {}
     }
 
-    private static class InvokableBlockingWithTrigger extends AbstractInvokable {
+    private static class InvokableBlockingWithTrigger extends TriggerLatchInvokable {
         public InvokableBlockingWithTrigger(Environment environment) {
             super(environment);
         }
@@ -1356,12 +1517,12 @@ public class TaskTest extends TestLogger {
         }
     }
 
-    private static class InvokableDeclingingCheckpoints extends InvokableBlockingWithTrigger {
+    private static class InvokableDecliningCheckpoints extends InvokableBlockingWithTrigger {
         public static final int REJECTED_EXECUTION_CHECKPOINT_ID = 2;
         public static final int THROWING_CHECKPOINT_ID = 3;
         public static final int TRIGGERING_FAILED_CHECKPOINT_ID = 4;
 
-        public InvokableDeclingingCheckpoints(Environment environment) {
+        public InvokableDecliningCheckpoints(Environment environment) {
             super(environment);
         }
 
@@ -1385,7 +1546,7 @@ public class TaskTest extends TestLogger {
         }
     }
 
-    private static final class InvokableBlockingInInvoke extends AbstractInvokable {
+    private static final class InvokableBlockingInInvoke extends AwaitLatchInvokable {
         public InvokableBlockingInInvoke(Environment environment) {
             super(environment);
         }
@@ -1396,6 +1557,7 @@ public class TaskTest extends TestLogger {
 
             // block forever
             synchronized (this) {
+                //noinspection InfiniteLoopStatement
                 while (true) {
                     wait();
                 }
@@ -1403,7 +1565,7 @@ public class TaskTest extends TestLogger {
         }
     }
 
-    private static final class InvokableBlockingInRestore extends AbstractInvokable {
+    private static final class InvokableBlockingInRestore extends AwaitLatchInvokable {
         public InvokableBlockingInRestore(Environment environment) {
             super(environment);
         }
@@ -1414,6 +1576,7 @@ public class TaskTest extends TestLogger {
 
             // block forever
             synchronized (this) {
+                //noinspection InfiniteLoopStatement
                 while (true) {
                     wait();
                 }
@@ -1421,7 +1584,7 @@ public class TaskTest extends TestLogger {
         }
 
         @Override
-        public void invoke() throws Exception {}
+        public void invoke() {}
 
         @Override
         public void cleanUp(Throwable throwable) throws Exception {
@@ -1431,7 +1594,7 @@ public class TaskTest extends TestLogger {
     }
 
     /** {@link AbstractInvokable} which throws {@link RuntimeException} on invoke. */
-    public static final class InvokableWithExceptionOnTrigger extends AbstractInvokable {
+    public static class InvokableWithExceptionOnTrigger extends TriggerLatchInvokable {
         public InvokableWithExceptionOnTrigger(Environment environment) {
             super(environment);
         }
@@ -1444,47 +1607,23 @@ public class TaskTest extends TestLogger {
         }
     }
 
-    private static void awaitTriggerLatch() {
-        awaitLatch.trigger();
-
-        // make sure that the interrupt call does not
-        // grab us out of the lock early
-        while (true) {
-            try {
-                triggerLatch.await();
-                break;
-            } catch (InterruptedException e) {
-                // fall through the loop
-            }
-        }
-    }
-
     /** {@link AbstractInvokable} which throws {@link CancelTaskException} on invoke. */
-    public static final class InvokableWithCancelTaskExceptionInInvoke extends AbstractInvokable {
-        static final Logger LOG = LoggerFactory.getLogger(InvokableWithExceptionOnTrigger.class);
-
+    public static final class InvokableWithCancelTaskExceptionInInvoke
+            extends TriggerLatchInvokable {
         public InvokableWithCancelTaskExceptionInInvoke(Environment environment) {
             super(environment);
         }
 
         @Override
         public void invoke() {
-            // Logging and try-catch block are only for debugging FLINK-15550.
-            LOG.info("Await for {}, isTriggered = {}", triggerLatch, triggerLatch.isTriggered());
-            try {
-                awaitTriggerLatch();
-            } catch (Throwable ex) {
-                LOG.error("Fail on awaiting trigger latch", ex);
-
-                throw ex;
-            }
+            awaitTriggerLatch();
 
             throw new CancelTaskException();
         }
     }
 
     /** {@link AbstractInvokable} which blocks in cancel. */
-    public static final class InvokableBlockingInCancel extends AbstractInvokable {
+    public static final class InvokableBlockingInCancel extends TriggerLatchInvokable {
         public InvokableBlockingInCancel(Environment environment) {
             super(environment);
         }
@@ -1516,7 +1655,7 @@ public class TaskTest extends TestLogger {
 
     /** {@link AbstractInvokable} which blocks in cancel and is interruptible. */
     public static final class InvokableInterruptibleSharedLockInInvokeAndCancel
-            extends AbstractInvokable {
+            extends TriggerLatchInvokable {
         private final Object lock = new Object();
 
         public InvokableInterruptibleSharedLockInInvokeAndCancel(Environment environment) {
@@ -1525,9 +1664,11 @@ public class TaskTest extends TestLogger {
 
         @Override
         public void invoke() throws Exception {
-            synchronized (lock) {
-                awaitLatch.trigger();
-                wait();
+            while (!triggerLatch.isTriggered()) {
+                synchronized (lock) {
+                    awaitLatch.trigger();
+                    lock.wait();
+                }
             }
         }
 
@@ -1541,7 +1682,7 @@ public class TaskTest extends TestLogger {
     }
 
     /** {@link AbstractInvokable} which blocks in cancel and is not interruptible. */
-    public static final class InvokableUnInterruptibleBlockingInvoke extends AbstractInvokable {
+    public static final class InvokableUnInterruptibleBlockingInvoke extends TriggerLatchInvokable {
         public InvokableUnInterruptibleBlockingInvoke(Environment environment) {
             super(environment);
         }
@@ -1563,6 +1704,30 @@ public class TaskTest extends TestLogger {
         public void cancel() {}
     }
 
+    /** {@link AbstractInvokable} which blocks in instantiation. */
+    public static final class InvokableBlockingInInstantiation extends AbstractInvokable {
+        /** Declared static, otherwise there's no way to access it when blocking in constructor. */
+        static final OneShotLatch AWAIT_LATCH = new OneShotLatch();
+
+        public InvokableBlockingInInstantiation(Environment environment)
+                throws InterruptedException {
+            super(environment);
+            while (true) {
+                synchronized (this) {
+                    AWAIT_LATCH.trigger();
+                    wait();
+                }
+            }
+        }
+
+        @Override
+        public void invoke() {}
+
+        static void await() throws InterruptedException {
+            AWAIT_LATCH.await();
+        }
+    }
+
     // ------------------------------------------------------------------------
     //  test exceptions
     // ------------------------------------------------------------------------
@@ -1572,6 +1737,77 @@ public class TaskTest extends TestLogger {
 
         TestWrappedException(@Nonnull Throwable cause) {
             super(cause);
+        }
+    }
+
+    private abstract static class AwaitLatchInvokable extends AbstractInvokable {
+
+        final OneShotLatch awaitLatch = new OneShotLatch();
+
+        public AwaitLatchInvokable(Environment environment) {
+            super(environment);
+        }
+
+        void await() throws InterruptedException {
+            awaitLatch.await();
+        }
+    }
+
+    private abstract static class TriggerLatchInvokable extends AwaitLatchInvokable {
+
+        final OneShotLatch triggerLatch = new OneShotLatch();
+
+        public TriggerLatchInvokable(Environment environment) {
+            super(environment);
+        }
+
+        void trigger() {
+            triggerLatch.trigger();
+        }
+
+        void awaitTriggerLatch() {
+            awaitLatch.trigger();
+
+            // make sure that the interrupt call does not
+            // grab us out of the lock early
+            while (true) {
+                try {
+                    triggerLatch.await();
+                    break;
+                } catch (InterruptedException e) {
+                    // fall through the loop
+                }
+            }
+        }
+    }
+
+    private static class ChannelStateWriterWithCloseTracker
+            extends ChannelStateWriter.NoOpChannelStateWriter {
+        private final AtomicBoolean closeCalled = new AtomicBoolean(false);
+
+        @Override
+        public void close() {
+            closeCalled.set(true);
+        }
+
+        public boolean isClosed() {
+            return closeCalled.get();
+        }
+    }
+
+    private static class ChannelStateWriterSetterInvokable extends InvokableBlockingWithTrigger {
+
+        public ChannelStateWriterSetterInvokable(Environment environment) {
+            super(environment);
+            environment.setChannelStateWriter(new ChannelStateWriterWithCloseTracker());
+        }
+    }
+
+    private static class FailingChannelStateWriterSetterInvokable
+            extends InvokableWithExceptionOnTrigger {
+        public FailingChannelStateWriterSetterInvokable(Environment environment) {
+            super(environment);
+            environment.setChannelStateWriter(new ChannelStateWriterWithCloseTracker());
         }
     }
 }

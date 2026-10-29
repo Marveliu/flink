@@ -19,9 +19,12 @@
 package org.apache.flink.state.api.output.operators;
 
 import org.apache.flink.annotation.Internal;
+import org.apache.flink.configuration.CheckpointingOptions;
+import org.apache.flink.configuration.Configuration;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.metrics.groups.OperatorMetricGroup;
 import org.apache.flink.runtime.checkpoint.CheckpointOptions;
+import org.apache.flink.runtime.event.WatermarkEvent;
 import org.apache.flink.runtime.jobgraph.OperatorID;
 import org.apache.flink.runtime.state.CheckpointStreamFactory;
 import org.apache.flink.state.api.output.SnapshotUtils;
@@ -30,14 +33,14 @@ import org.apache.flink.state.api.runtime.NeverFireProcessingTimeService;
 import org.apache.flink.streaming.api.graph.StreamConfig;
 import org.apache.flink.streaming.api.operators.AbstractStreamOperator;
 import org.apache.flink.streaming.api.operators.BoundedOneInput;
-import org.apache.flink.streaming.api.operators.ChainingStrategy;
 import org.apache.flink.streaming.api.operators.OneInputStreamOperator;
 import org.apache.flink.streaming.api.operators.OperatorSnapshotFutures;
 import org.apache.flink.streaming.api.operators.Output;
-import org.apache.flink.streaming.api.operators.SetupableStreamOperator;
 import org.apache.flink.streaming.api.operators.StreamTaskStateInitializer;
 import org.apache.flink.streaming.api.watermark.Watermark;
+import org.apache.flink.streaming.runtime.operators.windowing.WindowOperator;
 import org.apache.flink.streaming.runtime.streamrecord.LatencyMarker;
+import org.apache.flink.streaming.runtime.streamrecord.RecordAttributes;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
 import org.apache.flink.streaming.runtime.tasks.StreamTask;
 import org.apache.flink.streaming.runtime.watermarkstatus.WatermarkStatus;
@@ -48,11 +51,11 @@ import org.apache.flink.util.OutputTag;
 @SuppressWarnings({"unchecked", "deprecation", "rawtypes"})
 public final class StateBootstrapWrapperOperator<
                 IN, OUT, OP extends AbstractStreamOperator<OUT> & OneInputStreamOperator<IN, OUT>>
-        implements OneInputStreamOperator<IN, TaggedOperatorSubtaskState>,
-                SetupableStreamOperator<TaggedOperatorSubtaskState>,
-                BoundedOneInput {
+        implements OneInputStreamOperator<IN, TaggedOperatorSubtaskState>, BoundedOneInput {
 
     private static final long serialVersionUID = 1L;
+
+    private final long checkpointId;
 
     private final long timestamp;
 
@@ -60,21 +63,24 @@ public final class StateBootstrapWrapperOperator<
 
     private Output<StreamRecord<TaggedOperatorSubtaskState>> output;
 
-    private final OP operator;
+    private final WindowOperator<?, IN, ?, ?, ?> operator;
 
-    public StateBootstrapWrapperOperator(long timestamp, Path savepointPath, OP operator) {
-
+    public StateBootstrapWrapperOperator(
+            long checkpointId,
+            long timestamp,
+            Path savepointPath,
+            WindowOperator<?, IN, ?, ?, ?> operator) {
+        this.checkpointId = checkpointId;
         this.timestamp = timestamp;
         this.savepointPath = savepointPath;
         this.operator = operator;
     }
 
-    @Override
     public void setup(
             StreamTask<?, ?> containingTask,
             StreamConfig config,
             Output<StreamRecord<TaggedOperatorSubtaskState>> output) {
-        ((SetupableStreamOperator) operator).setup(containingTask, config, new VoidOutput<>());
+        operator.setup(containingTask, config, new VoidOutput<>());
         operator.setProcessingTimeService(new NeverFireProcessingTimeService());
         this.output = output;
     }
@@ -146,16 +152,6 @@ public final class StateBootstrapWrapperOperator<
     }
 
     @Override
-    public ChainingStrategy getChainingStrategy() {
-        return operator.getChainingStrategy();
-    }
-
-    @Override
-    public void setChainingStrategy(ChainingStrategy strategy) {
-        operator.setChainingStrategy(strategy);
-    }
-
-    @Override
     public OperatorMetricGroup getMetricGroup() {
         return operator.getMetricGroup();
     }
@@ -182,20 +178,18 @@ public final class StateBootstrapWrapperOperator<
 
     @Override
     public void endInput() throws Exception {
+        Configuration jobConf = operator.getContainingTask().getJobConfiguration();
         TaggedOperatorSubtaskState state =
                 SnapshotUtils.snapshot(
+                        checkpointId,
                         this,
                         operator.getContainingTask()
                                 .getEnvironment()
                                 .getTaskInfo()
                                 .getIndexOfThisSubtask(),
                         timestamp,
-                        operator.getContainingTask()
-                                .getConfiguration()
-                                .isExactlyOnceCheckpointMode(),
-                        operator.getContainingTask()
-                                .getConfiguration()
-                                .isUnalignedCheckpointsEnabled(),
+                        CheckpointingOptions.getCheckpointingMode(jobConf),
+                        CheckpointingOptions.isUnalignedCheckpointEnabled(jobConf),
                         operator.getContainingTask().getConfiguration().getConfiguration(),
                         savepointPath);
 
@@ -215,6 +209,12 @@ public final class StateBootstrapWrapperOperator<
 
         @Override
         public void emitLatencyMarker(LatencyMarker latencyMarker) {}
+
+        @Override
+        public void emitRecordAttributes(RecordAttributes recordAttributes) {}
+
+        @Override
+        public void emitWatermark(WatermarkEvent watermark) {}
 
         @Override
         public void collect(T record) {}

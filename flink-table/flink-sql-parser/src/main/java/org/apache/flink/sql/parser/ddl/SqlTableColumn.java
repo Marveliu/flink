@@ -18,9 +18,11 @@
 
 package org.apache.flink.sql.parser.ddl;
 
+import org.apache.flink.sql.parser.SqlParseUtils;
 import org.apache.flink.sql.parser.ddl.constraint.SqlTableConstraint;
 
 import org.apache.calcite.sql.SqlCall;
+import org.apache.calcite.sql.SqlCharStringLiteral;
 import org.apache.calcite.sql.SqlDataTypeSpec;
 import org.apache.calcite.sql.SqlIdentifier;
 import org.apache.calcite.sql.SqlKind;
@@ -31,7 +33,6 @@ import org.apache.calcite.sql.SqlSpecialOperator;
 import org.apache.calcite.sql.SqlWriter;
 import org.apache.calcite.sql.parser.SqlParserPos;
 import org.apache.calcite.util.ImmutableNullableList;
-import org.apache.calcite.util.NlsString;
 
 import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
@@ -49,9 +50,10 @@ public abstract class SqlTableColumn extends SqlCall {
 
     protected final SqlIdentifier name;
 
-    protected final SqlNode comment;
+    protected final SqlCharStringLiteral comment;
 
-    private SqlTableColumn(SqlParserPos pos, SqlIdentifier name, @Nullable SqlNode comment) {
+    private SqlTableColumn(
+            SqlParserPos pos, SqlIdentifier name, @Nullable SqlCharStringLiteral comment) {
         super(pos);
         this.name = requireNonNull(name, "Column name should not be null");
         this.comment = comment;
@@ -80,12 +82,26 @@ public abstract class SqlTableColumn extends SqlCall {
         return name;
     }
 
-    public Optional<SqlNode> getComment() {
-        return Optional.ofNullable(comment);
+    public String getComment() {
+        return SqlParseUtils.extractString(comment);
     }
 
     /** A regular, physical column. */
     public static class SqlRegularColumn extends SqlTableColumn {
+
+        private static final SqlSpecialOperator REGULAR_OPERATOR =
+                new SqlSpecialOperator("COLUMN_DECL", SqlKind.COLUMN_DECL) {
+                    @Override
+                    public SqlCall createCall(
+                            SqlLiteral functionQualifier, SqlParserPos pos, SqlNode... operands) {
+                        return new SqlRegularColumn(
+                                pos,
+                                (SqlIdentifier) operands[0],
+                                (SqlCharStringLiteral) operands[3],
+                                (SqlDataTypeSpec) operands[1],
+                                (SqlTableConstraint) operands[2]);
+                    }
+                };
 
         private SqlDataTypeSpec type;
 
@@ -94,7 +110,7 @@ public abstract class SqlTableColumn extends SqlCall {
         public SqlRegularColumn(
                 SqlParserPos pos,
                 SqlIdentifier name,
-                @Nullable SqlNode comment,
+                @Nullable SqlCharStringLiteral comment,
                 SqlDataTypeSpec type,
                 @Nullable SqlTableConstraint constraint) {
             super(pos, name, comment);
@@ -127,6 +143,11 @@ public abstract class SqlTableColumn extends SqlCall {
         }
 
         @Override
+        public @Nonnull SqlOperator getOperator() {
+            return REGULAR_OPERATOR;
+        }
+
+        @Override
         public @Nonnull List<SqlNode> getOperandList() {
             return ImmutableNullableList.of(name, type, constraint, comment);
         }
@@ -134,6 +155,21 @@ public abstract class SqlTableColumn extends SqlCall {
 
     /** A column derived from metadata. */
     public static class SqlMetadataColumn extends SqlTableColumn {
+
+        private static final SqlSpecialOperator METADATA_OPERATOR =
+                new SqlSpecialOperator("COLUMN_DECL", SqlKind.COLUMN_DECL) {
+                    @Override
+                    public SqlCall createCall(
+                            SqlLiteral functionQualifier, SqlParserPos pos, SqlNode... operands) {
+                        return new SqlMetadataColumn(
+                                pos,
+                                (SqlIdentifier) operands[0],
+                                (SqlCharStringLiteral) operands[2],
+                                (SqlDataTypeSpec) operands[1],
+                                operands[3],
+                                ((SqlLiteral) operands[4]).booleanValue());
+                    }
+                };
 
         private final SqlDataTypeSpec type;
 
@@ -144,7 +180,7 @@ public abstract class SqlTableColumn extends SqlCall {
         public SqlMetadataColumn(
                 SqlParserPos pos,
                 SqlIdentifier name,
-                @Nullable SqlNode comment,
+                @Nullable SqlCharStringLiteral comment,
                 SqlDataTypeSpec type,
                 @Nullable SqlNode metadataAlias,
                 boolean isVirtual) {
@@ -159,8 +195,7 @@ public abstract class SqlTableColumn extends SqlCall {
         }
 
         public Optional<String> getMetadataAlias() {
-            return Optional.ofNullable(metadataAlias)
-                    .map(alias -> ((NlsString) SqlLiteral.value(alias)).getValue());
+            return Optional.ofNullable(metadataAlias).map(SqlParseUtils::extractString);
         }
 
         public boolean isVirtual() {
@@ -185,18 +220,44 @@ public abstract class SqlTableColumn extends SqlCall {
         }
 
         @Override
+        public @Nonnull SqlOperator getOperator() {
+            return METADATA_OPERATOR;
+        }
+
+        @Override
         public @Nonnull List<SqlNode> getOperandList() {
-            return ImmutableNullableList.of(name, type, comment);
+            return ImmutableNullableList.of(
+                    name,
+                    type,
+                    comment,
+                    metadataAlias,
+                    SqlLiteral.createBoolean(isVirtual, SqlParserPos.ZERO));
         }
     }
 
     /** A column derived from an expression. */
     public static class SqlComputedColumn extends SqlTableColumn {
 
+        private static final SqlSpecialOperator COMPUTED_OPERATOR =
+                new SqlSpecialOperator("COLUMN_DECL", SqlKind.COLUMN_DECL) {
+                    @Override
+                    public SqlCall createCall(
+                            SqlLiteral functionQualifier, SqlParserPos pos, SqlNode... operands) {
+                        return new SqlComputedColumn(
+                                pos,
+                                (SqlIdentifier) operands[0],
+                                (SqlCharStringLiteral) operands[2],
+                                operands[1]);
+                    }
+                };
+
         private final SqlNode expr;
 
         public SqlComputedColumn(
-                SqlParserPos pos, SqlIdentifier name, @Nullable SqlNode comment, SqlNode expr) {
+                SqlParserPos pos,
+                SqlIdentifier name,
+                @Nullable SqlCharStringLiteral comment,
+                SqlNode expr) {
             super(pos, name, comment);
             this.expr = requireNonNull(expr, "Column expression should not be null");
         }
@@ -209,6 +270,11 @@ public abstract class SqlTableColumn extends SqlCall {
         protected void unparseColumn(SqlWriter writer, int leftPrec, int rightPrec) {
             writer.keyword("AS");
             expr.unparse(writer, leftPrec, rightPrec);
+        }
+
+        @Override
+        public @Nonnull SqlOperator getOperator() {
+            return COMPUTED_OPERATOR;
         }
 
         @Override

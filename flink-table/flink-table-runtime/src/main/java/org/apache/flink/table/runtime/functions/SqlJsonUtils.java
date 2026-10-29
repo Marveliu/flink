@@ -23,12 +23,32 @@ import org.apache.flink.table.api.JsonExistsOnError;
 import org.apache.flink.table.api.JsonQueryOnEmptyOrError;
 import org.apache.flink.table.api.JsonQueryWrapper;
 import org.apache.flink.table.api.JsonValueOnEmptyOrError;
-import org.apache.flink.table.api.TableException;
-import org.apache.flink.util.FlinkRuntimeException;
+import org.apache.flink.table.api.TableRuntimeException;
+import org.apache.flink.table.data.DecimalData;
+import org.apache.flink.table.data.DecimalDataUtils;
+import org.apache.flink.table.data.GenericArrayData;
+import org.apache.flink.table.data.StringData;
+import org.apache.flink.table.data.binary.BinaryStringData;
+import org.apache.flink.table.data.binary.BinaryStringDataUtil;
+import org.apache.flink.table.data.binary.StringUtf8Utils;
+import org.apache.flink.table.types.logical.LogicalTypeRoot;
+import org.apache.flink.types.variant.BinaryVariantInternalBuilder;
+import org.apache.flink.types.variant.Variant;
 
+import org.apache.flink.shaded.com.jayway.jsonpath.Configuration;
+import org.apache.flink.shaded.com.jayway.jsonpath.DocumentContext;
+import org.apache.flink.shaded.com.jayway.jsonpath.InvalidPathException;
+import org.apache.flink.shaded.com.jayway.jsonpath.JsonPath;
+import org.apache.flink.shaded.com.jayway.jsonpath.Option;
+import org.apache.flink.shaded.com.jayway.jsonpath.PathNotFoundException;
+import org.apache.flink.shaded.com.jayway.jsonpath.spi.cache.CacheProvider;
+import org.apache.flink.shaded.com.jayway.jsonpath.spi.json.JacksonJsonProvider;
+import org.apache.flink.shaded.com.jayway.jsonpath.spi.mapper.JacksonMappingProvider;
+import org.apache.flink.shaded.com.jayway.jsonpath.spi.mapper.MappingProvider;
 import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.annotation.JsonValue;
 import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.core.JsonFactory;
 import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.core.JsonProcessingException;
+import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.databind.DeserializationFeature;
 import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.databind.JsonNode;
 import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.databind.ObjectMapper;
 import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.databind.SerializationFeature;
@@ -36,17 +56,16 @@ import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.databind.node.Arra
 import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.databind.node.ObjectNode;
 
-import com.jayway.jsonpath.Configuration;
-import com.jayway.jsonpath.DocumentContext;
-import com.jayway.jsonpath.InvalidPathException;
-import com.jayway.jsonpath.JsonPath;
-import com.jayway.jsonpath.Option;
-import com.jayway.jsonpath.spi.json.JacksonJsonProvider;
-import com.jayway.jsonpath.spi.mapper.JacksonMappingProvider;
-import com.jayway.jsonpath.spi.mapper.MappingProvider;
+import javax.annotation.Nullable;
 
+import java.io.IOException;
+import java.lang.reflect.Array;
+import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.EnumSet;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
@@ -64,15 +83,45 @@ public class SqlJsonUtils {
     private static final JsonFactory JSON_FACTORY = new JsonFactory();
     private static final ObjectMapper MAPPER =
             new ObjectMapper(JSON_FACTORY)
-                    .configure(SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS, true);
+                    .configure(SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS, true)
+                    .configure(DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS, true);
     private static final Pattern JSON_PATH_BASE =
             Pattern.compile(
                     "^\\s*(?<mode>strict|lax)\\s+(?<spec>.+)$",
                     Pattern.CASE_INSENSITIVE | Pattern.DOTALL | Pattern.MULTILINE);
-    private static final JacksonJsonProvider JSON_PATH_JSON_PROVIDER = new JacksonJsonProvider();
-    private static final MappingProvider JSON_PATH_MAPPING_PROVIDER = new JacksonMappingProvider();
+    private static final JacksonJsonProvider JSON_PATH_JSON_PROVIDER =
+            new JacksonJsonProvider(MAPPER);
+    private static final MappingProvider JSON_PATH_MAPPING_PROVIDER =
+            new JacksonMappingProvider(MAPPER);
+
+    /**
+     * Configuration for JSON_LENGTH, which evaluates plain paths only and therefore does not need
+     * the 'lax'/'strict' path mode handling of {@link #jsonApiCommonSyntax}. Exceptions are left
+     * unsuppressed so that a path resolving to a JSON null literal (returns {@code null}) stays
+     * distinguishable from a path that does not exist (throws {@link PathNotFoundException}).
+     * {@link Configuration} is immutable, so a single instance is shared across all calls.
+     */
+    private static final Configuration JSON_PATH_LENGTH_CONFIG =
+            Configuration.builder()
+                    .jsonProvider(JSON_PATH_JSON_PROVIDER)
+                    .mappingProvider(JSON_PATH_MAPPING_PROVIDER)
+                    .build();
+
+    private static final String JSON_QUERY_FUNCTION_NAME = "JSON_QUERY";
+    private static final String JSON_VALUE_FUNCTION_NAME = "JSON_VALUE";
+    private static final String JSON_EXISTS_FUNCTION_NAME = "JSON_EXISTS";
+
+    private static final Configuration JSON_PATH_TYPE_CONFIG =
+            Configuration.builder()
+                    .jsonProvider(JSON_PATH_JSON_PROVIDER)
+                    .mappingProvider(JSON_PATH_MAPPING_PROVIDER)
+                    .build();
 
     private SqlJsonUtils() {}
+
+    static {
+        CacheProvider.setCache(new JsonPathCache());
+    }
 
     /** Returns the {@link JsonNodeFactory} for creating nodes. */
     public static JsonNodeFactory getNodeFactory() {
@@ -98,7 +147,8 @@ public class SqlJsonUtils {
             final Object convertedNode = MAPPER.treeToValue(node, Object.class);
             return MAPPER.writeValueAsString(convertedNode);
         } catch (JsonProcessingException e) {
-            throw new TableException("JSON object could not be serialized: " + node.asText(), e);
+            throw new TableRuntimeException(
+                    "JSON object could not be serialized: " + node.asText(), e);
         }
     }
 
@@ -123,7 +173,8 @@ public class SqlJsonUtils {
                 case UNKNOWN:
                     return null;
                 default:
-                    throw illegalErrorBehaviorInJsonExistsFunc(errorBehavior.toString());
+                    throw illegalErrorBehaviorFunc(
+                            errorBehavior.toString(), JSON_EXISTS_FUNCTION_NAME);
             }
         } else {
             return context.obj != null;
@@ -139,6 +190,22 @@ public class SqlJsonUtils {
             Object defaultValueOnError) {
         return jsonValue(
                 jsonApiCommonSyntax(input, pathSpec),
+                emptyBehavior,
+                defaultValueOnEmpty,
+                errorBehavior,
+                defaultValueOnError);
+    }
+
+    /** Accepts a pre-parsed context from {@link #jsonParse}. */
+    public static Object jsonValue(
+            JsonValueContext parsedInput,
+            String pathSpec,
+            JsonValueOnEmptyOrError emptyBehavior,
+            Object defaultValueOnEmpty,
+            JsonValueOnEmptyOrError errorBehavior,
+            Object defaultValueOnError) {
+        return jsonValue(
+                jsonApiCommonSyntax(parsedInput, pathSpec),
                 emptyBehavior,
                 defaultValueOnEmpty,
                 errorBehavior,
@@ -165,7 +232,8 @@ public class SqlJsonUtils {
                     case DEFAULT:
                         return defaultValueOnEmpty;
                     default:
-                        throw illegalEmptyBehaviorInJsonValueFunc(emptyBehavior.toString());
+                        throw illegalEmptyBehaviorFunc(
+                                emptyBehavior.toString(), JSON_VALUE_FUNCTION_NAME);
                 }
             } else if (context.mode == PathMode.STRICT && !isScalarObject(value)) {
                 exc = scalarValueRequiredInStrictModeOfJsonValueFunc(value.toString());
@@ -181,25 +249,50 @@ public class SqlJsonUtils {
             case DEFAULT:
                 return defaultValueOnError;
             default:
-                throw illegalErrorBehaviorInJsonValueFunc(errorBehavior.toString());
+                throw illegalErrorBehaviorFunc(errorBehavior.toString(), JSON_VALUE_FUNCTION_NAME);
         }
     }
 
-    public static String jsonQuery(
+    public enum JsonQueryReturnType {
+        STRING,
+        ARRAY,
+        RAW_ARRAY
+    }
+
+    public static Object jsonQuery(
             String input,
             String pathSpec,
+            JsonQueryReturnType returnType,
             JsonQueryWrapper wrapperBehavior,
             JsonQueryOnEmptyOrError emptyBehavior,
             JsonQueryOnEmptyOrError errorBehavior) {
         return jsonQuery(
                 jsonApiCommonSyntax(input, pathSpec),
+                returnType,
                 wrapperBehavior,
                 emptyBehavior,
                 errorBehavior);
     }
 
-    private static String jsonQuery(
+    /** Like {@link #jsonQuery} but accepts a pre-parsed context from {@link #jsonParse}. */
+    public static Object jsonQueryParsed(
+            JsonValueContext parsedInput,
+            String pathSpec,
+            JsonQueryReturnType returnType,
+            JsonQueryWrapper wrapperBehavior,
+            JsonQueryOnEmptyOrError emptyBehavior,
+            JsonQueryOnEmptyOrError errorBehavior) {
+        return jsonQuery(
+                jsonApiCommonSyntax(parsedInput, pathSpec),
+                returnType,
+                wrapperBehavior,
+                emptyBehavior,
+                errorBehavior);
+    }
+
+    private static Object jsonQuery(
             JsonPathContext context,
+            JsonQueryReturnType returnType,
             JsonQueryWrapper wrapperBehavior,
             JsonQueryOnEmptyOrError emptyBehavior,
             JsonQueryOnEmptyOrError errorBehavior) {
@@ -230,39 +323,176 @@ public class SqlJsonUtils {
                 }
             }
             if (value == null || context.mode == PathMode.LAX && isScalarObject(value)) {
-                switch (emptyBehavior) {
-                    case ERROR:
-                        throw emptyResultOfJsonQueryFuncNotAllowed();
-                    case NULL:
-                        return null;
-                    case EMPTY_ARRAY:
-                        return "[]";
-                    case EMPTY_OBJECT:
-                        return "{}";
-                    default:
-                        throw illegalEmptyBehaviorInJsonQueryFunc(emptyBehavior.toString());
-                }
+                return emptyResultForJsonQuery(emptyBehavior, returnType);
             } else if (context.mode == PathMode.STRICT && isScalarObject(value)) {
                 exc = arrayOrObjectValueRequiredInStrictModeOfJsonQueryFunc(value.toString());
             } else {
                 try {
-                    return jsonize(value);
+                    switch (returnType) {
+                        case STRING:
+                            return jsonize(value);
+                        case ARRAY:
+                            final List<Object> list = (List<Object>) value;
+                            final Object[] arr = new Object[list.size()];
+                            for (int i = 0; i < list.size(); i++) {
+                                final Object el = list.get(i);
+                                if (el != null) {
+                                    final String stringifiedEl;
+                                    if (isScalarObject(el)) {
+                                        stringifiedEl = String.valueOf(el);
+                                    } else {
+                                        stringifiedEl = jsonize(el);
+                                    }
+                                    arr[i] = StringData.fromString(stringifiedEl);
+                                }
+                            }
+
+                            return new GenericArrayData(arr);
+                        case RAW_ARRAY:
+                            final List<Object> rawList = (List<Object>) value;
+                            return rawList.toArray();
+                        default:
+                            throw new TableRuntimeException("illegal return type");
+                    }
                 } catch (Exception e) {
                     exc = e;
                 }
             }
         }
-        switch (errorBehavior) {
+        return errorResultForJsonQuery(errorBehavior, returnType, exc);
+    }
+
+    private static Object emptyResultForJsonQuery(
+            JsonQueryOnEmptyOrError emptyBehavior, JsonQueryReturnType returnType) {
+        switch (emptyBehavior) {
+            case ERROR:
+                throw emptyResultOfJsonQueryFuncNotAllowed();
+            case NULL:
+                return null;
+            case EMPTY_ARRAY:
+                switch (returnType) {
+                    case ARRAY:
+                        return new GenericArrayData(new StringData[0]);
+                    case RAW_ARRAY:
+                        return new Object[0];
+                    case STRING:
+                        return "[]";
+                    default:
+                        throw new RuntimeException("illegal return type");
+                }
+            case EMPTY_OBJECT:
+                if (Objects.requireNonNull(returnType) == JsonQueryReturnType.STRING) {
+                    return "{}";
+                }
+                throw illegalEmptyBehaviorFunc(emptyBehavior.toString(), JSON_QUERY_FUNCTION_NAME);
+            default:
+                throw illegalEmptyBehaviorFunc(emptyBehavior.toString(), JSON_QUERY_FUNCTION_NAME);
+        }
+    }
+
+    private static Object errorResultForJsonQuery(
+            JsonQueryOnEmptyOrError errorBehaviour, JsonQueryReturnType returnType, Exception exc) {
+        switch (errorBehaviour) {
             case ERROR:
                 throw toUnchecked(exc);
             case NULL:
                 return null;
             case EMPTY_ARRAY:
-                return "[]";
+                switch (returnType) {
+                    case ARRAY:
+                        return new GenericArrayData(new StringData[0]);
+                    case RAW_ARRAY:
+                        return new Object[0];
+                    case STRING:
+                        return "[]";
+                    default:
+                        throw new TableRuntimeException("illegal return type");
+                }
             case EMPTY_OBJECT:
-                return "{}";
+                if (Objects.requireNonNull(returnType) == JsonQueryReturnType.STRING) {
+                    return "{}";
+                }
+                throw illegalErrorBehaviorFunc(errorBehaviour.toString(), JSON_QUERY_FUNCTION_NAME);
             default:
-                throw illegalErrorBehaviorInJsonQueryFunc(errorBehavior.toString());
+                throw illegalErrorBehaviorFunc(errorBehaviour.toString(), JSON_QUERY_FUNCTION_NAME);
+        }
+    }
+
+    /** Accepts a pre-parsed context from {@link #jsonParse}. */
+    public static Integer jsonLength(final JsonValueContext parsedInput) {
+        if (parsedInput == null || parsedInput.hasException()) {
+            return null;
+        }
+
+        // Whole document: a top-level JSON null literal counts as a scalar (length 1).
+        return jsonLengthValue(parsedInput.obj);
+    }
+
+    /**
+     * Accepts a pre-parsed context from {@link #jsonParse}. {@code isPathDefinite} is computed at
+     * plan time by {@link #isPathDefinite}.
+     */
+    public static Integer jsonLength(
+            final JsonValueContext parsedInput,
+            final String pathSpec,
+            final boolean isPathDefinite) {
+        // An empty path is ruled out up front because JsonPath rejects it with an
+        // IllegalArgumentException instead of the InvalidPathException caught below.
+        if (parsedInput == null || parsedInput.hasException() || pathSpec.isEmpty()) {
+            return null;
+        }
+
+        // JsonPath rejects a null root document, so a whole document that is a JSON null literal
+        // has to be resolved here. Only the root path matches it, as a scalar of length 1.
+        if (parsedInput.obj == null) {
+            return "$".equals(pathSpec) ? 1 : null;
+        }
+        final Object value;
+        try {
+            value = JsonPath.parse(parsedInput.obj, JSON_PATH_LENGTH_CONFIG).read(pathSpec);
+        } catch (InvalidPathException e) {
+            // The path does not exist, or is not a valid path at all.
+            return null;
+        }
+
+        if (!isPathDefinite) {
+            final List<?> matched = (List<?>) value;
+            return matched.size() == 1 ? jsonLengthValue(matched.get(0)) : null;
+        }
+
+        // A definite path that read without throwing but produced null matched a JSON null
+        // literal, which jsonLengthValue counts as a scalar.
+        return jsonLengthValue(value);
+    }
+
+    private static int jsonLengthValue(final Object value) {
+        if (value instanceof Map) {
+            return ((Map<?, ?>) value).size();
+        } else if (value != null && value.getClass().isArray()) {
+            return Array.getLength(value);
+        } else if (value instanceof List<?>) {
+            return ((List<?>) value).size();
+        }
+
+        // Scalars, including a JSON null literal, have length 1.
+        return 1;
+    }
+
+    public static Object json(String input) {
+        try {
+            String trimmed = input.trim();
+            if (trimmed.isEmpty()) {
+                return null;
+            }
+            String jsonStr = jsonize(dejsonize(trimmed));
+
+            return jsonStr;
+        } catch (Exception e) {
+            throw new TableRuntimeException(
+                    String.format(
+                            "Invalid JSON string in JSON(value) function: \"%s\". Error: %s",
+                            input, e.getMessage()),
+                    e);
         }
     }
 
@@ -318,6 +548,119 @@ public class SqlJsonUtils {
 
     private static Object dejsonize(String input) {
         return JSON_PATH_JSON_PROVIDER.parse(input);
+    }
+
+    /**
+     * Returns the JSON type flag for the parsed value: {@code object}, {@code array}, {@code
+     * string}, {@code number}, {@code boolean}, or {@code null} for the JSON null literal. Returns
+     * SQL {@code NULL} for invalid JSON.
+     */
+    public static String jsonType(final JsonValueContext parsedInput) {
+        // Unparsed, or shared with a call that never assigned it: report NULL either way.
+        if (parsedInput == null || parsedInput.hasException()) {
+            return null;
+        }
+        return getJsonType(parsedInput.obj);
+    }
+
+    private static String getJsonType(final Object val) {
+        if (val instanceof Number) {
+            return "number";
+        } else if (val instanceof String) {
+            return "string";
+        } else if (val instanceof Boolean) {
+            return "boolean";
+        } else if (val instanceof Map) {
+            return "object";
+        } else if (val instanceof Collection) {
+            return "array";
+        } else if (val == null) {
+            return "null";
+        }
+        return null;
+    }
+
+    /**
+     * Returns the JSON type flag at {@code path}, or {@code null} if the path doesn't resolve to
+     * exactly one value. {@code definite} is computed at plan time by {@link #isPathDefinite}.
+     */
+    public static String jsonType(
+            final JsonValueContext parsedInput, final String path, final boolean isPathDefinite) {
+        if (parsedInput == null || parsedInput.hasException() || path.isEmpty()) {
+            return null;
+        }
+
+        if (parsedInput.obj == null) {
+            return "$".equals(path) ? "null" : null;
+        }
+
+        final Object value;
+        try {
+            // PathNotFoundException extends InvalidPathException (covers both exceptions)
+            value = JsonPath.parse(parsedInput.obj, JSON_PATH_TYPE_CONFIG).read(path);
+        } catch (InvalidPathException e) {
+            return null;
+        }
+
+        if (!isPathDefinite) {
+            // Indefinite paths (e.g. wildcards) read back as a list; only one match has one type.
+            final List<?> matched = (List<?>) value;
+            return matched.size() == 1 ? getJsonType(matched.get(0)) : null;
+        }
+        return getJsonType(value);
+    }
+
+    /** Returns whether {@code pathSpec} is a definite JSON path. */
+    public static boolean isPathDefinite(final String pathSpec) {
+        // JsonPath.compile() rejects an empty path with an IllegalArgumentException rather than
+        // the InvalidPathException caught below.
+        if (pathSpec.isEmpty()) {
+            return false;
+        }
+        try {
+            return JsonPath.isPathDefinite(pathSpec);
+        } catch (InvalidPathException e) {
+            return false;
+        }
+    }
+
+    /**
+     * Parses a JSON string into a reusable context object. The result can be passed to {@link
+     * #jsonValue} or {@link #jsonQueryParsed} to avoid re-parsing the same JSON string multiple
+     * times.
+     */
+    public static JsonValueContext jsonParse(String input) {
+        return jsonValueExpression(input);
+    }
+
+    /**
+     * Parses a JSON string into a {@link Variant}.
+     *
+     * <p>Malformed input fails with the parser's own exception, which {@code TRY_PARSE_JSON} can
+     * drop cheaply. {@code PARSE_JSON} reports it through {@link #parseJsonError}.
+     */
+    public static Variant parseJsonToVariant(StringData jsonStr, boolean allowDuplicateKeys)
+            throws IOException {
+        return BinaryVariantInternalBuilder.parseJson(jsonStr.toBytes(), allowDuplicateKeys);
+    }
+
+    /**
+     * Builds the error that {@code PARSE_JSON} throws when {@link #parseJsonToVariant} rejects
+     * {@code jsonStr}. Input that is not valid UTF-8 is reported by the index of its first invalid
+     * byte rather than by its content.
+     */
+    public static TableRuntimeException parseJsonError(StringData jsonStr, Throwable cause) {
+        final byte[] bytes = jsonStr.toBytes();
+        final int invalidIndex = StringUtf8Utils.firstInvalidUtf8ByteIndex(bytes, 0, bytes.length);
+        if (invalidIndex >= 0) {
+            return new TableRuntimeException(
+                    String.format(
+                            "Failed to parse JSON string: Invalid UTF-8 byte at index %d of %d.",
+                            invalidIndex, bytes.length),
+                    cause);
+        }
+        return new TableRuntimeException(
+                String.format("Failed to parse JSON string: %s", jsonStr), cause);
     }
 
     private static JsonValueContext jsonValueExpression(String input) {
@@ -384,100 +727,81 @@ public class SqlJsonUtils {
         }
     }
 
-    private static RuntimeException toUnchecked(Exception e) {
-        if (e instanceof RuntimeException) {
-            return (RuntimeException) e;
+    private static TableRuntimeException toUnchecked(Exception e) {
+        if (e instanceof TableRuntimeException) {
+            return (TableRuntimeException) e;
         }
-        return new RuntimeException(e);
+        return new TableRuntimeException(e.getMessage(), e);
     }
 
     private static RuntimeException illegalJsonPathModeInPathSpec(
             String pathMode, String pathSpec) {
-        return new FlinkRuntimeException(
+        return new TableRuntimeException(
                 String.format(
                         "Illegal jsonpath mode ''%s'' in jsonpath spec: ''%s''",
                         pathMode, pathSpec));
     }
 
     private static RuntimeException illegalJsonPathMode(String pathMode) {
-        return new FlinkRuntimeException(String.format("Illegal jsonpath mode ''%s''", pathMode));
+        return new TableRuntimeException(String.format("Illegal jsonpath mode ''%s''", pathMode));
     }
 
     private static RuntimeException illegalJsonPathSpec(String pathSpec) {
-        return new FlinkRuntimeException(
+        return new TableRuntimeException(
                 String.format(
                         "Illegal jsonpath spec ''%s'', format of the spec should be: ''<lax|strict> $'{'expr'}'''",
                         pathSpec));
     }
 
     private static RuntimeException strictPathModeRequiresNonEmptyValue() {
-        return new FlinkRuntimeException(
+        return new TableRuntimeException(
                 "Strict jsonpath mode requires a non empty returned value, but is null");
     }
 
-    private static RuntimeException illegalErrorBehaviorInJsonExistsFunc(String errorBehavior) {
-        return new FlinkRuntimeException(
-                String.format(
-                        "Illegal error behavior ''{0}'' specified in JSON_EXISTS function",
-                        errorBehavior));
-    }
-
     private static RuntimeException emptyResultOfJsonValueFuncNotAllowed() {
-        return new FlinkRuntimeException("Empty result of JSON_VALUE function is not allowed");
+        return new TableRuntimeException("Empty result of JSON_VALUE function is not allowed");
     }
 
-    private static RuntimeException illegalEmptyBehaviorInJsonValueFunc(String emptyBehavior) {
-        return new FlinkRuntimeException(
+    private static RuntimeException illegalEmptyBehaviorFunc(
+            String emptyBehavior, String functionName) {
+        return new TableRuntimeException(
                 String.format(
-                        "Illegal empty behavior ''{0}'' specified in JSON_VALUE function",
-                        emptyBehavior));
+                        "Illegal empty behavior ''{0}'' specified in %s function",
+                        emptyBehavior, functionName));
     }
 
-    private static RuntimeException illegalErrorBehaviorInJsonValueFunc(String errorBehavior) {
-        return new FlinkRuntimeException(
+    private static RuntimeException illegalErrorBehaviorFunc(
+            String errorBehavior, String functionName) {
+        return new TableRuntimeException(
                 String.format(
-                        "Illegal error behavior ''%s'' specified in JSON_VALUE function",
-                        errorBehavior));
+                        "Illegal error behavior ''%s'' specified in %s function",
+                        errorBehavior, functionName));
     }
 
     private static RuntimeException scalarValueRequiredInStrictModeOfJsonValueFunc(String value) {
-        return new FlinkRuntimeException(
+        return new TableRuntimeException(
                 String.format(
                         "Strict jsonpath mode requires scalar value, and the actual value is: ''%s''",
                         value));
     }
 
     private static RuntimeException illegalWrapperBehaviorInJsonQueryFunc(String wrapperBehavior) {
-        return new FlinkRuntimeException(
+        return new TableRuntimeException(
                 String.format(
                         "Illegal wrapper behavior ''%s'' specified in JSON_QUERY function",
                         wrapperBehavior));
     }
 
     private static RuntimeException emptyResultOfJsonQueryFuncNotAllowed() {
-        return new FlinkRuntimeException("Empty result of JSON_QUERY function is not allowed");
-    }
-
-    private static RuntimeException illegalEmptyBehaviorInJsonQueryFunc(String emptyBehavior) {
-        return new FlinkRuntimeException(
-                String.format(
-                        "Illegal empty behavior ''%s'' specified in JSON_VALUE function",
-                        emptyBehavior));
+        return new TableRuntimeException("Empty result of JSON_QUERY function is not allowed");
     }
 
     private static RuntimeException arrayOrObjectValueRequiredInStrictModeOfJsonQueryFunc(
             String value) {
-        return new FlinkRuntimeException(
+        return new TableRuntimeException(
                 String.format(
                         "Strict jsonpath mode requires array or object value, and the actual value is: ''%s''",
                         value));
-    }
-
-    private static RuntimeException illegalErrorBehaviorInJsonQueryFunc(String errorBehavior) {
-        return new FlinkRuntimeException(
-                String.format(
-                        "Illegal error behavior ''%s'' specified in JSON_VALUE function",
-                        errorBehavior));
     }
 
     /**
@@ -543,7 +867,308 @@ public class SqlJsonUtils {
         }
     }
 
-    private static class JsonValueContext {
+    // --- Type conversion for JSON_VALUE / JSON_QUERY RETURNING ---
+
+    private static final EnumSet<LogicalTypeRoot> SUPPORTED_JSON_RETURNING_TYPES =
+            EnumSet.of(
+                    LogicalTypeRoot.BOOLEAN,
+                    LogicalTypeRoot.TINYINT,
+                    LogicalTypeRoot.SMALLINT,
+                    LogicalTypeRoot.INTEGER,
+                    LogicalTypeRoot.BIGINT,
+                    LogicalTypeRoot.FLOAT,
+                    LogicalTypeRoot.DOUBLE,
+                    LogicalTypeRoot.DECIMAL);
+
+    public static boolean isSupportedJsonReturningType(LogicalTypeRoot typeRoot) {
+        return SUPPORTED_JSON_RETURNING_TYPES.contains(typeRoot);
+    }
+
+    public static Object convertJsonScalar(
+            Object raw,
+            LogicalTypeRoot typeRoot,
+            int precision,
+            int scale,
+            JsonValueOnEmptyOrError errorBehavior,
+            Object defaultValue) {
+        if (raw == null) {
+            return null;
+        }
+        try {
+            return convertToType(raw, typeRoot, precision, scale);
+        } catch (TableRuntimeException e) {
+            switch (errorBehavior) {
+                case NULL:
+                    return null;
+                case DEFAULT:
+                    return convertDefault(defaultValue, typeRoot, precision, scale);
+                case ERROR:
+                    throw new TableRuntimeException(
+                            "Cannot cast " + raw.getClass().getName() + " to " + typeRoot, e);
+                default:
+                    throw new TableRuntimeException(
+                            "Unreachable: unknown error behavior " + errorBehavior);
+            }
+        }
+    }
+
+    public static GenericArrayData convertJsonArray(
+            Object rawResult,
+            LogicalTypeRoot elementTypeRoot,
+            int precision,
+            int scale,
+            boolean elementNullable,
+            JsonQueryOnEmptyOrError errorBehavior) {
+        if (rawResult == null) {
+            return null;
+        }
+        try {
+            Object[] rawArr = (Object[]) rawResult;
+            Object[] converted = new Object[rawArr.length];
+            for (int i = 0; i < rawArr.length; i++) {
+                if (rawArr[i] != null) {
+                    converted[i] = convertToType(rawArr[i], elementTypeRoot, precision, scale);
+                } else if (!elementNullable) {
+                    throw new TableRuntimeException(
+                            "Null element at index " + i + " in NOT NULL array");
+                }
+            }
+            return new GenericArrayData(converted);
+        } catch (TableRuntimeException e) {
+            switch (errorBehavior) {
+                case NULL:
+                    return null;
+                case EMPTY_ARRAY:
+                    return new GenericArrayData(new Object[0]);
+                case ERROR:
+                    throw new TableRuntimeException(
+                            "JSON_QUERY array element conversion failed", e);
+                default:
+                    return null;
+            }
+        }
+    }
+
+    private static Object convertToType(
+            Object raw, LogicalTypeRoot typeRoot, int precision, int scale) {
+        if (raw instanceof DecimalData) {
+            return convertToType(((DecimalData) raw).toBigDecimal(), typeRoot, precision, scale);
+        }
+        if (raw instanceof StringData) {
+            return convertToType(raw.toString(), typeRoot, precision, scale);
+        }
+        if (raw instanceof String) {
+            if (typeRoot == LogicalTypeRoot.BOOLEAN) {
+                return BinaryStringDataUtil.toBoolean(
+                        BinaryStringData.fromString(((String) raw).trim()));
+            }
+            try {
+                String trimmed = ((String) raw).trim();
+                return convertToType(new BigDecimal(trimmed), typeRoot, precision, scale);
+            } catch (NumberFormatException e) {
+                throw new TableRuntimeException(
+                        "Cannot parse string '" + raw + "' as " + typeRoot, e);
+            }
+        }
+        switch (typeRoot) {
+            case BOOLEAN:
+                if (raw instanceof Number) {
+                    BigDecimal bd =
+                            raw instanceof BigDecimal
+                                    ? (BigDecimal) raw
+                                    : new BigDecimal(raw.toString());
+                    if (BigDecimal.ZERO.compareTo(bd) == 0) {
+                        return false;
+                    }
+                    if (BigDecimal.ONE.compareTo(bd) == 0) {
+                        return true;
+                    }
+                    throw new TableRuntimeException("Cannot convert " + raw + " to BOOLEAN");
+                }
+                if (raw instanceof Boolean) {
+                    return raw;
+                }
+                throw new TableRuntimeException(
+                        "Cannot convert " + raw.getClass().getName() + " to BOOLEAN");
+            case TINYINT:
+                return toCheckedByte(asNumber(raw, typeRoot));
+            case SMALLINT:
+                return toCheckedShort(asNumber(raw, typeRoot));
+            case INTEGER:
+                return toCheckedInt(asNumber(raw, typeRoot));
+            case BIGINT:
+                return toCheckedLong(asNumber(raw, typeRoot));
+            case FLOAT:
+                return toCheckedFloat(asNumber(raw, typeRoot));
+            case DOUBLE:
+                return toCheckedDouble(asNumber(raw, typeRoot));
+            case DECIMAL:
+                return toCheckedDecimal(raw, precision, scale);
+            default:
+                throw new TableRuntimeException(
+                        "Unsupported type for JSON conversion: " + typeRoot);
+        }
+    }
+
+    private static Object convertDefault(
+            Object defaultValue, LogicalTypeRoot typeRoot, int precision, int scale) {
+        if (defaultValue == null) {
+            return null;
+        }
+        try {
+            return convertToType(defaultValue, typeRoot, precision, scale);
+        } catch (TableRuntimeException e) {
+            throw new TableRuntimeException(
+                    "Default value " + defaultValue + " cannot be represented as " + typeRoot, e);
+        }
+    }
+
+    private static @Nullable BigInteger toBigIntegerTruncated(Number n) {
+        if (n instanceof BigDecimal) {
+            final BigDecimal bd = (BigDecimal) n;
+            final int integerDigits = bd.precision() - bd.scale();
+            if (integerDigits <= 0) {
+                return BigInteger.ZERO;
+            }
+            if (integerDigits > 19) {
+                throw new TableRuntimeException("Value " + n + " is out of range");
+            }
+            return bd.toBigInteger();
+        }
+        if (n instanceof BigInteger) {
+            return (BigInteger) n;
+        }
+        if (n instanceof Double || n instanceof Float) {
+            double d = n.doubleValue();
+            if (Double.isNaN(d) || Double.isInfinite(d)) {
+                throw new TableRuntimeException("Value " + n + " is out of range");
+            }
+            return new BigDecimal(d).toBigInteger();
+        }
+        return null;
+    }
+
+    static byte toCheckedByte(Number n) {
+        BigInteger bi = toBigIntegerTruncated(n);
+        if (bi != null) {
+            if (bi.compareTo(BigInteger.valueOf(Byte.MAX_VALUE)) > 0
+                    || bi.compareTo(BigInteger.valueOf(Byte.MIN_VALUE)) < 0) {
+                throw new TableRuntimeException("Value " + n + " is out of range for TINYINT");
+            }
+            return bi.byteValue();
+        }
+        long v = n.longValue();
+        if (v < Byte.MIN_VALUE || v > Byte.MAX_VALUE) {
+            throw new TableRuntimeException("Value " + n + " is out of range for TINYINT");
+        }
+        return (byte) v;
+    }
+
+    static short toCheckedShort(Number n) {
+        BigInteger bi = toBigIntegerTruncated(n);
+        if (bi != null) {
+            if (bi.compareTo(BigInteger.valueOf(Short.MAX_VALUE)) > 0
+                    || bi.compareTo(BigInteger.valueOf(Short.MIN_VALUE)) < 0) {
+                throw new TableRuntimeException("Value " + n + " is out of range for SMALLINT");
+            }
+            return bi.shortValue();
+        }
+        long v = n.longValue();
+        if (v < Short.MIN_VALUE || v > Short.MAX_VALUE) {
+            throw new TableRuntimeException("Value " + n + " is out of range for SMALLINT");
+        }
+        return (short) v;
+    }
+
+    static int toCheckedInt(Number n) {
+        BigInteger bi = toBigIntegerTruncated(n);
+        if (bi != null) {
+            if (bi.compareTo(BigInteger.valueOf(Integer.MAX_VALUE)) > 0
+                    || bi.compareTo(BigInteger.valueOf(Integer.MIN_VALUE)) < 0) {
+                throw new TableRuntimeException("Value " + n + " is out of range for INTEGER");
+            }
+            return bi.intValue();
+        }
+        long v = n.longValue();
+        if (v < Integer.MIN_VALUE || v > Integer.MAX_VALUE) {
+            throw new TableRuntimeException("Value " + n + " is out of range for INTEGER");
+        }
+        return (int) v;
+    }
+
+    static float toCheckedFloat(Number n) {
+        float f = n.floatValue();
+        if (Float.isInfinite(f) || Float.isNaN(f)) {
+            throw new TableRuntimeException("Value " + n + " is out of range for FLOAT");
+        }
+        return f;
+    }
+
+    static double toCheckedDouble(Number n) {
+        double d = n.doubleValue();
+        if (Double.isInfinite(d) || Double.isNaN(d)) {
+            throw new TableRuntimeException("Value " + n + " is out of range for DOUBLE");
+        }
+        return d;
+    }
+
+    static long toCheckedLong(Number n) {
+        BigInteger bi = toBigIntegerTruncated(n);
+        if (bi != null) {
+            if (bi.compareTo(BigInteger.valueOf(Long.MAX_VALUE)) > 0
+                    || bi.compareTo(BigInteger.valueOf(Long.MIN_VALUE)) < 0) {
+                throw new TableRuntimeException("Value " + n + " is out of range for BIGINT");
+            }
+            return bi.longValue();
+        }
+        return n.longValue();
+    }
+
+    private static Number asNumber(Object raw, LogicalTypeRoot typeRoot) {
+        if (!(raw instanceof Number)) {
+            throw new TableRuntimeException(
+                    "Cannot convert " + raw.getClass().getName() + " to " + typeRoot);
+        }
+        return (Number) raw;
+    }
+
+    static DecimalData toCheckedDecimal(Object raw, int precision, int scale) {
+        if (!(raw instanceof Number)) {
+            throw new TableRuntimeException(
+                    "Cannot convert " + raw.getClass().getName() + " to DECIMAL");
+        }
+        if (raw instanceof BigDecimal) {
+            final BigDecimal bd = (BigDecimal) raw;
+            final long integerDigits = (long) bd.precision() - bd.scale();
+            if (integerDigits <= -(long) scale - 1) {
+                return DecimalData.fromBigDecimal(BigDecimal.ZERO, precision, scale);
+            }
+            if (integerDigits > precision - scale) {
+                throw new TableRuntimeException(
+                        "Value "
+                                + raw
+                                + " cannot be represented as DECIMAL("
+                                + precision
+                                + ", "
+                                + scale
+                                + ")");
+            }
+        }
+        DecimalData result = DecimalDataUtils.castFrom(raw.toString(), precision, scale);
+        if (result == null) {
+            throw new TableRuntimeException(
+                    "Value "
+                            + raw
+                            + " cannot be represented as DECIMAL("
+                            + precision
+                            + ", "
+                            + scale
+                            + ")");
+        }
+        return result;
+    }
+
+    public static class JsonValueContext {
         @JsonValue public final Object obj;
         public final Exception exc;
 

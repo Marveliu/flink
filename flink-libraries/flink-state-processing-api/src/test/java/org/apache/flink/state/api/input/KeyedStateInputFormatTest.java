@@ -18,17 +18,21 @@
 
 package org.apache.flink.state.api.input;
 
+import org.apache.flink.api.common.ExecutionConfig;
+import org.apache.flink.api.common.functions.OpenContext;
 import org.apache.flink.api.common.functions.RichFlatMapFunction;
 import org.apache.flink.api.common.state.ValueState;
 import org.apache.flink.api.common.state.ValueStateDescriptor;
 import org.apache.flink.api.common.typeinfo.Types;
 import org.apache.flink.api.common.typeutils.base.VoidSerializer;
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.runtime.asyncprocessing.operators.AsyncStreamFlatMap;
 import org.apache.flink.runtime.checkpoint.OperatorState;
 import org.apache.flink.runtime.checkpoint.OperatorSubtaskState;
 import org.apache.flink.runtime.jobgraph.OperatorID;
 import org.apache.flink.runtime.state.VoidNamespace;
-import org.apache.flink.runtime.state.memory.MemoryStateBackend;
+import org.apache.flink.runtime.state.hashmap.HashMapStateBackend;
+import org.apache.flink.state.api.filter.SavepointKeyFilter;
 import org.apache.flink.state.api.functions.KeyedStateReaderFunction;
 import org.apache.flink.state.api.input.operator.KeyedStateReaderOperator;
 import org.apache.flink.state.api.input.splits.KeyGroupRangeInputSplit;
@@ -37,166 +41,261 @@ import org.apache.flink.streaming.api.functions.KeyedProcessFunction;
 import org.apache.flink.streaming.api.operators.KeyedProcessOperator;
 import org.apache.flink.streaming.api.operators.OneInputStreamOperator;
 import org.apache.flink.streaming.api.operators.StreamFlatMap;
+import org.apache.flink.streaming.api.operators.StreamingRuntimeContext;
 import org.apache.flink.streaming.util.KeyedOneInputStreamOperatorTestHarness;
 import org.apache.flink.streaming.util.MockStreamingRuntimeContext;
+import org.apache.flink.streaming.util.asyncprocessing.AsyncKeyedOneInputStreamOperatorTestHarness;
 import org.apache.flink.util.Collector;
 
-import org.junit.Assert;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import javax.annotation.Nonnull;
 
 import java.io.IOException;
 import java.util.ArrayList;
-import java.util.Arrays;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Set;
 
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
 /** Tests for keyed state input format. */
-public class KeyedStateInputFormatTest {
+class KeyedStateInputFormatTest {
     private static ValueStateDescriptor<Integer> stateDescriptor =
             new ValueStateDescriptor<>("state", Types.INT);
 
-    @Test
-    public void testCreatePartitionedInputSplits() throws Exception {
+    @ParameterizedTest(name = "Enable async state = {0}")
+    @ValueSource(booleans = {false, true})
+    void testCreatePartitionedInputSplits(boolean asyncState) throws Exception {
         OperatorID operatorID = OperatorIDGenerator.fromUid("uid");
 
         OperatorSubtaskState state =
-                createOperatorSubtaskState(new StreamFlatMap<>(new StatefulFunction()));
-        OperatorState operatorState = new OperatorState(operatorID, 1, 128);
+                createOperatorSubtaskState(createFlatMap(asyncState), asyncState);
+        OperatorState operatorState = new OperatorState(null, null, operatorID, 1, 128);
         operatorState.putState(0, state);
 
         KeyedStateInputFormat<?, ?, ?> format =
                 new KeyedStateInputFormat<>(
                         operatorState,
-                        new MemoryStateBackend(),
+                        new HashMapStateBackend(),
                         new Configuration(),
-                        new KeyedStateReaderOperator<>(new ReaderFunction(), Types.INT));
+                        new KeyedStateReaderOperator<>(new ReaderFunction(), Types.INT),
+                        new ExecutionConfig());
         KeyGroupRangeInputSplit[] splits = format.createInputSplits(4);
-        Assert.assertEquals(
-                "Failed to properly partition operator state into input splits", 4, splits.length);
+        assertThat(splits).hasSize(4);
     }
 
-    @Test
-    public void testMaxParallelismRespected() throws Exception {
+    @ParameterizedTest(name = "Enable async state = {0}")
+    @ValueSource(booleans = {false, true})
+    void testMaxParallelismRespected(boolean asyncState) throws Exception {
         OperatorID operatorID = OperatorIDGenerator.fromUid("uid");
 
         OperatorSubtaskState state =
-                createOperatorSubtaskState(new StreamFlatMap<>(new StatefulFunction()));
-        OperatorState operatorState = new OperatorState(operatorID, 1, 128);
+                createOperatorSubtaskState(createFlatMap(asyncState), asyncState);
+        OperatorState operatorState = new OperatorState(null, null, operatorID, 1, 128);
         operatorState.putState(0, state);
 
         KeyedStateInputFormat<?, ?, ?> format =
                 new KeyedStateInputFormat<>(
                         operatorState,
-                        new MemoryStateBackend(),
+                        new HashMapStateBackend(),
                         new Configuration(),
-                        new KeyedStateReaderOperator<>(new ReaderFunction(), Types.INT));
+                        new KeyedStateReaderOperator<>(new ReaderFunction(), Types.INT),
+                        new ExecutionConfig());
         KeyGroupRangeInputSplit[] splits = format.createInputSplits(129);
-        Assert.assertEquals(
-                "Failed to properly partition operator state into input splits",
-                128,
-                splits.length);
+        assertThat(splits)
+                .as("Failed to properly partition operator state into input splits")
+                .hasSize(128);
     }
 
-    @Test
-    public void testReadState() throws Exception {
+    @ParameterizedTest(name = "Enable async state = {0}")
+    @ValueSource(booleans = {false, true})
+    void testExactKeyFilterPrunesInputSplits(boolean asyncState) throws Exception {
         OperatorID operatorID = OperatorIDGenerator.fromUid("uid");
 
         OperatorSubtaskState state =
-                createOperatorSubtaskState(new StreamFlatMap<>(new StatefulFunction()));
-        OperatorState operatorState = new OperatorState(operatorID, 1, 128);
+                createOperatorSubtaskState(createFlatMap(asyncState), asyncState);
+        OperatorState operatorState = new OperatorState(null, null, operatorID, 1, 128);
         operatorState.putState(0, state);
 
         KeyedStateInputFormat<?, ?, ?> format =
                 new KeyedStateInputFormat<>(
                         operatorState,
-                        new MemoryStateBackend(),
+                        new HashMapStateBackend(),
                         new Configuration(),
-                        new KeyedStateReaderOperator<>(new ReaderFunction(), Types.INT));
+                        new KeyedStateReaderOperator<>(new ReaderFunction(), Types.INT),
+                        new ExecutionConfig(),
+                        SavepointKeyFilter.exact(5));
+        KeyGroupRangeInputSplit[] splits = format.createInputSplits(10);
+
+        assertThat(splits)
+                .as("Single-key exact filter maps to exactly one key group range")
+                .hasSize(1);
+    }
+
+    @ParameterizedTest(name = "Enable async state = {0}")
+    @ValueSource(booleans = {false, true})
+    void testEmptyExactFilterProducesNoInputSplits(boolean asyncState) throws Exception {
+        OperatorID operatorID = OperatorIDGenerator.fromUid("uid");
+
+        OperatorSubtaskState state =
+                createOperatorSubtaskState(createFlatMap(asyncState), asyncState);
+        OperatorState operatorState = new OperatorState(null, null, operatorID, 1, 128);
+        operatorState.putState(0, state);
+
+        KeyedStateInputFormat<?, ?, ?> format =
+                new KeyedStateInputFormat<>(
+                        operatorState,
+                        new HashMapStateBackend(),
+                        new Configuration(),
+                        new KeyedStateReaderOperator<>(new ReaderFunction(), Types.INT),
+                        new ExecutionConfig(),
+                        SavepointKeyFilter.exact(Collections.emptySet()));
+        KeyGroupRangeInputSplit[] splits = format.createInputSplits(10);
+
+        assertThat(splits).as("A filter matching no key leaves nothing to read").isEmpty();
+    }
+
+    @ParameterizedTest(name = "Enable async state = {0}")
+    @ValueSource(booleans = {false, true})
+    void testRangeFilterDoesNotPruneInputSplits(boolean asyncState) throws Exception {
+        OperatorID operatorID = OperatorIDGenerator.fromUid("uid");
+
+        OperatorSubtaskState state =
+                createOperatorSubtaskState(createFlatMap(asyncState), asyncState);
+        OperatorState operatorState = new OperatorState(null, null, operatorID, 1, 128);
+        operatorState.putState(0, state);
+
+        KeyedStateInputFormat<?, ?, ?> formatRange =
+                new KeyedStateInputFormat<>(
+                        operatorState,
+                        new HashMapStateBackend(),
+                        new Configuration(),
+                        new KeyedStateReaderOperator<>(new ReaderFunction(), Types.INT),
+                        new ExecutionConfig(),
+                        SavepointKeyFilter.range(3, true, 7, true));
+        KeyedStateInputFormat<?, ?, ?> formatNoFilter =
+                new KeyedStateInputFormat<>(
+                        operatorState,
+                        new HashMapStateBackend(),
+                        new Configuration(),
+                        new KeyedStateReaderOperator<>(new ReaderFunction(), Types.INT),
+                        new ExecutionConfig());
+
+        assertThat(formatRange.createInputSplits(10))
+                .as("Range filters cannot prune key-group splits")
+                .hasSize(formatNoFilter.createInputSplits(10).length);
+    }
+
+    @ParameterizedTest(name = "Enable async state = {0}")
+    @ValueSource(booleans = {false, true})
+    void testReadState(boolean asyncState) throws Exception {
+        OperatorID operatorID = OperatorIDGenerator.fromUid("uid");
+
+        OperatorSubtaskState state =
+                createOperatorSubtaskState(createFlatMap(asyncState), asyncState);
+        OperatorState operatorState = new OperatorState(null, null, operatorID, 1, 128);
+        operatorState.putState(0, state);
+
+        KeyedStateInputFormat<?, ?, ?> format =
+                new KeyedStateInputFormat<>(
+                        operatorState,
+                        new HashMapStateBackend(),
+                        new Configuration(),
+                        new KeyedStateReaderOperator<>(new ReaderFunction(), Types.INT),
+                        new ExecutionConfig());
         KeyGroupRangeInputSplit split = format.createInputSplits(1)[0];
 
         KeyedStateReaderFunction<Integer, Integer> userFunction = new ReaderFunction();
 
         List<Integer> data = readInputSplit(split, userFunction);
 
-        Assert.assertEquals("Incorrect data read from input split", Arrays.asList(1, 2, 3), data);
+        assertThat(data).as("Incorrect data read from input split").containsExactly(1, 2, 3);
     }
 
-    @Test
-    public void testReadMultipleOutputPerKey() throws Exception {
+    @ParameterizedTest(name = "Enable async state = {0}")
+    @ValueSource(booleans = {false, true})
+    void testReadMultipleOutputPerKey(boolean asyncState) throws Exception {
         OperatorID operatorID = OperatorIDGenerator.fromUid("uid");
 
         OperatorSubtaskState state =
-                createOperatorSubtaskState(new StreamFlatMap<>(new StatefulFunction()));
-        OperatorState operatorState = new OperatorState(operatorID, 1, 128);
+                createOperatorSubtaskState(createFlatMap(asyncState), asyncState);
+        OperatorState operatorState = new OperatorState(null, null, operatorID, 1, 128);
         operatorState.putState(0, state);
 
         KeyedStateInputFormat<?, ?, ?> format =
                 new KeyedStateInputFormat<>(
                         operatorState,
-                        new MemoryStateBackend(),
+                        new HashMapStateBackend(),
                         new Configuration(),
-                        new KeyedStateReaderOperator<>(new ReaderFunction(), Types.INT));
+                        new KeyedStateReaderOperator<>(new ReaderFunction(), Types.INT),
+                        new ExecutionConfig());
         KeyGroupRangeInputSplit split = format.createInputSplits(1)[0];
 
         KeyedStateReaderFunction<Integer, Integer> userFunction = new DoubleReaderFunction();
 
         List<Integer> data = readInputSplit(split, userFunction);
 
-        Assert.assertEquals(
-                "Incorrect data read from input split", Arrays.asList(1, 1, 2, 2, 3, 3), data);
+        assertThat(data)
+                .as("Incorrect data read from input split")
+                .containsExactly(1, 1, 2, 2, 3, 3);
     }
 
-    @Test(expected = IOException.class)
-    public void testInvalidProcessReaderFunctionFails() throws Exception {
+    @ParameterizedTest(name = "Enable async state = {0}")
+    @ValueSource(booleans = {false, true})
+    void testInvalidProcessReaderFunctionFails(boolean asyncState) throws Exception {
         OperatorID operatorID = OperatorIDGenerator.fromUid("uid");
 
         OperatorSubtaskState state =
-                createOperatorSubtaskState(new StreamFlatMap<>(new StatefulFunction()));
-        OperatorState operatorState = new OperatorState(operatorID, 1, 128);
+                createOperatorSubtaskState(createFlatMap(asyncState), asyncState);
+        OperatorState operatorState = new OperatorState(null, null, operatorID, 1, 128);
         operatorState.putState(0, state);
 
         KeyedStateInputFormat<?, ?, ?> format =
                 new KeyedStateInputFormat<>(
                         operatorState,
-                        new MemoryStateBackend(),
+                        new HashMapStateBackend(),
                         new Configuration(),
-                        new KeyedStateReaderOperator<>(new ReaderFunction(), Types.INT));
+                        new KeyedStateReaderOperator<>(new ReaderFunction(), Types.INT),
+                        new ExecutionConfig());
         KeyGroupRangeInputSplit split = format.createInputSplits(1)[0];
 
         KeyedStateReaderFunction<Integer, Integer> userFunction = new InvalidReaderFunction();
 
-        readInputSplit(split, userFunction);
-
-        Assert.fail("KeyedStateReaderFunction did not fail on invalid RuntimeContext use");
+        assertThatThrownBy(() -> readInputSplit(split, userFunction))
+                .isInstanceOf(IOException.class);
     }
 
     @Test
-    public void testReadTime() throws Exception {
+    void testReadTime() throws Exception {
         OperatorID operatorID = OperatorIDGenerator.fromUid("uid");
 
         OperatorSubtaskState state =
                 createOperatorSubtaskState(
-                        new KeyedProcessOperator<>(new StatefulFunctionWithTime()));
-        OperatorState operatorState = new OperatorState(operatorID, 1, 128);
+                        new KeyedProcessOperator<>(new StatefulFunctionWithTime()), false);
+        OperatorState operatorState = new OperatorState(null, null, operatorID, 1, 128);
         operatorState.putState(0, state);
 
         KeyedStateInputFormat<?, ?, ?> format =
                 new KeyedStateInputFormat<>(
                         operatorState,
-                        new MemoryStateBackend(),
+                        new HashMapStateBackend(),
                         new Configuration(),
-                        new KeyedStateReaderOperator<>(new TimerReaderFunction(), Types.INT));
+                        new KeyedStateReaderOperator<>(new TimerReaderFunction(), Types.INT),
+                        new ExecutionConfig());
         KeyGroupRangeInputSplit split = format.createInputSplits(1)[0];
 
         KeyedStateReaderFunction<Integer, Integer> userFunction = new TimerReaderFunction();
 
         List<Integer> data = readInputSplit(split, userFunction);
 
-        Assert.assertEquals(
-                "Incorrect data read from input split", Arrays.asList(1, 1, 2, 2, 3, 3), data);
+        assertThat(data)
+                .as("Incorrect data read from input split")
+                .containsExactly(1, 1, 2, 2, 3, 3);
     }
 
     @Nonnull
@@ -205,14 +304,15 @@ public class KeyedStateInputFormatTest {
             throws IOException {
         KeyedStateInputFormat<Integer, VoidNamespace, Integer> format =
                 new KeyedStateInputFormat<>(
-                        new OperatorState(OperatorIDGenerator.fromUid("uid"), 1, 4),
-                        new MemoryStateBackend(),
+                        new OperatorState(null, null, OperatorIDGenerator.fromUid("uid"), 1, 4),
+                        new HashMapStateBackend(),
                         new Configuration(),
-                        new KeyedStateReaderOperator<>(userFunction, Types.INT));
+                        new KeyedStateReaderOperator<>(userFunction, Types.INT),
+                        new ExecutionConfig());
 
         List<Integer> data = new ArrayList<>();
 
-        format.setRuntimeContext(new MockStreamingRuntimeContext(false, 1, 0));
+        format.setRuntimeContext(new MockStreamingRuntimeContext(1, 0));
 
         format.openInputFormat();
         format.open(split);
@@ -228,11 +328,20 @@ public class KeyedStateInputFormatTest {
         return data;
     }
 
+    private OneInputStreamOperator<Integer, Void> createFlatMap(boolean asyncState) {
+        return asyncState
+                ? new AsyncStreamFlatMap<>(new AsyncStatefulFunction())
+                : new StreamFlatMap<>(new StatefulFunction());
+    }
+
     private OperatorSubtaskState createOperatorSubtaskState(
-            OneInputStreamOperator<Integer, Void> operator) throws Exception {
+            OneInputStreamOperator<Integer, Void> operator, boolean async) throws Exception {
         try (KeyedOneInputStreamOperatorTestHarness<Integer, Integer, Void> testHarness =
-                new KeyedOneInputStreamOperatorTestHarness<>(
-                        operator, id -> id, Types.INT, 128, 1, 0)) {
+                async
+                        ? AsyncKeyedOneInputStreamOperatorTestHarness.create(
+                                operator, id -> id, Types.INT, 128, 1, 0)
+                        : new KeyedOneInputStreamOperatorTestHarness<>(
+                                operator, id -> id, Types.INT, 128, 1, 0)) {
 
             testHarness.setup(VoidSerializer.INSTANCE);
             testHarness.open();
@@ -249,7 +358,7 @@ public class KeyedStateInputFormatTest {
         ValueState<Integer> state;
 
         @Override
-        public void open(Configuration parameters) {
+        public void open(OpenContext openContext) {
             state = getRuntimeContext().getState(stateDescriptor);
         }
 
@@ -265,7 +374,7 @@ public class KeyedStateInputFormatTest {
         ValueState<Integer> state;
 
         @Override
-        public void open(Configuration parameters) {
+        public void open(OpenContext openContext) {
             state = getRuntimeContext().getState(stateDescriptor);
         }
 
@@ -281,7 +390,7 @@ public class KeyedStateInputFormatTest {
     static class InvalidReaderFunction extends KeyedStateReaderFunction<Integer, Integer> {
 
         @Override
-        public void open(Configuration parameters) {
+        public void open(OpenContext openContext) {
             getRuntimeContext().getState(stateDescriptor);
         }
 
@@ -298,7 +407,7 @@ public class KeyedStateInputFormatTest {
         ValueState<Integer> state;
 
         @Override
-        public void open(Configuration parameters) {
+        public void open(OpenContext openContext) {
             state = getRuntimeContext().getState(stateDescriptor);
         }
 
@@ -308,11 +417,31 @@ public class KeyedStateInputFormatTest {
         }
     }
 
+    static class AsyncStatefulFunction extends RichFlatMapFunction<Integer, Void> {
+        org.apache.flink.api.common.state.v2.ValueState<Integer> state;
+        org.apache.flink.api.common.state.v2.ValueStateDescriptor<Integer> asyncStateDescriptor;
+
+        @Override
+        public void open(OpenContext openContext) {
+            asyncStateDescriptor =
+                    new org.apache.flink.api.common.state.v2.ValueStateDescriptor<>(
+                            "state", Types.INT);
+            state =
+                    ((StreamingRuntimeContext) getRuntimeContext())
+                            .getValueState(asyncStateDescriptor);
+        }
+
+        @Override
+        public void flatMap(Integer value, Collector<Void> out) throws Exception {
+            state.asyncUpdate(value);
+        }
+    }
+
     static class StatefulFunctionWithTime extends KeyedProcessFunction<Integer, Integer, Void> {
         ValueState<Integer> state;
 
         @Override
-        public void open(Configuration parameters) {
+        public void open(OpenContext openContext) {
             state = getRuntimeContext().getState(stateDescriptor);
         }
 
@@ -329,7 +458,7 @@ public class KeyedStateInputFormatTest {
         ValueState<Integer> state;
 
         @Override
-        public void open(Configuration parameters) {
+        public void open(OpenContext openContext) {
             state = getRuntimeContext().getState(stateDescriptor);
         }
 
@@ -338,18 +467,16 @@ public class KeyedStateInputFormatTest {
                 Integer key, KeyedStateReaderFunction.Context ctx, Collector<Integer> out)
                 throws Exception {
             Set<Long> eventTimers = ctx.registeredEventTimeTimers();
-            Assert.assertEquals(
-                    "Each key should have exactly one event timer for key " + key,
-                    1,
-                    eventTimers.size());
+            assertThat(eventTimers)
+                    .as("Each key should have exactly one event timer for key %s", key)
+                    .hasSize(1);
 
             out.collect(eventTimers.iterator().next().intValue());
 
             Set<Long> procTimers = ctx.registeredProcessingTimeTimers();
-            Assert.assertEquals(
-                    "Each key should have exactly one processing timer for key " + key,
-                    1,
-                    procTimers.size());
+            assertThat(procTimers)
+                    .as("Each key should have exactly one processing timer for key %s", key)
+                    .hasSize(1);
 
             out.collect(procTimers.iterator().next().intValue());
         }

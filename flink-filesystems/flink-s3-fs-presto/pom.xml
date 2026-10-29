@@ -23,8 +23,7 @@ under the License.
 	<parent>
 		<groupId>org.apache.flink</groupId>
 		<artifactId>flink-filesystems</artifactId>
-		<version>1.16-SNAPSHOT</version>
-		<relativePath>..</relativePath>
+		<version>2.5-SNAPSHOT</version>
 	</parent>
 
 	<artifactId>flink-s3-fs-presto</artifactId>
@@ -33,7 +32,11 @@ under the License.
 	<packaging>jar</packaging>
 
 	<properties>
-		<presto.version>0.257</presto.version>
+		<presto.version>0.294</presto.version>
+		<surefire.module.config> <!--
+			S5CmdOnPrestoS3FileSystemITCase uses ArraysAsListSerializer indirectly
+			-->--add-opens=java.base/java.util=ALL-UNNAMED
+		</surefire.module.config>
 	</properties>
 
 	<dependencies>
@@ -44,6 +47,22 @@ under the License.
 			<artifactId>flink-core</artifactId>
 			<version>${project.version}</version>
 			<scope>provided</scope>
+		</dependency>
+
+		<!-- ArchUnit test dependencies -->
+
+		<dependency>
+			<groupId>org.apache.flink</groupId>
+			<artifactId>flink-architecture-tests-test</artifactId>
+			<scope>test</scope>
+		</dependency>
+		
+		<!-- S3 base (bundled) -->
+		<dependency>
+			<groupId>org.apache.flink</groupId>
+			<artifactId>flink-s3-fs-base</artifactId>
+			<version>${project.version}</version>
+			<optional>${flink.markBundledAsOptional}</optional>
 		</dependency>
 
 		<!-- for the HAJobRunOnPrestoS3FileSystemITCase -->
@@ -90,18 +109,12 @@ under the License.
 			</exclusions>
 		</dependency>
 
-		<!-- S3 base (bundled) -->
-		<dependency>
-			<groupId>org.apache.flink</groupId>
-			<artifactId>flink-s3-fs-base</artifactId>
-			<version>${project.version}</version>
-		</dependency>
-
 		<!-- Presto's S3 file system (bundled) -->
 		<dependency>
 			<groupId>com.facebook.presto</groupId>
 			<artifactId>presto-hive</artifactId>
 			<version>${presto.version}</version>
+			<optional>${flink.markBundledAsOptional}</optional>
 			<exclusions>
 				<!-- Exclude AWS dependencies which we provide ourselves (and in more recent versions). -->
 				<exclusion>
@@ -198,6 +211,10 @@ under the License.
 					<groupId>com.facebook.airlift</groupId>
 					<artifactId>log-manager</artifactId>
 				</exclusion>
+				<exclusion>
+					<groupId>com.facebook.presto.hadoop</groupId>
+					<artifactId>hadoop-apache</artifactId>
+				</exclusion>
 
 				<!-- Other -->
 				<exclusion>
@@ -209,8 +226,36 @@ under the License.
 					<artifactId>drift-api</artifactId>
 				</exclusion>
 				<exclusion>
+					<groupId>com.facebook.drift</groupId>
+					<artifactId>drift-codec</artifactId>
+				</exclusion>
+				<exclusion>
+					<groupId>com.facebook.drift</groupId>
+					<artifactId>drift-codec-utils</artifactId>
+				</exclusion>
+				<exclusion>
+					<groupId>com.facebook.drift</groupId>
+					<artifactId>drift-transport-netty</artifactId>
+				</exclusion>
+				<exclusion>
+					<groupId>com.facebook.presto.ranger</groupId>
+					<artifactId>ranger-apache</artifactId>
+				</exclusion>
+				<exclusion>
+					<groupId>com.esotericsoftware</groupId>
+					<artifactId>kryo-shaded</artifactId>
+				</exclusion>
+				<exclusion>
 					<groupId>com.facebook.hive</groupId>
 					<artifactId>hive-dwrf</artifactId>
+				</exclusion>
+				<exclusion>
+					<groupId>org.hibernate.validator</groupId>
+					<artifactId>hibernate-validator</artifactId>
+				</exclusion>
+				<exclusion>
+					<groupId>org.glassfish</groupId>
+					<artifactId>jakarta.el</artifactId>
 				</exclusion>
 				<exclusion>
 					<groupId>com.github.luben</groupId>
@@ -312,12 +357,85 @@ under the License.
 					<groupId>org.xerial.snappy</groupId>
 					<artifactId>snappy-java</artifactId>
 				</exclusion>
+				<exclusion>
+					<groupId>jakarta.validation</groupId>
+					<artifactId>jakarta.validation-api</artifactId>
+				</exclusion>
+				<exclusion>
+					<groupId>jakarta.inject</groupId>
+					<artifactId>jakarta.inject-api</artifactId>
+				</exclusion>
+				<exclusion>
+					<groupId>jakarta.annotation</groupId>
+					<artifactId>jakarta.annotation-api</artifactId>
+				</exclusion>
+				<exclusion>
+					<groupId>net.bytebuddy</groupId>
+					<artifactId>byte-buddy</artifactId>
+				</exclusion>
+				<exclusion>
+					<groupId>software.amazon.awssdk</groupId>
+					<artifactId>glue</artifactId>
+				</exclusion>
+				<exclusion>
+					<groupId>software.amazon.awssdk</groupId>
+					<artifactId>auth</artifactId>
+				</exclusion>
+				<exclusion>
+					<groupId>software.amazon.awssdk</groupId>
+					<artifactId>netty-client-spi</artifactId>
+				</exclusion>
+				<exclusion>
+					<groupId>software.amazon.awssdk</groupId>
+					<artifactId>netty-nio-client</artifactId>
+				</exclusion>
+				<exclusion>
+					<groupId>software.amazon.awssdk</groupId>
+					<artifactId>sdk-core</artifactId>
+				</exclusion>
+				<exclusion>
+					<groupId>software.amazon.awssdk</groupId>
+					<artifactId>metrics-spi</artifactId>
+				</exclusion>
+				<exclusion>
+					<groupId>software.amazon.awssdk</groupId>
+					<artifactId>aws-core</artifactId>
+				</exclusion>
+				<exclusion>
+					<groupId>software.amazon.awssdk</groupId>
+					<artifactId>http-clients</artifactId>
+				</exclusion>
+				<exclusion>
+					<groupId>software.amazon.awssdk</groupId>
+					<artifactId>sts</artifactId>
+				</exclusion>
+				<exclusion>
+					<groupId>software.amazon.awssdk</groupId>
+					<artifactId>http-client-spi</artifactId>
+				</exclusion>
+				<exclusion>
+					<groupId>software.amazon.awssdk</groupId>
+					<artifactId>regions</artifactId>
+				</exclusion>
+				<exclusion>
+					<groupId>software.amazon.awssdk</groupId>
+					<artifactId>retries</artifactId>
+				</exclusion>
+				<exclusion>
+					<groupId>software.amazon.awssdk</groupId>
+					<artifactId>retries-spi</artifactId>
+				</exclusion>
+				<exclusion>
+					<groupId>software.amazon.awssdk</groupId>
+					<artifactId>utils</artifactId>
+				</exclusion>
 			</exclusions>
 		</dependency>
 		<dependency>
 			<groupId>com.facebook.presto.hadoop</groupId>
 			<artifactId>hadoop-apache2</artifactId>
 			<version>2.7.4-9</version>
+			<optional>${flink.markBundledAsOptional}</optional>
 		</dependency>
 
 		<dependency>
@@ -353,6 +471,7 @@ under the License.
 				<groupId>org.apache.hadoop</groupId>
 				<artifactId>hadoop-common</artifactId>
 				<version>${fs.hadoopshaded.version}</version>
+				<optional>${flink.markBundledAsOptional}</optional>
 				<exclusions>
 					<exclusion>
 						<groupId>jdk.tools</groupId>
@@ -365,6 +484,14 @@ under the License.
 					<exclusion>
 						<groupId>org.slf4j</groupId>
 						<artifactId>slf4j-log4j12</artifactId>
+					</exclusion>
+					<exclusion>
+						<groupId>ch.qos.reload4j</groupId>
+						<artifactId>reload4j</artifactId>
+					</exclusion>
+					<exclusion>
+						<groupId>org.slf4j</groupId>
+						<artifactId>slf4j-reload4j</artifactId>
 					</exclusion>
 				</exclusions>
 			</dependency>
@@ -372,6 +499,7 @@ under the License.
 				<groupId>org.apache.hadoop</groupId>
 				<artifactId>hadoop-hdfs</artifactId>
 				<version>${fs.hadoopshaded.version}</version>
+				<optional>${flink.markBundledAsOptional}</optional>
 				<exclusions>
 					<exclusion>
 						<groupId>jdk.tools</groupId>
@@ -384,6 +512,14 @@ under the License.
 					<exclusion>
 						<groupId>org.slf4j</groupId>
 						<artifactId>slf4j-log4j12</artifactId>
+					</exclusion>
+					<exclusion>
+						<groupId>ch.qos.reload4j</groupId>
+						<artifactId>reload4j</artifactId>
+					</exclusion>
+					<exclusion>
+						<groupId>org.slf4j</groupId>
+						<artifactId>slf4j-reload4j</artifactId>
 					</exclusion>
 				</exclusions>
 			</dependency>
@@ -392,7 +528,8 @@ under the License.
 				<!-- Bumped for security purposes -->
 				<groupId>commons-beanutils</groupId>
 				<artifactId>commons-beanutils</artifactId>
-				<version>1.9.4</version>
+				<version>1.11.0</version>
+				<optional>${flink.markBundledAsOptional}</optional>
 			</dependency>
 		</dependencies>
 	</dependencyManagement>
@@ -545,6 +682,7 @@ under the License.
 										<exclude>META-INF/maven/**</exclude>
 										<exclude>META-INF/services/javax.xml.stream.*</exclude>
 										<exclude>META-INF/LICENSE.txt</exclude>
+										<exclude>LICENSE</exclude>
 									</excludes>
 								</filter>
 								<filter>

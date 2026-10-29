@@ -15,10 +15,8 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.planner.plan.rules.logical
 
-import org.apache.flink.api.scala._
 import org.apache.flink.table.api._
 import org.apache.flink.table.planner.plan.optimize.program.{FlinkBatchProgram, FlinkHepRuleSetProgramBuilder, HEP_RULES_EXECUTION_TYPE}
 import org.apache.flink.table.planner.runtime.utils.JavaUserDefinedTableFunctions.StringSplit
@@ -26,16 +24,14 @@ import org.apache.flink.table.planner.utils.{TableConfigUtils, TableTestBase}
 
 import org.apache.calcite.plan.hep.HepMatchOrder
 import org.apache.calcite.tools.RuleSets
-import org.junit.{Before, Test}
+import org.junit.jupiter.api.{BeforeEach, Test}
 
-/**
-  * Test for [[ProjectSemiAntiJoinTransposeRule]].
-  */
+/** Test for [[ProjectSemiAntiJoinTransposeRule]]. */
 class ProjectSemiAntiJoinTransposeRuleTest extends TableTestBase {
 
   private val util = batchTestUtil()
 
-  @Before
+  @BeforeEach
   def setup(): Unit = {
     util.buildBatchProgram(FlinkBatchProgram.DEFAULT_REWRITE)
     val calciteConfig = TableConfigUtils.getCalciteConfig(util.tableEnv.getConfig)
@@ -118,7 +114,7 @@ class ProjectSemiAntiJoinTransposeRuleTest extends TableTestBase {
 
   @Test
   def testTransposeProject_Anti2(): Unit = {
-    util.verifyRelPlan( "SELECT a + 1 FROM MyTable1 WHERE a NOT IN (SELECT d FROM MyTable2)")
+    util.verifyRelPlan("SELECT a + 1 FROM MyTable1 WHERE a NOT IN (SELECT d FROM MyTable2)")
   }
 
   @Test
@@ -141,7 +137,7 @@ class ProjectSemiAntiJoinTransposeRuleTest extends TableTestBase {
   @Test
   def testTransposeProject_EmptyProject(): Unit = {
     util.addTableSource[(Int, Long, String)]("MyTable3", 'i, 'j, 'k)
-    util.addFunction("table_func", new StringSplit)
+    util.addTemporarySystemFunction("table_func", new StringSplit)
 
     val sqlQuery = "SELECT * FROM MyTable1 WHERE EXISTS (" +
       "SELECT * FROM MyTable2, " +

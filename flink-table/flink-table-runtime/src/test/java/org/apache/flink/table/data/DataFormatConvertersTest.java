@@ -49,8 +49,9 @@ import org.apache.flink.table.types.utils.TypeConversions;
 import org.apache.flink.table.utils.DateTimeUtils;
 import org.apache.flink.types.Row;
 import org.apache.flink.types.RowKind;
+import org.apache.flink.types.bitmap.Bitmap;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.sql.Timestamp;
 import java.time.LocalDateTime;
@@ -61,7 +62,7 @@ import static org.apache.flink.table.data.util.DataFormatConverters.getConverter
 import static org.assertj.core.api.Assertions.assertThat;
 
 /** Test for {@link DataFormatConverters}. */
-public class DataFormatConvertersTest {
+class DataFormatConvertersTest {
 
     private TypeInformation[] simpleTypes =
             new TypeInformation[] {
@@ -128,7 +129,8 @@ public class DataFormatConvertersTest {
                         new LegacyTypeInformationType<>(
                                 LogicalTypeRoot.TIMESTAMP_WITHOUT_TIME_ZONE,
                                 new LegacyTimestampTypeInfo(7))),
-                DataTypes.TIMESTAMP(3).bridgedTo(TimestampData.class)
+                DataTypes.TIMESTAMP(3).bridgedTo(TimestampData.class),
+                DataTypes.BITMAP()
             };
 
     private Object[] dataValues =
@@ -140,7 +142,8 @@ public class DataFormatConvertersTest {
                 buildTimestamp(4000L, 123456789),
                 Timestamp.valueOf("1970-01-01 00:00:00.123"),
                 Timestamp.valueOf("1970-01-01 00:00:00.1234567"),
-                TimestampData.fromEpochMillis(1000L)
+                TimestampData.fromEpochMillis(1000L),
+                Bitmap.fromArray(new int[] {1, 2, 3})
             };
 
     private static Timestamp buildTimestamp(long mills, int nanos) {
@@ -177,7 +180,7 @@ public class DataFormatConvertersTest {
     }
 
     @Test
-    public void testTypes() {
+    void testTypes() {
         for (int i = 0; i < simpleTypes.length; i++) {
             test(simpleTypes[i], simpleValues[i]);
         }
@@ -229,7 +232,7 @@ public class DataFormatConvertersTest {
     }
 
     @Test
-    public void testDataTypes() {
+    void testDataTypes() {
         for (int i = 0; i < dataTypes.length; i++) {
             testDataType(dataTypes[i], dataValues[i]);
         }

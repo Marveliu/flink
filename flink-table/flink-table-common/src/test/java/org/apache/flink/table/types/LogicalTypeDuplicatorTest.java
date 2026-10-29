@@ -29,58 +29,54 @@ import org.apache.flink.table.types.logical.LogicalType;
 import org.apache.flink.table.types.logical.MapType;
 import org.apache.flink.table.types.logical.MultisetType;
 import org.apache.flink.table.types.logical.RowType;
+import org.apache.flink.table.types.logical.RowType.RowField;
 import org.apache.flink.table.types.logical.SmallIntType;
 import org.apache.flink.table.types.logical.StructuredType;
+import org.apache.flink.table.types.logical.StructuredType.StructuredAttribute;
 import org.apache.flink.table.types.logical.VarCharType;
 import org.apache.flink.table.types.logical.utils.LogicalTypeDuplicator;
 
-import org.junit.Test;
-import org.junit.runner.RunWith;
-import org.junit.runners.Parameterized;
-import org.junit.runners.Parameterized.Parameter;
-import org.junit.runners.Parameterized.Parameters;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 
 import java.util.Arrays;
-import java.util.Collections;
 import java.util.List;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /** Tests for {@link LogicalTypeDuplicator}. */
-@RunWith(Parameterized.class)
-public class LogicalTypeDuplicatorTest {
+class LogicalTypeDuplicatorTest {
 
     private static final LogicalTypeDuplicator DUPLICATOR = new LogicalTypeDuplicator();
 
     private static final LogicalTypeDuplicator INT_REPLACER = new IntReplacer();
 
-    @Parameters(name = "{index}: {0}")
-    public static List<Object[]> testData() {
-        return Arrays.asList(
-                new Object[][] {
-                    {new CharType(2), new CharType(2)},
-                    {createMultisetType(new IntType()), createMultisetType(new BigIntType())},
-                    {createArrayType(new IntType()), createArrayType(new BigIntType())},
-                    {createMapType(new IntType()), createMapType(new BigIntType())},
-                    {createRowType(new IntType()), createRowType(new BigIntType())},
-                    {createDistinctType(new IntType()), createDistinctType(new BigIntType())},
-                    {createUserType(new IntType()), createUserType(new BigIntType())},
-                    {createHumanType(), createHumanType()}
-                });
+    private static Stream<Arguments> testData() {
+        return Stream.of(
+                Arguments.of(new CharType(2), new CharType(2)),
+                Arguments.of(
+                        createMultisetType(new IntType()), createMultisetType(new BigIntType())),
+                Arguments.of(createArrayType(new IntType()), createArrayType(new BigIntType())),
+                Arguments.of(createMapType(new IntType()), createMapType(new BigIntType())),
+                Arguments.of(createRowType(new IntType()), createRowType(new BigIntType())),
+                Arguments.of(
+                        createDistinctType(new IntType()), createDistinctType(new BigIntType())),
+                Arguments.of(createUserType(new IntType()), createUserType(new BigIntType())),
+                Arguments.of(createHumanType(), createHumanType()),
+                Arguments.of(createNonClassType(), createNonClassType()));
     }
 
-    @Parameter public LogicalType logicalType;
-
-    @Parameter(1)
-    public LogicalType replacedLogicalType;
-
-    @Test
-    public void testDuplication() {
+    @ParameterizedTest(name = "{index}: {0}")
+    @MethodSource("testData")
+    void testDuplication(LogicalType logicalType, LogicalType replacedLogicalType) {
         assertThat(logicalType.accept(DUPLICATOR)).isEqualTo(logicalType);
     }
 
-    @Test
-    public void testReplacement() {
+    @ParameterizedTest(name = "{index}: {0}")
+    @MethodSource("testData")
+    void testReplacement(LogicalType logicalType, LogicalType replacedLogicalType) {
         assertThat(logicalType.accept(INT_REPLACER)).isEqualTo(replacedLogicalType);
     }
 
@@ -114,17 +110,15 @@ public class LogicalTypeDuplicatorTest {
     private static RowType createRowType(LogicalType replacedType) {
         return new RowType(
                 Arrays.asList(
-                        new RowType.RowField("field1", new CharType(2)),
-                        new RowType.RowField("field2", new BooleanType()),
-                        new RowType.RowField("field3", replacedType)));
+                        new RowField("field1", new CharType(2)),
+                        new RowField("field2", new BooleanType()),
+                        new RowField("field3", replacedType)));
     }
 
     private static StructuredType createHumanType() {
         return StructuredType.newBuilder(ObjectIdentifier.of("cat", "db", "Human"), Human.class)
                 .attributes(
-                        Collections.singletonList(
-                                new StructuredType.StructuredAttribute(
-                                        "name", new VarCharType(), "Description.")))
+                        List.of(new StructuredAttribute("name", new VarCharType(), "Description.")))
                 .description("Human type desc.")
                 .setFinal(false)
                 .setInstantiable(false)
@@ -133,9 +127,7 @@ public class LogicalTypeDuplicatorTest {
 
     private static StructuredType createUserType(LogicalType replacedType) {
         return StructuredType.newBuilder(ObjectIdentifier.of("cat", "db", "User"), User.class)
-                .attributes(
-                        Collections.singletonList(
-                                new StructuredType.StructuredAttribute("setting", replacedType)))
+                .attributes(List.of(new StructuredAttribute("setting", replacedType)))
                 .description("User type desc.")
                 .setFinal(false)
                 .setInstantiable(true)
@@ -143,10 +135,18 @@ public class LogicalTypeDuplicatorTest {
                 .build();
     }
 
+    private static StructuredType createNonClassType() {
+        return StructuredType.newBuilder("NotInClassPathType")
+                .attributes(List.of(new StructuredAttribute("setting", new BooleanType())))
+                .build();
+    }
+
+    @SuppressWarnings("unused")
     private abstract static class Human {
         public String name;
     }
 
+    @SuppressWarnings("unused")
     private static final class User extends Human {
         public int setting;
     }

@@ -21,20 +21,34 @@ package org.apache.flink.table.planner.runtime.utils;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.common.typeinfo.Types;
 import org.apache.flink.api.java.tuple.Tuple12;
+import org.apache.flink.table.annotation.DataTypeHint;
+import org.apache.flink.table.annotation.FunctionHint;
 import org.apache.flink.table.data.TimestampData;
+import org.apache.flink.table.functions.AsyncScalarFunction;
+import org.apache.flink.table.functions.AsyncTableFunction;
+import org.apache.flink.table.functions.ScalarFunction;
 import org.apache.flink.table.functions.TableFunction;
+import org.apache.flink.types.Row;
 
 import org.apache.commons.lang3.StringUtils;
 
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collection;
+import java.util.List;
 import java.util.Random;
+import java.util.concurrent.CompletableFuture;
 
 /** Test functions. */
 public class JavaUserDefinedTableFunctions {
 
     /** Emit inputs as long. */
     public static class JavaTableFunc0 extends TableFunction<Long> {
-        public void eval(Integer a, Long b, TimestampData c) {
+        public void eval(
+                @DataTypeHint("DATE") Integer a,
+                Long b,
+                @DataTypeHint("TIMESTAMP(0)") TimestampData c) {
             collect(a.longValue());
             collect(b);
             collect(c.getMillisecond());
@@ -108,6 +122,73 @@ public class JavaUserDefinedTableFunctions {
         @Override
         public TypeInformation<String> getResultType() {
             return Types.STRING;
+        }
+    }
+
+    /** String split table function. */
+    public static class AsyncStringSplit extends AsyncTableFunction<String> {
+
+        public void eval(CompletableFuture<Collection<String>> future) {
+            String[] strs = {"a", "b", "c"};
+            for (String str : strs) {
+                eval(future, str);
+            }
+        }
+
+        public void eval(CompletableFuture<Collection<String>> future, String str) {
+            this.eval(future, str, ",");
+        }
+
+        public void eval(
+                CompletableFuture<Collection<String>> future, String str, String separatorChars) {
+            this.eval(future, str, separatorChars, 0);
+        }
+
+        public void eval(
+                CompletableFuture<Collection<String>> future,
+                String str,
+                String separatorChars,
+                int startIndex) {
+            if (str != null) {
+                String[] strs = StringUtils.split(str, separatorChars);
+                if (startIndex < 0) {
+                    startIndex = 0;
+                }
+                List<String> result =
+                        new ArrayList<>(Arrays.asList(strs).subList(startIndex, strs.length));
+                future.complete(result);
+            }
+        }
+
+        public void eval(CompletableFuture<Collection<String>> future, byte[] varbinary) {
+            if (varbinary != null) {
+                this.eval(future, new String(varbinary, StandardCharsets.UTF_8));
+            }
+        }
+    }
+
+    /** A table function. */
+    @FunctionHint(output = @DataTypeHint("ROW<s STRING >"))
+    public static class AsyncTestTableFunction extends AsyncTableFunction<Row> {
+
+        public void eval(CompletableFuture<Collection<Row>> result, Integer i) {
+            result.complete(Arrays.asList(Row.of("blah " + i), Row.of("foo " + i)));
+        }
+    }
+
+    /** A sum function. */
+    public static class SumScalarFunction extends ScalarFunction {
+
+        public int eval(int a, int b) {
+            return a + b;
+        }
+    }
+
+    /** A sum function. */
+    public static class AsyncSumScalarFunction extends AsyncScalarFunction {
+
+        public void eval(CompletableFuture<Integer> result, int a, int b) {
+            result.complete(a + b);
         }
     }
 

@@ -15,26 +15,25 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.planner.runtime.harness
 
-import org.apache.flink.api.scala._
 import org.apache.flink.streaming.util.KeyedOneInputStreamOperatorTestHarness
-import org.apache.flink.table.api.bridge.scala._
-import org.apache.flink.table.api.bridge.scala.internal.StreamTableEnvironmentImpl
 import org.apache.flink.table.api.{EnvironmentSettings, _}
+import org.apache.flink.table.api.bridge.scala.{dataStreamConversions, tableConversions}
+import org.apache.flink.table.api.bridge.scala.internal.StreamTableEnvironmentImpl
 import org.apache.flink.table.data.RowData
+import org.apache.flink.table.planner.runtime.utils.StreamingEnvUtil
 import org.apache.flink.table.planner.runtime.utils.StreamingWithStateTestBase.StateBackendMode
 import org.apache.flink.table.planner.utils.{Top3WithMapView, Top3WithRetractInput}
 import org.apache.flink.table.runtime.typeutils.RowDataSerializer
 import org.apache.flink.table.runtime.util.RowDataHarnessAssertor
 import org.apache.flink.table.runtime.util.StreamRecordUtils.{deleteRecord, insertRecord}
 import org.apache.flink.table.types.logical.LogicalType
+import org.apache.flink.testutils.junit.extensions.parameterized.ParameterizedTestExtension
 import org.apache.flink.types.Row
 
-import org.junit.runner.RunWith
-import org.junit.runners.Parameterized
-import org.junit.{Before, Test}
+import org.junit.jupiter.api.{BeforeEach, TestTemplate}
+import org.junit.jupiter.api.extension.ExtendWith
 
 import java.lang.{Integer => JInt}
 import java.time.Duration
@@ -42,31 +41,30 @@ import java.util.concurrent.ConcurrentLinkedQueue
 
 import scala.collection.mutable
 
-@RunWith(classOf[Parameterized])
+@ExtendWith(Array(classOf[ParameterizedTestExtension]))
 class TableAggregateHarnessTest(mode: StateBackendMode) extends HarnessTestBase(mode) {
 
-  @Before
+  @BeforeEach
   override def before(): Unit = {
     super.before()
     val setting = EnvironmentSettings.newInstance().inStreamingMode().build()
     this.tEnv = StreamTableEnvironmentImpl.create(env, setting)
   }
 
-  val data = new mutable.MutableList[(Int, Int)]
+  val data = new mutable.ListBuffer[(Int, Int)]
 
-  @Test
+  @TestTemplate
   def testTableAggregate(): Unit = {
     val top3 = new Top3WithMapView
-    tEnv.registerFunction("top3", top3)
-    val source = env.fromCollection(data).toTable(tEnv, 'a, 'b)
+    tEnv.createTemporarySystemFunction("top3", top3)
+    val source = StreamingEnvUtil.fromCollection(env, data).toTable(tEnv, 'a, 'b)
     val resultTable = source
       .groupBy('a)
-      .flatAggregate(top3('b) as ('b1, 'b2))
+      .flatAggregate(top3('b).as('b1, 'b2))
       .select('a, 'b1, 'b2)
 
     tEnv.getConfig.setIdleStateRetention(Duration.ofSeconds(2))
-    val testHarness = createHarnessTester(
-      resultTable.toRetractStream[Row], "GroupTableAggregate")
+    val testHarness = createHarnessTester(resultTable.toRetractStream[Row], "GroupTableAggregate")
     val assertor = new RowDataHarnessAssertor(
       Array(
         DataTypes.INT().getLogicalType,
@@ -108,7 +106,7 @@ class TableAggregateHarnessTest(mode: StateBackendMode) extends HarnessTestBase(
     testHarness.processElement(insertRecord(2: JInt, 2: JInt))
     expectedOutput.add(insertRecord(2: JInt, 2: JInt, 2: JInt))
 
-    //set TtlTimeProvider with 3002 to trigger expired state cleanup
+    // set TtlTimeProvider with 3002 to trigger expired state cleanup
     testHarness.setStateTtlProcessingTime(3002)
     testHarness.processElement(insertRecord(1: JInt, 2: JInt))
     expectedOutput.add(insertRecord(1: JInt, 2: JInt, 2: JInt))
@@ -118,7 +116,7 @@ class TableAggregateHarnessTest(mode: StateBackendMode) extends HarnessTestBase(
     testHarness.close()
   }
 
-  @Test
+  @TestTemplate
   def testTableAggregateWithRetractInput(): Unit = {
     val (testHarness, outputTypes) = createTableAggregateWithRetract
     val assertor = new RowDataHarnessAssertor(outputTypes)
@@ -161,26 +159,23 @@ class TableAggregateHarnessTest(mode: StateBackendMode) extends HarnessTestBase(
   }
 
   private def createTableAggregateWithRetract()
-    : (KeyedOneInputStreamOperatorTestHarness[RowData, RowData, RowData], Array[LogicalType]) = {
+      : (KeyedOneInputStreamOperatorTestHarness[RowData, RowData, RowData], Array[LogicalType]) = {
     val top3 = new Top3WithRetractInput
-    tEnv.registerFunction("top3", top3)
-    val source = env.fromCollection(data).toTable(tEnv, 'a, 'b)
+    tEnv.createTemporarySystemFunction("top3", top3)
+    val source = StreamingEnvUtil.fromCollection(env, data).toTable(tEnv, 'a, 'b)
     val resultTable = source
-        .groupBy('a)
-        .select('b.sum as 'b)
-        .flatAggregate(top3('b) as('b1, 'b2))
-        .select('b1, 'b2)
+      .groupBy('a)
+      .select('b.sum.as('b))
+      .flatAggregate(top3('b).as('b1, 'b2))
+      .select('b1, 'b2)
 
     tEnv.getConfig.setIdleStateRetention(Duration.ofSeconds(2))
-    val testHarness = createHarnessTester(
-      resultTable.toRetractStream[Row], "GroupTableAggregate")
-    val outputTypes = Array(
-      DataTypes.INT().getLogicalType,
-      DataTypes.INT().getLogicalType)
+    val testHarness = createHarnessTester(resultTable.toRetractStream[Row], "GroupTableAggregate")
+    val outputTypes = Array(DataTypes.INT().getLogicalType, DataTypes.INT().getLogicalType)
     (testHarness, outputTypes)
   }
 
-  @Test
+  @TestTemplate
   def testCloseWithoutOpen(): Unit = {
     val (testHarness, outputTypes) = createTableAggregateWithRetract
     testHarness.setup(new RowDataSerializer(outputTypes: _*))

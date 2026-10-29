@@ -15,18 +15,17 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.planner.plan.metadata
 
 import org.apache.flink.table.planner.plan.nodes.physical.batch.{BatchPhysicalCorrelate, BatchPhysicalGroupAggregateBase}
+import org.apache.flink.testutils.junit.extensions.parameterized.{ParameterizedTestExtension, Parameters}
 
 import org.apache.calcite.rel.RelNode
 import org.apache.calcite.rel.core.{Aggregate, Correlate}
 import org.apache.calcite.rel.metadata.{MetadataDef, MetadataHandler, RelMetadataQuery}
-import org.junit.Assert.fail
-import org.junit.Test
-import org.junit.runner.RunWith
-import org.junit.runners.Parameterized
+import org.assertj.core.api.Assertions.fail
+import org.junit.jupiter.api.TestTemplate
+import org.junit.jupiter.api.extension.ExtendWith
 
 import java.lang.reflect.Method
 import java.util
@@ -35,22 +34,20 @@ import scala.collection.JavaConversions._
 import scala.collection.mutable
 
 /**
-  * Metadata estimation for logical RelNode and relative physical RelNode should be same.
-  * Now almost every logical RelNode has same parent class with its relative physical RelNode except
-  * for Aggregate and Correlate.
-  * This test ensure two points.
-  * 1. all subclasses of [[MetadataHandler]] have explicit metadata estimation
-  * for [[Aggregate]] and [[BatchPhysicalGroupAggregateBase]] or have no metadata estimation for
-  * [[Aggregate]] and [[BatchPhysicalGroupAggregateBase]] either.
-  * 2. all subclasses of [[MetadataHandler]] have explicit metadata estimation
-  * for [[Correlate]] and  [[BatchPhysicalGroupAggregateBase]] or have no metadata estimation for
-  * [[Correlate]] and  [[BatchPhysicalGroupAggregateBase]] either.
-  * Be cautious that if logical Aggregate and physical Aggregate or logical Correlate and physical
-  * Correlate both are present in a MetadataHandler class, their metadata estimation should be same.
-  * This test does not check this point because every MetadataHandler could have different
-  * parameters with each other.
-  */
-@RunWith(classOf[Parameterized])
+ * Metadata estimation for logical RelNode and relative physical RelNode should be same. Now almost
+ * every logical RelNode has same parent class with its relative physical RelNode except for
+ * Aggregate and Correlate. This test ensure two points.
+ *   1. all subclasses of [[MetadataHandler]] have explicit metadata estimation for [[Aggregate]]
+ *      and [[BatchPhysicalGroupAggregateBase]] or have no metadata estimation for [[Aggregate]] and
+ *      [[BatchPhysicalGroupAggregateBase]] either. 2. all subclasses of [[MetadataHandler]] have
+ *      explicit metadata estimation for [[Correlate]] and [[BatchPhysicalGroupAggregateBase]] or
+ *      have no metadata estimation for [[Correlate]] and [[BatchPhysicalGroupAggregateBase]]
+ *      either. Be cautious that if logical Aggregate and physical Aggregate or logical Correlate
+ *      and physical Correlate both are present in a MetadataHandler class, their metadata
+ *      estimation should be same. This test does not check this point because every MetadataHandler
+ *      could have different parameters with each other.
+ */
+@ExtendWith(Array(classOf[ParameterizedTestExtension]))
 class MetadataHandlerConsistencyTest(
     logicalNodeClass: Class[_ <: RelNode],
     physicalNodeClass: Class[_ <: RelNode]) {
@@ -76,57 +73,59 @@ class MetadataHandlerConsistencyTest(
     classOf[FlinkRelMdRowCount],
     classOf[FlinkRelMdSelectivity],
     classOf[FlinkRelMdNonCumulativeCost],
-    classOf[FlinkRelMdDistinctRowCount])
+    classOf[FlinkRelMdDistinctRowCount]
+  )
 
   // initiate each subclasses of [[MetadataHandler]]
-  private val mdHandlerInstances = allMdHandlerClazz map { mdhClass =>
-    val constructor = mdhClass.getDeclaredConstructor()
-    constructor.setAccessible(true)
-    constructor.newInstance()
+  private val mdHandlerInstances = allMdHandlerClazz.map {
+    mdhClass =>
+      val constructor = mdhClass.getDeclaredConstructor()
+      constructor.setAccessible(true)
+      constructor.newInstance()
   }
 
   // get [[MetadataDef]] of each subclasses of [[MetadataHandler]]
   private val mdDefMethods = allMdHandlerClazz.map(_.getMethod("getDef"))
 
-  @Test
+  @TestTemplate
   def ensureLogicalNodeAndPhysicalNodeBothPresentOrBothAbsent(): Unit = {
     allMdHandlerClazz.zip(mdHandlerInstances).zip(mdDefMethods).foreach {
       case ((mdHandlerClass, mdHandlerInstance), mdDefMethod) =>
         val mdDef = mdDefMethod.invoke(mdHandlerInstance).asInstanceOf[MetadataDef[_]]
         val methodsInDef = mdDef.methods
-        methodsInDef.foreach { methodInDef =>
-          val logicalIsPresent = existExplicitEstimation(
-            mdHandlerClass,
-            logicalNodeClass,
-            methodInDef)
-          val physicalIsPresent = existExplicitEstimation(
-            mdHandlerClass,
-            physicalNodeClass,
-            methodInDef)
-          val mdHandlerClassName = mdHandlerClass.getCanonicalName
-          // check logical node and physical node are both present or both absent
-          if (!logicalIsPresent && physicalIsPresent) {
-            fail(s"Require metadata estimation of ${logicalNodeClass.getCanonicalName} " +
-              s"in $mdHandlerClassName!")
-          } else if (logicalIsPresent && !physicalIsPresent) {
-            fail(
-              s"Require metadata estimation of ${physicalNodeClass.getCanonicalName} " +
+        methodsInDef.foreach {
+          methodInDef =>
+            val logicalIsPresent =
+              existExplicitEstimation(mdHandlerClass, logicalNodeClass, methodInDef)
+            val physicalIsPresent =
+              existExplicitEstimation(mdHandlerClass, physicalNodeClass, methodInDef)
+            val mdHandlerClassName = mdHandlerClass.getCanonicalName
+            // check logical node and physical node are both present or both absent
+            if (!logicalIsPresent && physicalIsPresent) {
+              fail(s"Require metadata estimation of ${logicalNodeClass.getCanonicalName} " +
+                s"in $mdHandlerClassName!")
+            } else if (logicalIsPresent && !physicalIsPresent) {
+              fail(s"Require metadata estimation of ${physicalNodeClass.getCanonicalName} " +
                 s"in $mdHandlerClassName")
-          }
+            }
         }
     }
   }
 
   /**
-    * Gets whether the given metadataHandler contains explicit metadata estimation for the given
-    * RelNode class.
-    *
-    * @param mdHandlerClazz class of metadata handler
-    * @param relNodeClazz   class of RelNode
-    * @param methodInDef    metadata estimation method
-    * @return True if the given metadataHandler contains explicit metadata estimation for the given
-    * RelNode class, false else.
-    */
+   * Gets whether the given metadataHandler contains explicit metadata estimation for the given
+   * RelNode class.
+   *
+   * @param mdHandlerClazz
+   *   class of metadata handler
+   * @param relNodeClazz
+   *   class of RelNode
+   * @param methodInDef
+   *   metadata estimation method
+   * @return
+   *   True if the given metadataHandler contains explicit metadata estimation for the given RelNode
+   *   class, false else.
+   */
   private def existExplicitEstimation(
       mdHandlerClazz: Class[_ <: MetadataHandler[_]],
       relNodeClazz: Class[_ <: RelNode],
@@ -145,7 +144,7 @@ class MetadataHandlerConsistencyTest(
 
 object MetadataHandlerConsistencyTest {
 
-  @Parameterized.Parameters(name = "logicalNodeClass={0}, physicalNodeClass={1}")
+  @Parameters(name = "logicalNodeClass={0}, physicalNodeClass={1}")
   def parameters(): util.Collection[Array[Any]] = {
     Seq[Array[Any]](
       Array(classOf[Aggregate], classOf[BatchPhysicalGroupAggregateBase]),

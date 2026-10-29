@@ -19,7 +19,6 @@
 package org.apache.flink.runtime.rest.handler.job.metrics;
 
 import org.apache.flink.api.common.JobID;
-import org.apache.flink.api.common.time.Time;
 import org.apache.flink.runtime.jobgraph.JobVertexID;
 import org.apache.flink.runtime.rest.handler.HandlerRequest;
 import org.apache.flink.runtime.rest.handler.legacy.metrics.MetricFetcher;
@@ -36,6 +35,7 @@ import org.apache.flink.util.UnionIterator;
 
 import javax.annotation.Nonnull;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
@@ -56,7 +56,7 @@ public class AggregatingSubtasksMetricsHandler
 
     public AggregatingSubtasksMetricsHandler(
             GatewayRetriever<? extends RestfulGateway> leaderRetriever,
-            Time timeout,
+            Duration timeout,
             Map<String, String> responseHeaders,
             Executor executor,
             MetricFetcher fetcher) {
@@ -76,6 +76,7 @@ public class AggregatingSubtasksMetricsHandler
         JobID jobID = request.getPathParameter(JobIDPathParameter.class);
         JobVertexID taskID = request.getPathParameter(JobVertexIdPathParameter.class);
 
+        MetricStore.JobMetricStoreSnapshot jobMetrics = store.getJobs();
         Collection<String> subtaskRanges =
                 request.getQueryParameter(SubtasksFilterQueryParameter.class);
         if (subtaskRanges.isEmpty()) {
@@ -91,7 +92,8 @@ public class AggregatingSubtasksMetricsHandler
             Collection<MetricStore.ComponentMetricStore> subtaskStores = new ArrayList<>(8);
             for (int subtask : subtasks) {
                 MetricStore.ComponentMetricStore subtaskMetricStore =
-                        store.getSubtaskMetricStore(jobID.toString(), taskID.toString(), subtask);
+                        jobMetrics.getSubtaskMetricStore(
+                                jobID.toString(), taskID.toString(), subtask);
                 if (subtaskMetricStore != null) {
                     subtaskStores.add(subtaskMetricStore);
                 }

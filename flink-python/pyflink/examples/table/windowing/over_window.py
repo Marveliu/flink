@@ -54,7 +54,7 @@ def tumble_window_demo():
               .column("f2", DataTypes.FLOAT())
               .watermark("ts", "ts - INTERVAL '3' SECOND")
               .build()
-    ).alias("ts, name, price")
+    ).alias("ts", "name", "price")
 
     # define the sink
     t_env.create_temporary_table(
@@ -68,18 +68,18 @@ def tumble_window_demo():
 
     # define the over window operation
     table = table.over_window(
-        Over.partition_by("name")
-            .order_by("ts")
+        Over.partition_by(col("name"))
+            .order_by(col("ts"))
             .preceding(row_interval(2))
             .following(CURRENT_ROW)
             .alias('w')) \
-        .select(table.name, table.price.max.over(col('w')))
+        .select(col('name'), col('price').max.over(col('w')))
 
     # submit for execution
     table.execute_insert('sink') \
          .wait()
     # remove .wait if submitting to a remote cluster, refer to
-    # https://nightlies.apache.org/flink/flink-docs-stable/docs/dev/python/faq/#wait-for-jobs-to-finish-when-executing-jobs-in-mini-cluster
+    # https://nightlies.apache.org/flink/flink-docs-stable/api/python/user_guide/faq.html#wait-for-jobs-to-finish-when-executing-jobs-in-mini-cluster
     # for more details
 
 

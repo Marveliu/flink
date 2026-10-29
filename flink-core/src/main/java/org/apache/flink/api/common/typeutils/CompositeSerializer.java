@@ -228,8 +228,15 @@ public abstract class CompositeSerializer<T> extends TypeSerializer<T> {
             this.stateful = stateful;
         }
 
-        static PrecomputedParameters precompute(
+        public static PrecomputedParameters precompute(
                 boolean immutableTargetType, TypeSerializer<Object>[] fieldSerializers) {
+            return precompute(immutableTargetType, false, fieldSerializers);
+        }
+
+        public static PrecomputedParameters precompute(
+                boolean immutableTargetType,
+                boolean forceFieldsImmutable,
+                TypeSerializer<Object>[] fieldSerializers) {
             Preconditions.checkNotNull(fieldSerializers);
             int totalLength = 0;
             boolean fieldsImmutable = true;
@@ -239,7 +246,7 @@ public abstract class CompositeSerializer<T> extends TypeSerializer<T> {
                 if (fieldSerializer != fieldSerializer.duplicate()) {
                     stateful = true;
                 }
-                if (!fieldSerializer.isImmutableType()) {
+                if (!forceFieldsImmutable && !fieldSerializer.isImmutableType()) {
                     fieldsImmutable = false;
                 }
                 if (fieldSerializer.getLength() < 0) {
@@ -250,31 +257,6 @@ public abstract class CompositeSerializer<T> extends TypeSerializer<T> {
             }
             return new PrecomputedParameters(
                     immutableTargetType, fieldsImmutable, totalLength, stateful);
-        }
-    }
-
-    /**
-     * Snapshot field serializers of composite type.
-     *
-     * @deprecated this snapshot class is no longer in use by any serializers, and is only kept
-     *     around for backwards compatibility. All subclass serializers should have their own
-     *     serializer snapshot classes.
-     */
-    @Deprecated
-    public static class ConfigSnapshot extends CompositeTypeSerializerConfigSnapshot {
-        private static final int VERSION = 0;
-
-        /** This empty nullary constructor is required for deserializing the configuration. */
-        @SuppressWarnings("unused")
-        public ConfigSnapshot() {}
-
-        ConfigSnapshot(@Nonnull TypeSerializer<?>... nestedSerializers) {
-            super(nestedSerializers);
-        }
-
-        @Override
-        public int getVersion() {
-            return VERSION;
         }
     }
 }

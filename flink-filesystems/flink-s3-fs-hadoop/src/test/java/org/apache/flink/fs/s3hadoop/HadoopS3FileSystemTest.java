@@ -21,18 +21,18 @@ package org.apache.flink.fs.s3hadoop;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.runtime.util.HadoopConfigLoader;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
-import static org.junit.Assert.assertEquals;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Unit tests for the S3 file system support via Hadoop's {@link
  * org.apache.hadoop.fs.s3a.S3AFileSystem}.
  */
-public class HadoopS3FileSystemTest {
+class HadoopS3FileSystemTest {
 
     @Test
-    public void testShadingOfAwsCredProviderConfig() {
+    void testShadingOfAwsCredProviderConfig() {
         final Configuration conf = new Configuration();
         conf.setString(
                 "fs.s3a.aws.credentials.provider",
@@ -42,9 +42,8 @@ public class HadoopS3FileSystemTest {
         configLoader.setFlinkConfig(conf);
 
         org.apache.hadoop.conf.Configuration hadoopConfig = configLoader.getOrLoadHadoopConfig();
-        assertEquals(
-                "com.amazonaws.auth.ContainerCredentialsProvider",
-                hadoopConfig.get("fs.s3a.aws.credentials.provider"));
+        assertThat(hadoopConfig.get("fs.s3a.aws.credentials.provider"))
+                .isEqualTo("com.amazonaws.auth.ContainerCredentialsProvider");
     }
 
     // ------------------------------------------------------------------------
@@ -54,7 +53,7 @@ public class HadoopS3FileSystemTest {
 
     /** Test forwarding of standard Hadoop-style credential keys. */
     @Test
-    public void testConfigKeysForwardingHadoopStyle() {
+    void testConfigKeysForwardingHadoopStyle() {
         Configuration conf = new Configuration();
         conf.setString("fs.s3a.access.key", "test_access_key");
         conf.setString("fs.s3a.secret.key", "test_secret_key");
@@ -64,7 +63,7 @@ public class HadoopS3FileSystemTest {
 
     /** Test forwarding of shortened Hadoop-style credential keys. */
     @Test
-    public void testConfigKeysForwardingShortHadoopStyle() {
+    void testConfigKeysForwardingShortHadoopStyle() {
         Configuration conf = new Configuration();
         conf.setString("s3.access.key", "my_key_a");
         conf.setString("s3.secret.key", "my_key_b");
@@ -74,11 +73,56 @@ public class HadoopS3FileSystemTest {
 
     /** Test forwarding of shortened Presto-style credential keys. */
     @Test
-    public void testConfigKeysForwardingPrestoStyle() {
+    void testConfigKeysForwardingPrestoStyle() {
         Configuration conf = new Configuration();
         conf.setString("s3.access-key", "clé d'accès");
         conf.setString("s3.secret-key", "clef secrète");
         checkHadoopAccessKeys(conf, "clé d'accès", "clef secrète");
+    }
+
+    /**
+     * Test that keys with the ".value" suffix are mapped to their Hadoop equivalents, allowing
+     * users to avoid YAML key prefix collisions in Flink v2's standard config.yaml format.
+     *
+     * <p>For example, "fs.s3a.endpoint" and "fs.s3a.endpoint.region" cannot coexist in standard
+     * YAML. Users can instead set "fs.s3a.endpoint.value" which is remapped to "fs.s3a.endpoint".
+     */
+    @Test
+    void testValueSuffixMappingForYamlCollisionAvoidance() {
+        Configuration conf = new Configuration();
+        conf.setString("fs.s3a.endpoint.value", "https://s3.eu-west-1.amazonaws.com");
+        conf.setString("fs.s3a.endpoint.region", "eu-west-1");
+        conf.setString(
+                "fs.s3a.assumed.role.sts.endpoint.value", "https://sts.eu-west-1.amazonaws.com");
+        conf.setString("fs.s3a.assumed.role.sts.endpoint.region", "eu-west-1");
+        conf.setString("fs.s3a.fast.upload.value", "true");
+        conf.setString("fs.s3a.fast.upload.buffer", "disk");
+        conf.setString("fs.s3a.multipart.purge.value", "true");
+        conf.setString("fs.s3a.multipart.purge.age", "86400");
+        conf.setString("fs.s3a.s3guard.ddb.table.value", "my-table");
+        conf.setString("fs.s3a.s3guard.ddb.table.capacity.read", "10");
+
+        HadoopConfigLoader configLoader = S3FileSystemFactory.createHadoopConfigLoader();
+        configLoader.setFlinkConfig(conf);
+
+        org.apache.hadoop.conf.Configuration hadoopConf = configLoader.getOrLoadHadoopConfig();
+
+        // ".value" keys must be remapped to their Hadoop equivalents
+        assertThat(hadoopConf.get("fs.s3a.endpoint", null))
+                .isEqualTo("https://s3.eu-west-1.amazonaws.com");
+        assertThat(hadoopConf.get("fs.s3a.assumed.role.sts.endpoint", null))
+                .isEqualTo("https://sts.eu-west-1.amazonaws.com");
+        assertThat(hadoopConf.get("fs.s3a.fast.upload", null)).isEqualTo("true");
+        assertThat(hadoopConf.get("fs.s3a.multipart.purge", null)).isEqualTo("true");
+        assertThat(hadoopConf.get("fs.s3a.s3guard.ddb.table", null)).isEqualTo("my-table");
+
+        // sibling keys must pass through unchanged
+        assertThat(hadoopConf.get("fs.s3a.endpoint.region", null)).isEqualTo("eu-west-1");
+        assertThat(hadoopConf.get("fs.s3a.assumed.role.sts.endpoint.region", null))
+                .isEqualTo("eu-west-1");
+        assertThat(hadoopConf.get("fs.s3a.fast.upload.buffer", null)).isEqualTo("disk");
+        assertThat(hadoopConf.get("fs.s3a.multipart.purge.age", null)).isEqualTo("86400");
+        assertThat(hadoopConf.get("fs.s3a.s3guard.ddb.table.capacity.read", null)).isEqualTo("10");
     }
 
     private static void checkHadoopAccessKeys(
@@ -88,7 +132,7 @@ public class HadoopS3FileSystemTest {
 
         org.apache.hadoop.conf.Configuration hadoopConf = configLoader.getOrLoadHadoopConfig();
 
-        assertEquals(accessKey, hadoopConf.get("fs.s3a.access.key", null));
-        assertEquals(secretKey, hadoopConf.get("fs.s3a.secret.key", null));
+        assertThat(hadoopConf.get("fs.s3a.access.key", null)).isEqualTo(accessKey);
+        assertThat(hadoopConf.get("fs.s3a.secret.key", null)).isEqualTo(secretKey);
     }
 }

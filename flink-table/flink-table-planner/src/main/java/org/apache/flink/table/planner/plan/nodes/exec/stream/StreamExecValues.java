@@ -19,6 +19,7 @@
 package org.apache.flink.table.planner.plan.nodes.exec.stream;
 
 import org.apache.flink.FlinkVersion;
+import org.apache.flink.configuration.ReadableConfig;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.planner.plan.nodes.exec.ExecNode;
 import org.apache.flink.table.planner.plan.nodes.exec.ExecNodeContext;
@@ -34,18 +35,32 @@ import org.apache.calcite.rex.RexLiteral;
 import java.util.List;
 
 /** Stream {@link ExecNode} that read records from given values. */
+// Version 1: Initial version
 @ExecNodeMetadata(
         name = "stream-exec-values",
         version = 1,
         producedTransformations = CommonExecValues.VALUES_TRANSFORMATION,
         minPlanVersion = FlinkVersion.v1_15,
         minStateVersion = FlinkVersion.v1_15)
+// Version 2: VALUES runs as a FLIP-27 source that checkpoints the position of the next row to
+// emit, so a restored job doesn't emit the rows again.
+@ExecNodeMetadata(
+        name = "stream-exec-values",
+        version = 2,
+        producedTransformations = CommonExecValues.VALUES_TRANSFORMATION,
+        minPlanVersion = FlinkVersion.v2_5,
+        minStateVersion = FlinkVersion.v2_5)
 public class StreamExecValues extends CommonExecValues implements StreamExecNode<RowData> {
 
-    public StreamExecValues(List<List<RexLiteral>> tuples, RowType outputType, String description) {
+    public StreamExecValues(
+            ReadableConfig tableConfig,
+            List<List<RexLiteral>> tuples,
+            RowType outputType,
+            String description) {
         this(
                 ExecNodeContext.newNodeId(),
                 ExecNodeContext.newContext(StreamExecValues.class),
+                ExecNodeContext.newPersistedConfig(StreamExecValues.class, tableConfig),
                 tuples,
                 outputType,
                 description);
@@ -55,9 +70,17 @@ public class StreamExecValues extends CommonExecValues implements StreamExecNode
     public StreamExecValues(
             @JsonProperty(FIELD_NAME_ID) int id,
             @JsonProperty(FIELD_NAME_TYPE) ExecNodeContext context,
+            @JsonProperty(FIELD_NAME_CONFIGURATION) ReadableConfig persistedConfig,
             @JsonProperty(FIELD_NAME_TUPLES) List<List<RexLiteral>> tuples,
             @JsonProperty(FIELD_NAME_OUTPUT_TYPE) RowType outputType,
             @JsonProperty(FIELD_NAME_DESCRIPTION) String description) {
-        super(id, context, tuples, outputType, description);
+        super(id, context, persistedConfig, tuples, outputType, description);
+    }
+
+    // A compiled plan with version 1 keeps the legacy source, so that it can still be restored
+    // from its checkpoints.
+    @Override
+    protected final boolean legacySourceEnabled() {
+        return getVersion() == 1;
     }
 }

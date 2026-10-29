@@ -22,7 +22,7 @@ import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.ExecutionConfig;
 import org.apache.flink.api.common.typeutils.TypeSerializer;
-import org.apache.flink.api.java.tuple.Tuple2;
+import org.apache.flink.api.java.tuple.Tuple3;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.fnexecution.v1.FlinkFnApi;
 import org.apache.flink.streaming.api.operators.InternalTimer;
@@ -42,7 +42,7 @@ import org.apache.flink.table.runtime.groupwindow.WindowEnd;
 import org.apache.flink.table.runtime.groupwindow.WindowProperty;
 import org.apache.flink.table.runtime.groupwindow.WindowStart;
 import org.apache.flink.table.runtime.operators.window.Window;
-import org.apache.flink.table.runtime.operators.window.assigners.WindowAssigner;
+import org.apache.flink.table.runtime.operators.window.groupwindow.assigners.GroupWindowAssigner;
 import org.apache.flink.table.runtime.typeutils.serializers.python.RowDataSerializer;
 import org.apache.flink.table.runtime.util.TimeWindowUtil;
 import org.apache.flink.table.types.logical.BigIntType;
@@ -56,7 +56,7 @@ import java.util.List;
 
 import static org.apache.flink.fnexecution.v1.FlinkFnApi.GroupWindow.WindowProperty.WINDOW_END;
 import static org.apache.flink.fnexecution.v1.FlinkFnApi.GroupWindow.WindowProperty.WINDOW_START;
-import static org.apache.flink.streaming.api.utils.ProtoUtils.createFlattenRowTypeCoderInfoDescriptorProto;
+import static org.apache.flink.python.util.ProtoUtils.createFlattenRowTypeCoderInfoDescriptorProto;
 import static org.apache.flink.table.runtime.util.TimeWindowUtil.toEpochMillsForTimer;
 import static org.apache.flink.table.runtime.util.TimeWindowUtil.toUtcTimestampMills;
 
@@ -102,8 +102,8 @@ public class PythonStreamGroupWindowAggregateOperator<K, W extends Window>
     /** The Infos of the Window. */
     private FlinkFnApi.GroupWindow.WindowProperty[] namedProperties;
 
-    /** A {@link WindowAssigner} assigns zero or more {@link Window Windows} to an element. */
-    @VisibleForTesting final WindowAssigner<W> windowAssigner;
+    /** A {@link GroupWindowAssigner} assigns zero or more {@link Window Windows} to an element. */
+    @VisibleForTesting final GroupWindowAssigner<W> windowAssigner;
 
     /** Window Type includes Tumble window, Sliding window and Session Window. */
     private final FlinkFnApi.GroupWindow.WindowType windowType;
@@ -152,7 +152,7 @@ public class PythonStreamGroupWindowAggregateOperator<K, W extends Window>
             boolean generateUpdateBefore,
             boolean countStarInserted,
             int inputTimeFieldIndex,
-            WindowAssigner<W> windowAssigner,
+            GroupWindowAssigner<W> windowAssigner,
             FlinkFnApi.GroupWindow.WindowType windowType,
             boolean isRowTime,
             boolean isTimeWindow,
@@ -217,7 +217,7 @@ public class PythonStreamGroupWindowAggregateOperator<K, W extends Window>
                             boolean generateUpdateBefore,
                             boolean countStarInserted,
                             int inputTimeFieldIndex,
-                            WindowAssigner<W> windowAssigner,
+                            GroupWindowAssigner<W> windowAssigner,
                             boolean isRowTime,
                             boolean isTimeWindow,
                             long size,
@@ -260,7 +260,7 @@ public class PythonStreamGroupWindowAggregateOperator<K, W extends Window>
                             boolean generateUpdateBefore,
                             boolean countStarInserted,
                             int inputTimeFieldIndex,
-                            WindowAssigner<W> windowAssigner,
+                            GroupWindowAssigner<W> windowAssigner,
                             boolean isRowTime,
                             boolean isTimeWindow,
                             long size,
@@ -304,7 +304,7 @@ public class PythonStreamGroupWindowAggregateOperator<K, W extends Window>
                             boolean generateUpdateBefore,
                             boolean countStarInserted,
                             int inputTimeFieldIndex,
-                            WindowAssigner<W> windowAssigner,
+                            GroupWindowAssigner<W> windowAssigner,
                             boolean isRowTime,
                             long gap,
                             long allowedLateness,
@@ -363,9 +363,9 @@ public class PythonStreamGroupWindowAggregateOperator<K, W extends Window>
     }
 
     @Override
-    public void emitResult(Tuple2<byte[], Integer> resultTuple) throws Exception {
-        byte[] rawUdfResult = resultTuple.f0;
-        int length = resultTuple.f1;
+    public void emitResult(Tuple3<String, byte[], Integer> resultTuple) throws Exception {
+        byte[] rawUdfResult = resultTuple.f1;
+        int length = resultTuple.f2;
         bais.setBuffer(rawUdfResult, 0, length);
         RowData udfResult = udfOutputTypeSerializer.deserialize(baisWrapper);
         byte recordType = udfResult.getByte(0);

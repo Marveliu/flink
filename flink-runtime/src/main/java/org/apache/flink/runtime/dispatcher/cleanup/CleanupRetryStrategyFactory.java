@@ -40,15 +40,14 @@ public enum CleanupRetryStrategyFactory {
 
     /** Creates the {@link RetryStrategy} instance based on the passed {@link Configuration}. */
     public RetryStrategy createRetryStrategy(Configuration configuration) {
-        final String configuredRetryStrategy =
-                configuration.getString(CleanupOptions.CLEANUP_STRATEGY);
+        final String configuredRetryStrategy = configuration.get(CleanupOptions.CLEANUP_STRATEGY);
         if (isRetryStrategy(
                 CleanupOptions.FIXED_DELAY_LABEL,
-                configuration.getString(CleanupOptions.CLEANUP_STRATEGY))) {
+                configuration.get(CleanupOptions.CLEANUP_STRATEGY))) {
             return createFixedRetryStrategy(configuration);
         } else if (isRetryStrategy(
                 CleanupOptions.EXPONENTIAL_DELAY_LABEL,
-                configuration.getString(CleanupOptions.CLEANUP_STRATEGY))) {
+                configuration.get(CleanupOptions.CLEANUP_STRATEGY))) {
             return createExponentialBackoffRetryStrategy(configuration);
         } else if (retryingDisabled(configuredRetryStrategy)) {
             return createNoRetryStrategy();
@@ -78,9 +77,7 @@ public enum CleanupRetryStrategyFactory {
         final Duration maxDelay =
                 configuration.get(CleanupOptions.CLEANUP_STRATEGY_EXPONENTIAL_DELAY_MAX_BACKOFF);
         final int maxAttempts =
-                configuration.getInteger(
-                        CleanupOptions.CLEANUP_STRATEGY_EXPONENTIAL_DELAY_MAX_ATTEMPTS,
-                        Integer.MAX_VALUE);
+                configuration.get(CleanupOptions.CLEANUP_STRATEGY_EXPONENTIAL_DELAY_MAX_ATTEMPTS);
 
         return new ExponentialBackoffRetryStrategy(maxAttempts, minDelay, maxDelay);
     }

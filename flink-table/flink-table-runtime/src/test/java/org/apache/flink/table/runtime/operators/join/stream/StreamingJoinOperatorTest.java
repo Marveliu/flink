@@ -1,0 +1,1404 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.apache.flink.table.runtime.operators.join.stream;
+
+import org.apache.flink.runtime.checkpoint.OperatorSubtaskState;
+import org.apache.flink.streaming.api.operators.TwoInputStreamOperator;
+import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
+import org.apache.flink.streaming.util.KeyedTwoInputStreamOperatorTestHarness;
+import org.apache.flink.streaming.util.asyncprocessing.AsyncKeyedTwoInputStreamOperatorTestHarness;
+import org.apache.flink.table.data.RowData;
+import org.apache.flink.table.runtime.generated.GeneratedJoinCondition;
+import org.apache.flink.table.runtime.keyselector.RowDataKeySelector;
+import org.apache.flink.table.runtime.operators.join.stream.asyncprocessing.AsyncStateStreamingJoinOperator;
+import org.apache.flink.table.runtime.operators.join.stream.utils.JoinInputSideSpec;
+import org.apache.flink.table.runtime.util.RuntimeChangelogMode;
+import org.apache.flink.table.types.logical.LogicalType;
+import org.apache.flink.table.types.logical.RowType;
+import org.apache.flink.table.utils.HandwrittenSelectorUtil;
+import org.apache.flink.testutils.junit.extensions.parameterized.Parameter;
+import org.apache.flink.testutils.junit.extensions.parameterized.ParameterizedTestExtension;
+import org.apache.flink.testutils.junit.extensions.parameterized.Parameters;
+import org.apache.flink.types.RowKind;
+
+import org.junit.jupiter.api.Tag;
+import org.junit.jupiter.api.TestInfo;
+import org.junit.jupiter.api.TestTemplate;
+import org.junit.jupiter.api.extension.ExtendWith;
+
+import javax.annotation.Nullable;
+
+import java.lang.reflect.Method;
+import java.util.Arrays;
+import java.util.List;
+import java.util.function.Function;
+import java.util.stream.Stream;
+
+import static org.apache.flink.table.runtime.util.StreamRecordUtils.binaryRecord;
+import static org.apache.flink.table.runtime.util.StreamRecordUtils.deleteRecord;
+import static org.apache.flink.table.runtime.util.StreamRecordUtils.insertRecord;
+import static org.apache.flink.table.runtime.util.StreamRecordUtils.rowOfKind;
+import static org.apache.flink.table.runtime.util.StreamRecordUtils.updateAfterRecord;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assumptions.assumeFalse;
+
+/** Harness tests for {@link StreamingJoinOperator}. */
+@ExtendWith(ParameterizedTestExtension.class)
+class StreamingJoinOperatorTest extends StreamingJoinOperatorTestBase {
+
+    @Parameters(name = "enableAsyncState = {0}")
+    public static List<Boolean> enableAsyncState() {
+        return Arrays.asList(false, true);
+    }
+
+    @Parameter private boolean enableAsyncState;
+
+    @Override
+    protected TwoInputStreamOperator<RowData, RowData, RowData> createJoinOperator(
+            TestInfo testInfo) {
+        Boolean[] joinTypeSpec =
+                JOIN_TYPE_EXTRACTOR.apply(
+                        testInfo.getTestMethod()
+                                .map(Method::getName)
+                                .orElse(testInfo.getDisplayName()));
+        Long[] ttl = STATE_RETENTION_TIME_EXTRACTOR.apply(testInfo.getTags());
+        if (!enableAsyncState) {
+            return new StreamingJoinOperator(
+                    leftTypeInfo,
+                    rightTypeInfo,
+                    joinCondition,
+                    leftInputSpec,
+                    rightInputSpec,
+                    joinTypeSpec[0],
+                    joinTypeSpec[1],
+                    // the tests send both retract and upsert inputs
+                    null,
+                    null,
+                    false,
+                    new boolean[] {true},
+                    ttl[0],
+                    ttl[1]);
+        } else {
+            return new AsyncStateStreamingJoinOperator(
+                    leftTypeInfo,
+                    rightTypeInfo,
+                    joinCondition,
+                    leftInputSpec,
+                    rightInputSpec,
+                    joinTypeSpec[0],
+                    joinTypeSpec[1],
+                    new boolean[] {true},
+                    ttl[0],
+                    ttl[1]);
+        }
+    }
+
+    @Override
+    protected RowType getOutputType() {
+        return RowType.of(
+                Stream.concat(
+                                leftTypeInfo.toRowType().getChildren().stream(),
+                                rightTypeInfo.toRowType().getChildren().stream())
+                        .toArray(LogicalType[]::new),
+                Stream.concat(
+                                leftTypeInfo.toRowType().getFieldNames().stream(),
+                                rightTypeInfo.toRowType().getFieldNames().stream())
+                        .toArray(String[]::new));
+    }
+
+    /**
+     * The equivalent SQL as follows.
+     *
+     * <p>{@code SELECT a.order_id, a.line_order_id, a.shipping_address, b.line_order_id,
+     * b.line_order_ship_mode FROM orders a JOIN line_orders b ON a.line_order_id = b.line_order_id}
+     */
+    @Tag("leftStateRetentionTime=4000")
+    @Tag("rightStateRetentionTime=1000")
+    @TestTemplate
+    void testInnerJoinWithDifferentStateRetentionTime() throws Exception {
+        // async state op is not supported to set ttl yet
+        assumeFalse(enableAsyncState);
+
+        testHarness.setStateTtlProcessingTime(1);
+        testHarness.processElement1(
+                insertRecord("Ord#1", "LineOrd#1", "3 Bellevue Drive, Pottstown, PA 19464"));
+        assertor.shouldEmitNothing(testHarness);
+
+        testHarness.processElement1(
+                insertRecord("Ord#1", "LineOrd#2", "3 Bellevue Drive, Pottstown, PA 19464"));
+        assertor.shouldEmitNothing(testHarness);
+
+        testHarness.processElement2(insertRecord("LineOrd#2", "AIR"));
+        assertor.shouldEmit(
+                testHarness,
+                rowOfKind(
+                        RowKind.INSERT,
+                        "Ord#1",
+                        "LineOrd#2",
+                        "3 Bellevue Drive, Pottstown, PA 19464",
+                        "LineOrd#2",
+                        "AIR"));
+
+        // the right side state of LineOrd#2 has expired
+        testHarness.setStateTtlProcessingTime(3000);
+        testHarness.processElement1(
+                updateAfterRecord(
+                        "Ord#1", "LineOrd#2", "68 Manor Station Street, Honolulu, HI 96815"));
+        assertor.shouldEmitNothing(testHarness);
+
+        testHarness.processElement2(updateAfterRecord("LineOrd#2", "SHIP"));
+        assertor.shouldEmit(
+                testHarness,
+                rowOfKind(
+                        RowKind.UPDATE_AFTER,
+                        "Ord#1",
+                        "LineOrd#2",
+                        "68 Manor Station Street, Honolulu, HI 96815",
+                        "LineOrd#2",
+                        "SHIP"));
+
+        // the left side state of LineOrd#1 has expired
+        testHarness.setStateTtlProcessingTime(4001);
+        testHarness.processElement2(insertRecord("LineOrd#1", "TRUCK"));
+        assertor.shouldEmitNothing(testHarness);
+
+        testHarness.processElement2(deleteRecord("LineOrd#2", "SHIP"));
+        assertor.shouldEmit(
+                testHarness,
+                rowOfKind(
+                        RowKind.DELETE,
+                        "Ord#1",
+                        "LineOrd#2",
+                        "68 Manor Station Street, Honolulu, HI 96815",
+                        "LineOrd#2",
+                        "SHIP"));
+
+        // the left side state of LineOrd#2 has expired
+        testHarness.setStateTtlProcessingTime(7000);
+        testHarness.processElement2(insertRecord("LineOrd#2", "RAIL"));
+        assertor.shouldEmitNothing(testHarness);
+    }
+
+    /**
+     * The equivalent SQL is same with {@link #testInnerJoinWithDifferentStateRetentionTime}. The
+     * only difference is that the state retention is disabled.
+     */
+    @TestTemplate
+    void testInnerJoinWithStateRetentionDisabled() throws Exception {
+        testHarness.setStateTtlProcessingTime(1);
+        testHarness.processElement1(
+                insertRecord("Ord#1", "LineOrd#1", "3 Bellevue Drive, Pottstown, PA 19464"));
+        assertor.shouldEmitNothing(testHarness);
+
+        testHarness.processElement1(
+                insertRecord("Ord#1", "LineOrd#2", "3 Bellevue Drive, Pottstown, PA 19464"));
+        assertor.shouldEmitNothing(testHarness);
+
+        testHarness.processElement2(insertRecord("LineOrd#2", "AIR"));
+        assertor.shouldEmit(
+                testHarness,
+                rowOfKind(
+                        RowKind.INSERT,
+                        "Ord#1",
+                        "LineOrd#2",
+                        "3 Bellevue Drive, Pottstown, PA 19464",
+                        "LineOrd#2",
+                        "AIR"));
+
+        testHarness.setStateTtlProcessingTime(3000);
+        testHarness.processElement1(
+                updateAfterRecord(
+                        "Ord#1", "LineOrd#2", "68 Manor Station Street, Honolulu, HI 96815"));
+        assertor.shouldEmit(
+                testHarness,
+                rowOfKind(
+                        RowKind.UPDATE_AFTER,
+                        "Ord#1",
+                        "LineOrd#2",
+                        "68 Manor Station Street, Honolulu, HI 96815",
+                        "LineOrd#2",
+                        "AIR"));
+
+        testHarness.processElement2(updateAfterRecord("LineOrd#2", "SHIP"));
+        assertor.shouldEmit(
+                testHarness,
+                rowOfKind(
+                        RowKind.UPDATE_AFTER,
+                        "Ord#1",
+                        "LineOrd#2",
+                        "68 Manor Station Street, Honolulu, HI 96815",
+                        "LineOrd#2",
+                        "SHIP"));
+
+        testHarness.setStateTtlProcessingTime(4001);
+        testHarness.processElement2(insertRecord("LineOrd#1", "TRUCK"));
+        assertor.shouldEmit(
+                testHarness,
+                rowOfKind(
+                        RowKind.INSERT,
+                        "Ord#1",
+                        "LineOrd#1",
+                        "3 Bellevue Drive, Pottstown, PA 19464",
+                        "LineOrd#1",
+                        "TRUCK"));
+
+        testHarness.processElement2(deleteRecord("LineOrd#2", "SHIP"));
+        assertor.shouldEmit(
+                testHarness,
+                rowOfKind(
+                        RowKind.DELETE,
+                        "Ord#1",
+                        "LineOrd#2",
+                        "68 Manor Station Street, Honolulu, HI 96815",
+                        "LineOrd#2",
+                        "SHIP"));
+
+        testHarness.setStateTtlProcessingTime(7000);
+        testHarness.processElement2(insertRecord("LineOrd#2", "RAIL"));
+        assertor.shouldEmit(
+                testHarness,
+                rowOfKind(
+                        RowKind.INSERT,
+                        "Ord#1",
+                        "LineOrd#2",
+                        "68 Manor Station Street, Honolulu, HI 96815",
+                        "LineOrd#2",
+                        "RAIL"));
+    }
+
+    /**
+     * The equivalent SQL is same with testInnerJoinWithDifferentStateRetentionTime. The only
+     * difference is that the left and right state retention time are same.
+     */
+    @Tag("leftStateRetentionTime=4000")
+    @Tag("rightStateRetentionTime=4000")
+    @TestTemplate
+    void testInnerJoinWithSameStateRetentionTime() throws Exception {
+        // async state op is not supported to set ttl yet
+        assumeFalse(enableAsyncState);
+
+        testHarness.setStateTtlProcessingTime(1);
+        testHarness.processElement1(
+                insertRecord("Ord#1", "LineOrd#1", "3 Bellevue Drive, Pottstown, PA 19464"));
+        assertor.shouldEmitNothing(testHarness);
+
+        testHarness.processElement1(
+                insertRecord("Ord#1", "LineOrd#2", "3 Bellevue Drive, Pottstown, PA 19464"));
+        assertor.shouldEmitNothing(testHarness);
+
+        testHarness.processElement2(insertRecord("LineOrd#2", "AIR"));
+        assertor.shouldEmit(
+                testHarness,
+                rowOfKind(
+                        RowKind.INSERT,
+                        "Ord#1",
+                        "LineOrd#2",
+                        "3 Bellevue Drive, Pottstown, PA 19464",
+                        "LineOrd#2",
+                        "AIR"));
+
+        // extend the expired time to 8000 for LineOrd#2
+        testHarness.setStateTtlProcessingTime(4000);
+        testHarness.processElement1(
+                updateAfterRecord(
+                        "Ord#1", "LineOrd#2", "68 Manor Station Street, Honolulu, HI 96815"));
+        assertor.shouldEmit(
+                testHarness,
+                rowOfKind(
+                        RowKind.UPDATE_AFTER,
+                        "Ord#1",
+                        "LineOrd#2",
+                        "68 Manor Station Street, Honolulu, HI 96815",
+                        "LineOrd#2",
+                        "AIR"));
+
+        // the state of LineOrd#1 has expired
+        testHarness.setStateTtlProcessingTime(4001);
+        testHarness.processElement2(insertRecord("LineOrd#1", "TRUCK"));
+        assertor.shouldEmitNothing(testHarness);
+
+        // the expired time for left and right state of LineOrd#2 is 8000
+        testHarness.setStateTtlProcessingTime(7999);
+        testHarness.processElement2(updateAfterRecord("LineOrd#2", "TRUCK"));
+        assertor.shouldEmit(
+                testHarness,
+                rowOfKind(
+                        RowKind.UPDATE_AFTER,
+                        "Ord#1",
+                        "LineOrd#2",
+                        "68 Manor Station Street, Honolulu, HI 96815",
+                        "LineOrd#2",
+                        "TRUCK"));
+
+        testHarness.setStateTtlProcessingTime(8000);
+        testHarness.processElement2(updateAfterRecord("LineOrd#2", "RAIL"));
+        assertor.shouldEmitNothing(testHarness);
+    }
+
+    /**
+     * The equivalent SQL as follows.
+     *
+     * <p>{@code SELECT a.order_id, a.line_order_id, a.shipping_address, b.line_order_id,
+     * b.line_order_ship_mode FROM orders a LEFT JOIN line_orders b ON a.line_order_id =
+     * b.line_order_id}
+     */
+    @Tag("leftStateRetentionTime=4000")
+    @Tag("rightStateRetentionTime=1000")
+    @TestTemplate
+    void testLeftOuterJoinWithDifferentStateRetentionTime() throws Exception {
+        // async state op is not supported to set ttl yet
+        assumeFalse(enableAsyncState);
+
+        testHarness.setStateTtlProcessingTime(1);
+        testHarness.processElement1(
+                insertRecord("Ord#1", "LineOrd#1", "3 Bellevue Drive, Pottstown, PA 19464"));
+        assertor.shouldEmit(
+                testHarness,
+                rowOfKind(
+                        RowKind.INSERT,
+                        "Ord#1",
+                        "LineOrd#1",
+                        "3 Bellevue Drive, Pottstown, PA 19464",
+                        null,
+                        null));
+
+        testHarness.processElement1(
+                insertRecord("Ord#1", "LineOrd#2", "3 Bellevue Drive, Pottstown, PA 19464"));
+        assertor.shouldEmit(
+                testHarness,
+                rowOfKind(
+                        RowKind.INSERT,
+                        "Ord#1",
+                        "LineOrd#2",
+                        "3 Bellevue Drive, Pottstown, PA 19464",
+                        null,
+                        null));
+
+        testHarness.processElement2(insertRecord("LineOrd#2", "AIR"));
+        assertor.shouldEmit(
+                testHarness,
+                rowOfKind(
+                        RowKind.DELETE,
+                        "Ord#1",
+                        "LineOrd#2",
+                        "3 Bellevue Drive, Pottstown, PA 19464",
+                        null,
+                        null),
+                rowOfKind(
+                        RowKind.INSERT,
+                        "Ord#1",
+                        "LineOrd#2",
+                        "3 Bellevue Drive, Pottstown, PA 19464",
+                        "LineOrd#2",
+                        "AIR"));
+
+        // the right side state of LineOrd#2 has expired
+        testHarness.setStateTtlProcessingTime(3000);
+        testHarness.processElement1(
+                updateAfterRecord(
+                        "Ord#1", "LineOrd#2", "68 Manor Station Street, Honolulu, HI 96815"));
+        assertor.shouldEmit(
+                testHarness,
+                rowOfKind(
+                        RowKind.INSERT,
+                        "Ord#1",
+                        "LineOrd#2",
+                        "68 Manor Station Street, Honolulu, HI 96815",
+                        null,
+                        null));
+
+        testHarness.processElement2(updateAfterRecord("LineOrd#2", "SHIP"));
+        assertor.shouldEmit(
+                testHarness,
+                rowOfKind(
+                        RowKind.DELETE,
+                        "Ord#1",
+                        "LineOrd#2",
+                        "68 Manor Station Street, Honolulu, HI 96815",
+                        null,
+                        null),
+                rowOfKind(
+                        RowKind.INSERT,
+                        "Ord#1",
+                        "LineOrd#2",
+                        "68 Manor Station Street, Honolulu, HI 96815",
+                        "LineOrd#2",
+                        "SHIP"));
+
+        // the left side state of LineOrd#1 has expired
+        testHarness.setStateTtlProcessingTime(4001);
+        testHarness.processElement2(insertRecord("LineOrd#1", "TRUCK"));
+        assertor.shouldEmitNothing(testHarness);
+
+        testHarness.processElement2(deleteRecord("LineOrd#2", "SHIP"));
+        assertor.shouldEmit(
+                testHarness,
+                rowOfKind(
+                        RowKind.DELETE,
+                        "Ord#1",
+                        "LineOrd#2",
+                        "68 Manor Station Street, Honolulu, HI 96815",
+                        "LineOrd#2",
+                        "SHIP"),
+                rowOfKind(
+                        RowKind.INSERT,
+                        "Ord#1",
+                        "LineOrd#2",
+                        "68 Manor Station Street, Honolulu, HI 96815",
+                        null,
+                        null));
+
+        // the left side state of LineOrd#2 has expired
+        testHarness.setStateTtlProcessingTime(8001);
+        testHarness.processElement2(insertRecord("LineOrd#2", "RAIL"));
+        assertor.shouldEmitNothing(testHarness);
+    }
+
+    /**
+     * The equivalent SQL is the same as {@link
+     * #testLeftOuterJoinWithDifferentStateRetentionTime()}. The only difference is that the state
+     * retention is disabled.
+     */
+    @TestTemplate
+    void testLeftOuterJoinWithStateRetentionDisabled() throws Exception {
+        testHarness.setStateTtlProcessingTime(1);
+        testHarness.processElement1(
+                insertRecord("Ord#1", "LineOrd#1", "3 Bellevue Drive, Pottstown, PA 19464"));
+        assertor.shouldEmit(
+                testHarness,
+                rowOfKind(
+                        RowKind.INSERT,
+                        "Ord#1",
+                        "LineOrd#1",
+                        "3 Bellevue Drive, Pottstown, PA 19464",
+                        null,
+                        null));
+
+        testHarness.processElement1(
+                insertRecord("Ord#1", "LineOrd#2", "3 Bellevue Drive, Pottstown, PA 19464"));
+        assertor.shouldEmit(
+                testHarness,
+                rowOfKind(
+                        RowKind.INSERT,
+                        "Ord#1",
+                        "LineOrd#2",
+                        "3 Bellevue Drive, Pottstown, PA 19464",
+                        null,
+                        null));
+
+        testHarness.processElement2(insertRecord("LineOrd#2", "AIR"));
+        assertor.shouldEmit(
+                testHarness,
+                rowOfKind(
+                        RowKind.DELETE,
+                        "Ord#1",
+                        "LineOrd#2",
+                        "3 Bellevue Drive, Pottstown, PA 19464",
+                        null,
+                        null),
+                rowOfKind(
+                        RowKind.INSERT,
+                        "Ord#1",
+                        "LineOrd#2",
+                        "3 Bellevue Drive, Pottstown, PA 19464",
+                        "LineOrd#2",
+                        "AIR"));
+
+        testHarness.setStateTtlProcessingTime(3000);
+        testHarness.processElement1(
+                updateAfterRecord(
+                        "Ord#1", "LineOrd#2", "68 Manor Station Street, Honolulu, HI 96815"));
+        assertor.shouldEmit(
+                testHarness,
+                rowOfKind(
+                        RowKind.INSERT,
+                        "Ord#1",
+                        "LineOrd#2",
+                        "68 Manor Station Street, Honolulu, HI 96815",
+                        "LineOrd#2",
+                        "AIR"));
+
+        testHarness.processElement2(updateAfterRecord("LineOrd#2", "SHIP"));
+        assertor.shouldEmit(
+                testHarness,
+                rowOfKind(
+                        RowKind.INSERT,
+                        "Ord#1",
+                        "LineOrd#2",
+                        "68 Manor Station Street, Honolulu, HI 96815",
+                        "LineOrd#2",
+                        "SHIP"));
+
+        testHarness.setStateTtlProcessingTime(4001);
+        testHarness.processElement2(insertRecord("LineOrd#1", "TRUCK"));
+        assertor.shouldEmit(
+                testHarness,
+                rowOfKind(
+                        RowKind.DELETE,
+                        "Ord#1",
+                        "LineOrd#1",
+                        "3 Bellevue Drive, Pottstown, PA 19464",
+                        null,
+                        null),
+                rowOfKind(
+                        RowKind.INSERT,
+                        "Ord#1",
+                        "LineOrd#1",
+                        "3 Bellevue Drive, Pottstown, PA 19464",
+                        "LineOrd#1",
+                        "TRUCK"));
+
+        testHarness.setStateTtlProcessingTime(8001);
+        testHarness.processElement2(deleteRecord("LineOrd#2", "SHIP"));
+        if (increaseAssociationsOnReplace()) {
+            assertor.shouldEmit(
+                    testHarness,
+                    rowOfKind(
+                            RowKind.DELETE,
+                            "Ord#1",
+                            "LineOrd#2",
+                            "68 Manor Station Street, Honolulu, HI 96815",
+                            "LineOrd#2",
+                            "SHIP"));
+        } else {
+            assertor.shouldEmit(
+                    testHarness,
+                    rowOfKind(
+                            RowKind.DELETE,
+                            "Ord#1",
+                            "LineOrd#2",
+                            "68 Manor Station Street, Honolulu, HI 96815",
+                            "LineOrd#2",
+                            "SHIP"),
+                    rowOfKind(
+                            RowKind.INSERT,
+                            "Ord#1",
+                            "LineOrd#2",
+                            "68 Manor Station Street, Honolulu, HI 96815",
+                            null,
+                            null));
+        }
+    }
+
+    /**
+     * The equivalent SQL as follows.
+     *
+     * <p>{@code SELECT a.order_id, a.line_order_id, a.shipping_address, b.line_order_id,
+     * b.line_order_ship_mode FROM orders a RIGHT JOIN line_orders b ON a.line_order_id =
+     * b.line_order_id}
+     */
+    @Tag("leftStateRetentionTime=4000")
+    @Tag("rightStateRetentionTime=1000")
+    @TestTemplate
+    void testRightOuterJoinWithDifferentStateRetentionTime() throws Exception {
+        // async state op is not supported to set ttl yet
+        assumeFalse(enableAsyncState);
+
+        testHarness.setStateTtlProcessingTime(1);
+        testHarness.processElement1(
+                insertRecord("Ord#1", "LineOrd#1", "3 Bellevue Drive, Pottstown, PA 19464"));
+        assertor.shouldEmitNothing(testHarness);
+
+        testHarness.processElement1(
+                insertRecord("Ord#1", "LineOrd#2", "3 Bellevue Drive, Pottstown, PA 19464"));
+        assertor.shouldEmitNothing(testHarness);
+
+        // left side state is expired
+        testHarness.setStateTtlProcessingTime(4001);
+        testHarness.processElement2(insertRecord("LineOrd#2", "AIR"));
+        assertor.shouldEmit(
+                testHarness, rowOfKind(RowKind.INSERT, null, null, null, "LineOrd#2", "AIR"));
+
+        testHarness.processElement2(insertRecord("LineOrd#1", "TRUCK"));
+        assertor.shouldEmit(
+                testHarness, rowOfKind(RowKind.INSERT, null, null, null, "LineOrd#1", "TRUCK"));
+
+        // the right side state has expired
+        testHarness.setStateTtlProcessingTime(5001);
+        testHarness.processElement1(
+                updateAfterRecord(
+                        "Ord#1", "LineOrd#2", "68 Manor Station Street, Honolulu, HI 96815"));
+        assertor.shouldEmitNothing(testHarness);
+
+        testHarness.processElement2(updateAfterRecord("LineOrd#2", "SHIP"));
+        assertor.shouldEmit(
+                testHarness,
+                rowOfKind(
+                        RowKind.INSERT,
+                        "Ord#1",
+                        "LineOrd#2",
+                        "68 Manor Station Street, Honolulu, HI 96815",
+                        "LineOrd#2",
+                        "SHIP"));
+
+        testHarness.processElement2(updateAfterRecord("LineOrd#1", "RAIL"));
+        assertor.shouldEmit(
+                testHarness, rowOfKind(RowKind.INSERT, null, null, null, "LineOrd#1", "RAIL"));
+
+        testHarness.setStateTtlProcessingTime(6000);
+        testHarness.processElement1(
+                updateAfterRecord(
+                        "Ord#1", "LineOrd#1", "3 North Winchester Drive, Haines City, FL 33844"));
+        assertor.shouldEmit(
+                testHarness,
+                rowOfKind(RowKind.DELETE, null, null, null, "LineOrd#1", "RAIL"),
+                rowOfKind(
+                        RowKind.INSERT,
+                        "Ord#1",
+                        "LineOrd#1",
+                        "3 North Winchester Drive, Haines City, FL 33844",
+                        "LineOrd#1",
+                        "RAIL"));
+
+        // right side state has expired
+        testHarness.setStateTtlProcessingTime(7000);
+        testHarness.processElement1(
+                deleteRecord(
+                        "Ord#1", "LineOrd#1", "3 North Winchester Drive, Haines City, FL 33844"));
+        assertor.shouldEmitNothing(testHarness);
+    }
+
+    /**
+     * The equivalent SQL is the same as {@link
+     * #testRightOuterJoinWithDifferentStateRetentionTime()}. The only difference is that the state
+     * retention is disabled.
+     */
+    @TestTemplate
+    void testRightOuterJoinWithDStateRetentionDisabled() throws Exception {
+        testHarness.setStateTtlProcessingTime(1);
+        testHarness.processElement1(
+                insertRecord("Ord#1", "LineOrd#1", "3 Bellevue Drive, Pottstown, PA 19464"));
+        assertor.shouldEmitNothing(testHarness);
+
+        testHarness.processElement1(
+                insertRecord("Ord#1", "LineOrd#2", "3 Bellevue Drive, Pottstown, PA 19464"));
+        assertor.shouldEmitNothing(testHarness);
+
+        testHarness.setStateTtlProcessingTime(4001);
+        testHarness.processElement2(insertRecord("LineOrd#2", "AIR"));
+        assertor.shouldEmit(
+                testHarness,
+                rowOfKind(
+                        RowKind.INSERT,
+                        "Ord#1",
+                        "LineOrd#2",
+                        "3 Bellevue Drive, Pottstown, PA 19464",
+                        "LineOrd#2",
+                        "AIR"));
+
+        testHarness.setStateTtlProcessingTime(10000);
+        testHarness.processElement2(insertRecord("LineOrd#1", "TRUCK"));
+        assertor.shouldEmit(
+                testHarness,
+                rowOfKind(
+                        RowKind.INSERT,
+                        "Ord#1",
+                        "LineOrd#1",
+                        "3 Bellevue Drive, Pottstown, PA 19464",
+                        "LineOrd#1",
+                        "TRUCK"));
+
+        testHarness.setStateTtlProcessingTime(20000);
+        testHarness.processElement1(
+                updateAfterRecord(
+                        "Ord#1", "LineOrd#2", "68 Manor Station Street, Honolulu, HI 96815"));
+        assertor.shouldEmit(
+                testHarness,
+                rowOfKind(
+                        RowKind.INSERT,
+                        "Ord#1",
+                        "LineOrd#2",
+                        "68 Manor Station Street, Honolulu, HI 96815",
+                        "LineOrd#2",
+                        "AIR"));
+    }
+
+    /** Deleting a left row replaced without UPDATE_BEFORE restores the right null padding. */
+    @TestTemplate
+    void testRightOuterJoinRestoresNullPaddingAfterLeftUpsertAndDelete() throws Exception {
+        assumeFalse(enableAsyncState);
+        useStreamingJoinOperator(leftHasUniqueKeySpec(), rightInputSpec, false, true);
+
+        testHarness.processElement2(insertRecord("LineOrd#1", "AIR"));
+        assertor.shouldEmit(
+                testHarness, rowOfKind(RowKind.INSERT, null, null, null, "LineOrd#1", "AIR"));
+
+        testHarness.processElement1(insertRecord("Ord#1", "LineOrd#1", ADDRESS));
+        assertor.shouldEmit(
+                testHarness,
+                rowOfKind(RowKind.DELETE, null, null, null, "LineOrd#1", "AIR"),
+                rowOfKind(RowKind.INSERT, "Ord#1", "LineOrd#1", ADDRESS, "LineOrd#1", "AIR"));
+
+        testHarness.processElement1(updateAfterRecord("Ord#1", "LineOrd#1", NEW_ADDRESS));
+        assertor.shouldEmit(
+                testHarness,
+                rowOfKind(RowKind.INSERT, "Ord#1", "LineOrd#1", NEW_ADDRESS, "LineOrd#1", "AIR"));
+
+        testHarness.processElement1(deleteRecord("Ord#1", "LineOrd#1", NEW_ADDRESS));
+        assertor.shouldEmit(
+                testHarness,
+                rowOfKind(RowKind.DELETE, "Ord#1", "LineOrd#1", NEW_ADDRESS, "LineOrd#1", "AIR"),
+                rowOfKind(RowKind.INSERT, null, null, null, "LineOrd#1", "AIR"));
+    }
+
+    /** A left row replaced without UPDATE_BEFORE is not counted twice by the right row. */
+    @TestTemplate
+    void testFullOuterJoinRestoresNullPaddingAfterLeftUpsertAndDeletes() throws Exception {
+        assumeFalse(enableAsyncState);
+        useStreamingJoinOperator(leftHasUniqueKeySpec(), rightInputSpec, true, true);
+
+        testHarness.processElement1(insertRecord("Ord#1", "LineOrd#1", ADDRESS));
+        assertor.shouldEmit(
+                testHarness, rowOfKind(RowKind.INSERT, "Ord#1", "LineOrd#1", ADDRESS, null, null));
+
+        testHarness.processElement2(insertRecord("LineOrd#1", "AIR"));
+        assertor.shouldEmit(
+                testHarness,
+                rowOfKind(RowKind.DELETE, "Ord#1", "LineOrd#1", ADDRESS, null, null),
+                rowOfKind(RowKind.INSERT, "Ord#1", "LineOrd#1", ADDRESS, "LineOrd#1", "AIR"));
+
+        testHarness.processElement1(insertRecord("Ord#2", "LineOrd#1", ADDRESS));
+        assertor.shouldEmit(
+                testHarness,
+                rowOfKind(RowKind.INSERT, "Ord#2", "LineOrd#1", ADDRESS, "LineOrd#1", "AIR"));
+
+        testHarness.processElement1(updateAfterRecord("Ord#1", "LineOrd#1", NEW_ADDRESS));
+        assertor.shouldEmit(
+                testHarness,
+                rowOfKind(RowKind.INSERT, "Ord#1", "LineOrd#1", NEW_ADDRESS, "LineOrd#1", "AIR"));
+
+        testHarness.processElement1(deleteRecord("Ord#1", "LineOrd#1", NEW_ADDRESS));
+        assertor.shouldEmit(
+                testHarness,
+                rowOfKind(RowKind.DELETE, "Ord#1", "LineOrd#1", NEW_ADDRESS, "LineOrd#1", "AIR"));
+
+        testHarness.processElement1(deleteRecord("Ord#2", "LineOrd#1", ADDRESS));
+        assertor.shouldEmit(
+                testHarness,
+                rowOfKind(RowKind.DELETE, "Ord#2", "LineOrd#1", ADDRESS, "LineOrd#1", "AIR"),
+                rowOfKind(RowKind.INSERT, null, null, null, "LineOrd#1", "AIR"));
+    }
+
+    /** Without a unique key, a repeated row is a second row and not a replacement. */
+    @TestTemplate
+    void testLeftOuterJoinWithoutUniqueKeyKeepsDuplicateRows() throws Exception {
+        assumeFalse(enableAsyncState);
+        useStreamingJoinOperator(leftInputSpec, JoinInputSideSpec.withoutUniqueKey(), true, false);
+
+        testHarness.processElement1(insertRecord("Ord#1", "LineOrd#1", ADDRESS));
+        assertor.shouldEmit(
+                testHarness, rowOfKind(RowKind.INSERT, "Ord#1", "LineOrd#1", ADDRESS, null, null));
+
+        testHarness.processElement2(insertRecord("LineOrd#1", "AIR"));
+        assertor.shouldEmit(
+                testHarness,
+                rowOfKind(RowKind.DELETE, "Ord#1", "LineOrd#1", ADDRESS, null, null),
+                rowOfKind(RowKind.INSERT, "Ord#1", "LineOrd#1", ADDRESS, "LineOrd#1", "AIR"));
+
+        testHarness.processElement2(insertRecord("LineOrd#1", "AIR"));
+        assertor.shouldEmit(
+                testHarness,
+                rowOfKind(RowKind.INSERT, "Ord#1", "LineOrd#1", ADDRESS, "LineOrd#1", "AIR"));
+
+        testHarness.processElement2(deleteRecord("LineOrd#1", "AIR"));
+        assertor.shouldEmit(
+                testHarness,
+                rowOfKind(RowKind.DELETE, "Ord#1", "LineOrd#1", ADDRESS, "LineOrd#1", "AIR"));
+    }
+
+    /**
+     * A left row replaced without UPDATE_BEFORE is counted by the right row if the old version did
+     * not match it.
+     */
+    @TestTemplate
+    void testRightOuterJoinCountsLeftUpsertThatStartsMatching() throws Exception {
+        assumeFalse(enableAsyncState);
+        useStreamingJoinOperator(
+                leftHasUniqueKeySpec(),
+                rightInputSpec,
+                false,
+                true,
+                knownValuesNonEquiCondition(),
+                true);
+
+        testHarness.processElement2(insertRecord("LineOrd#1", "AIR"));
+        assertor.shouldEmit(
+                testHarness, rowOfKind(RowKind.INSERT, null, null, null, "LineOrd#1", "AIR"));
+
+        testHarness.processElement1(insertRecord("Ord#2", "LineOrd#1", ADDRESS));
+        assertor.shouldEmit(
+                testHarness,
+                rowOfKind(RowKind.DELETE, null, null, null, "LineOrd#1", "AIR"),
+                rowOfKind(RowKind.INSERT, "Ord#2", "LineOrd#1", ADDRESS, "LineOrd#1", "AIR"));
+
+        testHarness.processElement1(insertRecord("Ord#1", "LineOrd#1", UNKNOWN));
+        assertor.shouldEmitNothing(testHarness);
+
+        testHarness.processElement1(updateAfterRecord("Ord#1", "LineOrd#1", NEW_ADDRESS));
+        assertor.shouldEmit(
+                testHarness,
+                rowOfKind(RowKind.INSERT, "Ord#1", "LineOrd#1", NEW_ADDRESS, "LineOrd#1", "AIR"));
+
+        testHarness.processElement1(deleteRecord("Ord#2", "LineOrd#1", ADDRESS));
+        assertor.shouldEmit(
+                testHarness,
+                rowOfKind(RowKind.DELETE, "Ord#2", "LineOrd#1", ADDRESS, "LineOrd#1", "AIR"));
+
+        testHarness.processElement1(deleteRecord("Ord#1", "LineOrd#1", NEW_ADDRESS));
+        assertor.shouldEmit(
+                testHarness,
+                rowOfKind(RowKind.DELETE, "Ord#1", "LineOrd#1", NEW_ADDRESS, "LineOrd#1", "AIR"),
+                rowOfKind(RowKind.INSERT, null, null, null, "LineOrd#1", "AIR"));
+    }
+
+    /** A right row replaced without UPDATE_BEFORE that no longer matches retracts its match. */
+    @TestTemplate
+    void testLeftOuterJoinRetractsLostMatchOfRightUpsert() throws Exception {
+        assumeFalse(enableAsyncState);
+        useStreamingJoinOperator(
+                leftInputSpec, rightInputSpec, true, false, knownValuesNonEquiCondition(), true);
+
+        testHarness.processElement1(insertRecord("Ord#1", "LineOrd#1", ADDRESS));
+        testHarness.processElement2(insertRecord("LineOrd#1", "AIR"));
+        testHarness.getOutput().clear();
+
+        testHarness.processElement2(updateAfterRecord("LineOrd#1", UNKNOWN));
+        assertor.shouldEmit(
+                testHarness,
+                rowOfKind(RowKind.DELETE, "Ord#1", "LineOrd#1", ADDRESS, "LineOrd#1", "AIR"),
+                rowOfKind(RowKind.INSERT, "Ord#1", "LineOrd#1", ADDRESS, null, null));
+
+        testHarness.processElement2(updateAfterRecord("LineOrd#1", "SHIP"));
+        assertor.shouldEmit(
+                testHarness,
+                rowOfKind(RowKind.DELETE, "Ord#1", "LineOrd#1", ADDRESS, null, null),
+                rowOfKind(RowKind.INSERT, "Ord#1", "LineOrd#1", ADDRESS, "LineOrd#1", "SHIP"));
+    }
+
+    /**
+     * A null padded left row replaced without UPDATE_BEFORE that now matches retracts its null
+     * padding.
+     */
+    @TestTemplate
+    void testLeftOuterJoinRetractsNullPaddingOfLeftUpsert() throws Exception {
+        assumeFalse(enableAsyncState);
+        useStreamingJoinOperator(
+                leftInputSpec, rightInputSpec, true, false, knownValuesNonEquiCondition(), true);
+
+        testHarness.processElement2(insertRecord("LineOrd#1", "AIR"));
+        testHarness.processElement1(insertRecord("Ord#1", "LineOrd#1", UNKNOWN));
+        assertor.shouldEmit(
+                testHarness, rowOfKind(RowKind.INSERT, "Ord#1", "LineOrd#1", UNKNOWN, null, null));
+
+        testHarness.processElement1(updateAfterRecord("Ord#1", "LineOrd#1", ADDRESS));
+        assertor.shouldEmit(
+                testHarness,
+                rowOfKind(RowKind.DELETE, "Ord#1", "LineOrd#1", UNKNOWN, null, null),
+                rowOfKind(RowKind.INSERT, "Ord#1", "LineOrd#1", ADDRESS, "LineOrd#1", "AIR"));
+    }
+
+    /** A right row replaced without UPDATE_BEFORE that no longer matches retracts its match. */
+    @TestTemplate
+    void testInnerJoinRetractsLostMatchOfRightUpsert() throws Exception {
+        assumeFalse(enableAsyncState);
+        useStreamingJoinOperator(
+                leftInputSpec, rightInputSpec, false, false, knownValuesNonEquiCondition(), true);
+
+        testHarness.processElement1(insertRecord("Ord#1", "LineOrd#1", ADDRESS));
+        testHarness.processElement2(insertRecord("LineOrd#1", "AIR"));
+        testHarness.getOutput().clear();
+
+        testHarness.processElement2(updateAfterRecord("LineOrd#1", UNKNOWN));
+        assertor.shouldEmit(
+                testHarness,
+                rowOfKind(RowKind.DELETE, "Ord#1", "LineOrd#1", ADDRESS, "LineOrd#1", "AIR"));
+    }
+
+    /** A left row replaced without UPDATE_BEFORE that no longer matches uncounts its match. */
+    @TestTemplate
+    void testRightOuterJoinUncountsLostMatchOfLeftUpsert() throws Exception {
+        assumeFalse(enableAsyncState);
+        useStreamingJoinOperator(
+                leftHasUniqueKeySpec(),
+                rightInputSpec,
+                false,
+                true,
+                knownValuesNonEquiCondition(),
+                true);
+
+        testHarness.processElement2(insertRecord("LineOrd#1", "AIR"));
+        testHarness.processElement1(insertRecord("Ord#1", "LineOrd#1", ADDRESS));
+        testHarness.processElement1(insertRecord("Ord#2", "LineOrd#1", ADDRESS));
+        testHarness.getOutput().clear();
+
+        testHarness.processElement1(updateAfterRecord("Ord#1", "LineOrd#1", UNKNOWN));
+        assertor.shouldEmit(
+                testHarness,
+                rowOfKind(RowKind.DELETE, "Ord#1", "LineOrd#1", ADDRESS, "LineOrd#1", "AIR"));
+
+        testHarness.processElement1(deleteRecord("Ord#2", "LineOrd#1", ADDRESS));
+        assertor.shouldEmit(
+                testHarness,
+                rowOfKind(RowKind.DELETE, "Ord#2", "LineOrd#1", ADDRESS, "LineOrd#1", "AIR"),
+                rowOfKind(RowKind.INSERT, null, null, null, "LineOrd#1", "AIR"));
+    }
+
+    /**
+     * A right row replaced by INSERT or UPDATE_AFTER keeps the null padding of both sides in sync
+     * when it loses and gains its match.
+     */
+    @TestTemplate
+    void testFullOuterJoinReplacesMatchesOfRightUpsert() throws Exception {
+        assumeFalse(enableAsyncState);
+        useStreamingJoinOperator(
+                leftInputSpec, rightInputSpec, true, true, knownValuesNonEquiCondition(), true);
+
+        testHarness.processElement1(insertRecord("Ord#1", "LineOrd#1", ADDRESS));
+        testHarness.processElement2(insertRecord("LineOrd#1", "AIR"));
+        testHarness.getOutput().clear();
+
+        testHarness.processElement2(insertRecord("LineOrd#1", UNKNOWN));
+        assertor.shouldEmit(
+                testHarness,
+                rowOfKind(RowKind.DELETE, "Ord#1", "LineOrd#1", ADDRESS, "LineOrd#1", "AIR"),
+                rowOfKind(RowKind.INSERT, "Ord#1", "LineOrd#1", ADDRESS, null, null),
+                rowOfKind(RowKind.INSERT, null, null, null, "LineOrd#1", UNKNOWN));
+
+        testHarness.processElement2(updateAfterRecord("LineOrd#1", "SHIP"));
+        assertor.shouldEmit(
+                testHarness,
+                rowOfKind(RowKind.DELETE, null, null, null, "LineOrd#1", UNKNOWN),
+                rowOfKind(RowKind.DELETE, "Ord#1", "LineOrd#1", ADDRESS, null, null),
+                rowOfKind(RowKind.INSERT, "Ord#1", "LineOrd#1", ADDRESS, "LineOrd#1", "SHIP"));
+
+        testHarness.processElement1(deleteRecord("Ord#1", "LineOrd#1", ADDRESS));
+        assertor.shouldEmit(
+                testHarness,
+                rowOfKind(RowKind.DELETE, "Ord#1", "LineOrd#1", ADDRESS, "LineOrd#1", "SHIP"),
+                rowOfKind(RowKind.INSERT, null, null, null, "LineOrd#1", "SHIP"));
+    }
+
+    /**
+     * A DELETE of only the key is joined with the stored row, so it retracts the matches one by one
+     * and restores the null padding of the right row after the last one.
+     */
+    @TestTemplate
+    void testRightOuterJoinKeyOnlyDeletesOfLeft() throws Exception {
+        assumeFalse(enableAsyncState);
+        useStreamingJoinOperator(
+                leftHasUniqueKeySpec(),
+                rightInputSpec,
+                false,
+                true,
+                knownValuesNonEquiCondition(),
+                true);
+
+        testHarness.processElement2(insertRecord("LineOrd#1", "AIR"));
+        testHarness.processElement1(insertRecord("Ord#1", "LineOrd#1", ADDRESS));
+        testHarness.processElement1(insertRecord("Ord#2", "LineOrd#1", NEW_ADDRESS));
+        testHarness.getOutput().clear();
+
+        testHarness.processElement1(deleteRecord("Ord#1", "LineOrd#1", null));
+        assertor.shouldEmit(
+                testHarness,
+                rowOfKind(RowKind.DELETE, "Ord#1", "LineOrd#1", ADDRESS, "LineOrd#1", "AIR"));
+
+        testHarness.processElement1(deleteRecord("Ord#2", "LineOrd#1", null));
+        assertor.shouldEmit(
+                testHarness,
+                rowOfKind(RowKind.DELETE, "Ord#2", "LineOrd#1", NEW_ADDRESS, "LineOrd#1", "AIR"),
+                rowOfKind(RowKind.INSERT, null, null, null, "LineOrd#1", "AIR"));
+    }
+
+    /**
+     * Compiled plans before Flink 2.4 do not tell whether a DELETE contains only the key, so it is
+     * joined with the stored row. A row that is not stored, e.g. expired, is joined as it is.
+     */
+    @TestTemplate
+    void testLeftOuterJoinKeyOnlyDeletesOfPreviousPlan() throws Exception {
+        assumeFalse(enableAsyncState);
+        useStreamingJoinOperator(
+                leftInputSpec,
+                rightInputSpec,
+                true,
+                false,
+                knownValuesNonEquiCondition(),
+                true,
+                null);
+
+        testHarness.processElement1(insertRecord("Ord#1", "LineOrd#1", ADDRESS));
+        testHarness.processElement2(insertRecord("LineOrd#1", "AIR"));
+        testHarness.getOutput().clear();
+
+        testHarness.processElement2(deleteRecord("LineOrd#1", null));
+        assertor.shouldEmit(
+                testHarness,
+                rowOfKind(RowKind.DELETE, "Ord#1", "LineOrd#1", ADDRESS, "LineOrd#1", "AIR"),
+                rowOfKind(RowKind.INSERT, "Ord#1", "LineOrd#1", ADDRESS, null, null));
+
+        testHarness.processElement1(deleteRecord("Ord#2", "LineOrd#2", null));
+        assertor.shouldEmit(
+                testHarness, rowOfKind(RowKind.DELETE, "Ord#2", "LineOrd#2", null, null, null));
+    }
+
+    /**
+     * A DELETE is joined as it is if every stored row of the join key matches, if the input sends
+     * full deletes, or if the input has no unique key.
+     */
+    @TestTemplate
+    void testLeftOuterJoinDeletesWithoutLookup() throws Exception {
+        assumeFalse(enableAsyncState);
+        useStreamingJoinOperator(leftInputSpec, rightInputSpec, true, false);
+        assertJoinedDeleteOfRight(deleteRecord("LineOrd#1", null), null);
+
+        useStreamingJoinOperator(
+                leftInputSpec,
+                rightInputSpec,
+                true,
+                false,
+                knownValuesNonEquiCondition(),
+                true,
+                UPSERT_WITH_FULL_DELETES);
+        // differs from the stored row to show that it is not looked up
+        assertJoinedDeleteOfRight(deleteRecord("LineOrd#1", "SHIP"), "SHIP");
+
+        useStreamingJoinOperator(
+                leftInputSpec,
+                JoinInputSideSpec.withoutUniqueKey(),
+                true,
+                false,
+                knownValuesNonEquiCondition(),
+                true);
+        assertJoinedDeleteOfRight(deleteRecord("LineOrd#1", "AIR"), "AIR");
+    }
+
+    private void assertJoinedDeleteOfRight(StreamRecord<RowData> delete, String joinedShipMode)
+            throws Exception {
+        testHarness.processElement1(insertRecord("Ord#1", "LineOrd#1", ADDRESS));
+        testHarness.processElement2(insertRecord("LineOrd#1", "AIR"));
+        testHarness.getOutput().clear();
+
+        testHarness.processElement2(delete);
+        assertor.shouldEmit(
+                testHarness,
+                rowOfKind(
+                        RowKind.DELETE, "Ord#1", "LineOrd#1", ADDRESS, "LineOrd#1", joinedShipMode),
+                rowOfKind(RowKind.INSERT, "Ord#1", "LineOrd#1", ADDRESS, null, null));
+    }
+
+    /** Views without a unique key never return a stored record, not even an equal one. */
+    @TestTemplate
+    void testLeftOuterJoinGetRecord() throws Exception {
+        assumeFalse(enableAsyncState);
+        assertGetRecordAfterInsert(true);
+
+        useStreamingJoinOperator(
+                JoinInputSideSpec.withoutUniqueKey(),
+                JoinInputSideSpec.withoutUniqueKey(),
+                true,
+                false);
+        assertGetRecordAfterInsert(false);
+    }
+
+    // TODO FLINK-40681: remove once AsyncStateStreamingJoinOperator handles
+    // replacing records
+    /**
+     * {@link AsyncStateStreamingJoinOperator} counts a record that replaces another one as an
+     * additional association.
+     */
+    private boolean increaseAssociationsOnReplace() {
+        return enableAsyncState;
+    }
+
+    @TestTemplate
+    void testInnerJoinSkipsNullKeys() throws Exception {
+        useNullKeyJoinOperator(
+                JoinInputSideSpec.withoutUniqueKey(),
+                JoinInputSideSpec.withoutUniqueKey(),
+                false,
+                false,
+                true,
+                null);
+        testHarness.processElement1(insertRecord("Ord#1", null, ADDRESS));
+        testHarness.processElement2(insertRecord(null, "AIR"));
+        testHarness.processElement2(deleteRecord(null, "AIR"));
+        assertor.shouldEmitNothing(testHarness);
+        assertStoresOnlyNonNullKeys();
+    }
+
+    @TestTemplate
+    void testLeftOuterJoinSkipsNullKeys() throws Exception {
+        useNullKeyJoinOperator(leftHasUniqueKeySpec(), rightInputSpec, true, false, true, null);
+        testHarness.processElement1(insertRecord("Ord#1", null, ADDRESS));
+        assertor.shouldEmit(
+                testHarness, rowOfKind(RowKind.INSERT, "Ord#1", null, ADDRESS, null, null));
+        assertThat(numStateEntries()).isZero();
+        testHarness.processElement1(updateAfterRecord("Ord#1", null, NEW_ADDRESS));
+        assertor.shouldEmit(
+                testHarness, rowOfKind(RowKind.INSERT, "Ord#1", null, NEW_ADDRESS, null, null));
+        testHarness.processElement1(deleteRecord("Ord#1", null, NEW_ADDRESS));
+        assertor.shouldEmit(
+                testHarness, rowOfKind(RowKind.DELETE, "Ord#1", null, NEW_ADDRESS, null, null));
+        assertStoresOnlyNonNullKeys();
+    }
+
+    @TestTemplate
+    void testRightOuterJoinSkipsNullKeys() throws Exception {
+        useNullKeyJoinOperator(leftInputSpec, rightInputSpec, false, true, true, null);
+        testHarness.processElement2(insertRecord(null, "AIR"));
+        assertor.shouldEmit(testHarness, rowOfKind(RowKind.INSERT, null, null, null, null, "AIR"));
+        testHarness.processElement1(insertRecord("Ord#1", null, ADDRESS));
+        testHarness.processElement2(deleteRecord(null, "AIR"));
+        assertor.shouldEmit(testHarness, rowOfKind(RowKind.DELETE, null, null, null, null, "AIR"));
+        assertStoresOnlyNonNullKeys();
+    }
+
+    @TestTemplate
+    void testFullOuterJoinSkipsNullKeys() throws Exception {
+        useNullKeyJoinOperator(
+                JoinInputSideSpec.withoutUniqueKey(),
+                JoinInputSideSpec.withoutUniqueKey(),
+                true,
+                true,
+                true,
+                null);
+        testHarness.processElement1(insertRecord("Ord#1", null, ADDRESS));
+        testHarness.processElement2(insertRecord(null, "AIR"));
+        testHarness.processElement1(deleteRecord("Ord#1", null, ADDRESS));
+        assertor.shouldEmit(
+                testHarness,
+                rowOfKind(RowKind.INSERT, "Ord#1", null, ADDRESS, null, null),
+                rowOfKind(RowKind.INSERT, null, null, null, null, "AIR"),
+                rowOfKind(RowKind.DELETE, "Ord#1", null, ADDRESS, null, null));
+        assertStoresOnlyNonNullKeys();
+    }
+
+    @TestTemplate
+    void testNullSafeInnerJoinMatchesNullKeys() throws Exception {
+        useNullKeyJoinOperator(
+                JoinInputSideSpec.withoutUniqueKey(),
+                JoinInputSideSpec.withoutUniqueKey(),
+                false,
+                false,
+                false,
+                null);
+        testHarness.processElement1(insertRecord("Ord#1", null, ADDRESS));
+        testHarness.processElement2(insertRecord(null, "AIR"));
+        assertor.shouldEmit(
+                testHarness, rowOfKind(RowKind.INSERT, "Ord#1", null, ADDRESS, null, "AIR"));
+        assertThat(numStateEntries()).isEqualTo(2);
+    }
+
+    /**
+     * A row with a null key that a null-safe join stored is still removed by its retraction. Binary
+     * rows, because restored records are binary and compare unequal to generic ones.
+     */
+    @TestTemplate
+    void testLeftOuterJoinRetractsRestoredNullKeys() throws Exception {
+        final JoinInputSideSpec spec = JoinInputSideSpec.withoutUniqueKey();
+        useNullKeyJoinOperator(spec, spec, true, false, false, null);
+        testHarness.processElement1(binaryRecord(RowKind.INSERT, "Ord#1", null, ADDRESS));
+        assertor.shouldEmit(
+                testHarness, rowOfKind(RowKind.INSERT, "Ord#1", null, ADDRESS, null, null));
+        assertThat(numStateEntries()).isOne();
+        final OperatorSubtaskState snapshot = testHarness.snapshot(0L, 0L);
+
+        useNullKeyJoinOperator(spec, spec, true, false, true, snapshot);
+        assertThat(numStateEntries()).isOne();
+        testHarness.processElement1(binaryRecord(RowKind.DELETE, "Ord#1", null, ADDRESS));
+        assertor.shouldEmit(
+                testHarness, rowOfKind(RowKind.DELETE, "Ord#1", null, ADDRESS, null, null));
+        assertStoresOnlyNonNullKeys();
+    }
+
+    /** Asserts that nothing is stored, and that a row with a non-null key is. */
+    private void assertStoresOnlyNonNullKeys() throws Exception {
+        assertThat(numStateEntries()).isZero();
+        testHarness.processElement1(insertRecord("Ord#2", "LineOrd#2", ADDRESS));
+        assertThat(numStateEntries()).isOne();
+    }
+
+    private int numStateEntries() throws Exception {
+        if (testHarness instanceof AsyncKeyedTwoInputStreamOperatorTestHarness) {
+            ((AsyncKeyedTwoInputStreamOperatorTestHarness<?, ?, ?, ?>) testHarness)
+                    .drainStateRequests();
+        }
+        return testHarness.numKeyedStateEntries();
+    }
+
+    /** Uses a join of the given shape with the state API of the test, restored if given a state. */
+    private void useNullKeyJoinOperator(
+            JoinInputSideSpec leftSpec,
+            JoinInputSideSpec rightSpec,
+            boolean leftIsOuter,
+            boolean rightIsOuter,
+            boolean filterNullKeys,
+            @Nullable OperatorSubtaskState restoredState)
+            throws Exception {
+        final boolean[] filterNulls = {filterNullKeys};
+        testHarness.close();
+        if (enableAsyncState) {
+            testHarness =
+                    AsyncKeyedTwoInputStreamOperatorTestHarness.create(
+                            new AsyncStateStreamingJoinOperator(
+                                    leftTypeInfo,
+                                    rightTypeInfo,
+                                    joinCondition,
+                                    leftSpec,
+                                    rightSpec,
+                                    leftIsOuter,
+                                    rightIsOuter,
+                                    filterNulls,
+                                    0L,
+                                    0L),
+                            leftKeySelector,
+                            rightKeySelector,
+                            leftKeySelector.getProducedType());
+        } else {
+            testHarness =
+                    new KeyedTwoInputStreamOperatorTestHarness<>(
+                            new StreamingJoinOperator(
+                                    leftTypeInfo,
+                                    rightTypeInfo,
+                                    joinCondition,
+                                    leftSpec,
+                                    rightSpec,
+                                    leftIsOuter,
+                                    rightIsOuter,
+                                    null,
+                                    null,
+                                    false,
+                                    filterNulls,
+                                    0L,
+                                    0L),
+                            leftKeySelector,
+                            rightKeySelector,
+                            leftKeySelector.getProducedType());
+        }
+        if (restoredState != null) {
+            testHarness.initializeState(restoredState);
+        }
+        testHarness.open();
+    }
+
+    private void useStreamingJoinOperator(
+            JoinInputSideSpec leftSpec,
+            JoinInputSideSpec rightSpec,
+            boolean leftIsOuter,
+            boolean rightIsOuter)
+            throws Exception {
+        useStreamingJoinOperator(
+                leftSpec, rightSpec, leftIsOuter, rightIsOuter, joinCondition, false);
+    }
+
+    private void useStreamingJoinOperator(
+            JoinInputSideSpec leftSpec,
+            JoinInputSideSpec rightSpec,
+            boolean leftIsOuter,
+            boolean rightIsOuter,
+            GeneratedJoinCondition condition,
+            boolean hasNonEquiCondition)
+            throws Exception {
+        useStreamingJoinOperator(
+                leftSpec,
+                rightSpec,
+                leftIsOuter,
+                rightIsOuter,
+                condition,
+                hasNonEquiCondition,
+                UPSERT_WITH_KEY_ONLY_DELETES);
+    }
+
+    private void useStreamingJoinOperator(
+            JoinInputSideSpec leftSpec,
+            JoinInputSideSpec rightSpec,
+            boolean leftIsOuter,
+            boolean rightIsOuter,
+            GeneratedJoinCondition condition,
+            boolean hasNonEquiCondition,
+            @Nullable RuntimeChangelogMode inputChangelogMode)
+            throws Exception {
+        testHarness.close();
+        testHarness =
+                new KeyedTwoInputStreamOperatorTestHarness<>(
+                        new StreamingJoinOperator(
+                                leftTypeInfo,
+                                rightTypeInfo,
+                                condition,
+                                leftSpec,
+                                rightSpec,
+                                leftIsOuter,
+                                rightIsOuter,
+                                inputChangelogMode,
+                                inputChangelogMode,
+                                hasNonEquiCondition,
+                                new boolean[] {true},
+                                0L,
+                                0L),
+                        leftKeySelector,
+                        rightKeySelector,
+                        joinKeyTypeInfo);
+        testHarness.open();
+    }
+
+    private void assertGetRecordAfterInsert(boolean hasUniqueKey) throws Exception {
+        final StreamingJoinOperator operator = (StreamingJoinOperator) testHarness.getOperator();
+        final RowData left = insertRecord("Ord#1", "LineOrd#1", ADDRESS).getValue();
+        final RowData right = insertRecord("LineOrd#1", "AIR").getValue();
+
+        operator.setCurrentKey(rightKeySelector.getKey(right));
+        assertThat(operator.leftRecordStateView.getRecord(left)).isNull();
+        assertThat(operator.rightRecordStateView.getRecord(right)).isNull();
+
+        testHarness.processElement1(insertRecord("Ord#1", "LineOrd#1", ADDRESS));
+        testHarness.processElement2(insertRecord("LineOrd#1", "AIR"));
+        assertThat(operator.leftRecordStateView.getRecord(left))
+                .isEqualTo(hasUniqueKey ? left : null);
+        assertThat(operator.rightRecordStateView.getRecord(right))
+                .isEqualTo(hasUniqueKey ? right : null);
+    }
+
+    /**
+     * The unique key (order_id, line_order_id) contains the join key (line_order_id), which the
+     * planner requires for inputs without UPDATE_BEFORE, so a replacing record has the same join
+     * key.
+     */
+    private JoinInputSideSpec leftHasUniqueKeySpec() {
+        final RowDataKeySelector uniqueKeySelector =
+                HandwrittenSelectorUtil.getRowDataSelector(
+                        new int[] {0, 1},
+                        leftTypeInfo.toRowType().getChildren().toArray(new LogicalType[0]));
+        return JoinInputSideSpec.withUniqueKey(
+                uniqueKeySelector.getProducedType(), uniqueKeySelector);
+    }
+
+    private static final String ADDRESS = "3 Bellevue Drive, Pottstown, PA 19464";
+    private static final String NEW_ADDRESS = "68 Manor Station Street, Honolulu, HI 96815";
+
+    private static final Function<String, Boolean[]> JOIN_TYPE_EXTRACTOR =
+            (testDisplayName) -> {
+                if (testDisplayName.contains("InnerJoin")) {
+                    return new Boolean[] {false, false};
+                } else if (testDisplayName.contains("LeftOuterJoin")) {
+                    return new Boolean[] {true, false};
+                } else {
+                    return new Boolean[] {false, true};
+                }
+            };
+}

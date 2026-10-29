@@ -27,6 +27,8 @@ import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.data.StringData;
 import org.apache.flink.table.data.TimestampData;
 import org.apache.flink.types.RowKind;
+import org.apache.flink.types.bitmap.Bitmap;
+import org.apache.flink.types.variant.Variant;
 
 import java.util.List;
 import java.util.Objects;
@@ -243,6 +245,26 @@ public class EnrichedRowData implements RowData {
             return mutableRow.getRow(index, numFields);
         } else {
             return fixedRow.getRow(-(index + 1), numFields);
+        }
+    }
+
+    @Override
+    public Variant getVariant(int pos) {
+        int index = indexMapping[pos];
+        if (index >= 0) {
+            return mutableRow.getVariant(index);
+        } else {
+            return fixedRow.getVariant(-(index + 1));
+        }
+    }
+
+    @Override
+    public Bitmap getBitmap(int pos) {
+        int index = indexMapping[pos];
+        if (index >= 0) {
+            return mutableRow.getBitmap(index);
+        } else {
+            return fixedRow.getBitmap(-(index + 1));
         }
     }
 

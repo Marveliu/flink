@@ -18,50 +18,44 @@
 
 package org.apache.flink.kubernetes.highavailability;
 
-import org.apache.flink.core.testutils.FlinkMatchers;
 import org.apache.flink.kubernetes.kubeclient.FlinkKubeClient;
 import org.apache.flink.kubernetes.kubeclient.resources.KubernetesConfigMap;
+import org.apache.flink.kubernetes.kubeclient.resources.KubernetesException;
+import org.apache.flink.runtime.leaderelection.LeaderElectionEvent;
+import org.apache.flink.runtime.leaderelection.LeaderElectionException;
 import org.apache.flink.runtime.leaderelection.LeaderInformation;
+import org.apache.flink.runtime.leaderelection.LeaderInformationRegister;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.Collections;
-import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 
-import static org.apache.flink.kubernetes.utils.Constants.LABEL_CONFIGMAP_TYPE_HIGH_AVAILABILITY;
-import static org.apache.flink.kubernetes.utils.Constants.LABEL_CONFIGMAP_TYPE_KEY;
 import static org.apache.flink.kubernetes.utils.Constants.LEADER_ADDRESS_KEY;
 import static org.apache.flink.kubernetes.utils.Constants.LEADER_SESSION_ID_KEY;
-import static org.hamcrest.MatcherAssert.assertThat;
-import static org.hamcrest.Matchers.is;
-import static org.hamcrest.Matchers.notNullValue;
-import static org.hamcrest.Matchers.nullValue;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /** Tests for the {@link KubernetesLeaderElectionDriver}. */
-public class KubernetesLeaderElectionDriverTest extends KubernetesHighAvailabilityTestBase {
+class KubernetesLeaderElectionDriverTest extends KubernetesHighAvailabilityTestBase {
 
     @Test
-    public void testIsLeader() throws Exception {
+    void testIsLeader() throws Exception {
         new Context() {
             {
                 runTest(
                         () -> {
-                            // Grant leadership
-                            leaderCallbackGrantLeadership();
-                            assertThat(electionEventHandler.isLeader(), is(true));
-                            assertThat(
-                                    electionEventHandler
-                                            .getConfirmedLeaderInformation()
-                                            .getLeaderAddress(),
-                                    is(LEADER_ADDRESS));
+                            grantLeadership();
+
+                            // the following call shouldn't block
+                            electionEventHandler.await(LeaderElectionEvent.IsLeaderEvent.class);
                         });
             }
         };
     }
 
     @Test
-    public void testNotLeader() throws Exception {
+    void testNotLeader() throws Exception {
         new Context() {
             {
                 runTest(
@@ -70,130 +64,137 @@ public class KubernetesLeaderElectionDriverTest extends KubernetesHighAvailabili
                             // Revoke leadership
                             getLeaderCallback().notLeader();
 
-                            electionEventHandler.waitForRevokeLeader(TIMEOUT);
-                            assertThat(electionEventHandler.isLeader(), is(false));
-                            assertThat(
-                                    electionEventHandler.getConfirmedLeaderInformation(),
-                                    is(LeaderInformation.empty()));
+                            electionEventHandler.await(LeaderElectionEvent.NotLeaderEvent.class);
+
                             // The ConfigMap should also be cleared
-                            assertThat(
-                                    getLeaderConfigMap().getData().get(LEADER_ADDRESS_KEY),
-                                    is(nullValue()));
-                            assertThat(
-                                    getLeaderConfigMap().getData().get(LEADER_SESSION_ID_KEY),
-                                    is(nullValue()));
+                            assertThat(getLeaderConfigMap().getData())
+                                    .doesNotContainKey(LEADER_ADDRESS_KEY);
+                            assertThat(getLeaderConfigMap().getData())
+                                    .doesNotContainKey(LEADER_SESSION_ID_KEY);
                         });
             }
         };
     }
 
     @Test
-    public void testHasLeadershipWhenConfigMapNotExist() throws Exception {
+    void testHasLeadershipWhenConfigMapNotExist() throws Exception {
         new Context() {
             {
                 runTest(
                         () -> {
                             leaderElectionDriver.hasLeadership();
-                            electionEventHandler.waitForError(TIMEOUT);
-                            final String errorMsg =
+
+                            final String expectedErrorMessage =
                                     "ConfigMap " + LEADER_CONFIGMAP_NAME + " does not exist.";
-                            assertThat(electionEventHandler.getError(), is(notNullValue()));
-                            assertThat(
-                                    electionEventHandler.getError(),
-                                    FlinkMatchers.containsMessage(errorMsg));
+
+                            final LeaderElectionEvent.ErrorEvent errorEvent =
+                                    electionEventHandler.await(
+                                            LeaderElectionEvent.ErrorEvent.class);
+                            assertThat(errorEvent.getError())
+                                    .isInstanceOf(KubernetesException.class)
+                                    .hasMessageContaining(expectedErrorMessage);
                         });
             }
         };
     }
 
     @Test
-    public void testWriteLeaderInformation() throws Exception {
+    void testWriteLeaderInformation() throws Exception {
         new Context() {
             {
                 runTest(
                         () -> {
-                            leaderCallbackGrantLeadership();
+                            final UUID leaderSessionID = leaderCallbackGrantLeadership();
 
-                            final LeaderInformation leader =
-                                    LeaderInformation.known(UUID.randomUUID(), LEADER_ADDRESS);
-                            leaderElectionDriver.writeLeaderInformation(leader);
+                            final LeaderInformation leaderInformation =
+                                    LeaderInformation.known(leaderSessionID, leaderAddress);
 
-                            assertThat(
-                                    getLeaderConfigMap().getData().get(LEADER_ADDRESS_KEY),
-                                    is(leader.getLeaderAddress()));
-                            assertThat(
-                                    getLeaderConfigMap().getData().get(LEADER_SESSION_ID_KEY),
-                                    is(leader.getLeaderSessionID().toString()));
+                            assertThat(getLeaderInformationFromConfigMap())
+                                    .hasValue(leaderInformation);
                         });
             }
         };
     }
 
     @Test
-    public void testWriteLeaderInformationWhenConfigMapNotExist() throws Exception {
+    void testWriteLeaderInformationWhenConfigMapNotExist() throws Exception {
         new Context() {
             {
                 runTest(
                         () -> {
-                            leaderElectionDriver.writeLeaderInformation(
+                            leaderElectionDriver.publishLeaderInformation(
+                                    componentId,
                                     LeaderInformation.known(UUID.randomUUID(), LEADER_ADDRESS));
-                            electionEventHandler.waitForError(TIMEOUT);
 
-                            final String errorMsg =
-                                    "Could not write leader information since ConfigMap "
-                                            + LEADER_CONFIGMAP_NAME
-                                            + " does not exist.";
-                            assertThat(electionEventHandler.getError(), is(notNullValue()));
-                            assertThat(
-                                    electionEventHandler.getError(),
-                                    FlinkMatchers.containsMessage(errorMsg));
+                            final String expectedErrorMessage =
+                                    "ConfigMap " + LEADER_CONFIGMAP_NAME + " does not exist.";
+                            final LeaderElectionEvent.ErrorEvent errorEvent =
+                                    electionEventHandler.assertNextEvent(
+                                            LeaderElectionEvent.ErrorEvent.class);
+                            assertThat(errorEvent.getError())
+                                    .cause()
+                                    .isInstanceOf(KubernetesException.class)
+                                    .hasMessage(expectedErrorMessage);
                         });
             }
         };
     }
 
     @Test
-    public void testLeaderConfigMapModifiedExternallyShouldBeCorrected() throws Exception {
+    void testLeaderConfigMapModifiedExternallyShouldBeCorrected() throws Exception {
         new Context() {
             {
                 runTest(
                         () -> {
-                            leaderCallbackGrantLeadership();
+                            final UUID leaderSessionID = leaderCallbackGrantLeadership();
 
+                            final Optional<LeaderInformation> leaderInformation =
+                                    getLeaderInformationFromConfigMap();
+                            assertThat(leaderInformation.map(LeaderInformation::getLeaderSessionID))
+                                    .hasValue(leaderSessionID);
+
+                            // Update ConfigMap with wrong data
+                            final UUID faultySessionID = UUID.randomUUID();
+                            final String faultyAddress = "faultyLeaderAddress";
+                            putLeaderInformationIntoConfigMap(faultySessionID, faultyAddress);
+
+                            // Simulate ConfigMap modification event
                             final FlinkKubeClient.WatchCallbackHandler<KubernetesConfigMap>
                                     callbackHandler = getLeaderElectionConfigMapCallback();
-                            // Update ConfigMap with wrong data
-                            final KubernetesConfigMap updatedConfigMap = getLeaderConfigMap();
-                            final UUID leaderSessionId =
-                                    UUID.fromString(
-                                            updatedConfigMap.getData().get(LEADER_SESSION_ID_KEY));
-                            final LeaderInformation faultyLeader =
-                                    LeaderInformation.known(
-                                            UUID.randomUUID(), "faultyLeaderAddress");
-                            updatedConfigMap
-                                    .getData()
-                                    .put(LEADER_ADDRESS_KEY, faultyLeader.getLeaderAddress());
-                            updatedConfigMap
-                                    .getData()
-                                    .put(
-                                            LEADER_SESSION_ID_KEY,
-                                            faultyLeader.getLeaderSessionID().toString());
+                            callbackHandler.onModified(
+                                    Collections.singletonList(getLeaderConfigMap()));
 
-                            callbackHandler.onModified(Collections.singletonList(updatedConfigMap));
-                            // The leader should be corrected
-                            assertThat(
-                                    getLeaderConfigMap().getData().get(LEADER_ADDRESS_KEY),
-                                    is(LEADER_ADDRESS));
-                            assertThat(
-                                    getLeaderConfigMap().getData().get(LEADER_SESSION_ID_KEY),
-                                    is(leaderSessionId.toString()));
+                            final LeaderInformationRegister leaderInformationRegister =
+                                    electionEventHandler
+                                            .await(
+                                                    LeaderElectionEvent
+                                                            .AllLeaderInformationChangeEvent.class)
+                                            .getLeaderInformationRegister();
+
+                            assertThat(leaderInformationRegister.getRegisteredComponentIds())
+                                    .containsExactly(componentId);
+
+                            final LeaderInformation expectedFaultyLeaderInformation =
+                                    LeaderInformation.known(faultySessionID, faultyAddress);
+                            assertThat(leaderInformationRegister.forComponentId(componentId))
+                                    .hasValue(expectedFaultyLeaderInformation);
+
+                            leaderElectionDriver.publishLeaderInformation(
+                                    componentId,
+                                    LeaderInformation.known(leaderSessionID, leaderAddress));
+
+                            assertThat(getLeaderInformationFromConfigMap())
+                                    .as("LeaderInformation should have been corrected.")
+                                    .hasValue(
+                                            LeaderInformation.known(
+                                                    leaderSessionID, leaderAddress));
                         });
             }
         };
     }
 
     @Test
-    public void testLeaderConfigMapDeletedExternally() throws Exception {
+    void testLeaderConfigMapDeletedExternally() throws Exception {
         new Context() {
             {
                 runTest(
@@ -205,20 +206,23 @@ public class KubernetesLeaderElectionDriverTest extends KubernetesHighAvailabili
                             callbackHandler.onDeleted(
                                     Collections.singletonList(getLeaderConfigMap()));
 
-                            electionEventHandler.waitForError(TIMEOUT);
-                            final String errorMsg =
-                                    "ConfigMap " + LEADER_CONFIGMAP_NAME + " is deleted externally";
-                            assertThat(electionEventHandler.getError(), is(notNullValue()));
-                            assertThat(
-                                    electionEventHandler.getError(),
-                                    FlinkMatchers.containsMessage(errorMsg));
+                            final String expectedErrorMessage =
+                                    "ConfigMap "
+                                            + LEADER_CONFIGMAP_NAME
+                                            + " has been deleted externally.";
+                            final LeaderElectionEvent.ErrorEvent errorEvent =
+                                    electionEventHandler.await(
+                                            LeaderElectionEvent.ErrorEvent.class);
+                            assertThat(errorEvent.getError())
+                                    .isInstanceOf(LeaderElectionException.class)
+                                    .hasMessage(expectedErrorMessage);
                         });
             }
         };
     }
 
     @Test
-    public void testErrorForwarding() throws Exception {
+    void testErrorForwarding() throws Exception {
         new Context() {
             {
                 runTest(
@@ -230,33 +234,33 @@ public class KubernetesLeaderElectionDriverTest extends KubernetesHighAvailabili
                             callbackHandler.onError(
                                     Collections.singletonList(getLeaderConfigMap()));
 
-                            electionEventHandler.waitForError(TIMEOUT);
-                            final String errorMsg =
-                                    "Error while watching the ConfigMap " + LEADER_CONFIGMAP_NAME;
-                            assertThat(electionEventHandler.getError(), is(notNullValue()));
-                            assertThat(
-                                    electionEventHandler.getError(),
-                                    FlinkMatchers.containsMessage(errorMsg));
+                            final String expectedErrorMessage =
+                                    "Error while watching the ConfigMap "
+                                            + LEADER_CONFIGMAP_NAME
+                                            + ".";
+
+                            final LeaderElectionEvent.ErrorEvent errorEvent =
+                                    electionEventHandler.await(
+                                            LeaderElectionEvent.ErrorEvent.class);
+
+                            assertThat(errorEvent.getError())
+                                    .isInstanceOf(LeaderElectionException.class)
+                                    .hasMessage(expectedErrorMessage);
                         });
             }
         };
     }
 
     @Test
-    public void testHighAvailabilityLabelsCorrectlySet() throws Exception {
+    void testToStringContainingConfigMap() throws Exception {
         new Context() {
             {
                 runTest(
-                        () -> {
-                            leaderCallbackGrantLeadership();
-
-                            final Map<String, String> leaderLabels =
-                                    getLeaderConfigMap().getLabels();
-                            assertThat(leaderLabels.size(), is(3));
-                            assertThat(
-                                    leaderLabels.get(LABEL_CONFIGMAP_TYPE_KEY),
-                                    is(LABEL_CONFIGMAP_TYPE_HIGH_AVAILABILITY));
-                        });
+                        () ->
+                                assertThat(leaderElectionDriver.toString())
+                                        .as(
+                                                "toString() should contain the ConfigMap name for a human-readable representation of the driver instance.")
+                                        .contains(LEADER_CONFIGMAP_NAME));
             }
         };
     }

@@ -26,6 +26,9 @@ import org.apache.flink.api.common.typeutils.base.MapSerializer;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.queryablestate.client.state.serialization.KvStateSerializer;
 import org.apache.flink.runtime.state.internal.InternalMapState;
+import org.apache.flink.runtime.state.ttl.TtlAwareSerializer;
+import org.apache.flink.runtime.state.ttl.TtlTimeProvider;
+import org.apache.flink.runtime.state.ttl.TtlValue;
 import org.apache.flink.util.Preconditions;
 
 import java.util.Collections;
@@ -201,6 +204,28 @@ class HeapMapState<K, N, UK, UV> extends AbstractHeapState<K, N, Map<UK, UV>>
     }
 
     @SuppressWarnings("unchecked")
+    public Map<UK, UV> migrateTtlValue(
+            Map<UK, UV> stateValue,
+            TtlAwareSerializer<Map<UK, UV>, ?> currentTtlAwareSerializer,
+            TtlTimeProvider ttlTimeProvider) {
+
+        if (currentTtlAwareSerializer.isTtlEnabled()) {
+            for (Map.Entry<UK, UV> entry : stateValue.entrySet()) {
+                UV value =
+                        (UV) new TtlValue<>(entry.getValue(), ttlTimeProvider.currentTimestamp());
+                stateValue.put(entry.getKey(), value);
+            }
+        } else {
+            for (Map.Entry<UK, UV> entry : stateValue.entrySet()) {
+                UV value = (UV) ((TtlValue<?>) entry.getValue()).getUserValue();
+                stateValue.put(entry.getKey(), value);
+            }
+        }
+
+        return stateValue;
+    }
+
+    @SuppressWarnings("unchecked")
     static <UK, UV, K, N, SV, S extends State, IS extends S> IS create(
             StateDescriptor<S, SV> stateDesc,
             StateTable<K, N, SV> stateTable,
@@ -212,5 +237,16 @@ class HeapMapState<K, N, UK, UV> extends AbstractHeapState<K, N, Map<UK, UV>>
                         (TypeSerializer<Map<UK, UV>>) stateTable.getStateSerializer(),
                         stateTable.getNamespaceSerializer(),
                         (Map<UK, UV>) stateDesc.getDefaultValue());
+    }
+
+    @SuppressWarnings("unchecked")
+    static <UK, UV, K, N, SV, S extends State, IS extends S> IS update(
+            StateDescriptor<S, SV> stateDesc, StateTable<K, N, SV> stateTable, IS existingState) {
+        return (IS)
+                ((HeapMapState<K, N, UK, UV>) existingState)
+                        .setNamespaceSerializer(stateTable.getNamespaceSerializer())
+                        .setValueSerializer(
+                                (TypeSerializer<Map<UK, UV>>) stateTable.getStateSerializer())
+                        .setDefaultValue((Map<UK, UV>) stateDesc.getDefaultValue());
     }
 }

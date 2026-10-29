@@ -15,10 +15,8 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.planner.runtime.harness
 
-import org.apache.flink.api.scala._
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord
 import org.apache.flink.streaming.util.KeyedOneInputStreamOperatorTestHarness
 import org.apache.flink.table.api._
@@ -29,51 +27,50 @@ import org.apache.flink.table.planner.runtime.utils.StreamingWithStateTestBase.{
 import org.apache.flink.table.planner.runtime.utils.TestData
 import org.apache.flink.table.runtime.util.RowDataHarnessAssertor
 import org.apache.flink.table.runtime.util.StreamRecordUtils.binaryRecord
-import org.apache.flink.types.Row
+import org.apache.flink.testutils.junit.extensions.parameterized.{ParameterizedTestExtension, Parameters}
 import org.apache.flink.types.RowKind.INSERT
-import org.junit.runner.RunWith
-import org.junit.runners.Parameterized
-import org.junit.{Before, Test}
+
+import org.junit.jupiter.api.{BeforeEach, TestTemplate}
+import org.junit.jupiter.api.extension.ExtendWith
+
 import java.time.{LocalDateTime, ZoneId}
+import java.util.{Collection => JCollection, TimeZone}
 import java.util.concurrent.ConcurrentLinkedQueue
-import java.util.{Collection => JCollection}
-import java.util.TimeZone
 
 import scala.collection.JavaConversions._
 
 /**
- * Harness tests for processing-time window aggregate in timezone using DaylightTime.
- * We can't test them in [[WindowAggregateITCase]] because the result is non-deterministic,
- * therefore we use harness to test them.
+ * Harness tests for processing-time window aggregate in timezone using DaylightTime. We can't test
+ * them in [[WindowAggregateITCase]] because the result is non-deterministic, therefore we use
+ * harness to test them.
  */
-@RunWith(classOf[Parameterized])
+@ExtendWith(Array(classOf[ParameterizedTestExtension]))
 class WindowAggregateUseDaylightTimeHarnessTest(backend: StateBackendMode, timeZone: TimeZone)
   extends HarnessTestBase(backend) {
 
-  @Before
+  @BeforeEach
   override def before(): Unit = {
     super.before()
     val dataId = TestValuesTableFactory.registerData(TestData.windowDataWithTimestamp)
     tEnv.getConfig.setLocalTimeZone(timeZone.toZoneId)
-    tEnv.executeSql(
-      s"""
-         |CREATE TABLE T1 (
-         | `ts` STRING,
-         | `int` INT,
-         | `double` DOUBLE,
-         | `float` FLOAT,
-         | `bigdec` DECIMAL(10, 2),
-         | `string` STRING,
-         | `name` STRING,
-         | proctime AS PROCTIME()
-         |) WITH (
-         | 'connector' = 'values',
-         | 'data-id' = '$dataId'
-         |)
-         |""".stripMargin)
+    tEnv.executeSql(s"""
+                       |CREATE TABLE T1 (
+                       | `ts` STRING,
+                       | `int` INT,
+                       | `double` DOUBLE,
+                       | `float` FLOAT,
+                       | `bigdec` DECIMAL(10, 2),
+                       | `string` STRING,
+                       | `name` STRING,
+                       | proctime AS PROCTIME()
+                       |) WITH (
+                       | 'connector' = 'values',
+                       | 'data-id' = '$dataId'
+                       |)
+                       |""".stripMargin)
   }
 
-  @Test
+  @TestTemplate
   def testProcessingTimeWindow(): Unit = {
     val sql =
       """
@@ -93,7 +90,7 @@ class WindowAggregateUseDaylightTimeHarnessTest(backend: StateBackendMode, timeZ
         |GROUP BY `name`, window_start, window_end
       """.stripMargin
     val t1 = tEnv.sqlQuery(sql)
-    val testHarness = createHarnessTester(t1.toAppendStream[Row], "WindowAggregate")
+    val testHarness = createHarnessTester(t1.toDataStream, "WindowAggregate")
     // window aggregate put window properties at the end of aggs
     val assertor = new RowDataHarnessAssertor(
       Array(
@@ -102,40 +99,41 @@ class WindowAggregateUseDaylightTimeHarnessTest(backend: StateBackendMode, timeZ
         DataTypes.DOUBLE().getLogicalType,
         DataTypes.BIGINT().getLogicalType,
         DataTypes.TIMESTAMP_LTZ(3).getLogicalType,
-        DataTypes.TIMESTAMP_LTZ(3).getLogicalType))
+        DataTypes.TIMESTAMP_LTZ(3).getLogicalType
+      ))
 
     testHarness.open()
     ingestData(testHarness)
 
     val expected = new ConcurrentLinkedQueue[Object]()
-    if (timeZone.useDaylightTime()){
+    if (timeZone.useDaylightTime()) {
       // two [2021-03-14T00:00:00, 2021-03-14T02:00:00] windows with same agg value
-      expected.add(record("a", 1L, 1.0D, 1L, ts("2021-03-14T00:00:00"), ts("2021-03-14T01:00:00")))
-      expected.add(record("a", 2L, 2.0D, 2L, ts("2021-03-14T00:00:00"), ts("2021-03-14T02:00:00")))
-      expected.add(record("a", 2L, 2.0D, 2L, ts("2021-03-14T00:00:00"), ts("2021-03-14T03:00:00")))
-      expected.add(record("a", 1L, 2.0D, 1L, ts("2021-03-14T03:00:00"), ts("2021-03-14T04:00:00")))
-      expected.add(record("a", 2L, 5.0D, 1L, ts("2021-03-14T03:00:00"), ts("2021-03-14T05:00:00")))
-      expected.add(record("a", 3L, 5.0D, 1L, ts("2021-03-14T03:00:00"), ts("2021-03-14T06:00:00")))
+      expected.add(record("a", 1L, 1.0d, 1L, ts("2021-03-14T00:00:00"), ts("2021-03-14T01:00:00")))
+      expected.add(record("a", 2L, 2.0d, 2L, ts("2021-03-14T00:00:00"), ts("2021-03-14T02:00:00")))
+      expected.add(record("a", 2L, 2.0d, 2L, ts("2021-03-14T00:00:00"), ts("2021-03-14T03:00:00")))
+      expected.add(record("a", 1L, 2.0d, 1L, ts("2021-03-14T03:00:00"), ts("2021-03-14T04:00:00")))
+      expected.add(record("a", 2L, 5.0d, 1L, ts("2021-03-14T03:00:00"), ts("2021-03-14T05:00:00")))
+      expected.add(record("a", 3L, 5.0d, 1L, ts("2021-03-14T03:00:00"), ts("2021-03-14T06:00:00")))
 
       // [2021-11-07T00:00:00, 2021-11-07T02:00:00] window contains 3 hours data
-      expected.add(record("a", 1L, 3.0D, 1L, ts("2021-11-07T00:00:00"), ts("2021-11-07T01:00:00")))
-      expected.add(record("a", 3L, 3.0D, 2L, ts("2021-11-07T00:00:00"), ts("2021-11-07T02:00:00")))
-      expected.add(record("a", 4L, 3.0D, 2L, ts("2021-11-07T00:00:00"), ts("2021-11-07T03:00:00")))
-      expected.add(record("a", 1L, 3.0D, 1L, ts("2021-11-07T03:00:00"), ts("2021-11-07T04:00:00")))
+      expected.add(record("a", 1L, 3.0d, 1L, ts("2021-11-07T00:00:00"), ts("2021-11-07T01:00:00")))
+      expected.add(record("a", 3L, 3.0d, 2L, ts("2021-11-07T00:00:00"), ts("2021-11-07T02:00:00")))
+      expected.add(record("a", 4L, 3.0d, 2L, ts("2021-11-07T00:00:00"), ts("2021-11-07T03:00:00")))
+      expected.add(record("a", 1L, 3.0d, 1L, ts("2021-11-07T03:00:00"), ts("2021-11-07T04:00:00")))
     } else {
-      expected.add(record("a", 1L, 1.0D, 1L, ts("2021-03-14T06:00:00"), ts("2021-03-14T09:00:00")))
-      expected.add(record("a", 1L, 2.0D, 1L, ts("2021-03-14T09:00:00"), ts("2021-03-14T10:00:00")))
-      expected.add(record("a", 2L, 2.0D, 1L, ts("2021-03-14T09:00:00"), ts("2021-03-14T11:00:00")))
-      expected.add(record("a", 3L, 5.0D, 1L, ts("2021-03-14T09:00:00"), ts("2021-03-14T12:00:00")))
-      expected.add(record("a", 1L, 5.0D, 0L, ts("2021-03-14T12:00:00"), ts("2021-03-14T13:00:00")))
-      expected.add(record("a", 1L, 5.0D, 0L, ts("2021-03-14T12:00:00"), ts("2021-03-14T14:00:00")))
-      expected.add(record("a", 1L, 5.0D, 0L, ts("2021-03-14T12:00:00"), ts("2021-03-14T15:00:00")))
+      expected.add(record("a", 1L, 1.0d, 1L, ts("2021-03-14T06:00:00"), ts("2021-03-14T09:00:00")))
+      expected.add(record("a", 1L, 2.0d, 1L, ts("2021-03-14T09:00:00"), ts("2021-03-14T10:00:00")))
+      expected.add(record("a", 2L, 2.0d, 1L, ts("2021-03-14T09:00:00"), ts("2021-03-14T11:00:00")))
+      expected.add(record("a", 3L, 5.0d, 1L, ts("2021-03-14T09:00:00"), ts("2021-03-14T12:00:00")))
+      expected.add(record("a", 1L, 5.0d, 0L, ts("2021-03-14T12:00:00"), ts("2021-03-14T13:00:00")))
+      expected.add(record("a", 1L, 5.0d, 0L, ts("2021-03-14T12:00:00"), ts("2021-03-14T14:00:00")))
+      expected.add(record("a", 1L, 5.0d, 0L, ts("2021-03-14T12:00:00"), ts("2021-03-14T15:00:00")))
 
-      expected.add(record("a", 1L, 3.0D, 1L, ts("2021-11-07T06:00:00"), ts("2021-11-07T08:00:00")))
-      expected.add(record("a", 2L, 3.0D, 1L, ts("2021-11-07T06:00:00"), ts("2021-11-07T09:00:00")))
-      expected.add(record("a", 1L, 3.0D, 1L, ts("2021-11-07T09:00:00"), ts("2021-11-07T10:00:00")))
-      expected.add(record("a", 2L, 3.0D, 1L, ts("2021-11-07T09:00:00"), ts("2021-11-07T11:00:00")))
-      expected.add(record("a", 3L, 3.0D, 1L, ts("2021-11-07T09:00:00"), ts("2021-11-07T12:00:00")))
+      expected.add(record("a", 1L, 3.0d, 1L, ts("2021-11-07T06:00:00"), ts("2021-11-07T08:00:00")))
+      expected.add(record("a", 2L, 3.0d, 1L, ts("2021-11-07T06:00:00"), ts("2021-11-07T09:00:00")))
+      expected.add(record("a", 1L, 3.0d, 1L, ts("2021-11-07T09:00:00"), ts("2021-11-07T10:00:00")))
+      expected.add(record("a", 2L, 3.0d, 1L, ts("2021-11-07T09:00:00"), ts("2021-11-07T11:00:00")))
+      expected.add(record("a", 3L, 3.0d, 1L, ts("2021-11-07T09:00:00"), ts("2021-11-07T12:00:00")))
 
     }
 
@@ -194,7 +192,7 @@ class WindowAggregateUseDaylightTimeHarnessTest(backend: StateBackendMode, timeZ
     val objs = args.map {
       case l: Long => Long.box(l)
       case d: Double => Double.box(d)
-      case arg@_ => arg.asInstanceOf[Object]
+      case arg @ _ => arg.asInstanceOf[Object]
     }.toArray
     binaryRecord(INSERT, objs: _*)
   }
@@ -202,7 +200,7 @@ class WindowAggregateUseDaylightTimeHarnessTest(backend: StateBackendMode, timeZ
 
 object WindowAggregateUseDaylightTimeHarnessTest {
 
-  @Parameterized.Parameters(name = "StateBackend={0}, TimeZone={1}")
+  @Parameters(name = "StateBackend={0}, TimeZone={1}")
   def parameters(): JCollection[Array[Object]] = {
     Seq[Array[AnyRef]](
       Array(HEAP_BACKEND, TimeZone.getTimeZone("America/Los_Angeles")),

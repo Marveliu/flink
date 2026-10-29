@@ -19,125 +19,134 @@
 package org.apache.flink.test.checkpointing;
 
 import org.apache.flink.api.common.JobID;
-import org.apache.flink.api.common.restartstrategy.RestartStrategies;
 import org.apache.flink.api.common.state.CheckpointListener;
 import org.apache.flink.api.common.state.ListState;
 import org.apache.flink.api.common.state.ListStateDescriptor;
-import org.apache.flink.configuration.Configuration;
-import org.apache.flink.configuration.RestOptions;
+import org.apache.flink.core.execution.CheckpointingMode;
 import org.apache.flink.core.execution.SavepointFormatType;
 import org.apache.flink.runtime.OperatorIDPair;
 import org.apache.flink.runtime.jobgraph.JobGraph;
 import org.apache.flink.runtime.jobgraph.OperatorID;
 import org.apache.flink.runtime.jobgraph.SavepointRestoreSettings;
 import org.apache.flink.runtime.minicluster.MiniCluster;
-import org.apache.flink.runtime.minicluster.MiniClusterConfiguration;
 import org.apache.flink.runtime.state.FunctionInitializationContext;
 import org.apache.flink.runtime.state.FunctionSnapshotContext;
-import org.apache.flink.streaming.api.CheckpointingMode;
+import org.apache.flink.runtime.testutils.MiniClusterResourceConfiguration;
 import org.apache.flink.streaming.api.checkpoint.CheckpointedFunction;
 import org.apache.flink.streaming.api.datastream.SingleOutputStreamOperator;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
-import org.apache.flink.streaming.api.functions.sink.SinkFunction;
-import org.apache.flink.streaming.api.functions.source.RichSourceFunction;
-import org.apache.flink.testutils.junit.SharedObjects;
+import org.apache.flink.streaming.api.functions.sink.legacy.SinkFunction;
+import org.apache.flink.streaming.api.functions.source.legacy.RichSourceFunction;
+import org.apache.flink.streaming.util.RestartStrategyUtils;
+import org.apache.flink.test.junit5.InjectMiniCluster;
+import org.apache.flink.test.junit5.MiniClusterExtension;
+import org.apache.flink.testutils.junit.SharedObjectsExtension;
 import org.apache.flink.testutils.junit.SharedReference;
 
-import org.junit.Before;
-import org.junit.ClassRule;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.TemporaryFolder;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.RegisterExtension;
+import org.junit.jupiter.api.io.TempDir;
 
 import javax.annotation.Nullable;
 
+import java.io.File;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
+import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
 import static org.apache.flink.runtime.testutils.CommonTestUtils.waitForAllTaskRunning;
-import static org.hamcrest.MatcherAssert.assertThat;
-import static org.hamcrest.Matchers.contains;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Verifies that with {@code uidHash} a job could restore state from an existing savepoint, and the
  * job would still be able to restored from the checkpoints taken after restarted correctly without
  * losing states due to mismatched operator id.
  */
-public class CheckpointRestoreWithUidHashITCase {
+class CheckpointRestoreWithUidHashITCase {
 
-    @ClassRule public static final TemporaryFolder TMP_FOLDER = new TemporaryFolder();
+    @TempDir private File tempDir;
 
-    @Rule public final SharedObjects sharedObjects = SharedObjects.create();
+    @RegisterExtension
+    private final SharedObjectsExtension sharedObjects = SharedObjectsExtension.create();
+
+    @RegisterExtension
+    private static final MiniClusterExtension MINI_CLUSTER_EXTENSION =
+            new MiniClusterExtension(
+                    new MiniClusterResourceConfiguration.Builder()
+                            .setNumberTaskManagers(1)
+                            .setNumberSlotsPerTaskManager(1)
+                            .build());
 
     private SharedReference<CountDownLatch> startWaitingForCheckpointLatch;
 
     private SharedReference<List<Integer>> result;
 
-    @Before
-    public void setup() {
+    @BeforeEach
+    void setup() {
         startWaitingForCheckpointLatch = sharedObjects.add(new CountDownLatch(1));
         result = sharedObjects.add(new ArrayList<>());
     }
 
     @Test
-    public void testRestoreFromSavepointBySetUidHash() throws Exception {
-        final int maxNumber = 100;
-
-        try (MiniCluster miniCluster = new MiniCluster(createMiniClusterConfig())) {
-            miniCluster.start();
-
-            StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
-            JobGraph firstJob =
-                    createJobGraph(
-                            env,
-                            StatefulSourceBehavior.HOLD_AFTER_CHECKPOINT_ON_FIRST_RUN,
-                            maxNumber,
-                            "test-uid",
-                            null,
-                            null);
-            JobID jobId = miniCluster.submitJob(firstJob).get().getJobID();
-            waitForAllTaskRunning(miniCluster, jobId, false);
-
-            // The source would emit some records and start waiting for the checkpoint to happen.
-            // With this latch we ensures the savepoint happens in a fixed position and no following
-            // records are emitted after savepoint is triggered.
-            startWaitingForCheckpointLatch.get().await();
-            String savepointPath =
-                    miniCluster
-                            .triggerSavepoint(
-                                    jobId,
-                                    TMP_FOLDER.newFolder().getAbsolutePath(),
-                                    true,
-                                    SavepointFormatType.CANONICAL)
-                            .get();
-
-            // Get the operator id
-            List<OperatorIDPair> operatorIds =
-                    firstJob.getVerticesSortedTopologicallyFromSources().get(0).getOperatorIDs();
-            OperatorIDPair sourceOperatorIds = operatorIds.get(operatorIds.size() - 1);
-
-            JobGraph secondJob =
-                    createJobGraph(
-                            env,
-                            StatefulSourceBehavior.PROCESS_ONLY,
-                            maxNumber,
-                            null,
-                            sourceOperatorIds.getGeneratedOperatorID().toHexString(),
-                            savepointPath);
-            miniCluster.executeJobBlocking(secondJob);
-        }
-        assertThat(result.get(), contains(IntStream.range(0, maxNumber).boxed().toArray()));
-    }
-
-    @Test
-    public void testRestoreCheckpointAfterFailoverWithUidHashSet() throws Exception {
+    void testRestoreFromSavepointBySetUidHash(@InjectMiniCluster MiniCluster miniCluster)
+            throws Exception {
         final int maxNumber = 100;
 
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
-        env.setRestartStrategy(RestartStrategies.fixedDelayRestart(2, 500));
+        JobGraph firstJob =
+                createJobGraph(
+                        env,
+                        StatefulSourceBehavior.HOLD_AFTER_CHECKPOINT_ON_FIRST_RUN,
+                        maxNumber,
+                        "test-uid",
+                        null,
+                        null);
+        JobID jobId = miniCluster.submitJob(firstJob).get().getJobID();
+        waitForAllTaskRunning(miniCluster, jobId, false);
+
+        // The source would emit some records and start waiting for the checkpoint to happen.
+        // With this latch we ensures the savepoint happens in a fixed position and no following
+        // records are emitted after savepoint is triggered.
+        startWaitingForCheckpointLatch.get().await();
+        String savepointPath =
+                miniCluster
+                        .triggerSavepoint(
+                                jobId,
+                                tempDir.getAbsolutePath(),
+                                true,
+                                SavepointFormatType.CANONICAL)
+                        .get();
+
+        // Get the operator id
+        List<OperatorIDPair> operatorIds =
+                firstJob.getVerticesSortedTopologicallyFromSources().get(0).getOperatorIDs();
+        OperatorIDPair sourceOperatorIds = operatorIds.get(operatorIds.size() - 1);
+
+        JobGraph secondJob =
+                createJobGraph(
+                        env,
+                        StatefulSourceBehavior.PROCESS_ONLY,
+                        maxNumber,
+                        null,
+                        sourceOperatorIds.getGeneratedOperatorID().toHexString(),
+                        savepointPath);
+        miniCluster.executeJobBlocking(secondJob);
+        assertThat(result.get())
+                .containsExactlyElementsOf(
+                        IntStream.range(0, maxNumber).boxed().collect(Collectors.toList()));
+    }
+
+    @Test
+    void testRestoreCheckpointAfterFailoverWithUidHashSet(
+            @InjectMiniCluster MiniCluster miniCluster) throws Exception {
+        final int maxNumber = 100;
+
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        RestartStrategyUtils.configureFixedDelayRestartStrategy(env, 2, 500L);
         env.enableCheckpointing(500, CheckpointingMode.EXACTLY_ONCE);
 
         JobGraph jobGraph =
@@ -149,21 +158,10 @@ public class CheckpointRestoreWithUidHashITCase {
                         new OperatorID().toHexString(),
                         null);
 
-        try (MiniCluster miniCluster = new MiniCluster(createMiniClusterConfig())) {
-            miniCluster.start();
-            miniCluster.executeJobBlocking(jobGraph);
-        }
-        assertThat(result.get(), contains(IntStream.range(0, maxNumber).boxed().toArray()));
-    }
-
-    private MiniClusterConfiguration createMiniClusterConfig() {
-        final Configuration config = new Configuration();
-        config.setString(RestOptions.BIND_PORT, "18081-19000");
-        return new MiniClusterConfiguration.Builder()
-                .setNumTaskManagers(1)
-                .setNumSlotsPerTaskManager(1)
-                .setConfiguration(config)
-                .build();
+        miniCluster.executeJobBlocking(jobGraph);
+        assertThat(result.get())
+                .containsExactlyElementsOf(
+                        IntStream.range(0, maxNumber).boxed().collect(Collectors.toList()));
     }
 
     private JobGraph createJobGraph(
@@ -254,7 +252,7 @@ public class CheckpointRestoreWithUidHashITCase {
             emitRecordsTill(maxNumber / 3, ctx);
 
             if (behavior.waitForCheckpointOnFirstRun
-                    && getRuntimeContext().getAttemptNumber() == 0) {
+                    && getRuntimeContext().getTaskInfo().getAttemptNumber() == 0) {
                 // Wait till one checkpoint is triggered and completed
                 isWaiting = true;
                 startWaitingForCheckpointLatch.get().countDown();

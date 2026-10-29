@@ -22,18 +22,22 @@ import org.apache.flink.table.planner.runtime.utils.BatchTestBase
 import org.apache.flink.table.planner.runtime.utils.BatchTestBase.row
 import org.apache.flink.table.planner.runtime.utils.TestData._
 
-import org.junit.{Before, Test}
+import org.junit.jupiter.api.{BeforeEach, Test}
 
 import scala.collection.JavaConverters._
-import scala.collection.Seq
 
 class PruneAggregateCallITCase extends BatchTestBase {
 
-  @Before
+  @BeforeEach
   override def before(): Unit = {
     super.before()
     registerCollection("MyTable", smallData3, type3, "a, b, c", nullablesOfSmallData3)
-    registerCollection("MyTable2", smallData5, type5, "a, b, c, d, e", nullablesOfSmallData5,
+    registerCollection(
+      "MyTable2",
+      smallData5,
+      type5,
+      "a, b, c, d, e",
+      nullablesOfSmallData5,
       FlinkStatistic.builder().uniqueKeys(Set(Set("b").asJava).asJava).build())
   }
 

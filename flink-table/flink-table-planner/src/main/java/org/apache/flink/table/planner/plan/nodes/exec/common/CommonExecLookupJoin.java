@@ -22,6 +22,7 @@ import org.apache.flink.api.common.functions.FlatMapFunction;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.dag.Transformation;
 import org.apache.flink.api.java.typeutils.RowTypeInfo;
+import org.apache.flink.configuration.ReadableConfig;
 import org.apache.flink.streaming.api.datastream.AsyncDataStream;
 import org.apache.flink.streaming.api.functions.ProcessFunction;
 import org.apache.flink.streaming.api.functions.async.AsyncFunction;
@@ -30,8 +31,8 @@ import org.apache.flink.streaming.api.operators.SimpleOperatorFactory;
 import org.apache.flink.streaming.api.operators.StreamOperatorFactory;
 import org.apache.flink.streaming.api.operators.async.AsyncWaitOperatorFactory;
 import org.apache.flink.table.api.TableException;
-import org.apache.flink.table.api.config.ExecutionConfigOptions;
 import org.apache.flink.table.catalog.DataTypeFactory;
+import org.apache.flink.table.connector.ChangelogMode;
 import org.apache.flink.table.connector.source.LookupTableSource;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.data.conversion.DataStructureConverter;
@@ -40,8 +41,12 @@ import org.apache.flink.table.functions.AsyncTableFunction;
 import org.apache.flink.table.functions.TableFunction;
 import org.apache.flink.table.functions.UserDefinedFunction;
 import org.apache.flink.table.functions.UserDefinedFunctionHelper;
+import org.apache.flink.table.legacy.sources.LookupableTableSource;
+import org.apache.flink.table.legacy.sources.TableSource;
 import org.apache.flink.table.planner.calcite.FlinkTypeFactory;
 import org.apache.flink.table.planner.codegen.CodeGeneratorContext;
+import org.apache.flink.table.planner.codegen.FilterCodeGenerator;
+import org.apache.flink.table.planner.codegen.FunctionCallCodeGenerator;
 import org.apache.flink.table.planner.codegen.LookupJoinCodeGenerator;
 import org.apache.flink.table.planner.delegation.PlannerBase;
 import org.apache.flink.table.planner.plan.nodes.exec.ExecEdge;
@@ -50,33 +55,38 @@ import org.apache.flink.table.planner.plan.nodes.exec.ExecNodeBase;
 import org.apache.flink.table.planner.plan.nodes.exec.ExecNodeConfig;
 import org.apache.flink.table.planner.plan.nodes.exec.ExecNodeContext;
 import org.apache.flink.table.planner.plan.nodes.exec.InputProperty;
-import org.apache.flink.table.planner.plan.nodes.exec.SingleTransformationTranslator;
 import org.apache.flink.table.planner.plan.nodes.exec.spec.TemporalTableSourceSpec;
 import org.apache.flink.table.planner.plan.nodes.exec.utils.ExecNodeUtil;
 import org.apache.flink.table.planner.plan.schema.LegacyTableSourceTable;
 import org.apache.flink.table.planner.plan.schema.TableSourceTable;
+import org.apache.flink.table.planner.plan.utils.FunctionCallUtil;
 import org.apache.flink.table.planner.plan.utils.LookupJoinUtil;
 import org.apache.flink.table.planner.utils.JavaScalaConversionUtil;
 import org.apache.flink.table.planner.utils.ShortcutUtils;
-import org.apache.flink.table.runtime.collector.TableFunctionCollector;
+import org.apache.flink.table.runtime.collector.ListenableCollector;
 import org.apache.flink.table.runtime.collector.TableFunctionResultFuture;
 import org.apache.flink.table.runtime.generated.GeneratedCollector;
+import org.apache.flink.table.runtime.generated.GeneratedFilterCondition;
 import org.apache.flink.table.runtime.generated.GeneratedFunction;
 import org.apache.flink.table.runtime.generated.GeneratedResultFuture;
+import org.apache.flink.table.runtime.keyselector.RowDataKeySelector;
+import org.apache.flink.table.runtime.operators.TableKeyedAsyncWaitOperatorFactory;
 import org.apache.flink.table.runtime.operators.join.FlinkJoinType;
 import org.apache.flink.table.runtime.operators.join.lookup.AsyncLookupJoinRunner;
 import org.apache.flink.table.runtime.operators.join.lookup.AsyncLookupJoinWithCalcRunner;
 import org.apache.flink.table.runtime.operators.join.lookup.LookupJoinRunner;
 import org.apache.flink.table.runtime.operators.join.lookup.LookupJoinWithCalcRunner;
+import org.apache.flink.table.runtime.operators.join.lookup.ResultRetryStrategy;
 import org.apache.flink.table.runtime.types.PlannerTypeUtils;
 import org.apache.flink.table.runtime.types.TypeInfoDataTypeConverter;
 import org.apache.flink.table.runtime.typeutils.InternalSerializers;
 import org.apache.flink.table.runtime.typeutils.InternalTypeInfo;
-import org.apache.flink.table.sources.LookupableTableSource;
-import org.apache.flink.table.sources.TableSource;
 import org.apache.flink.table.types.logical.LogicalType;
 import org.apache.flink.table.types.logical.RowType;
+import org.apache.flink.types.RowKind;
+import org.apache.flink.util.Preconditions;
 
+import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.annotation.JsonInclude;
 import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.annotation.JsonProperty;
 
 import org.apache.calcite.plan.RelOptTable;
@@ -88,12 +98,16 @@ import org.apache.commons.lang3.StringUtils;
 
 import javax.annotation.Nullable;
 
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.stream.Collectors;
 
+import static org.apache.flink.table.planner.calcite.FlinkTypeFactory.toLogicalType;
+import static org.apache.flink.table.planner.utils.ShortcutUtils.unwrapTypeFactory;
 import static org.apache.flink.util.Preconditions.checkArgument;
 import static org.apache.flink.util.Preconditions.checkNotNull;
 
@@ -133,18 +147,29 @@ import static org.apache.flink.util.Preconditions.checkNotNull;
  * 3) join left input record and lookup-ed records <br>
  * 4) only outputs the rows which match to the condition <br>
  */
-public abstract class CommonExecLookupJoin extends ExecNodeBase<RowData>
-        implements SingleTransformationTranslator<RowData> {
+public abstract class CommonExecLookupJoin extends ExecNodeBase<RowData> {
 
     public static final String LOOKUP_JOIN_TRANSFORMATION = "lookup-join";
 
+    public static final String LOOKUP_JOIN_MATERIALIZE_TRANSFORMATION = "lookup-join-materialize";
+
+    public static final String LOOKUP_JOIN_KEY_ORDERED_TRANSFORMATION = "lookup-join-key-ordered";
+
     public static final String FIELD_NAME_JOIN_TYPE = "joinType";
-    public static final String FIELD_NAME_JOIN_CONDITION = "joinCondition";
+    public static final String FIELD_NAME_PRE_FILTER_CONDITION = "preFilterCondition";
+    public static final String FIELD_NAME_REMAINING_JOIN_CONDITION = "joinCondition";
     public static final String FIELD_NAME_TEMPORAL_TABLE = "temporalTable";
     public static final String FIELD_NAME_LOOKUP_KEYS = "lookupKeys";
     public static final String FIELD_NAME_PROJECTION_ON_TEMPORAL_TABLE =
             "projectionOnTemporalTable";
     public static final String FIELD_NAME_FILTER_ON_TEMPORAL_TABLE = "filterOnTemporalTable";
+
+    public static final String FIELD_NAME_INPUT_CHANGELOG_MODE = "inputChangelogMode";
+
+    public static final String FIELD_NAME_ASYNC_OPTIONS = "asyncOptions";
+    public static final String FIELD_NAME_RETRY_OPTIONS = "retryOptions";
+    public static final String FIELD_NAME_PREFER_CUSTOM_SHUFFLE = "preferCustomShuffle";
+    public static final String CUSTOM_SHUFFLE_TRANSFORMATION = "custom-shuffle";
 
     @JsonProperty(FIELD_NAME_JOIN_TYPE)
     private final FlinkJoinType joinType;
@@ -154,7 +179,7 @@ public abstract class CommonExecLookupJoin extends ExecNodeBase<RowData>
      * or field from right table.
      */
     @JsonProperty(FIELD_NAME_LOOKUP_KEYS)
-    private final Map<Integer, LookupJoinUtil.LookupKey> lookupKeys;
+    private final Map<Integer, FunctionCallUtil.FunctionParam> lookupKeys;
 
     @JsonProperty(FIELD_NAME_TEMPORAL_TABLE)
     private final TemporalTableSourceSpec temporalTableSourceSpec;
@@ -165,56 +190,75 @@ public abstract class CommonExecLookupJoin extends ExecNodeBase<RowData>
     @JsonProperty(FIELD_NAME_FILTER_ON_TEMPORAL_TABLE)
     private final @Nullable RexNode filterOnTemporalTable;
 
-    /** join condition except equi-conditions extracted as lookup keys. */
-    @JsonProperty(FIELD_NAME_JOIN_CONDITION)
-    private final @Nullable RexNode joinCondition;
+    /** pre-filter condition on left input except lookup keys. */
+    @JsonProperty(FIELD_NAME_PRE_FILTER_CONDITION)
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    private final @Nullable RexNode preFilterCondition;
 
-    private final boolean existCalcOnTemporalTable;
+    /** remaining join condition except pre-filter & equi-conditions except lookup keys. */
+    @JsonProperty(FIELD_NAME_REMAINING_JOIN_CONDITION)
+    private final @Nullable RexNode remainingJoinCondition;
 
-    private final @Nullable RelDataType temporalTableOutputType;
+    @JsonProperty(FIELD_NAME_INPUT_CHANGELOG_MODE)
+    private final ChangelogMode inputChangelogMode;
+
+    @JsonProperty(FIELD_NAME_ASYNC_OPTIONS)
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    private final @Nullable FunctionCallUtil.AsyncOptions asyncLookupOptions;
+
+    @JsonProperty(FIELD_NAME_RETRY_OPTIONS)
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    private final @Nullable LookupJoinUtil.RetryLookupOptions retryOptions;
+
+    @JsonProperty(FIELD_NAME_PREFER_CUSTOM_SHUFFLE)
+    private final boolean preferCustomShuffle;
 
     protected CommonExecLookupJoin(
             int id,
             ExecNodeContext context,
+            ReadableConfig persistedConfig,
             FlinkJoinType joinType,
-            @Nullable RexNode joinCondition,
+            @Nullable RexNode preFilterCondition,
+            @Nullable RexNode remainingJoinCondition,
             // TODO: refactor this into TableSourceTable, once legacy TableSource is removed
             TemporalTableSourceSpec temporalTableSourceSpec,
-            Map<Integer, LookupJoinUtil.LookupKey> lookupKeys,
+            Map<Integer, FunctionCallUtil.FunctionParam> lookupKeys,
             @Nullable List<RexNode> projectionOnTemporalTable,
             @Nullable RexNode filterOnTemporalTable,
+            @Nullable FunctionCallUtil.AsyncOptions asyncLookupOptions,
+            @Nullable LookupJoinUtil.RetryLookupOptions retryOptions,
+            ChangelogMode inputChangelogMode,
             List<InputProperty> inputProperties,
             RowType outputType,
-            String description) {
-        super(id, context, inputProperties, outputType, description);
+            String description,
+            boolean preferCustomShuffle) {
+        super(id, context, persistedConfig, inputProperties, outputType, description);
         checkArgument(inputProperties.size() == 1);
         this.joinType = checkNotNull(joinType);
-        this.joinCondition = joinCondition;
+        this.preFilterCondition = preFilterCondition;
+        this.remainingJoinCondition = remainingJoinCondition;
         this.lookupKeys = Collections.unmodifiableMap(checkNotNull(lookupKeys));
         this.temporalTableSourceSpec = checkNotNull(temporalTableSourceSpec);
         this.projectionOnTemporalTable = projectionOnTemporalTable;
         this.filterOnTemporalTable = filterOnTemporalTable;
-        if (null != projectionOnTemporalTable) {
-            this.existCalcOnTemporalTable = true;
-            this.temporalTableOutputType =
-                    RexUtil.createStructType(
-                            FlinkTypeFactory.INSTANCE(), projectionOnTemporalTable);
-        } else {
-            this.existCalcOnTemporalTable = false;
-            temporalTableOutputType = null;
-        }
+        this.inputChangelogMode = inputChangelogMode;
+        this.asyncLookupOptions = asyncLookupOptions;
+        this.retryOptions = retryOptions;
+        this.preferCustomShuffle = preferCustomShuffle;
     }
 
     public TemporalTableSourceSpec getTemporalTableSourceSpec() {
         return temporalTableSourceSpec;
     }
 
-    @Override
-    @SuppressWarnings("unchecked")
-    public Transformation<RowData> translateToPlanInternal(
-            PlannerBase planner, ExecNodeConfig config) {
+    protected Transformation<RowData> createJoinTransformation(
+            PlannerBase planner,
+            ExecNodeConfig config,
+            boolean upsertMaterialize,
+            boolean lookupKeyContainsPrimaryKey) {
         RelOptTable temporalTable =
-                temporalTableSourceSpec.getTemporalTable(planner.getFlinkContext());
+                temporalTableSourceSpec.getTemporalTable(
+                        planner.getFlinkContext(), unwrapTypeFactory(planner));
         // validate whether the node is valid and supported.
         validate(temporalTable);
         final ExecEdge inputEdge = getInputEdges().get(0);
@@ -222,67 +266,155 @@ public abstract class CommonExecLookupJoin extends ExecNodeBase<RowData>
         RowType tableSourceRowType = FlinkTypeFactory.toLogicalRowType(temporalTable.getRowType());
         RowType resultRowType = (RowType) getOutputType();
         validateLookupKeyType(lookupKeys, inputRowType, tableSourceRowType);
+        boolean isAsyncEnabled = null != asyncLookupOptions;
+        ResultRetryStrategy retryStrategy =
+                retryOptions != null ? retryOptions.toRetryStrategy() : null;
 
-        boolean isAsyncEnabled = false;
-        UserDefinedFunction userDefinedFunction =
-                LookupJoinUtil.getLookupFunction(temporalTable, lookupKeys.keySet());
-        UserDefinedFunctionHelper.prepareInstance(config, userDefinedFunction);
-
-        if (userDefinedFunction instanceof AsyncTableFunction) {
-            isAsyncEnabled = true;
+        boolean tryApplyCustomShuffle = preferCustomShuffle && !upsertMaterialize;
+        UserDefinedFunction lookupFunction =
+                LookupJoinUtil.getLookupFunction(
+                        temporalTable,
+                        lookupKeys.keySet(),
+                        planner.getFlinkContext().getClassLoader(),
+                        isAsyncEnabled,
+                        retryStrategy,
+                        tryApplyCustomShuffle);
+        Transformation<RowData> inputTransformation =
+                (Transformation<RowData>) inputEdge.translateToPlan(planner);
+        if (tryApplyCustomShuffle) {
+            inputTransformation =
+                    LookupJoinUtil.tryApplyCustomShufflePartitioner(
+                            planner,
+                            temporalTable,
+                            inputRowType,
+                            lookupKeys,
+                            inputTransformation,
+                            inputChangelogMode,
+                            createTransformationMeta(CUSTOM_SHUFFLE_TRANSFORMATION, config));
         }
 
+        UserDefinedFunctionHelper.prepareInstance(config, lookupFunction);
+
         boolean isLeftOuterJoin = joinType == FlinkJoinType.LEFT;
-        StreamOperatorFactory<RowData> operatorFactory;
         if (isAsyncEnabled) {
-            operatorFactory =
-                    createAsyncLookupJoin(
-                            temporalTable,
-                            config,
-                            lookupKeys,
-                            (AsyncTableFunction<Object>) userDefinedFunction,
-                            planner.getRelBuilder(),
-                            inputRowType,
-                            tableSourceRowType,
-                            resultRowType,
-                            isLeftOuterJoin);
+            assert lookupFunction instanceof AsyncTableFunction;
+        }
+
+        if (upsertMaterialize) {
+            // upsertMaterialize only works on sync lookup mode, async lookup is unsupported.
+            assert !isAsyncEnabled && !inputChangelogMode.containsOnly(RowKind.INSERT);
+            return createSyncLookupJoinWithState(
+                    inputTransformation,
+                    temporalTable,
+                    config,
+                    planner.getFlinkContext().getClassLoader(),
+                    lookupKeys,
+                    (TableFunction<Object>) lookupFunction,
+                    planner.createRelBuilder(),
+                    inputRowType,
+                    tableSourceRowType,
+                    resultRowType,
+                    isLeftOuterJoin,
+                    planner.getExecEnv().getConfig().isObjectReuseEnabled(),
+                    lookupKeyContainsPrimaryKey);
         } else {
-            operatorFactory =
-                    createSyncLookupJoin(
+            StreamOperatorFactory<RowData> operatorFactory;
+            if (isAsyncEnabled) {
+                if (asyncLookupOptions.keyOrdered) {
+                    return createKeyOrderedAsyncLookupJoin(
+                            inputTransformation,
                             temporalTable,
                             config,
+                            planner.getFlinkContext().getClassLoader(),
                             lookupKeys,
-                            (TableFunction<Object>) userDefinedFunction,
-                            planner.getRelBuilder(),
+                            (AsyncTableFunction<Object>) lookupFunction,
+                            planner.createRelBuilder(),
                             inputRowType,
                             tableSourceRowType,
                             resultRowType,
                             isLeftOuterJoin,
-                            planner.getExecEnv().getConfig().isObjectReuseEnabled());
-        }
+                            asyncLookupOptions);
+                }
+                operatorFactory =
+                        createAsyncLookupJoin(
+                                temporalTable,
+                                config,
+                                planner.getFlinkContext().getClassLoader(),
+                                lookupKeys,
+                                (AsyncTableFunction<Object>) lookupFunction,
+                                planner.createRelBuilder(),
+                                inputRowType,
+                                tableSourceRowType,
+                                resultRowType,
+                                isLeftOuterJoin,
+                                asyncLookupOptions,
+                                null);
+            } else {
+                operatorFactory =
+                        createSyncLookupJoin(
+                                temporalTable,
+                                config,
+                                planner.getFlinkContext().getClassLoader(),
+                                lookupKeys,
+                                (TableFunction<Object>) lookupFunction,
+                                planner.createRelBuilder(),
+                                inputRowType,
+                                tableSourceRowType,
+                                resultRowType,
+                                isLeftOuterJoin,
+                                planner.getExecEnv().getConfig().isObjectReuseEnabled());
+            }
 
-        Transformation<RowData> inputTransformation =
-                (Transformation<RowData>) inputEdge.translateToPlan(planner);
-        return ExecNodeUtil.createOneInputTransformation(
-                inputTransformation,
-                createTransformationMeta(LOOKUP_JOIN_TRANSFORMATION, config),
-                operatorFactory,
-                InternalTypeInfo.of(resultRowType),
-                inputTransformation.getParallelism());
+            return ExecNodeUtil.createOneInputTransformation(
+                    inputTransformation,
+                    createTransformationMeta(LOOKUP_JOIN_TRANSFORMATION, config),
+                    operatorFactory,
+                    InternalTypeInfo.of(resultRowType),
+                    inputTransformation.getParallelism(),
+                    false);
+        }
     }
 
+    protected abstract Transformation<RowData> createKeyOrderedAsyncLookupJoin(
+            Transformation<RowData> inputTransformation,
+            RelOptTable temporalTable,
+            ExecNodeConfig config,
+            ClassLoader classLoader,
+            Map<Integer, FunctionCallUtil.FunctionParam> allLookupKeys,
+            AsyncTableFunction<Object> asyncLookupFunction,
+            RelBuilder relBuilder,
+            RowType inputRowType,
+            RowType tableSourceRowType,
+            RowType resultRowType,
+            boolean isLeftOuterJoin,
+            LookupJoinUtil.AsyncOptions asyncLookupOptions);
+
+    protected abstract Transformation<RowData> createSyncLookupJoinWithState(
+            Transformation<RowData> inputTransformation,
+            RelOptTable temporalTable,
+            ExecNodeConfig config,
+            ClassLoader classLoader,
+            Map<Integer, FunctionCallUtil.FunctionParam> allLookupKeys,
+            TableFunction<?> syncLookupFunction,
+            RelBuilder relBuilder,
+            RowType inputRowType,
+            RowType tableSourceRowType,
+            RowType resultRowType,
+            boolean isLeftOuterJoin,
+            boolean isObjectReuseEnabled,
+            boolean lookupKeyContainsPrimaryKey);
+
     protected void validateLookupKeyType(
-            final Map<Integer, LookupJoinUtil.LookupKey> lookupKeys,
+            final Map<Integer, FunctionCallUtil.FunctionParam> lookupKeys,
             final RowType inputRowType,
             final RowType tableSourceRowType) {
         final List<String> imCompatibleConditions = new LinkedList<>();
         lookupKeys.entrySet().stream()
-                .filter(entry -> entry.getValue() instanceof LookupJoinUtil.FieldRefLookupKey)
+                .filter(entry -> entry.getValue() instanceof FunctionCallUtil.FieldRef)
                 .forEach(
                         entry -> {
                             int rightKey = entry.getKey();
-                            int leftKey =
-                                    ((LookupJoinUtil.FieldRefLookupKey) entry.getValue()).index;
+                            int leftKey = ((FunctionCallUtil.FieldRef) entry.getValue()).index;
                             LogicalType leftType = inputRowType.getTypeAt(leftKey);
                             LogicalType rightType = tableSourceRowType.getTypeAt(rightKey);
                             boolean isCompatible =
@@ -306,72 +438,82 @@ public abstract class CommonExecLookupJoin extends ExecNodeBase<RowData>
     }
 
     @SuppressWarnings("unchecked")
-    private StreamOperatorFactory<RowData> createAsyncLookupJoin(
+    protected StreamOperatorFactory<RowData> createAsyncLookupJoin(
             RelOptTable temporalTable,
             ExecNodeConfig config,
-            Map<Integer, LookupJoinUtil.LookupKey> allLookupKeys,
+            ClassLoader classLoader,
+            Map<Integer, FunctionCallUtil.FunctionParam> allLookupKeys,
             AsyncTableFunction<Object> asyncLookupFunction,
             RelBuilder relBuilder,
             RowType inputRowType,
             RowType tableSourceRowType,
             RowType resultRowType,
-            boolean isLeftOuterJoin) {
-
-        int asyncBufferCapacity =
-                config.get(ExecutionConfigOptions.TABLE_EXEC_ASYNC_LOOKUP_BUFFER_CAPACITY);
-        long asyncTimeout =
-                config.get(ExecutionConfigOptions.TABLE_EXEC_ASYNC_LOOKUP_TIMEOUT).toMillis();
+            boolean isLeftOuterJoin,
+            LookupJoinUtil.AsyncOptions asyncLookupOptions,
+            @Nullable RowDataKeySelector keySelector) {
 
         DataTypeFactory dataTypeFactory =
                 ShortcutUtils.unwrapContext(relBuilder).getCatalogManager().getDataTypeFactory();
 
-        LookupJoinCodeGenerator.GeneratedTableFunctionWithDataType<AsyncFunction<RowData, Object>>
+        List<FunctionCallUtil.FunctionParam> convertedKeys =
+                Arrays.stream(LookupJoinUtil.getOrderedLookupKeys(allLookupKeys.keySet()))
+                        .mapToObj(allLookupKeys::get)
+                        .collect(Collectors.toList());
+
+        FunctionCallCodeGenerator.GeneratedTableFunctionWithDataType<AsyncFunction<RowData, Object>>
                 generatedFuncWithType =
                         LookupJoinCodeGenerator.generateAsyncLookupFunction(
-                                config.getTableConfig(),
+                                config,
+                                classLoader,
                                 dataTypeFactory,
                                 inputRowType,
                                 tableSourceRowType,
                                 resultRowType,
-                                allLookupKeys,
-                                LookupJoinUtil.getOrderedLookupKeys(allLookupKeys.keySet()),
+                                convertedKeys,
                                 asyncLookupFunction,
                                 StringUtils.join(temporalTable.getQualifiedName(), "."));
 
+        RelDataType projectionOutputRelDataType = getProjectionOutputRelDataType(relBuilder);
         RowType rightRowType =
-                Optional.ofNullable(temporalTableOutputType)
-                        .map(FlinkTypeFactory::toLogicalRowType)
-                        .orElse(tableSourceRowType);
+                getRightOutputRowType(projectionOutputRelDataType, tableSourceRowType);
         // a projection or filter after table source scan
         GeneratedResultFuture<TableFunctionResultFuture<RowData>> generatedResultFuture =
                 LookupJoinCodeGenerator.generateTableAsyncCollector(
-                        config.getTableConfig(),
+                        config,
+                        classLoader,
                         "TableFunctionResultFuture",
                         inputRowType,
                         rightRowType,
-                        JavaScalaConversionUtil.toScala(Optional.ofNullable(joinCondition)));
+                        JavaScalaConversionUtil.toScala(
+                                Optional.ofNullable(remainingJoinCondition)));
+        GeneratedFilterCondition generatedPreFilterCondition =
+                FilterCodeGenerator.generateFilterCondition(
+                        config, classLoader, preFilterCondition, inputRowType);
 
         DataStructureConverter<?, ?> fetcherConverter =
                 DataStructureConverters.getConverter(generatedFuncWithType.dataType());
         AsyncFunction<RowData, RowData> asyncFunc;
-        if (existCalcOnTemporalTable) {
+        if (projectionOnTemporalTable != null) {
             // a projection or filter after table source scan
             GeneratedFunction<FlatMapFunction<RowData, RowData>> generatedCalc =
                     LookupJoinCodeGenerator.generateCalcMapFunction(
-                            config.getTableConfig(),
+                            config,
+                            classLoader,
                             JavaScalaConversionUtil.toScala(projectionOnTemporalTable),
                             filterOnTemporalTable,
-                            temporalTableOutputType,
-                            tableSourceRowType);
+                            projectionOutputRelDataType,
+                            tableSourceRowType,
+                            ShortcutUtils.unwrapTypeFactory(relBuilder));
             asyncFunc =
                     new AsyncLookupJoinWithCalcRunner(
                             generatedFuncWithType.tableFunc(),
                             (DataStructureConverter<RowData, Object>) fetcherConverter,
                             generatedCalc,
                             generatedResultFuture,
+                            generatedPreFilterCondition,
                             InternalSerializers.create(rightRowType),
                             isLeftOuterJoin,
-                            asyncBufferCapacity);
+                            asyncLookupOptions.asyncBufferCapacity);
         } else {
             // right type is the same as table source row type, because no calc after temporal table
             asyncFunc =
@@ -379,21 +521,78 @@ public abstract class CommonExecLookupJoin extends ExecNodeBase<RowData>
                             generatedFuncWithType.tableFunc(),
                             (DataStructureConverter<RowData, Object>) fetcherConverter,
                             generatedResultFuture,
+                            generatedPreFilterCondition,
                             InternalSerializers.create(rightRowType),
                             isLeftOuterJoin,
-                            asyncBufferCapacity);
+                            asyncLookupOptions.asyncBufferCapacity);
         }
-
-        // force ORDERED output mode currently, optimize it to UNORDERED
-        // when the downstream do not need orderness
+        if (asyncLookupOptions.keyOrdered) {
+            Preconditions.checkState(
+                    AsyncDataStream.OutputMode.ORDERED.equals(asyncLookupOptions.asyncOutputMode));
+            return new TableKeyedAsyncWaitOperatorFactory<>(
+                    asyncFunc,
+                    keySelector,
+                    asyncLookupOptions.asyncTimeout,
+                    asyncLookupOptions.asyncBufferCapacity);
+        }
+        // Why not directly enable retry on 'AsyncWaitOperator'? because of two reasons:
+        // 1. AsyncLookupJoinRunner has a 'stateful' resultFutureBuffer bind to each input record
+        // (it's non-reenter-able) 2. can not lookup new value if cache empty values enabled when
+        // chained with the new AsyncCachingLookupFunction. So similar to sync lookup join with
+        // retry, use a 'RetryableAsyncLookupFunctionDelegator' to support retry.
         return new AsyncWaitOperatorFactory<>(
-                asyncFunc, asyncTimeout, asyncBufferCapacity, AsyncDataStream.OutputMode.ORDERED);
+                asyncFunc,
+                asyncLookupOptions.asyncTimeout,
+                asyncLookupOptions.asyncBufferCapacity,
+                asyncLookupOptions.asyncOutputMode);
     }
 
     private StreamOperatorFactory<RowData> createSyncLookupJoin(
             RelOptTable temporalTable,
             ExecNodeConfig config,
-            Map<Integer, LookupJoinUtil.LookupKey> allLookupKeys,
+            ClassLoader classLoader,
+            Map<Integer, FunctionCallUtil.FunctionParam> allLookupKeys,
+            TableFunction<?> syncLookupFunction,
+            RelBuilder relBuilder,
+            RowType inputRowType,
+            RowType tableSourceRowType,
+            RowType resultRowType,
+            boolean isLeftOuterJoin,
+            boolean isObjectReuseEnabled) {
+        return SimpleOperatorFactory.of(
+                new ProcessOperator<>(
+                        createSyncLookupJoinFunction(
+                                temporalTable,
+                                config,
+                                classLoader,
+                                allLookupKeys,
+                                syncLookupFunction,
+                                relBuilder,
+                                inputRowType,
+                                tableSourceRowType,
+                                resultRowType,
+                                isLeftOuterJoin,
+                                isObjectReuseEnabled)));
+    }
+
+    protected RelDataType getProjectionOutputRelDataType(RelBuilder relBuilder) {
+        return projectionOnTemporalTable != null
+                ? RexUtil.createStructType(unwrapTypeFactory(relBuilder), projectionOnTemporalTable)
+                : null;
+    }
+
+    protected RowType getRightOutputRowType(
+            RelDataType projectionOutputRelDataType, RowType tableSourceRowType) {
+        return projectionOutputRelDataType != null
+                ? (RowType) toLogicalType(projectionOutputRelDataType)
+                : tableSourceRowType;
+    }
+
+    protected ProcessFunction<RowData, RowData> createSyncLookupJoinFunction(
+            RelOptTable temporalTable,
+            ExecNodeConfig config,
+            ClassLoader classLoader,
+            Map<Integer, FunctionCallUtil.FunctionParam> allLookupKeys,
             TableFunction<?> syncLookupFunction,
             RelBuilder relBuilder,
             RowType inputRowType,
@@ -405,51 +604,59 @@ public abstract class CommonExecLookupJoin extends ExecNodeBase<RowData>
         DataTypeFactory dataTypeFactory =
                 ShortcutUtils.unwrapContext(relBuilder).getCatalogManager().getDataTypeFactory();
 
-        int[] orderedLookupKeys = LookupJoinUtil.getOrderedLookupKeys(allLookupKeys.keySet());
-
+        List<FunctionCallUtil.FunctionParam> convertedKeys =
+                Arrays.stream(LookupJoinUtil.getOrderedLookupKeys(allLookupKeys.keySet()))
+                        .mapToObj(allLookupKeys::get)
+                        .collect(Collectors.toList());
         GeneratedFunction<FlatMapFunction<RowData, RowData>> generatedFetcher =
                 LookupJoinCodeGenerator.generateSyncLookupFunction(
-                        config.getTableConfig(),
+                        config,
+                        classLoader,
                         dataTypeFactory,
                         inputRowType,
                         tableSourceRowType,
                         resultRowType,
-                        allLookupKeys,
-                        orderedLookupKeys,
+                        convertedKeys,
                         syncLookupFunction,
                         StringUtils.join(temporalTable.getQualifiedName(), "."),
                         isObjectReuseEnabled);
 
+        RelDataType projectionOutputRelDataType = getProjectionOutputRelDataType(relBuilder);
         RowType rightRowType =
-                Optional.ofNullable(temporalTableOutputType)
-                        .map(FlinkTypeFactory::toLogicalRowType)
-                        .orElse(tableSourceRowType);
-        CodeGeneratorContext ctx = new CodeGeneratorContext(config.getTableConfig());
-        GeneratedCollector<TableFunctionCollector<RowData>> generatedCollector =
+                getRightOutputRowType(projectionOutputRelDataType, tableSourceRowType);
+        GeneratedCollector<ListenableCollector<RowData>> generatedCollector =
                 LookupJoinCodeGenerator.generateCollector(
-                        ctx,
+                        new CodeGeneratorContext(config, classLoader),
                         inputRowType,
                         rightRowType,
                         resultRowType,
-                        JavaScalaConversionUtil.toScala(Optional.ofNullable(joinCondition)),
+                        JavaScalaConversionUtil.toScala(
+                                Optional.ofNullable(remainingJoinCondition)),
                         JavaScalaConversionUtil.toScala(Optional.empty()),
                         true);
+
+        GeneratedFilterCondition generatedPreFilterCondition =
+                FilterCodeGenerator.generateFilterCondition(
+                        config, classLoader, preFilterCondition, inputRowType);
         ProcessFunction<RowData, RowData> processFunc;
-        if (existCalcOnTemporalTable) {
+        if (projectionOnTemporalTable != null) {
             // a projection or filter after table source scan
             GeneratedFunction<FlatMapFunction<RowData, RowData>> generatedCalc =
                     LookupJoinCodeGenerator.generateCalcMapFunction(
-                            config.getTableConfig(),
+                            config,
+                            classLoader,
                             JavaScalaConversionUtil.toScala(projectionOnTemporalTable),
                             filterOnTemporalTable,
-                            temporalTableOutputType,
-                            tableSourceRowType);
+                            projectionOutputRelDataType,
+                            tableSourceRowType,
+                            ShortcutUtils.unwrapTypeFactory(relBuilder));
 
             processFunc =
                     new LookupJoinWithCalcRunner(
                             generatedFetcher,
                             generatedCalc,
                             generatedCollector,
+                            generatedPreFilterCondition,
                             isLeftOuterJoin,
                             rightRowType.getFieldCount());
         } else {
@@ -458,10 +665,11 @@ public abstract class CommonExecLookupJoin extends ExecNodeBase<RowData>
                     new LookupJoinRunner(
                             generatedFetcher,
                             generatedCollector,
+                            generatedPreFilterCondition,
                             isLeftOuterJoin,
                             rightRowType.getFieldCount());
         }
-        return SimpleOperatorFactory.of(new ProcessOperator<>(processFunc));
+        return processFunc;
     }
 
     // ----------------------------------------------------------------------------------------

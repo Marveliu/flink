@@ -19,7 +19,6 @@
 package org.apache.flink.table.planner.plan.nodes.exec.serde;
 
 import org.apache.flink.api.common.typeutils.base.LocalDateTimeSerializer;
-import org.apache.flink.configuration.Configuration;
 import org.apache.flink.table.api.DataTypes;
 import org.apache.flink.table.api.TableConfig;
 import org.apache.flink.table.api.ValidationException;
@@ -29,18 +28,19 @@ import org.apache.flink.table.api.dataview.MapView;
 import org.apache.flink.table.catalog.CatalogManager;
 import org.apache.flink.table.catalog.ObjectIdentifier;
 import org.apache.flink.table.planner.plan.nodes.exec.serde.DataTypeJsonSerdeTest.PojoClass;
-import org.apache.flink.table.planner.typeutils.DataViewUtils;
+import org.apache.flink.table.runtime.dataview.DataViewUtils;
 import org.apache.flink.table.runtime.typeutils.ExternalSerializer;
 import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.types.logical.ArrayType;
 import org.apache.flink.table.types.logical.BigIntType;
 import org.apache.flink.table.types.logical.BinaryType;
+import org.apache.flink.table.types.logical.BitmapType;
 import org.apache.flink.table.types.logical.BooleanType;
 import org.apache.flink.table.types.logical.CharType;
 import org.apache.flink.table.types.logical.DateType;
 import org.apache.flink.table.types.logical.DayTimeIntervalType;
 import org.apache.flink.table.types.logical.DecimalType;
-import org.apache.flink.table.types.logical.DistinctType;
+import org.apache.flink.table.types.logical.DescriptorType;
 import org.apache.flink.table.types.logical.DoubleType;
 import org.apache.flink.table.types.logical.FloatType;
 import org.apache.flink.table.types.logical.IntType;
@@ -53,21 +53,24 @@ import org.apache.flink.table.types.logical.RawType;
 import org.apache.flink.table.types.logical.RowType;
 import org.apache.flink.table.types.logical.SmallIntType;
 import org.apache.flink.table.types.logical.StructuredType;
+import org.apache.flink.table.types.logical.StructuredType.StructuredAttribute;
 import org.apache.flink.table.types.logical.SymbolType;
 import org.apache.flink.table.types.logical.TimeType;
 import org.apache.flink.table.types.logical.TimestampKind;
 import org.apache.flink.table.types.logical.TimestampType;
 import org.apache.flink.table.types.logical.TinyIntType;
+import org.apache.flink.table.types.logical.UuidType;
 import org.apache.flink.table.types.logical.VarBinaryType;
 import org.apache.flink.table.types.logical.VarCharType;
+import org.apache.flink.table.types.logical.VariantType;
 import org.apache.flink.table.types.logical.YearMonthIntervalType;
 import org.apache.flink.table.types.logical.ZonedTimestampType;
 import org.apache.flink.table.types.utils.DataTypeFactoryMock;
 import org.apache.flink.table.utils.CatalogManagerMocks;
 import org.apache.flink.types.Row;
+import org.apache.flink.util.jackson.JacksonMapperFactory;
 
 import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.databind.JsonNode;
-import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.databind.ObjectMapper;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.parallel.Execution;
@@ -78,7 +81,6 @@ import java.io.IOException;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
 
@@ -112,18 +114,17 @@ public class LogicalTypeJsonSerdeTest {
     public void testIdentifierSerde() throws IOException {
         final DataTypeFactoryMock dataTypeFactoryMock = new DataTypeFactoryMock();
         final TableConfig tableConfig = TableConfig.getDefault();
-        final Configuration config = tableConfig.getConfiguration();
         final CatalogManager catalogManager =
                 preparedCatalogManager().dataTypeFactory(dataTypeFactoryMock).build();
         final SerdeContext serdeContext = configuredSerdeContext(catalogManager, tableConfig);
 
         // minimal plan content
-        config.set(TableConfigOptions.PLAN_COMPILE_CATALOG_OBJECTS, IDENTIFIER);
+        tableConfig.set(TableConfigOptions.PLAN_COMPILE_CATALOG_OBJECTS, IDENTIFIER);
         final String minimalJson = toJson(serdeContext, STRUCTURED_TYPE);
         assertThat(minimalJson).isEqualTo("\"`default_catalog`.`default_database`.`MyType`\"");
 
         // catalog lookup with miss
-        config.set(
+        tableConfig.set(
                 TableConfigOptions.PLAN_RESTORE_CATALOG_OBJECTS,
                 TableConfigOptions.CatalogPlanRestore.IDENTIFIER);
         dataTypeFactoryMock.logicalType = Optional.empty();
@@ -131,7 +132,7 @@ public class LogicalTypeJsonSerdeTest {
                 .satisfies(anyCauseMatches(ValidationException.class, "No type found."));
 
         // catalog lookup
-        config.set(
+        tableConfig.set(
                 TableConfigOptions.PLAN_RESTORE_CATALOG_OBJECTS,
                 TableConfigOptions.CatalogPlanRestore.IDENTIFIER);
         dataTypeFactoryMock.logicalType = Optional.of(STRUCTURED_TYPE);
@@ -139,17 +140,17 @@ public class LogicalTypeJsonSerdeTest {
                 .isEqualTo(STRUCTURED_TYPE);
 
         // maximum plan content
-        config.set(TableConfigOptions.PLAN_COMPILE_CATALOG_OBJECTS, ALL);
+        tableConfig.set(TableConfigOptions.PLAN_COMPILE_CATALOG_OBJECTS, ALL);
         final String maximumJson = toJson(serdeContext, STRUCTURED_TYPE);
-        final ObjectMapper mapper = new ObjectMapper();
-        final JsonNode maximumJsonNode = mapper.readTree(maximumJson);
+        final JsonNode maximumJsonNode =
+                JacksonMapperFactory.createObjectMapper().readTree(maximumJson);
         assertThat(maximumJsonNode.get(LogicalTypeJsonSerializer.FIELD_NAME_ATTRIBUTES))
                 .isNotNull();
         assertThat(maximumJsonNode.get(LogicalTypeJsonSerializer.FIELD_NAME_DESCRIPTION).asText())
                 .isEqualTo("My original type.");
 
         // catalog lookup with miss
-        config.set(
+        tableConfig.set(
                 TableConfigOptions.PLAN_RESTORE_CATALOG_OBJECTS,
                 TableConfigOptions.CatalogPlanRestore.IDENTIFIER);
         dataTypeFactoryMock.logicalType = Optional.empty();
@@ -157,7 +158,7 @@ public class LogicalTypeJsonSerdeTest {
                 .satisfies(anyCauseMatches(ValidationException.class, "No type found."));
 
         // catalog lookup
-        config.set(
+        tableConfig.set(
                 TableConfigOptions.PLAN_RESTORE_CATALOG_OBJECTS,
                 TableConfigOptions.CatalogPlanRestore.IDENTIFIER);
         dataTypeFactoryMock.logicalType = Optional.of(UPDATED_STRUCTURED_TYPE);
@@ -165,7 +166,7 @@ public class LogicalTypeJsonSerdeTest {
                 .isEqualTo(UPDATED_STRUCTURED_TYPE);
 
         // no lookup
-        config.set(
+        tableConfig.set(
                 TableConfigOptions.PLAN_RESTORE_CATALOG_OBJECTS,
                 TableConfigOptions.CatalogPlanRestore.ALL);
         dataTypeFactoryMock.logicalType = Optional.of(UPDATED_STRUCTURED_TYPE);
@@ -267,6 +268,13 @@ public class LogicalTypeJsonSerdeTest {
                         new MultisetType(VarCharType.ofEmptyLiteral()),
                         new MultisetType(BinaryType.ofEmptyLiteral()),
                         new MultisetType(VarBinaryType.ofEmptyLiteral()),
+                        new BitmapType(),
+                        new UuidType(),
+                        new VariantType(),
+                        new ArrayType(new VariantType()),
+                        new MultisetType(new VariantType()),
+                        new MapType(new VarCharType(5), new VariantType()),
+                        RowType.of(new VariantType(), new VariantType(false)),
                         RowType.of(new BigIntType(), new IntType(false), new VarCharType(200)),
                         RowType.of(
                                 new LogicalType[] {
@@ -286,53 +294,33 @@ public class LogicalTypeJsonSerdeTest {
                                 VarCharType.ofEmptyLiteral(),
                                 BinaryType.ofEmptyLiteral(),
                                 VarBinaryType.ofEmptyLiteral()),
-                        // registered structured type
-                        StructuredType.newBuilder(
-                                        ObjectIdentifier.of("cat", "db", "structuredType"),
-                                        PojoClass.class)
-                                .attributes(
-                                        Arrays.asList(
-                                                new StructuredType.StructuredAttribute(
-                                                        "f0", new IntType(true)),
-                                                new StructuredType.StructuredAttribute(
-                                                        "f1", new BigIntType(true)),
-                                                new StructuredType.StructuredAttribute(
-                                                        "f2", new VarCharType(200), "desc")))
-                                .comparison(StructuredType.StructuredComparison.FULL)
-                                .setFinal(false)
-                                .setInstantiable(false)
-                                .superType(
-                                        StructuredType.newBuilder(
-                                                        ObjectIdentifier.of(
-                                                                "cat", "db", "structuredType2"))
-                                                .attributes(
-                                                        Collections.singletonList(
-                                                                new StructuredType
-                                                                        .StructuredAttribute(
-                                                                        "f0",
-                                                                        new BigIntType(false))))
-                                                .build())
-                                .description("description for StructuredType")
-                                .build(),
-                        // unregistered structured type
+                        // inline structured type with resolved class
                         StructuredType.newBuilder(PojoClass.class)
                                 .attributes(
                                         Arrays.asList(
-                                                new StructuredType.StructuredAttribute(
-                                                        "f0", new IntType(true)),
-                                                new StructuredType.StructuredAttribute(
-                                                        "f1", new BigIntType(true)),
-                                                new StructuredType.StructuredAttribute(
+                                                new StructuredAttribute("f0", new IntType(true)),
+                                                new StructuredAttribute("f1", new BigIntType(true)),
+                                                new StructuredAttribute(
                                                         "f2", new VarCharType(200), "desc")))
                                 .build(),
-                        // registered distinct type
-                        DistinctType.newBuilder(
-                                        ObjectIdentifier.of("cat", "db", "distinctType"),
-                                        new VarCharType(5))
+                        // inline structured type with class name only
+                        StructuredType.newBuilder("NotInClassPathPojo")
+                                .attributes(
+                                        Arrays.asList(
+                                                new StructuredAttribute("f0", new IntType(true)),
+                                                new StructuredAttribute("f1", new BigIntType(true)),
+                                                new StructuredAttribute(
+                                                        "f2", new VarCharType(200), "desc")))
                                 .build(),
-                        DistinctType.newBuilder(
-                                        ObjectIdentifier.of("cat", "db", "distinctType"),
-                                        new VarCharType(false, 5))
+                        // inline structured type with time indicator type
+                        StructuredType.newBuilder(PojoClass.class.getName())
+                                .attributes(
+                                        Arrays.asList(
+                                                new StructuredAttribute("f0", new IntType(true)),
+                                                new StructuredAttribute(
+                                                        "f1",
+                                                        new TimestampType(
+                                                                false, TimestampKind.ROWTIME, 3))))
                                 .build(),
                         // custom RawType
                         new RawType<>(LocalDateTime.class, LocalDateTimeSerializer.INSTANCE),
@@ -340,7 +328,8 @@ public class LogicalTypeJsonSerdeTest {
                         new RawType<>(
                                 Row.class,
                                 ExternalSerializer.of(
-                                        DataTypes.ROW(DataTypes.INT(), DataTypes.STRING()))));
+                                        DataTypes.ROW(DataTypes.INT(), DataTypes.STRING()))),
+                        new DescriptorType());
 
         final List<LogicalType> mutableTypes = new ArrayList<>(types);
 

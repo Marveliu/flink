@@ -20,7 +20,13 @@ from typing import Union, TypeVar, Generic, Any
 
 from pyflink import add_version_doc
 from pyflink.java_gateway import get_gateway
-from pyflink.table.types import DataType, DataTypes, _to_java_data_type
+from pyflink.table.types import (
+    DataType,
+    DataTypes,
+    _TableDataTypeLike,
+    _to_java_data_type,
+)
+from pyflink.util.api_stability_decorators import PublicEvolving
 from pyflink.util.java_utils import to_jarray
 
 __all__ = [
@@ -33,7 +39,6 @@ __all__ = [
     'JsonQueryWrapper',
     'JsonQueryOnEmptyOrError'
 ]
-
 
 _aggregation_doc = """
 {op_desc}
@@ -89,7 +94,10 @@ _string_doc_seealso = """
              :func:`~Expression.overlay`, :func:`~Expression.regexp_replace`,
              :func:`~Expression.regexp_extract`, :func:`~Expression.substring`,
              :py:attr:`~Expression.from_base64`, :py:attr:`~Expression.to_base64`,
-             :py:attr:`~Expression.ltrim`, :py:attr:`~Expression.rtrim`, :func:`~Expression.repeat`
+             :func:`~Expression.ltrim`, :func:`~Expression.rtrim`, :func:`~Expression.repeat`,
+             :func:`~Expression.json_quote`, :func:`~Expression.json_unquote`,
+             :func:`~Expression.parse_json`, :func:`~Expression.try_parse_json`,
+             :func:`~Expression.parse_xml`, :func:`~Expression.try_parse_xml`
 """
 
 _temporal_doc_seealso = """
@@ -161,7 +169,7 @@ def _make_aggregation_doc():
         Expression.sum: "Returns the sum of the numeric field across all input values. "
                         "If all values are null, null is returned.",
         Expression.sum0: "Returns the sum of the numeric field across all input values. "
-                        "If all values are null, 0 is returned.",
+                         "If all values are null, 0 is returned.",
         Expression.min: "Returns the minimum value of field across all input values.",
         Expression.max: "Returns the maximum value of field across all input values.",
         Expression.count: "Returns the number of input rows for which the field is not null.",
@@ -187,11 +195,14 @@ def _make_string_doc():
         Expression.init_cap, Expression.like, Expression.similar, Expression.position,
         Expression.lpad, Expression.rpad, Expression.overlay, Expression.regexp_replace,
         Expression.regexp_extract, Expression.from_base64, Expression.to_base64,
-        Expression.ltrim, Expression.rtrim, Expression.repeat
+        Expression.ltrim, Expression.rtrim, Expression.repeat,
+        Expression.json_quote, Expression.json_unquote,
+        Expression.parse_json, Expression.try_parse_json,
+        Expression.parse_xml, Expression.try_parse_xml
     ]
 
     for func in string_funcs:
-        func.__doc__ = func.__doc__.replace('  ', '') + _string_doc_seealso
+        func.__doc__ = func.__doc__ + _string_doc_seealso
 
 
 def _make_temporal_doc():
@@ -201,7 +212,7 @@ def _make_temporal_doc():
     ]
 
     for func in temporal_funcs:
-        func.__doc__ = func.__doc__.replace('  ', '') + _temporal_doc_seealso
+        func.__doc__ = func.__doc__ + _temporal_doc_seealso
 
 
 def _make_time_doc():
@@ -262,17 +273,6 @@ def _get_java_expression(expr, to_expr: bool = False):
         return gateway.jvm.Expressions.lit(expr)
     else:
         return expr
-
-
-def _get_or_create_java_expression(expr: Union["Expression", str]):
-    if isinstance(expr, Expression):
-        return expr._j_expr
-    elif isinstance(expr, str):
-        from pyflink.table.expressions import col
-        return col(expr)._j_expr
-    else:
-        raise TypeError(
-            "Invalid argument: expected Expression or string, got {0}.".format(type(expr)))
 
 
 def _unary_op(op_name: str):
@@ -464,6 +464,7 @@ class JsonOnNull(Enum):
 T = TypeVar('T')
 
 
+@PublicEvolving()
 class Expression(Generic[T]):
     """
     Expressions represent a logical tree for producing a computation result.
@@ -488,7 +489,7 @@ class Expression(Generic[T]):
     # logic functions
     __and__ = _binary_op("and")
     __or__ = _binary_op("or")
-    __invert__ = _unary_op('isNotTrue')
+    __invert__ = _unary_op("not")
 
     __rand__ = _binary_op("and")
     __ror__ = _binary_op("or")
@@ -641,6 +642,12 @@ class Expression(Generic[T]):
         """
         return _binary_op("round")(self, places)
 
+    def concat(self, other: Union[str, 'Expression[str]']) -> 'Expression[str]':
+        """
+        Concatenates two strings.
+        """
+        return _binary_op("concat")(self, other)
+
     def between(self, lower_bound, upper_bound) -> 'Expression[bool]':
         """
         Returns true if the given expression is between lower_bound and upper_bound
@@ -762,6 +769,24 @@ class Expression(Generic[T]):
         return _unary_op("isNotFalse")(self)
 
     @property
+    def is_nan(self) -> 'Expression[bool]':
+        """
+        Returns true if the given numeric expression is NaN (Not-a-Number).
+
+        .. seealso:: :py:attr:`~Expression.is_not_nan`
+        """
+        return _unary_op("isNan")(self)
+
+    @property
+    def is_not_nan(self) -> 'Expression[bool]':
+        """
+        Returns true if the given numeric expression is not NaN (Not-a-Number).
+
+        .. seealso:: :py:attr:`~Expression.is_nan`
+        """
+        return _unary_op("isNotNan")(self)
+
+    @property
     def distinct(self) -> 'Expression':
         """
         Similar to a SQL distinct aggregation clause such as COUNT(DISTINCT a), declares that an
@@ -801,6 +826,30 @@ class Expression(Generic[T]):
         return _unary_op("avg")(self)
 
     @property
+    def first_value(self) -> 'Expression':
+        """
+        Returns the first value of field across all input values.
+        """
+        return _unary_op("firstValue")(self)
+
+    @property
+    def last_value(self) -> 'Expression':
+        """
+        Returns the last value of field across all input values.
+        """
+        return _unary_op("lastValue")(self)
+
+    def list_agg(self, separator: Union[str, 'Expression[str]'] = None) -> 'Expression[str]':
+        """
+        Concatenates the values of string expressions and places separator values between them.
+        The separator is not added at the end of string. The default value of separator is ‘,’.
+        """
+        if separator is None:
+            return _unary_op("listAgg")(self)
+        else:
+            return _binary_op("listAgg")(self, separator)
+
+    @property
     def stddev_pop(self) -> 'Expression':
         return _unary_op("stddevPop")(self)
 
@@ -820,6 +869,10 @@ class Expression(Generic[T]):
     def collect(self) -> 'Expression':
         return _unary_op("collect")(self)
 
+    @property
+    def array_agg(self) -> 'Expression':
+        return _unary_op("arrayAgg")(self)
+
     def alias(self, name: str, *extra_names: str) -> 'Expression[T]':
         """
         Specifies a name for an expression i.e. a field.
@@ -835,7 +888,32 @@ class Expression(Generic[T]):
         gateway = get_gateway()
         return _ternary_op("as")(self, name, to_jarray(gateway.jvm.String, extra_names))
 
-    def cast(self, data_type: DataType) -> 'Expression':
+    def as_argument(self, name: str) -> 'Expression':
+        """
+        Converts this expression into a named argument.
+
+        If the function declares a static signature (usually indicated by the "=>" assignment
+        operator), the framework is able to reorder named arguments and consider optional arguments
+        accordingly, before passing them into the function call.
+
+        .. note::
+            Not every function supports named arguments. Named arguments are not available for
+            signatures that are overloaded, use varargs, or any other kind of input type strategy.
+
+        Example:
+        ::
+
+            >>> table.select(
+            ...     call(
+            ...         "MyFunction",
+            ...         col("my_column").as_argument("input"),
+            ...         lit(42).as_argument("threshold")
+            ...     )
+            ... )
+        """
+        return _binary_op("asArgument")(self, name)
+
+    def cast(self, data_type: _TableDataTypeLike) -> 'Expression':
         """
         Returns a new value being cast to type type.
         A cast error throws an exception and fails the job.
@@ -849,7 +927,7 @@ class Expression(Generic[T]):
         """
         return _binary_op("cast")(self, _to_java_data_type(data_type))
 
-    def try_cast(self, data_type: DataType) -> 'Expression':
+    def try_cast(self, data_type: _TableDataTypeLike) -> 'Expression':
         """
         Like cast, but in case of error, returns NULL rather than failing the job.
 
@@ -911,7 +989,7 @@ class Expression(Generic[T]):
         ::
 
             >>> tab.where(col("a").in_(1, 2, 3))
-            >>> table_a.where(col("x").in_(table_b.select("y")))
+            >>> table_a.where(col("x").in_(table_b.select(col("y"))))
         """
         from pyflink.table import Table
         if isinstance(first_element_or_table, Table):
@@ -988,6 +1066,17 @@ class Expression(Generic[T]):
         """
         return _unary_op("hex")(self)
 
+    @property
+    def unhex(self) -> 'Expression':
+        """
+        Converts hexadecimal string expr to BINARY.
+        If the length of expr is odd, the first character is discarded
+        and the result is left padded with a null byte.
+
+        :return: a BINARY. null if expr is null or expr contains non-hex characters.
+        """
+        return _unary_op("unhex")(self)
+
     def truncate(self, n: Union[int, 'Expression[int]'] = 0) -> 'Expression[T]':
         """
         Returns a number of truncated to n decimal places.
@@ -997,7 +1086,54 @@ class Expression(Generic[T]):
         """
         return _binary_op("truncate")(self, n)
 
+    def percentile(self, percentage, frequency=None) -> 'Expression':
+        """
+        Returns the exact percentile value of expr at the specified percentage in a group.
+
+        percentage must be a literal numeric value between [0.0, 1.0] or an array of such values.
+        If a variable expression is passed to this function, the result will be calculated using
+        any one of them. frequency describes how many times expr should be counted, the default
+        value is 1.
+
+        If no expr lies exactly at the desired percentile, the result is calculated using linear
+        interpolation of the two nearest exprs. If expr or frequency is null, or frequency is not
+        positive, the input row will be ignored.
+
+        NOTE: It is recommended to use this function in a window scenario, as it typically offers
+        better performance. In a regular group aggregation scenario, users should be aware of the
+        performance overhead caused by a full sort triggered by each record.
+
+        :param percentage: A NUMERIC NOT NULL or ARRAY<NUMERIC NOT NULL> NOT NULL expression.
+        :param frequency: An optional INTEGER_NUMERIC expression.
+        :return: A DOUBLE if percentage is numeric, or an ARRAY<DOUBLE> if percentage is an
+                 array. null if percentage is an empty array.
+        """
+        if frequency is None:
+            return _binary_op("percentile")(self, percentage)
+        else:
+            return _ternary_op("percentile")(self, percentage, frequency)
+
     # ---------------------------- string functions ----------------------------------
+
+    def starts_with(self, start_expr) -> 'Expression':
+        """
+        Returns whether expr starts with start_expr. If start_expr is empty, the result is true.
+        expr and start_expr should have same type.
+
+        :param start_expr: A STRING or BINARY expression.
+        :return: A BOOLEAN.
+        """
+        return _binary_op("startsWith")(self, start_expr)
+
+    def ends_with(self, end_expr) -> 'Expression':
+        """
+        Returns whether expr ends with end_expr. If end_expr is empty, the result is true.
+        expr and end_expr should have same type.
+
+        :param end_expr: A STRING or BINARY expression.
+        :return: A BOOLEAN.
+        """
+        return _binary_op("endsWith")(self, end_expr)
 
     def substring(self,
                   begin_index: Union[int, 'Expression[int]'],
@@ -1012,6 +1148,20 @@ class Expression(Generic[T]):
             return _binary_op("substring")(self, begin_index)
         else:
             return _ternary_op("substring")(self, begin_index, length)
+
+    def substr(self,
+               begin_index: Union[int, 'Expression[int]'],
+               length: Union[int, 'Expression[int]'] = None) -> 'Expression[str]':
+        """
+        Creates a substring of the given string at given index for a given length.
+
+        :param begin_index: first character of the substring (starting at 1, inclusive)
+        :param length: number of characters of the substring
+        """
+        if length is None:
+            return _binary_op("substr")(self, begin_index)
+        else:
+            return _ternary_op("substr")(self, begin_index, length)
 
     def trim_leading(self, character: Union[str, 'Expression[str]'] = None) -> 'Expression[str]':
         """
@@ -1054,6 +1204,13 @@ class Expression(Generic[T]):
         """
         return _ternary_op("replace")(self, search, replacement)
 
+    def translate(self, from_str, to_str) -> 'Expression':
+        """
+        Translate an expr where all characters in from_str have been replaced with those in to_str.
+        If to_str has a shorter length than from_str, unmatched characters are removed.
+        """
+        return _ternary_op("translate")(self, from_str, to_str)
+
     @property
     def char_length(self) -> 'Expression[int]':
         """
@@ -1085,12 +1242,19 @@ class Expression(Generic[T]):
         """
         return _unary_op("initCap")(self)
 
-    def like(self, pattern: Union[str, 'Expression[str]'] = None) -> 'Expression[bool]':
+    def like(self,
+             pattern: Union[str, 'Expression[str]'] = None,
+             escape=None) -> 'Expression[bool]':
         """
         Returns true, if a string matches the specified LIKE pattern.
-        e.g. 'Jo_n%' matches all strings that start with 'Jo(arbitrary letter)n'
+        e.g. 'Jo_n%' matches all strings that start with 'Jo(arbitrary letter)n'.
+        An escape character consisting of a single char can be defined if necessary.
+        There is no default escape character.
         """
-        return _binary_op("like")(self, pattern)
+        if escape is None:
+            return _binary_op("like")(self, pattern)
+        else:
+            return _ternary_op("like")(self, pattern, escape)
 
     def similar(self, pattern: Union[str, 'Expression[str]'] = None) -> 'Expression[bool]':
         """
@@ -1147,6 +1311,24 @@ class Expression(Generic[T]):
             return Expression(getattr(self._j_expr, "overlay")(
                 j_expr_new_string, j_expr_starting, j_expr_length))
 
+    def regexp(self, regex: Union[str, 'Expression[str]']) -> 'Expression[str]':
+        """
+        Returns True if any (possibly empty) substring matches the regular expression,
+        otherwise False. Returns None if any of arguments is None.
+        """
+        return _binary_op("regexp")(self, regex)
+
+    def regexp_count(self, regex) -> 'Expression':
+        """
+        Returns the number of times str matches the regex pattern.
+        regex must be a Java regular expression.
+        null if any of the arguments are null or regex is invalid.
+
+        :param regex: A STRING expression with a matching pattern.
+        :return: An INTEGER representation of the number of matches.
+        """
+        return _binary_op("regexpCount")(self, regex)
+
     def regexp_replace(self,
                        regex: Union[str, 'Expression[str]'],
                        replacement: Union[str, 'Expression[str]']) -> 'Expression[str]':
@@ -1156,18 +1338,56 @@ class Expression(Generic[T]):
         """
         return _ternary_op("regexpReplace")(self, regex, replacement)
 
-    def regexp_extract(
-            self,
-            regex: Union[str, 'Expression[str]'],
-            extract_index: Union[int, 'Expression[int]'] = None) -> 'Expression[str]':
+    def regexp_extract(self,
+                       regex: Union[str, 'Expression[str]'],
+                       extract_index: Union[int, 'Expression[int]'] = None) -> 'Expression[str]':
         """
         Returns a string extracted with a specified regular expression and a regex match
         group index.
         """
         if extract_index is None:
-            return _ternary_op("regexpExtract")(self, regex)
+            return _binary_op("regexpExtract")(self, regex)
         else:
             return _ternary_op("regexpExtract")(self, regex, extract_index)
+
+    def regexp_extract_all(self, regex, extract_index=None) -> 'Expression':
+        """
+        Extracts all the substrings in str that match the regex expression and correspond to the
+        regex group extract_index.
+        regex may contain multiple groups. extract_index indicates which regex group to extract and
+        starts from 1, also the default value if not specified. 0 means matching the entire
+        regular expression.
+        null if any of the arguments are null or invalid.
+
+        :param regex: A STRING expression with a matching pattern.
+        :param extract_index: An optional INTEGER expression with default 1.
+        :return: An ARRAY<STRING> of all the matched substrings.
+        """
+        if extract_index is None:
+            return _binary_op("regexpExtractAll")(self, regex)
+        else:
+            return _ternary_op("regexpExtractAll")(self, regex, extract_index)
+
+    def regexp_instr(self, regex) -> 'Expression':
+        """
+        Returns the position of the first substring in str that matches regex.
+        Result indexes begin at 1, 0 if there is no match.
+        null if any of the arguments are null or regex is invalid.
+
+        :param regex: A STRING expression with a matching pattern.
+        :return: An INTEGER representation of the first matched substring index.
+        """
+        return _binary_op("regexpInstr")(self, regex)
+
+    def regexp_substr(self, regex) -> 'Expression':
+        """
+        Returns the first substring in str that matches regex.
+        null if any of the arguments are null or regex is invalid or pattern is not found.
+
+        :param regex: A STRING expression with a matching pattern.
+        :return: A STRING representation of the first matched substring.
+        """
+        return _binary_op("regexpSubstr")(self, regex)
 
     @property
     def from_base64(self) -> 'Expression[str]':
@@ -1184,18 +1404,194 @@ class Expression(Generic[T]):
         return _unary_op("toBase64")(self)
 
     @property
-    def ltrim(self) -> 'Expression[str]':
+    def ascii(self) -> 'Expression[int]':
         """
-        Returns a string that removes the left whitespaces from the given string.
+        Returns the numeric value of the first character of the input string.
         """
-        return _unary_op("ltrim")(self)
+        return _unary_op("ascii")(self)
 
     @property
-    def rtrim(self) -> 'Expression[str]':
+    def chr(self) -> 'Expression[str]':
         """
-        Returns a string that removes the right whitespaces from the given string.
+        Returns the ASCII character result of the input integer.
         """
-        return _unary_op("rtrim")(self)
+        return _unary_op("chr")(self)
+
+    def decode(self, charset: Union[str, 'Expression[str]']) -> 'Expression[str]':
+        """
+        Decodes the first argument into a String using the provided character set.
+        """
+        return _binary_op("decode")(self, charset)
+
+    def encode(self, charset: Union[str, 'Expression[str]']) -> 'Expression[bytes]':
+        """
+        Encodes the string into a BINARY using the provided character set.
+        """
+        return _binary_op("encode")(self, charset)
+
+    def left(self, length: Union[int, 'Expression[int]']) -> 'Expression[str]':
+        """
+        Returns the leftmost integer characters from the input string.
+        """
+        return _binary_op("left")(self, length)
+
+    def right(self, length: Union[int, 'Expression[int]']) -> 'Expression[str]':
+        """
+        Returns the rightmost integer characters from the input string.
+        """
+        return _binary_op("right")(self, length)
+
+    def instr(self, s: Union[str, 'Expression[str]']) -> 'Expression[int]':
+        """
+        Returns the position of the first occurrence in the input string.
+        """
+        return _binary_op("instr")(self, s)
+
+    def locate(self, s: Union[str, 'Expression[str]'],
+               pos: Union[int, 'Expression[int]'] = None) -> 'Expression[int]':
+        """
+        Returns the position of the first occurrence in the input string after position integer.
+        """
+        if pos is None:
+            return _binary_op("locate")(self, s)
+        else:
+            return _ternary_op("locate")(self, s, pos)
+
+    def url_decode(self) -> 'Expression[str]':
+        """
+        Decodes a given string in 'application/x-www-form-urlencoded' format using the UTF-8
+        encoding scheme. If the input is null, or there is an issue with the decoding process
+        (such as encountering an illegal escape pattern), or the encoding scheme is not supported,
+        the function returns null.
+        """
+        return _unary_op("urlDecode")(self)
+
+    def url_encode(self) -> 'Expression[str]':
+        """
+        Translates a string into 'application/x-www-form-urlencoded' format using the UTF-8
+        encoding scheme. If the input is null, or there is an issue with the encoding process, or
+        the encoding scheme is not supported, will return null.
+        """
+        return _unary_op("urlEncode")(self)
+
+    def inet_aton(self) -> 'Expression':
+        """
+        Converts an IPv4 address string to its numeric representation (BIGINT).
+        This function follows MySQL INET_ATON behavior.
+
+        The conversion formula is: A * 256^3 + B * 256^2 + C * 256 + D for an IP address A.B.C.D
+
+        Supports MySQL-compatible short-form IPv4 addresses:
+          - a — the value is stored directly as an address (value must be in [0, 255])
+          - a.b — interpreted as a.0.0.b
+          - a.b.c — interpreted as a.b.0.c
+          - a.b.c.d — standard dotted-decimal format
+
+        Examples:
+          - lit('1').inet_aton() returns 1 (single number)
+          - lit('127.0.0.1').inet_aton() returns 2130706433
+          - lit('127.1').inet_aton() returns 2130706433 (short-form: 127.0.0.1)
+          - lit('0.0.0.0').inet_aton() returns 0
+
+        :return: the numeric representation of the IP address, or null if the input is
+                 null or invalid
+        """
+        return _unary_op("inetAton")(self)
+
+    def inet_ntoa(self) -> 'Expression[str]':
+        """
+        Converts a numeric IPv4 address representation back to its string format.
+
+        Accepts any integer numeric type (TINYINT, SMALLINT, INT, BIGINT). The input must be
+        in the valid IPv4 range [0, 4294967295]. Negative values return null, consistent with
+        MySQL's INET_NTOA(-1) = NULL behavior.
+
+        Examples:
+          - lit(2130706433).inet_ntoa() returns '127.0.0.1'
+          - lit(0).inet_ntoa() returns '0.0.0.0'
+          - lit(-1).inet_ntoa() returns null
+
+        :return: the IPv4 address string in dotted-decimal notation, or null if the input is
+                 null, negative, or out of valid range
+        """
+        return _unary_op("inetNtoa")(self)
+
+    @property
+    def is_valid_utf8(self) -> 'Expression[bool]':
+        """
+        Returns true if the input bytes are a well-formed UTF-8 sequence, false otherwise.
+        Returns null if the input is null.
+
+        Specifically rejects: truncated multi-byte sequences (missing continuation bytes),
+        "overlong" encodings (using more bytes than necessary for the code point), code points
+        above the Unicode maximum U+10FFFF, and UTF-16 surrogate values U+D800-U+DFFF (which
+        have no UTF-8 representation).
+        """
+        return _unary_op("isValidUtf8")(self)
+
+    @property
+    def make_valid_utf8(self) -> 'Expression[str]':
+        """
+        Decodes the input bytes as UTF-8, replacing each invalid sequence with the Unicode
+        replacement character U+FFFD. The substitution is lossy and irreversible. Returns null
+        if the input is null.
+        """
+        return _unary_op("makeValidUtf8")(self)
+
+    def parse_url(self, part_to_extract: Union[str, 'Expression[str]'],
+                  key: Union[str, 'Expression[str]'] = None) -> 'Expression[str]':
+        """
+        Parse url and return various parameter of the URL.
+        If accept any null arguments, return null.
+        """
+        if key is None:
+            return _binary_op("parseUrl")(self, part_to_extract)
+        else:
+            return _ternary_op("parseUrl")(self, part_to_extract, key)
+
+    def printf(self, *obj) -> 'Expression':
+        """
+        Returns a formatted string from printf-style format strings.
+        The function exploits the java.util.Formatter class with Locale.US.
+
+        :param obj: any expression
+        :return: a formatted string. null if format is null or invalid.
+        """
+        gateway = get_gateway()
+        ApiExpressionUtils = gateway.jvm.org.apache.flink.table.expressions.ApiExpressionUtils
+        exprs = [ApiExpressionUtils.objectToExpression(_get_java_expression(e))
+                 for e in obj]
+        return _binary_op("printf")(self, to_jarray(gateway.jvm.Object, exprs))
+
+    def ltrim(self, trim_str=None) -> 'Expression[str]':
+        """
+        Removes any leading characters within trim_str from str.
+        trim_str is set to whitespace by default.
+        """
+        if trim_str is None:
+            return _unary_op("ltrim")(self)
+        else:
+            return _binary_op("ltrim")(self, trim_str)
+
+    def rtrim(self, trim_str=None) -> 'Expression[str]':
+        """
+        Removes any trailing characters within trim_str from str.
+        trim_str is set to whitespace by default.
+        """
+        if trim_str is None:
+            return _unary_op("rtrim")(self)
+        else:
+            return _binary_op("rtrim")(self, trim_str)
+
+    def btrim(self, trim_str=None) -> 'Expression':
+        """
+        Removes any leading and trailing characters within trim_str from str.
+        trim_str is set to whitespace by default.
+        """
+        if trim_str is None:
+            return _unary_op("btrim")(self)
+        else:
+            return _binary_op("btrim")(self, trim_str)
 
     def repeat(self, n: Union[int, 'Expression[int]']) -> 'Expression[str]':
         """
@@ -1203,22 +1599,140 @@ class Expression(Generic[T]):
         """
         return _binary_op("repeat")(self, n)
 
-    def over(self, alias) -> 'Expression':
+    def over(
+        self,
+        alias=None,
+        *,
+        order_by=None,
+        partition_by=None,
+        rows=None,
+        range=None,
+    ) -> 'Expression':
         """
-        Defines an aggregation to be used for a previously specified over window.
+        Defines an aggregation over a named Table API window or an inline DataFrame window.
 
-        Example:
-        ::
+        A positional ``alias`` or ``alias=`` refers to a named Table API window. Inline DataFrame
+        windows require ``order_by=`` and can use ``rows`` or ``range``. Matching Table API frame
+        constants are also accepted (``*_ROW`` with ``rows``, ``*_RANGE`` with ``range``).
 
-            >>> tab.window(Over
-            >>>         .partition_by(col('c'))
-            >>>         .order_by(col('rowtime'))
-            >>>         .preceding(row_interval(2))
-            >>>         .following(CURRENT_ROW)
-            >>>         .alias("w")) \\
-            >>>     .select(col('c'), col('a'), col('a').count.over(col('w')))
+        A scalar ``rows`` value is a positive integer describing the number of preceding rows. A
+        scalar ``range`` value is a non-negative :class:`datetime.timedelta` or Flink duration
+        string describing the preceding time interval. Both frames can instead be specified as a
+        two-element ``(lower, upper)`` tuple. Explicit bounds are created with
+        :func:`~pyflink.dataframe.over_window.preceding` and
+        :func:`~pyflink.dataframe.over_window.following`, or with matching constants from
+        :mod:`pyflink.table.expressions`.
+
+        :param alias: Expression identifying a previously declared Table API OVER window. It
+                      cannot be combined with inline window arguments.
+        :type alias: Optional[Expression]
+        :param order_by: Column name or expression identifying the single ordering time attribute
+                         of an inline window.
+        :type order_by: Optional[Union[str, Expression]]
+        :param partition_by: Optional column name, expression, or non-empty list or tuple of column
+                             names and expressions used as partition keys.
+        :type partition_by: Optional[Union[str, Expression, List[Union[str, Expression]],
+                            Tuple[Union[str, Expression], ...]]]
+        :param rows: Optional positive row count or two-element ROW-frame bound tuple.
+        :type rows: Optional[Union[int, Expression, Tuple[Union[FrameBoundary, Expression],
+                    Union[FrameBoundary, Expression]]]]
+        :param range: Optional Flink duration string, :class:`datetime.timedelta`, or two-element
+                      RANGE-frame bound tuple.
+        :type range: Optional[Union[str, datetime.timedelta, Expression,
+                     Tuple[Union[FrameBoundary, Expression],
+                     Union[FrameBoundary, Expression]]]]
+        :return: An OVER aggregation expression.
+        :raises TypeError: If named- and inline-window arguments are combined, a required
+                           ``order_by`` is missing, or an argument has an unsupported type.
+        :raises ValueError: If ``rows`` and ``range`` are both provided, or a frame bound has an
+                            invalid value, direction, or frame kind.
+
+        Given a DataFrame ``df`` containing ``key``, ``amount``, and ``rowtime``::
+
+            >>> import pyflink.dataframe as pf
+            >>> from pyflink.table.expressions import CURRENT_ROW, UNBOUNDED_ROW
+            >>> result = df.select(
+            ...     "key",
+            ...     running=pf.col("amount").sum.over(
+            ...         order_by="rowtime", partition_by="key",
+            ...         rows=(pf.preceding(2), CURRENT_ROW)))
+
+        Table API frame constants can also define the bounds::
+
+            >>> cumulative = pf.col("amount").sum.over(
+            ...     order_by="rowtime", rows=(UNBOUNDED_ROW, CURRENT_ROW))
+
+        For an existing named Table API window ``w``::
+
+            >>> pf.col("amount").sum.over(alias=pf.col("w"))
+
+        .. versionchanged:: 2.4.0
+           Added inline DataFrame window arguments while preserving named Table API windows.
         """
-        return _binary_op("over")(self, alias)
+        if alias is not None and order_by is not None:
+            raise TypeError("over() cannot specify both alias and order_by")
+        if alias is not None and (
+            partition_by is not None or rows is not None or range is not None
+        ):
+            raise TypeError("over() cannot combine alias with inline window arguments")
+        if alias is not None:
+            return _binary_op("over")(self, alias)
+
+        if order_by is None:
+            raise TypeError("over() missing required argument: order_by")
+
+        from pyflink.table._over_window import _build_over_expression
+
+        return _build_over_expression(
+            self,
+            order_by,
+            partition_by=partition_by,
+            rows=rows,
+            range_=range,
+        )
+
+    @property
+    def reverse(self) -> 'Expression[str]':
+        """
+        Reverse each character in current string.
+        """
+        return _unary_op("reverse")(self)
+
+    def split_index(self, separator: Union[str, 'Expression[str]'],
+                    index: Union[int, 'Expression[int]']) -> 'Expression[str]':
+        """
+        Split target string with custom separator and pick the index-th(start with 0) result.
+        """
+        return _ternary_op("splitIndex")(self, separator, index)
+
+    def str_to_map(self, list_delimiter: Union[str, 'Expression[str]'] = None,
+                   key_value_delimiter: Union[str, 'Expression[str]'] = None) -> 'Expression[dict]':
+        """
+        Creates a map by parsing text. Split text into key-value pairs using two delimiters. The
+        first delimiter separates pairs, and the second delimiter separates key and value. Both
+        list_delimiter and key_value_delimiter are treated as regular expressions.
+        Default delimiters are used: ',' as list_delimiter and '=' as key_value_delimiter.
+        """
+        if list_delimiter is None or key_value_delimiter is None:
+            return _unary_op("strToMap")(self)
+        else:
+            return _ternary_op("strToMap")(self, list_delimiter, key_value_delimiter)
+
+    def elt(self, expr, *exprs) -> 'Expression':
+        """
+        Returns the index-th expression. null if index is null or out of range.
+        index must be an integer between 1 and the number of expressions.
+
+        :param expr: a STRING or BINARY expression
+        :param exprs: a STRING or BINARY expression
+
+        :return: result type is the least common type of all expressions.
+        """
+        gateway = get_gateway()
+        ApiExpressionUtils = gateway.jvm.org.apache.flink.table.expressions.ApiExpressionUtils
+        expr_list = [ApiExpressionUtils.objectToExpression(_get_java_expression(e))
+                     for e in exprs]
+        return _ternary_op("elt")(self, expr, to_jarray(gateway.jvm.Object, expr_list))
 
     # ---------------------------- temporal functions ----------------------------------
 
@@ -1345,6 +1859,245 @@ class Expression(Generic[T]):
         .. seealso:: :func:`~Expression.at`, :py:attr:`~Expression.cardinality`
         """
         return _unary_op("element")(self)
+
+    def array_append(self, addition) -> 'Expression':
+        """
+        Appends an element to the end of the array and returns the result.
+
+        If the array itself is null, the function will return null. If an element to add is null,
+        the null element will be added to the end of the array.
+        """
+        return _binary_op("arrayAppend")(self, addition)
+
+    def array_contains(self, needle) -> 'Expression':
+        """
+        Returns whether the given element exists in an array.
+
+        Checking for null elements in the array is supported. If the array itself is null, the
+        function will return null. The given element is cast implicitly to the array's element type
+        if necessary.
+        """
+        return _binary_op("arrayContains")(self, needle)
+
+    def array_distinct(self) -> 'Expression':
+        """
+        Returns an array with unique elements.
+        If the array itself is null, the function will return null. Keeps ordering of elements.
+        """
+        return _binary_op("arrayDistinct")(self)
+
+    def array_position(self, needle) -> 'Expression':
+        """
+        Returns the position of the first occurrence of element in the given array as int.
+
+        Returns 0 if the given value could not be found in the array. Returns null if either of the
+        arguments are null.
+        NOTE: that this is not zero based, but 1-based index. The first element in the array
+        has index 1.
+        """
+        return _binary_op("arrayPosition")(self, needle)
+
+    def array_prepend(self, addition) -> 'Expression':
+        """
+        Appends an element to the beginning of the array and returns the result.
+
+        If the array itself is null, the function will return null. If an element to add is null,
+        the null element will be added to the beginning of the array.
+        """
+        return _binary_op("arrayPrepend")(self, addition)
+
+    def array_remove(self, needle) -> 'Expression':
+        """
+        Removes all elements that equal to element from array.
+        If the array itself is null, the function will return null. Keeps ordering of elements.
+        """
+        return _binary_op("arrayRemove")(self, needle)
+
+    def array_reverse(self) -> 'Expression':
+        """
+        Returns an array in reverse order.
+        If the array itself is null, the function will return null.
+        """
+        return _binary_op("arrayReverse")(self)
+
+    def array_slice(self, start_offset, end_offset=None) -> 'Expression':
+        """
+        Returns a subarray of the input array between 'start_offset' and 'end_offset' inclusive.
+        The offsets are 1-based however 0 is also treated as the beginning of the array.
+        Positive values are counted from the beginning of the array while negative from the end.
+        If 'end_offset' is omitted then this offset is treated as the length of the array.
+        If 'start_offset' is after 'end_offset' or both are out of array bounds an empty array will
+        be returned.
+        Returns null if any input is null.
+        """
+        if end_offset is None:
+            return _binary_op("array_slice")(self, start_offset)
+        else:
+            return _ternary_op("array_slice")(self, start_offset, end_offset)
+
+    def array_sort(self, ascending_order=None, null_first=None) -> 'Expression':
+        """
+        Returns the array in sorted order.
+        The function sorts an array, defaulting to ascending order with NULLs at the start when
+        only the array is input. Specifying ascending_order as true orders the array in ascending
+        with NULLs first, and setting it to false orders it in descending with NULLs last.
+        Independently, null_first as true moves NULLs to the beginning, and as false to the end,
+        irrespective of the sorting order. The function returns null if any input is null.
+        """
+        if ascending_order and null_first is None:
+            return _unary_op("array_sort")(self)
+        elif null_first is None:
+            return _binary_op("array_sort")(self, ascending_order)
+        else:
+            return _ternary_op("array_sort")(self, ascending_order, null_first)
+
+    def array_union(self, array) -> 'Expression':
+        """
+        Returns an array of the elements in the union of array1 and array2, without duplicates.
+        If any of the array is null, the function will return null.
+        """
+        return _binary_op("arrayUnion")(self, array)
+
+    def array_concat(self, *arrays) -> 'Expression':
+        """
+        Returns an array that is the result of concatenating at least one array.
+        This array contains all the elements in the first array, followed by all
+        the elements in the second array, and so forth, up to the Nth array.
+        If any input array is NULL, the function returns NULL.
+        """
+        return _binary_op("arrayConcat")(self, *arrays)
+
+    def array_max(self) -> 'Expression':
+        """
+        Returns the maximum value from the array.
+        if array itself is null, the function returns null.
+        """
+        return _unary_op("arrayMax")(self)
+
+    def array_join(self, delimiter, null_replacement=None) -> 'Expression':
+        """
+        Returns a string that represents the concatenation of the elements in the given array and
+        the elements' data type in the given array is string. The `delimiter` is a string that
+        separates each pair of consecutive elements of the array. The optional `null_replacement`
+        is a string that replaces null elements in the array. If `null_replacement` is not
+        specified, null elements in the array will be omitted from the resulting string.
+        Returns null if input array or delimiter or nullReplacement are null.
+        """
+        if null_replacement is None:
+            return _binary_op("array_join")(self, delimiter)
+        else:
+            return _ternary_op("array_join")(self, delimiter, null_replacement)
+
+    def array_min(self) -> 'Expression':
+        """
+        Returns the minimum value from the array.
+        if array itself is null, the function returns null.
+        """
+        return _unary_op("arrayMin")(self)
+
+    def array_except(self, array) -> 'Expression':
+        """
+        Returns an ARRAY that contains the elements from array1 that are not in array2.
+        If no elements remain after excluding the elements in array2 from array1,
+        the function returns an empty ARRAY. If one or both arguments are NULL,
+        the function returns NULL. The order of the elements from array1 is kept
+        however the duplicates are removed.
+        """
+        return _binary_op("arrayExcept")(self, array)
+
+    def array_intersect(self, array) -> 'Expression':
+        """
+        Returns an ARRAY that contains the elements from array1 that are also in array2,
+        without duplicates. If no elements are both in array1 and array2, the function
+        returns an empty ARRAY. If one or both arguments are NULL, the function returns NULL.
+        The order of the elements from array1 is kept.
+        """
+        return _binary_op("arrayIntersect")(self, array)
+
+    def split(self, delimiter) -> 'Expression':
+        """
+        Returns an array of substrings by splitting the input string based on the given delimiter.
+        If the delimiter is not found in the string, the original string is returned as the only
+        element in the array. If the delimiter is empty, every character in the string is split.
+        If the string or delimiter is null, a null value is returned. If the delimiter is found a
+        t the beginning or end of the string, or there are contiguous delimiters, then an empty
+        string is added to the array.
+        """
+        return _binary_op("split")(self, delimiter)
+
+    @property
+    def map_keys(self) -> 'Expression':
+        """
+        Returns the keys of the map as an array. No order guaranteed.
+
+        .. seealso:: :py:attr:`~Expression.map_keys`
+        """
+        return _unary_op("mapKeys")(self)
+
+    def map_union(self, *maps) -> 'Expression':
+        """
+        Returns a map created by merging at least one map. These maps should have a common map type.
+        If there are overlapping keys, the value from 'map2' will overwrite the value from 'map1',
+        the value from 'map3' will overwrite the value from 'map2',  the value from 'mapn' will
+        overwrite the value from 'map(n-1)'. If any of maps is null, return null.
+
+        .. seealso:: :py:attr:`~Expression.map_union`
+        """
+        return _binary_op("mapUnion")(self, *maps)
+
+    @property
+    def map_values(self) -> 'Expression':
+        """
+        Returns the values of the map as an array. No order guaranteed.
+
+        .. seealso:: :py:attr:`~Expression.map_values`
+        """
+        return _unary_op("mapValues")(self)
+
+    @property
+    def map_entries(self) -> 'Expression':
+        """
+        Returns an array of all entries in the given map. No order guaranteed.
+
+        .. seealso:: :py:attr:`~Expression.map_entries`
+        """
+        return _unary_op("mapEntries")(self)
+
+    @property
+    def map_from_entries(self) -> 'Expression':
+        """
+        Returns a map created from the given array of entries. Each entry must be a row with
+        exactly two fields, where the first field becomes the key and the second one the value.
+
+        If there are duplicate keys, the value of the last entry with that key wins; None keys are
+        treated as equal and collapse into a single entry. If the array itself or any of its
+        entries is None, None is returned.
+
+        Examples:
+        ::
+
+            >>> array(row(1, "one"), row(2, "two")).map_from_entries # {1=one, 2=two}
+            >>> array(row(1, "one"), row(2, "two"), row(1, "uno")).map_from_entries # {1=uno, 2=two}
+        """
+        return _unary_op("mapFromEntries")(self)
+
+    def map_contains_key(self, key) -> 'Expression':
+        """
+        Returns True if the given key exists in the map, False otherwise. Returns None if the map
+        is None.
+
+        If the search key is None, the function returns True when the map contains a None key.
+        The given key is cast implicitly to the map's key type where Flink's implicit casting
+        rules allow it; otherwise the call fails validation.
+
+        Examples:
+        ::
+
+            >>> map_("a", 1, "b", 2).map_contains_key("a") # True
+            >>> map_("a", 1, "b", 2).map_contains_key("z") # False
+            >>> map_(1, "a").map_contains_key(lit(1, DataTypes.TINYINT())) # True
+        """
+        return _binary_op("mapContainsKey")(self, key)
 
     # ---------------------------- time definition functions -----------------------------
 
@@ -1552,8 +2305,13 @@ class Expression(Generic[T]):
 
         * `STRING`
         * `BOOLEAN`
+        * `TINYINT`
+        * `SMALLINT`
         * `INT`
+        * `BIGINT`
+        * `FLOAT`
         * `DOUBLE`
+        * `DECIMAL`
 
         For empty path expressions or errors a behavior can be defined to either return `null`,
         raise an error or return a defined default value instead.
@@ -1622,6 +2380,451 @@ class Expression(Generic[T]):
         return _varargs_op("jsonQuery")(self, path, wrapping_behavior._to_j_json_query_wrapper(),
                                         on_empty._to_j_json_query_on_error_or_empty(),
                                         on_error._to_j_json_query_on_error_or_empty())
+
+    def json_quote(self) -> 'Expression':
+        """
+        Quotes a string as a JSON value by wrapping it with double quote characters,
+        escaping interior quote and special characters
+        ('"', '\', '/', 'b', 'f', 'n', 'r', 't'), and returning
+        the result as a string. If the argument is NULL, the function returns NULL.
+        """
+        return _unary_op("jsonQuote")(self)
+
+    def json_unquote(self) -> 'Expression':
+        """
+        Unquotes JSON value, unescapes escaped special characters
+        ('"', '\', '/', 'b', 'f', 'n', 'r', 't', 'u' hex hex hex hex) and
+        returns the result as a string.
+        If the argument is NULL, returns NULL. If the value starts and ends with
+        double quotes but is not a valid JSON string literal, an error occurs.
+        """
+        return _unary_op("jsonUnquote")(self)
+
+    def parse_json(self, allow_duplicate_keys=None) -> 'Expression':
+        """
+        Parses a JSON string into a value of VARIANT type. If the JSON string is invalid,
+        an error is thrown. To return None instead of an error, use
+        :func:`~Expression.try_parse_json`.
+
+        If there are duplicate keys in the input, allow_duplicate_keys controls whether the
+        parser keeps the last occurrence of each duplicated key (True) or throws an error
+        (False). The default value of allow_duplicate_keys is False.
+        """
+        if allow_duplicate_keys is None:
+            return _unary_op("parseJson")(self)
+        else:
+            return _binary_op("parseJson")(self, allow_duplicate_keys)
+
+    def try_parse_json(self, allow_duplicate_keys=None) -> 'Expression':
+        """
+        Parses a JSON string into a value of VARIANT type. If the JSON string is invalid,
+        None is returned. To throw an error instead, use :func:`~Expression.parse_json`.
+
+        If there are duplicate keys in the input, allow_duplicate_keys controls whether the
+        parser keeps the last occurrence of each duplicated key (True) or returns
+        None (False). The default value of allow_duplicate_keys is False.
+        """
+        if allow_duplicate_keys is None:
+            return _unary_op("tryParseJson")(self)
+        else:
+            return _binary_op("tryParseJson")(self, allow_duplicate_keys)
+
+    def parse_xml(self, force_array=None) -> 'Expression':
+        """
+        Parses an XML string into a value of VARIANT type. If the XML string is invalid,
+        an error is thrown. To return None instead of an error, use
+        :func:`~Expression.try_parse_xml`.
+
+        If force_array is True, every child element, text, and position in a # field is stored
+        as an array, even if it occurs only once. force_array can be a bool or a boolean
+        expression, and its default value is False. A NULL value is treated as False.
+        """
+        if force_array is None:
+            return _unary_op("parseXml")(self)
+        else:
+            return _binary_op("parseXml")(self, force_array)
+
+    def try_parse_xml(self, force_array=None) -> 'Expression':
+        """
+        Parses an XML string into a value of VARIANT type. If the XML string is invalid,
+        None is returned. To throw an error instead, use :func:`~Expression.parse_xml`.
+
+        See :func:`~Expression.parse_xml` for the meaning of force_array.
+        """
+        if force_array is None:
+            return _unary_op("tryParseXml")(self)
+        else:
+            return _binary_op("tryParseXml")(self, force_array)
+
+    def variant_get(self, path, return_type: DataType = None) -> 'Expression':
+        """
+        Returns the value of a VARIANT at a path, cast to return_type. Without return_type, the
+        value is returned as a VARIANT. If the VARIANT or the path is NULL, or nothing is at the
+        path, NULL is returned. A variant null at the path gives NULL, unless return_type is
+        omitted or DataTypes.VARIANT(), which keeps it as a variant null. If the value cannot be
+        cast to return_type, an error is thrown. To return NULL instead, use
+        :func:`~Expression.try_variant_get`.
+
+        Array indices in a path such as '$.items[0].qty' start at 0. See the SQL function
+        VARIANT_GET for the path syntax.
+
+        Example:
+        ::
+
+            >>> lit('{"a": {"b": 1}}').parse_json().variant_get('$.a.b', DataTypes.INT()) # 1
+            >>> lit('{"a": 1}').parse_json().variant_get('$.b', DataTypes.INT()) # NULL
+        """
+        if return_type is None:
+            return _binary_op("variantGet")(self, path)
+        else:
+            return _ternary_op("variantGet")(self, path, _to_java_data_type(return_type))
+
+    def try_variant_get(self, path, return_type: DataType = None) -> 'Expression':
+        """
+        Returns the value of a VARIANT at a path, cast to return_type. Unlike
+        :func:`~Expression.variant_get`, NULL is returned instead of an error if the value cannot
+        be cast to return_type or a path that is not a literal is malformed.
+        """
+        if return_type is None:
+            return _binary_op("tryVariantGet")(self, path)
+        else:
+            return _ternary_op("tryVariantGet")(self, path, _to_java_data_type(return_type))
+
+    def json_length(self, path=None) -> 'Expression':
+        """
+        Returns the number of elements in a JSON document, or the length of the value at the
+        specified path if one is provided.
+
+        The input can be a JSON STRING or a VARIANT. Returns NULL if the argument is NULL,
+        the json is invalid, or the path is empty, malformed or does not locate a value.
+
+        The path must be a plain path literal such as '$.a.b'. A path carrying a
+        'lax'/'strict' path mode prefix raises an error.
+
+        The length is determined as follows:
+
+        - Scalar values (number, string, boolean) have length 1.
+        - Arrays have a length equal to the number of their elements.
+        - Objects have a length equal to the number of their key-value pairs.
+
+        When provided with a path that uses a wildcard and resolves to 2 or more paths,
+        'json_length' resolves to NULL.
+
+        json_length also supports input of the VARIANT type; you can pass the output of
+        parse_json into json_length.
+
+        Because a NULL result can mean several different things (the input is not valid
+        JSON, the path does not match anything, or a wildcard path matched 2 or more
+        nodes), it is recommended to pair json_length with a helper function so invalid
+        input is handled explicitly rather than silently returning NULL:
+
+        - Without a path, guard the call with is_json to separate malformed input from a
+          real result.
+        - With a path, use json_exists to tell "the path is absent" apart from "the path
+          matched but was ambiguous / matched 2 or more nodes".
+
+        ::
+
+            # returns the length only for valid JSON, otherwise NULL means "invalid input"
+            >>> lit("[1,2]").is_json().then(lit("[1,2]").json_length(), null_of(DataTypes.INT()))
+
+            # path is present even when json_length is NULL due to a multi-match wildcard
+            >>> lit("{}").json_exists("$.items[*]")
+            >>> lit("{}").json_length("$.items[*]")
+
+        Examples:
+        ::
+
+            >>> lit('{"1": "hello", "2": "bye bye"}').json_length() # 2
+            >>> lit('[1,2,3,4,5]').json_length() # 5
+            >>> lit('"hello"').json_length() # 1
+
+            >>> lit('{"1": "hello", "2": "bye bye"}').json_length('$.1') # 1
+            >>> lit('{"1": [1,2,3], "2": "bye bye"}').json_length('$.1') # 3
+            >>> lit('[1,2,3,4,5]').json_length('$[3]') # 1
+
+            >>> lit('[1,2,3,4,5]').json_length('$[7]') # NULL
+            >>> lit('{"1": "bad", "2": "syntax here ->"').json_length('$.1') # NULL
+            >>> lit('[1,2,3,4,5]').json_length('$.[') # NULL
+        """
+        if path is None:
+            return _unary_op("jsonLength")(self)
+        else:
+            return _binary_op("jsonLength")(self, path)
+
+    def json_type(self, path=None) -> 'Expression':
+        """
+        Returns a string value indicating the type of the input.
+
+        Potential outputs are as following
+
+        * `object`
+        * `array`
+        * `string`
+        * `number`
+        * `boolean`
+        * `null`, for the JSON null literal
+
+        Every number is reported as `number`, whatever its magnitude or precision.
+
+        Returns None if the input is None or is not valid JSON.
+
+        If `path` is given, the type is read at that location instead of the root. A path that
+        does not resolve to exactly one value returns None.
+
+        Examples:
+        ::
+
+            >>> lit('{"a": true}').json_type() # 'object'
+            >>> lit('[1, 2]').json_type() # 'array'
+            >>> lit('null').json_type() # 'null'
+            >>> lit('"Hello, World!"').json_type() # 'string'
+            >>> lit('"2015-01-01"').json_type() # 'string'
+            >>> lit('66').json_type() # 'number'
+            >>> lit('11.1').json_type() # 'number'
+            >>> lit('68s').json_type() # None, not valid JSON
+            >>> lit('{"a": [1, 2]}').json_type('$.a') # 'array'
+        """
+        if path is None:
+            return _unary_op("jsonType")(self)
+        else:
+            return _binary_op("jsonType")(self, path)
+    # ---------------------------- value modification functions -----------------------------
+
+    def object_update(self, *kv) -> "Expression":
+        """
+        Updates existing fields in a structured object by providing key-value pairs.
+
+        This function takes a structured object and updates specified fields with new values.
+        The keys must be string literals that correspond to existing fields in the structured type.
+        If a key does not exist in the input object, an exception will be thrown.
+
+        The function expects alternating key-value pairs where keys are field names
+        (non-null strings) and values are the new values for those fields.
+        At least one key-value pair must be provided.
+        The total number of arguments must be odd (object + pairs of key-value arguments).
+
+        The result type is the same structured class, with the specified fields
+        updated to their new values.
+
+        Example:
+        ::
+
+            >>> # Update the 'name' field of a user object
+            >>> user_obj.object_update("name", "Alice")
+            >>> # Returns an updated user object with 'name' set to "Alice"
+            >>>
+            >>> # Update multiple fields
+            >>> user_obj.object_update("name", "Alice", "age", 30)
+            >>> # Returns an updated user object with 'name' set to "Alice" and 'age' set to 30
+
+        The result type is the same structured type class, with the specified
+        fields updated to their new values.
+
+        :param kv: key-value pairs where even-indexed elements are field names
+                   (strings) and odd-indexed elements are the new values for those
+                   fields
+        :return: expression representing the updated structured type with modified
+                 field values
+        """
+        return _varargs_op("objectUpdate")(self, *kv)
+
+    # ---------------------------- Bitmap functions -----------------------------
+
+    def bitmap_and(self, bitmap2) -> 'Expression':
+        """
+        Computes the AND (intersection) of two bitmaps.
+
+        If any of the inputs are null, the result is null.
+
+        :param bitmap2: the bitmap to perform AND operation with
+        :return: a BITMAP expression
+        """
+        return _binary_op("bitmapAnd")(self, bitmap2)
+
+    def bitmap_andnot(self, bitmap2) -> 'Expression':
+        """
+        Computes the AND NOT (difference) of two bitmaps.
+
+        If any of the inputs are null, the result is null.
+
+        :param bitmap2: the bitmap to perform AND NOT operation with
+        :return: a BITMAP expression
+        """
+        return _binary_op("bitmapAndnot")(self, bitmap2)
+
+    def bitmap_and_agg(self):
+        """
+        Aggregates the AND (intersection) of multiple bitmaps.
+
+        NOTE: The retraction variant of this function may have significant performance overhead
+        with large bitmaps.
+
+        :return: a BITMAP expression
+        """
+        return _unary_op("bitmapAndAgg")(self)
+
+    def bitmap_and_cardinality_agg(self):
+        """
+        Aggregates the AND (intersection) of multiple bitmaps and returns its 64-bit cardinality.
+
+        NOTE: The retraction variant of this function may have significant performance overhead
+        with large bitmaps.
+
+        :return: a BIGINT expression
+        """
+        return _unary_op("bitmapAndCardinalityAgg")(self)
+
+    def bitmap_build(self) -> 'Expression':
+        """
+        Creates a bitmap from an array of 32-bit integers.
+
+        If the input is null, the result is null.
+
+        :return: a BITMAP expression
+        """
+        return _unary_op("bitmapBuild")(self)
+
+    def bitmap_build_agg(self):
+        """
+        Aggregates 32-bit integers into a bitmap.
+
+        :return: a BITMAP expression
+        """
+        return _unary_op("bitmapBuildAgg")(self)
+
+    def bitmap_build_cardinality_agg(self):
+        """
+        Aggregates 32-bit integers into a bitmap and returns its 64-bit cardinality.
+
+        :return: a BIGINT expression
+        """
+        return _unary_op("bitmapBuildCardinalityAgg")(self)
+
+    def bitmap_cardinality(self) -> 'Expression':
+        """
+        Returns the cardinality of a bitmap.
+
+        If the input is null, the result is null.
+
+        :return: a BIGINT expression
+        """
+        return _unary_op("bitmapCardinality")(self)
+
+    def bitmap_from_bytes(self) -> 'Expression':
+        """
+        Converts an array of bytes to a bitmap.
+
+        Following the format defined in `32-bit RoaringBitmap format specification \
+        <https://github.com/RoaringBitmap/RoaringFormatSpec>`_.
+
+        If the input is null, the result is null.
+
+        :return: a BITMAP expression
+        """
+        return _unary_op("bitmapFromBytes")(self)
+
+    def bitmap_or(self, bitmap2) -> 'Expression':
+        """
+        Computes the OR (union) of two bitmaps.
+
+        If any of the inputs are null, the result is null.
+
+        :param bitmap2: the bitmap to perform OR operation with
+        :return: a BITMAP expression
+        """
+        return _binary_op("bitmapOr")(self, bitmap2)
+
+    def bitmap_or_agg(self):
+        """
+        Aggregates the OR (union) of multiple bitmaps.
+
+        NOTE: The retraction variant of this function may have significant performance overhead
+        with large bitmaps.
+
+        :return: a BITMAP expression
+        """
+        return _unary_op("bitmapOrAgg")(self)
+
+    def bitmap_or_cardinality_agg(self):
+        """
+        Aggregates the OR (union) of multiple bitmaps and returns its 64-bit cardinality.
+
+        NOTE: The retraction variant of this function may have significant performance overhead
+        with large bitmaps.
+
+        :return: a BIGINT expression
+        """
+        return _unary_op("bitmapOrCardinalityAgg")(self)
+
+    def bitmap_to_array(self) -> 'Expression':
+        """
+        Converts a bitmap to an array of 32-bit integers, the values are sorted by \
+        :py:meth:`Integer.compareUnsigned`.
+
+        If the input is null, the result is null.
+
+        :return: an ARRAY<INT> expression
+        """
+        return _unary_op("bitmapToArray")(self)
+
+    def bitmap_to_bytes(self) -> 'Expression':
+        """
+        Converts a bitmap to an array of bytes.
+
+        Following the format defined in `32-bit RoaringBitmap format specification \
+        <https://github.com/RoaringBitmap/RoaringFormatSpec>`_.
+
+        If the input is null, the result is null.
+
+        :return: a VARBINARY expression
+        """
+        return _unary_op("bitmapToBytes")(self)
+
+    def bitmap_to_string(self) -> 'Expression':
+        """
+        Converts a bitmap to a string, the values are sorted by `Integer.compareUnsigned` in Java.
+        The string will be truncated and end with "..." if it is too long.
+
+        For example:
+
+        - ``"{}"``, ``"{1,2,3,4,5}"``
+        - Negative values (converted to unsigned): ``"{0,1,4294967294,4294967295}"``
+        - String too long: ``"{1,2,3,...}"``
+
+        If the input is null, the result is null.
+
+        :return: a STRING expression
+        """
+        return _unary_op("bitmapToString")(self)
+
+    def bitmap_xor(self, bitmap2) -> 'Expression':
+        """
+        Computes the XOR (symmetric difference) of two bitmaps.
+
+        If any of the inputs are null, the result is null.
+
+        :param bitmap2: the bitmap to perform XOR operation with
+        :return: a BITMAP expression
+        """
+        return _binary_op("bitmapXor")(self, bitmap2)
+
+    def bitmap_xor_agg(self):
+        """
+        Aggregates the XOR (symmetric difference) of multiple bitmaps.
+
+        :return: a BITMAP expression
+        """
+        return _unary_op("bitmapXorAgg")(self)
+
+    def bitmap_xor_cardinality_agg(self):
+        """
+        Aggregates the XOR (symmetric difference) of multiple bitmaps and returns its 64-bit
+        cardinality.
+
+        :return: a BIGINT expression
+        """
+        return _unary_op("bitmapXorCardinalityAgg")(self)
 
 
 # add the docs

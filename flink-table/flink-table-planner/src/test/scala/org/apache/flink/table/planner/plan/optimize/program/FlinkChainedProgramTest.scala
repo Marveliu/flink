@@ -15,7 +15,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.planner.plan.optimize.program
 
 import org.apache.calcite.plan.Convention
@@ -23,16 +22,15 @@ import org.apache.calcite.plan.hep.{HepMatchOrder, HepProgramBuilder}
 import org.apache.calcite.rel.RelNode
 import org.apache.calcite.rel.rules._
 import org.apache.calcite.tools.RuleSets
-import org.junit.Assert._
-import org.junit.Test
+import org.assertj.core.api.Assertions.assertThatThrownBy
+import org.junit.jupiter.api.Assertions._
+import org.junit.jupiter.api.Test
 
 import java.util.Collections
 
 import scala.collection.JavaConversions._
 
-/**
-  * Tests for [[FlinkChainedProgram]].
-  */
+/** Tests for [[FlinkChainedProgram]]. */
 class FlinkChainedProgramTest {
 
   @Test
@@ -59,12 +57,14 @@ class FlinkChainedProgramTest {
     assertTrue(program1 eq programs.get("o2").get)
 
     val program2 = FlinkHepRuleSetProgramBuilder.newBuilder
-      .add(RuleSets.ofList(
-        CoreRules.FILTER_REDUCE_EXPRESSIONS,
-        CoreRules.PROJECT_REDUCE_EXPRESSIONS,
-        CoreRules.CALC_REDUCE_EXPRESSIONS,
-        CoreRules.JOIN_REDUCE_EXPRESSIONS
-      )).build()
+      .add(
+        RuleSets.ofList(
+          CoreRules.FILTER_REDUCE_EXPRESSIONS,
+          CoreRules.PROJECT_REDUCE_EXPRESSIONS,
+          CoreRules.CALC_REDUCE_EXPRESSIONS,
+          CoreRules.JOIN_REDUCE_EXPRESSIONS
+        ))
+      .build()
     assertTrue(programs.addFirst("o1", program2))
     assertEquals(List("o1", "o2"), programs.getProgramNames.toList)
     assertTrue(programs.get("o1").isDefined)
@@ -72,12 +72,13 @@ class FlinkChainedProgramTest {
 
     // test addLast
     val program3 = FlinkHepRuleSetProgramBuilder.newBuilder
-      .add(RuleSets.ofList(
-        CoreRules.FILTER_CALC_MERGE,
-        CoreRules.PROJECT_CALC_MERGE,
-        CoreRules.FILTER_TO_CALC,
-        CoreRules.PROJECT_TO_CALC,
-        CoreRules.CALC_MERGE))
+      .add(
+        RuleSets.ofList(
+          CoreRules.FILTER_CALC_MERGE,
+          CoreRules.PROJECT_CALC_MERGE,
+          CoreRules.FILTER_TO_CALC,
+          CoreRules.PROJECT_TO_CALC,
+          CoreRules.CALC_MERGE))
       .setHepRulesExecutionType(HEP_RULES_EXECUTION_TYPE.RULE_COLLECTION)
       .setMatchLimit(10000)
       .setHepMatchOrder(HepMatchOrder.ARBITRARY)
@@ -90,9 +91,7 @@ class FlinkChainedProgramTest {
     // test addBefore
     val TEST = new Convention.Impl("TEST", classOf[RelNode])
     val program4 = FlinkVolcanoProgramBuilder.newBuilder
-      .add(RuleSets.ofList(
-        CoreRules.FILTER_INTO_JOIN,
-        CoreRules.JOIN_CONDITION_PUSH))
+      .add(RuleSets.ofList(CoreRules.FILTER_INTO_JOIN, CoreRules.JOIN_CONDITION_PUSH))
       .setRequiredOutputTraits(Array(TEST))
       .build()
     assertTrue(programs.addBefore("o4", "o3", program4))
@@ -148,9 +147,10 @@ class FlinkChainedProgramTest {
     assertTrue(p1.get eq programs.getFlinkRuleSetProgram("o1").get)
   }
 
-  @Test(expected = classOf[NullPointerException])
+  @Test
   def testAddNullProgram(): Unit = {
     val programs = new FlinkChainedProgram[BatchOptimizeContext]
-    programs.addLast("o1", null)
+    assertThatThrownBy(() => programs.addLast("o1", null))
+      .isInstanceOf(classOf[NullPointerException])
   }
 }

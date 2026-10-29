@@ -18,6 +18,7 @@
 
 package org.apache.flink.state.api.input;
 
+import org.apache.flink.api.common.ExecutionConfig;
 import org.apache.flink.api.common.state.MapStateDescriptor;
 import org.apache.flink.api.common.typeinfo.Types;
 import org.apache.flink.api.java.tuple.Tuple2;
@@ -33,20 +34,21 @@ import org.apache.flink.streaming.util.MockStreamingRuntimeContext;
 import org.apache.flink.streaming.util.TwoInputStreamOperatorTestHarness;
 import org.apache.flink.util.Collector;
 
-import org.junit.Assert;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 
+import static org.assertj.core.api.Assertions.assertThat;
+
 /** Test for operator broadcast state input format. */
-public class BroadcastStateInputFormatTest {
+class BroadcastStateInputFormatTest {
     private static MapStateDescriptor<Integer, Integer> descriptor =
             new MapStateDescriptor<>("state", Types.INT, Types.INT);
 
     @Test
-    public void testReadBroadcastState() throws Exception {
+    void testReadBroadcastState() throws Exception {
         try (TwoInputStreamOperatorTestHarness<Void, Integer, Void> testHarness =
                 getTestHarness()) {
             testHarness.open();
@@ -56,16 +58,18 @@ public class BroadcastStateInputFormatTest {
             testHarness.processElement2(new StreamRecord<>(3));
 
             OperatorSubtaskState subtaskState = testHarness.snapshot(0, 0);
-            OperatorState state = new OperatorState(OperatorIDGenerator.fromUid("uid"), 1, 4);
+            OperatorState state =
+                    new OperatorState(null, null, OperatorIDGenerator.fromUid("uid"), 1, 4);
             state.putState(0, subtaskState);
 
             OperatorStateInputSplit split =
                     new OperatorStateInputSplit(subtaskState.getManagedOperatorState(), 0);
 
             BroadcastStateInputFormat<Integer, Integer> format =
-                    new BroadcastStateInputFormat<>(state, new Configuration(), null, descriptor);
+                    new BroadcastStateInputFormat<>(
+                            state, new Configuration(), null, descriptor, new ExecutionConfig());
 
-            format.setRuntimeContext(new MockStreamingRuntimeContext(false, 1, 0));
+            format.setRuntimeContext(new MockStreamingRuntimeContext(1, 0));
             format.open(split);
 
             Map<Integer, Integer> results = new HashMap<>(3);
@@ -80,8 +84,9 @@ public class BroadcastStateInputFormatTest {
             expected.put(2, 2);
             expected.put(3, 3);
 
-            Assert.assertEquals(
-                    "Failed to read correct list state from state backend", expected, results);
+            assertThat(results)
+                    .as("Failed to read correct list state from state backend")
+                    .isEqualTo(expected);
         }
     }
 

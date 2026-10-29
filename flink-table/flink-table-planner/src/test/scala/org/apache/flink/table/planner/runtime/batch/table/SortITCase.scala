@@ -15,23 +15,24 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.planner.runtime.batch.table
 
+import org.apache.flink.core.testutils.EachCallbackWrapper
 import org.apache.flink.table.api._
-import org.apache.flink.table.planner.runtime.utils.SortTestUtils.{sortExpectedly, tupleDataSetStrings}
 import org.apache.flink.table.planner.runtime.utils.{BatchTestBase, CollectionBatchExecTable}
-import org.apache.flink.table.utils.LegacyRowResource
+import org.apache.flink.table.planner.runtime.utils.SortTestUtils.{sortExpectedly, tupleDataSetStrings}
+import org.apache.flink.table.utils.LegacyRowExtension
 import org.apache.flink.test.util.TestBaseUtils
 
-import org.junit._
+import org.junit.jupiter.api.{Disabled, Test}
+import org.junit.jupiter.api.extension.RegisterExtension
 
 import scala.collection.JavaConverters._
 
 class SortITCase extends BatchTestBase {
 
-  @Rule
-  def usesLegacyRows: LegacyRowResource = LegacyRowResource.INSTANCE
+  @RegisterExtension private val _: EachCallbackWrapper[LegacyRowExtension] =
+    new EachCallbackWrapper[LegacyRowExtension](new LegacyRowExtension)
 
   def compare(t: Table, expected: String): Unit = {
     TestBaseUtils.compareOrderedResultAsText(executeQuery(t).asJava, expected)
@@ -41,8 +42,8 @@ class SortITCase extends BatchTestBase {
   def testOrderByDesc(): Unit = {
     val ds = CollectionBatchExecTable.get3TupleDataSet(tEnv)
     val t = ds.orderBy('_1.desc)
-    implicit def tupleOrdering[T <: Product] = Ordering.by((x : T) =>
-      -x.productElement(0).asInstanceOf[Int])
+    implicit def tupleOrdering[T <: Product] =
+      Ordering.by((x: T) => -x.productElement(0).asInstanceOf[Int])
     compare(t, sortExpectedly(tupleDataSetStrings))
   }
 
@@ -50,8 +51,8 @@ class SortITCase extends BatchTestBase {
   def testOrderByAsc(): Unit = {
     val ds = CollectionBatchExecTable.get3TupleDataSet(tEnv)
     val t = ds.orderBy('_1.asc)
-    implicit def tupleOrdering[T <: Product] = Ordering.by((x : T) =>
-      x.productElement(0).asInstanceOf[Int])
+    implicit def tupleOrdering[T <: Product] =
+      Ordering.by((x: T) => x.productElement(0).asInstanceOf[Int])
     compare(t, sortExpectedly(tupleDataSetStrings))
   }
 
@@ -59,18 +60,18 @@ class SortITCase extends BatchTestBase {
   def testOrderByMultipleFieldsDifferentDirections(): Unit = {
     val ds = CollectionBatchExecTable.get3TupleDataSet(tEnv)
     val t = ds.orderBy('_2.asc, '_1.desc)
-    implicit def tupleOrdering[T <: Product] = Ordering.by((x : T) =>
-      (x.productElement(1).asInstanceOf[Long], - x.productElement(0).asInstanceOf[Int]) )
+    implicit def tupleOrdering[T <: Product] = Ordering.by(
+      (x: T) => (x.productElement(1).asInstanceOf[Long], -x.productElement(0).asInstanceOf[Int]))
     compare(t, sortExpectedly(tupleDataSetStrings))
   }
 
-  @Ignore //TODO something not support?
+  @Disabled // TODO something not support?
   @Test
   def testOrderByOffset(): Unit = {
     val ds = CollectionBatchExecTable.get3TupleDataSet(tEnv)
     val t = ds.orderBy('_1.asc).offset(3)
-    implicit def tupleOrdering[T <: Product] = Ordering.by((x : T) =>
-      x.productElement(0).asInstanceOf[Int] )
+    implicit def tupleOrdering[T <: Product] =
+      Ordering.by((x: T) => x.productElement(0).asInstanceOf[Int])
     compare(t, sortExpectedly(tupleDataSetStrings, 3, 21))
   }
 
@@ -78,8 +79,8 @@ class SortITCase extends BatchTestBase {
   def testOrderByOffsetAndFetch(): Unit = {
     val ds = CollectionBatchExecTable.get3TupleDataSet(tEnv)
     val t = ds.orderBy('_1.desc).offset(3).fetch(5)
-    implicit def tupleOrdering[T <: Product] = Ordering.by((x : T) =>
-      - x.productElement(0).asInstanceOf[Int] )
+    implicit def tupleOrdering[T <: Product] =
+      Ordering.by((x: T) => -x.productElement(0).asInstanceOf[Int])
     compare(t, sortExpectedly(tupleDataSetStrings, 3, 8))
   }
 
@@ -87,8 +88,8 @@ class SortITCase extends BatchTestBase {
   def testOrderByFetch(): Unit = {
     val ds = CollectionBatchExecTable.get3TupleDataSet(tEnv)
     val t = ds.orderBy('_1.asc).offset(0).fetch(5)
-    implicit def tupleOrdering[T <: Product] = Ordering.by((x : T) =>
-      x.productElement(0).asInstanceOf[Int] )
+    implicit def tupleOrdering[T <: Product] =
+      Ordering.by((x: T) => x.productElement(0).asInstanceOf[Int])
     compare(t, sortExpectedly(tupleDataSetStrings, 0, 5))
   }
 }

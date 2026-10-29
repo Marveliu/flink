@@ -18,8 +18,9 @@
 
 package org.apache.flink.runtime.taskexecutor;
 
+import org.apache.flink.api.common.ApplicationID;
 import org.apache.flink.api.common.JobID;
-import org.apache.flink.api.java.tuple.Tuple6;
+import org.apache.flink.api.java.tuple.Tuple7;
 import org.apache.flink.runtime.checkpoint.CheckpointOptions;
 import org.apache.flink.runtime.clusterframework.types.AllocationID;
 import org.apache.flink.runtime.clusterframework.types.ResourceID;
@@ -36,7 +37,9 @@ import org.apache.flink.runtime.messages.Acknowledge;
 import org.apache.flink.runtime.messages.TaskThreadInfoResponse;
 import org.apache.flink.runtime.operators.coordination.OperatorEvent;
 import org.apache.flink.runtime.resourcemanager.ResourceManagerId;
+import org.apache.flink.runtime.rest.messages.ProfilingInfo;
 import org.apache.flink.runtime.rest.messages.ThreadDumpInfo;
+import org.apache.flink.runtime.shuffle.PartitionWithMetrics;
 import org.apache.flink.util.SerializedValue;
 import org.apache.flink.util.concurrent.FutureUtils;
 import org.apache.flink.util.function.QuadFunction;
@@ -44,6 +47,7 @@ import org.apache.flink.util.function.TriConsumer;
 import org.apache.flink.util.function.TriFunction;
 
 import java.util.Collection;
+import java.util.Collections;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.function.BiConsumer;
@@ -65,7 +69,14 @@ public class TestingTaskExecutorGatewayBuilder {
             NOOP_SUBMIT_TASK_CONSUMER =
                     (ignoredA, ignoredB) -> CompletableFuture.completedFuture(Acknowledge.get());
     private static final Function<
-                    Tuple6<SlotID, JobID, AllocationID, ResourceProfile, String, ResourceManagerId>,
+                    Tuple7<
+                            SlotID,
+                            JobID,
+                            ApplicationID,
+                            AllocationID,
+                            ResourceProfile,
+                            String,
+                            ResourceManagerId>,
                     CompletableFuture<Acknowledge>>
             NOOP_REQUEST_SLOT_FUNCTION =
                     ignored -> CompletableFuture.completedFuture(Acknowledge.get());
@@ -81,7 +92,12 @@ public class TestingTaskExecutorGatewayBuilder {
             NOOP_CANCEL_TASK_FUNCTION =
                     ignored -> CompletableFuture.completedFuture(Acknowledge.get());
     private static final TriConsumer<JobID, Set<ResultPartitionID>, Set<ResultPartitionID>>
-            NOOP_RELEASE_PARTITIONS_CONSUMER = (ignoredA, ignoredB, ignoredC) -> {};
+            NOOP_RELEASE_OR_PROMOTE_PARTITIONS_CONSUMER = (ignoredA, ignoredB, ignoredC) -> {};
+
+    private static final BiConsumer<JobID, Set<ResultPartitionID>>
+            NOOP_RELEASE_PARTITIONS_CONSUMER = (ignoredA, ignoredB) -> {};
+    private static final BiConsumer<JobID, Set<ResultPartitionID>>
+            NOOP_PROMOTE_PARTITIONS_CONSUMER = (ignoredA, ignoredB) -> {};
     private static final TriFunction<
                     ExecutionAttemptID,
                     OperatorID,
@@ -90,6 +106,9 @@ public class TestingTaskExecutorGatewayBuilder {
             DEFAULT_OPERATOR_EVENT_HANDLER =
                     (a, b, c) -> CompletableFuture.completedFuture(Acknowledge.get());
     private static final Supplier<CompletableFuture<ThreadDumpInfo>> DEFAULT_THREAD_DUMP_SUPPLIER =
+            () -> FutureUtils.completedExceptionally(new UnsupportedOperationException());
+
+    private static final Supplier<CompletableFuture<ProfilingInfo>> DEFAULT_PROFILING_SUPPLIER =
             () -> FutureUtils.completedExceptionally(new UnsupportedOperationException());
     private static final Supplier<CompletableFuture<TaskThreadInfoResponse>>
             DEFAULT_THREAD_INFO_SAMPLES_SUPPLIER =
@@ -117,9 +136,19 @@ public class TestingTaskExecutorGatewayBuilder {
     private BiFunction<TaskDeploymentDescriptor, JobMasterId, CompletableFuture<Acknowledge>>
             submitTaskConsumer = NOOP_SUBMIT_TASK_CONSUMER;
     private Function<
-                    Tuple6<SlotID, JobID, AllocationID, ResourceProfile, String, ResourceManagerId>,
+                    Tuple7<
+                            SlotID,
+                            JobID,
+                            ApplicationID,
+                            AllocationID,
+                            ResourceProfile,
+                            String,
+                            ResourceManagerId>,
                     CompletableFuture<Acknowledge>>
             requestSlotFunction = NOOP_REQUEST_SLOT_FUNCTION;
+    private Function<JobID, CompletableFuture<Collection<PartitionWithMetrics>>>
+            requestPartitionWithMetricsFunction =
+                    ignored -> CompletableFuture.completedFuture(Collections.emptyList());
     private BiFunction<AllocationID, Throwable, CompletableFuture<Acknowledge>> freeSlotFunction =
             NOOP_FREE_SLOT_FUNCTION;
     private Consumer<JobID> freeInactiveSlotsConsumer = NOOP_FREE_INACTIVE_SLOTS_CONSUMER;
@@ -131,8 +160,11 @@ public class TestingTaskExecutorGatewayBuilder {
             NOOP_CANCEL_TASK_FUNCTION;
     private Supplier<CompletableFuture<Boolean>> canBeReleasedSupplier =
             () -> CompletableFuture.completedFuture(true);
-    private TriConsumer<JobID, Set<ResultPartitionID>, Set<ResultPartitionID>>
-            releaseOrPromotePartitionsConsumer = NOOP_RELEASE_PARTITIONS_CONSUMER;
+
+    private BiConsumer<JobID, Set<ResultPartitionID>> releasePartitionsConsumer =
+            NOOP_RELEASE_PARTITIONS_CONSUMER;
+    private BiConsumer<JobID, Set<ResultPartitionID>> promotePartitionsConsumer =
+            NOOP_PROMOTE_PARTITIONS_CONSUMER;
     private Consumer<Collection<IntermediateDataSetID>> releaseClusterPartitionsConsumer =
             ignored -> {};
     private TriFunction<
@@ -143,6 +175,8 @@ public class TestingTaskExecutorGatewayBuilder {
             operatorEventHandler = DEFAULT_OPERATOR_EVENT_HANDLER;
     private Supplier<CompletableFuture<ThreadDumpInfo>> requestThreadDumpSupplier =
             DEFAULT_THREAD_DUMP_SUPPLIER;
+    private Supplier<CompletableFuture<ProfilingInfo>> requestProfilingSupplier =
+            DEFAULT_PROFILING_SUPPLIER;
 
     private Supplier<CompletableFuture<TaskThreadInfoResponse>> requestThreadInfoSamplesSupplier =
             DEFAULT_THREAD_INFO_SAMPLES_SUPPLIER;
@@ -190,9 +224,10 @@ public class TestingTaskExecutorGatewayBuilder {
 
     public TestingTaskExecutorGatewayBuilder setRequestSlotFunction(
             Function<
-                            Tuple6<
+                            Tuple7<
                                     SlotID,
                                     JobID,
+                                    ApplicationID,
                                     AllocationID,
                                     ResourceProfile,
                                     String,
@@ -200,6 +235,13 @@ public class TestingTaskExecutorGatewayBuilder {
                             CompletableFuture<Acknowledge>>
                     requestSlotFunction) {
         this.requestSlotFunction = requestSlotFunction;
+        return this;
+    }
+
+    public TestingTaskExecutorGatewayBuilder setRequestPartitionWithMetricsFunction(
+            Function<JobID, CompletableFuture<Collection<PartitionWithMetrics>>>
+                    requestPartitionWithMetricsFunction) {
+        this.requestPartitionWithMetricsFunction = requestPartitionWithMetricsFunction;
         return this;
     }
 
@@ -239,10 +281,15 @@ public class TestingTaskExecutorGatewayBuilder {
         return this;
     }
 
-    public TestingTaskExecutorGatewayBuilder setReleaseOrPromotePartitionsConsumer(
-            TriConsumer<JobID, Set<ResultPartitionID>, Set<ResultPartitionID>>
-                    releasePartitionsConsumer) {
-        this.releaseOrPromotePartitionsConsumer = releasePartitionsConsumer;
+    public TestingTaskExecutorGatewayBuilder setReleasePartitionsConsumer(
+            BiConsumer<JobID, Set<ResultPartitionID>> releasePartitionsConsumer) {
+        this.releasePartitionsConsumer = releasePartitionsConsumer;
+        return this;
+    }
+
+    public TestingTaskExecutorGatewayBuilder setPromotePartitionsConsumer(
+            BiConsumer<JobID, Set<ResultPartitionID>> promotePartitionsConsumer) {
+        this.promotePartitionsConsumer = promotePartitionsConsumer;
         return this;
     }
 
@@ -266,6 +313,11 @@ public class TestingTaskExecutorGatewayBuilder {
     public void setRequestThreadDumpSupplier(
             Supplier<CompletableFuture<ThreadDumpInfo>> requestThreadDumpSupplier) {
         this.requestThreadDumpSupplier = requestThreadDumpSupplier;
+    }
+
+    public void setRequestProfilingSupplier(
+            Supplier<CompletableFuture<ProfilingInfo>> requestProfilingSupplier) {
+        this.requestProfilingSupplier = requestProfilingSupplier;
     }
 
     public TestingTaskExecutorGatewayBuilder setRequestThreadInfoSamplesSupplier(
@@ -301,16 +353,19 @@ public class TestingTaskExecutorGatewayBuilder {
                 disconnectJobManagerConsumer,
                 submitTaskConsumer,
                 requestSlotFunction,
+                requestPartitionWithMetricsFunction,
                 freeSlotFunction,
                 freeInactiveSlotsConsumer,
                 heartbeatResourceManagerFunction,
                 disconnectResourceManagerConsumer,
                 cancelTaskFunction,
                 canBeReleasedSupplier,
-                releaseOrPromotePartitionsConsumer,
+                releasePartitionsConsumer,
+                promotePartitionsConsumer,
                 releaseClusterPartitionsConsumer,
                 operatorEventHandler,
                 requestThreadDumpSupplier,
+                requestProfilingSupplier,
                 requestThreadInfoSamplesSupplier,
                 triggerCheckpointFunction,
                 confirmCheckpointFunction);

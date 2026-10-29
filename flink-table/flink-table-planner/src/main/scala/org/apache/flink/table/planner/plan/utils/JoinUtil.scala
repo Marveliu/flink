@@ -15,77 +15,80 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.planner.plan.utils
 
-import org.apache.flink.table.api.{TableConfig, TableException}
+import org.apache.flink.configuration.ReadableConfig
+import org.apache.flink.table.api.TableException
+import org.apache.flink.table.api.config.ExecutionConfigOptions
 import org.apache.flink.table.data.RowData
+import org.apache.flink.table.planner.JDouble
 import org.apache.flink.table.planner.calcite.FlinkTypeFactory
 import org.apache.flink.table.planner.codegen.{CodeGeneratorContext, ExprCodeGenerator, FunctionCodeGenerator}
+import org.apache.flink.table.planner.hint.JoinStrategy
+import org.apache.flink.table.planner.plan.nodes.exec.ExecNodeConfig
 import org.apache.flink.table.planner.plan.nodes.exec.spec.JoinSpec
 import org.apache.flink.table.planner.plan.nodes.logical.{FlinkLogicalJoin, FlinkLogicalSnapshot}
+import org.apache.flink.table.planner.plan.nodes.physical.batch.BatchPhysicalJoinBase
 import org.apache.flink.table.planner.plan.utils.IntervalJoinUtil.satisfyIntervalJoin
 import org.apache.flink.table.planner.plan.utils.TemporalJoinUtil.satisfyTemporalJoin
 import org.apache.flink.table.planner.plan.utils.WindowJoinUtil.satisfyWindowJoin
 import org.apache.flink.table.runtime.generated.GeneratedJoinCondition
-import org.apache.flink.table.runtime.operators.join.stream.state.JoinInputSideSpec
-import org.apache.flink.table.runtime.typeutils.InternalTypeInfo
+import org.apache.flink.table.runtime.operators.join.FlinkJoinType
+import org.apache.flink.table.runtime.operators.join.stream.utils.JoinInputSideSpec
 import org.apache.flink.table.runtime.types.PlannerTypeUtils
+import org.apache.flink.table.runtime.typeutils.InternalTypeInfo
 import org.apache.flink.table.types.logical.{LogicalType, RowType}
 
+import com.google.common.collect.ImmutableList
 import org.apache.calcite.plan.RelOptUtil
-import org.apache.calcite.rel.core.{Join, JoinInfo, JoinRelType}
-import org.apache.calcite.rel.RelNode
-import org.apache.calcite.rex.{RexCall, RexInputRef, RexNode, RexUtil}
 import org.apache.calcite.rel.`type`.{RelDataType, RelDataTypeField}
+import org.apache.calcite.rel.RelNode
+import org.apache.calcite.rel.core.{Join, JoinInfo, JoinRelType}
+import org.apache.calcite.rel.hint.RelHint
+import org.apache.calcite.rex.{RexCall, RexInputRef, RexNode, RexUtil}
 import org.apache.calcite.sql.validate.SqlValidatorUtil
-import org.apache.calcite.util.ImmutableIntList
+import org.apache.calcite.util.{ImmutableIntList, Util}
 
 import java.util
 import java.util.Collections
 
 import scala.collection.JavaConversions._
 
-/**
-  * Util for [[Join]]s.
-  */
+/** Util for [[Join]]s. */
 object JoinUtil {
 
-  /**
-   * Create [[JoinSpec]] according to the given join.
-   */
+  /** Create [[JoinSpec]] according to the given join. */
   def createJoinSpec(join: Join): JoinSpec = {
     val filterNulls = new util.ArrayList[java.lang.Boolean]
     val joinInfo = createJoinInfo(join.getLeft, join.getRight, join.getCondition, filterNulls)
     val nonEquiCondition =
-        RexUtil.composeConjunction(join.getCluster.getRexBuilder, joinInfo.nonEquiConditions)
+      RexUtil.composeConjunction(join.getCluster.getRexBuilder, joinInfo.nonEquiConditions)
     new JoinSpec(
-        JoinTypeUtil.getFlinkJoinType(join.getJoinType),
-        joinInfo.leftKeys.toIntArray,
-        joinInfo.rightKeys.toIntArray,
-        filterNulls.map(_.booleanValue()).toArray,
-        nonEquiCondition)
+      JoinTypeUtil.getFlinkJoinType(join.getJoinType),
+      joinInfo.leftKeys.toIntArray,
+      joinInfo.rightKeys.toIntArray,
+      filterNulls.map(_.booleanValue()).toArray,
+      nonEquiCondition)
   }
 
-  /**
-   * Validates that join keys in [[JoinSpec]] is compatible in both sides of join.
-   */
+  /** Validates that join keys in [[JoinSpec]] is compatible in both sides of join. */
   def validateJoinSpec(
       joinSpec: JoinSpec,
       leftType: RowType,
       rightType: RowType,
       allowEmptyKey: Boolean = false): Unit = {
     if (joinSpec.getLeftKeys.isEmpty && !allowEmptyKey) {
-        throw new TableException(
-          s"Joins should have at least one equality condition.\n" +
-            s"\tLeft type: $leftType\n\tright type: $rightType\n" +
-            s"please re-check the join statement and make sure there's " +
-            "equality condition for join.")
+      throw new TableException(
+        s"Joins should have at least one equality condition.\n" +
+          s"\tLeft type: $leftType\n\tright type: $rightType\n" +
+          s"please re-check the join statement and make sure there's " +
+          "equality condition for join.")
     }
 
     val leftKeys = joinSpec.getLeftKeys
     val rightKeys = joinSpec.getRightKeys
-    (0 until joinSpec.getJoinKeySize).foreach { idx =>
+    (0 until joinSpec.getJoinKeySize).foreach {
+      idx =>
         val leftKeyType = leftType.getTypeAt(leftKeys(idx))
         val rightKeyType = rightType.getTypeAt(rightKeys(idx))
 
@@ -100,11 +103,11 @@ object JoinUtil {
   }
 
   /**
-    * Creates a [[JoinInfo]] by analyzing a condition.
-    *
-    * <p>NOTES: the functionality of the method is same with [[JoinInfo#of]],
-    * the only difference is that the methods could return `filterNulls`.
-    */
+   * Creates a [[JoinInfo]] by analyzing a condition.
+   *
+   * <p>NOTES: the functionality of the method is same with [[JoinInfo#of]], the only difference is
+   * that the methods could return `filterNulls`.
+   */
   def createJoinInfo(
       left: RelNode,
       right: RelNode,
@@ -112,8 +115,8 @@ object JoinUtil {
       filterNulls: util.List[java.lang.Boolean]): JoinInfo = {
     val leftKeys = new util.ArrayList[Integer]
     val rightKeys = new util.ArrayList[Integer]
-    val remaining = RelOptUtil.splitJoinCondition(
-      left, right, condition, leftKeys, rightKeys, filterNulls)
+    val remaining =
+      RelOptUtil.splitJoinCondition(left, right, condition, leftKeys, rightKeys, filterNulls)
 
     if (remaining.isAlwaysTrue) {
       JoinInfo.of(ImmutableIntList.copyOf(leftKeys), ImmutableIntList.copyOf(rightKeys))
@@ -124,46 +127,47 @@ object JoinUtil {
   }
 
   def generateConditionFunction(
-      tableConfig: TableConfig,
+      tableConfig: ReadableConfig,
+      classLoader: ClassLoader,
       joinSpec: JoinSpec,
       leftType: LogicalType,
       rightType: LogicalType): GeneratedJoinCondition = {
     generateConditionFunction(
       tableConfig,
-        joinSpec.getNonEquiCondition.orElse(null),
-        leftType,
-        rightType)
+      classLoader,
+      joinSpec.getNonEquiCondition.orElse(null),
+      leftType,
+      rightType)
   }
 
   def generateConditionFunction(
-        tableConfig: TableConfig,
-        nonEquiCondition: RexNode,
-        leftType: LogicalType,
-        rightType: LogicalType): GeneratedJoinCondition = {
-    val ctx = CodeGeneratorContext(tableConfig)
+      tableConfig: ReadableConfig,
+      classLoader: ClassLoader,
+      joinCondition: RexNode,
+      leftType: LogicalType,
+      rightType: LogicalType): GeneratedJoinCondition = {
+    val ctx = new CodeGeneratorContext(tableConfig, classLoader)
     // should consider null fields
     val exprGenerator = new ExprCodeGenerator(ctx, false)
-        .bindInput(leftType)
-        .bindSecondInput(rightType)
+      .bindInput(leftType)
+      .bindSecondInput(rightType)
 
-    val body = if (nonEquiCondition == null) {
-      // only equality condition
+    val body = if (joinCondition == null) {
+      // The join condition is null, which means the join condition is always true
       "return true;"
     } else {
-      val condition = exprGenerator.generateExpression(nonEquiCondition)
+      val condition = exprGenerator.generateExpression(joinCondition)
       s"""
          |${condition.code}
          |return ${condition.resultTerm};
          |""".stripMargin
     }
 
-    FunctionCodeGenerator.generateJoinCondition(
-      ctx,
-      "ConditionFunction",
-      body)
+    FunctionCodeGenerator.generateJoinCondition(ctx, "ConditionFunction", body)
   }
 
   def analyzeJoinInput(
+      classLoader: ClassLoader,
       inputTypeInfo: InternalTypeInfo[RowData],
       joinKeys: Array[Int],
       uniqueKeys: util.List[Array[Int]]): JoinInputSideSpec = {
@@ -174,17 +178,19 @@ object JoinUtil {
       val joinKeySet = new util.HashSet[Integer]
       joinKeys.map(Int.box).foreach(joinKeySet.add)
       val uniqueKeysContainedByJoinKey = uniqueKeys
-          .filter((uk: Array[Int]) => joinKeySet.containsAll(uk.toList))
+        .filter((uk: Array[Int]) => joinKeySet.containsAll(uk.toList))
 
       if (uniqueKeysContainedByJoinKey.isEmpty) {
         val smallestUniqueKey = getSmallestKey(uniqueKeys)
-        val uniqueKeySelector = KeySelectorUtil.getRowDataSelector(smallestUniqueKey, inputTypeInfo)
+        val uniqueKeySelector =
+          KeySelectorUtil.getRowDataSelector(classLoader, smallestUniqueKey, inputTypeInfo)
         val uniqueKeyTypeInfo = uniqueKeySelector.getProducedType
         JoinInputSideSpec.withUniqueKey(uniqueKeyTypeInfo, uniqueKeySelector)
       } else {
         // join key contains unique key
         val smallestUniqueKey = getSmallestKey(uniqueKeysContainedByJoinKey)
-        val uniqueKeySelector = KeySelectorUtil.getRowDataSelector(smallestUniqueKey, inputTypeInfo)
+        val uniqueKeySelector =
+          KeySelectorUtil.getRowDataSelector(classLoader, smallestUniqueKey, inputTypeInfo)
         val uniqueKeyTypeInfo = uniqueKeySelector.getProducedType
         JoinInputSideSpec.withUniqueKeyContainedByJoinKey(uniqueKeyTypeInfo, uniqueKeySelector)
       }
@@ -198,9 +204,12 @@ object JoinUtil {
   /**
    * Checks if an expression accesses a time attribute.
    *
-   * @param expr      The expression to check.
-   * @param inputType The input type of the expression.
-   * @return True, if the expression accesses a time attribute. False otherwise.
+   * @param expr
+   *   The expression to check.
+   * @param inputType
+   *   The input type of the expression.
+   * @return
+   *   True, if the expression accesses a time attribute. False otherwise.
    */
   def accessesTimeAttribute(expr: RexNode, inputType: RelDataType): Boolean = {
     expr match {
@@ -214,8 +223,8 @@ object JoinUtil {
   }
 
   /**
-   * Combines join inputs' RowType. For SEMI/ANTI join, the result is different from join's
-   * RowType. For other joinType, the result is same with join's RowType.
+   * Combines join inputs' RowType. For SEMI/ANTI join, the result is different from join's RowType.
+   * For other joinType, the result is same with join's RowType.
    *
    * @param join
    * @return
@@ -236,12 +245,15 @@ object JoinUtil {
   /**
    * Check whether input join node satisfy preconditions to convert into regular join.
    *
-   * @param join input join to analyze.
-   * @param newLeft new left child of join
-   * @param newRight new right child of join
+   * @param join
+   *   input join to analyze.
+   * @param newLeft
+   *   new left child of join
+   * @param newRight
+   *   new right child of join
    *
-   * @return True if input join node satisfy preconditions to convert into regular join,
-   *         else false.
+   * @return
+   *   True if input join node satisfy preconditions to convert into regular join, else false.
    */
   def satisfyRegularJoin(join: FlinkLogicalJoin, newLeft: RelNode, newRight: RelNode): Boolean = {
     if (newRight.isInstanceOf[FlinkLogicalSnapshot]) {
@@ -259,5 +271,53 @@ object JoinUtil {
     } else {
       true
     }
+  }
+
+  def binaryRowRelNodeSize(relNode: RelNode): JDouble = {
+    val mq = relNode.getCluster.getMetadataQuery
+    val rowCount = mq.getRowCount(relNode)
+    if (rowCount == null) {
+      null
+    } else {
+      rowCount * FlinkRelMdUtil.binaryRowAverageSize(relNode)
+    }
+  }
+
+  /**
+   * Get managed memory for hash join. Because hash join may fallback to sort merge join, it takes
+   * larger managed memory to support a HashJoin being converted into a SortMergeJoin.
+   */
+  def getManagedMemory(joinType: FlinkJoinType, config: ExecNodeConfig): Long = {
+    val hashJoinManagedMemory =
+      config.get(ExecutionConfigOptions.TABLE_EXEC_RESOURCE_HASH_JOIN_MEMORY).getBytes
+    // The memory used by SortMergeJoinIterator that buffer the matched rows, each side needs
+    // this memory if it is full outer join
+    val externalBufferMemory =
+      config.get(ExecutionConfigOptions.TABLE_EXEC_RESOURCE_EXTERNAL_BUFFER_MEMORY).getBytes
+    // The memory used by BinaryExternalSorter for sort, the left and right side both need it
+    val sortMemory = config.get(ExecutionConfigOptions.TABLE_EXEC_RESOURCE_SORT_MEMORY).getBytes
+    var externalBufferNum = 1
+    if (joinType eq FlinkJoinType.FULL) {
+      externalBufferNum = 2
+    }
+    val sortMergeJoinManagedMemory = externalBufferMemory * externalBufferNum + sortMemory * 2
+    // Due to hash join maybe fallback to sort merge join, so here managed memory choose the
+    // large one
+    Math.max(hashJoinManagedMemory, sortMergeJoinManagedMemory)
+  }
+
+  /** Get estimated row stats for hash join. */
+  def getEstimatedRowStats(joinBase: BatchPhysicalJoinBase): (Int, Long, Int, Long) = {
+    val mq = joinBase.getCluster.getMetadataQuery
+    val leftRowSize = Util.first(mq.getAverageRowSize(joinBase.getLeft), 24).toInt
+    val leftRowCount = Util.first(mq.getRowCount(joinBase.getLeft), 200000).toLong
+    val rightRowSize = Util.first(mq.getAverageRowSize(joinBase.getRight), 24).toInt
+    val rightRowCount = Util.first(mq.getRowCount(joinBase.getRight), 200000).toLong
+
+    (leftRowSize, leftRowCount, rightRowSize, rightRowCount)
+  }
+
+  def containsJoinStrategyHint(relHints: ImmutableList[RelHint]): Boolean = {
+    relHints.exists(relHint => JoinStrategy.isJoinStrategy(relHint.hintName))
   }
 }

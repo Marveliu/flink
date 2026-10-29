@@ -15,26 +15,22 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.planner.plan.rules.logical
 
-import org.apache.flink.api.scala._
 import org.apache.flink.table.api._
 import org.apache.flink.table.planner.plan.optimize.program.{FlinkBatchProgram, FlinkHepRuleSetProgramBuilder, HEP_RULES_EXECUTION_TYPE}
 import org.apache.flink.table.planner.utils.{TableConfigUtils, TableTestBase}
 
 import org.apache.calcite.plan.hep.HepMatchOrder
 import org.apache.calcite.tools.RuleSets
-import org.junit.{Before, Test}
+import org.junit.jupiter.api.{BeforeEach, Test}
 
-/**
-  * Test for [[FlinkSemiAntiJoinProjectTransposeRule]].
-  */
+/** Test for [[FlinkSemiAntiJoinProjectTransposeRule]]. */
 class FlinkSemiAntiJoinProjectTransposeRuleTest extends TableTestBase {
 
   private val util = batchTestUtil()
 
-  @Before
+  @BeforeEach
   def setup(): Unit = {
     util.buildBatchProgram(FlinkBatchProgram.DEFAULT_REWRITE)
     val calciteConfig = TableConfigUtils.getCalciteConfig(util.tableEnv.getConfig)
@@ -43,10 +39,11 @@ class FlinkSemiAntiJoinProjectTransposeRuleTest extends TableTestBase {
       FlinkHepRuleSetProgramBuilder.newBuilder
         .setHepRulesExecutionType(HEP_RULES_EXECUTION_TYPE.RULE_COLLECTION)
         .setHepMatchOrder(HepMatchOrder.BOTTOM_UP)
-        .add(RuleSets.ofList(
-          FlinkSemiAntiJoinProjectTransposeRule.INSTANCE,
-          FlinkSemiAntiJoinFilterTransposeRule.INSTANCE,
-          FlinkSemiAntiJoinJoinTransposeRule.INSTANCE))
+        .add(
+          RuleSets.ofList(
+            FlinkSemiAntiJoinProjectTransposeRule.INSTANCE,
+            FlinkSemiAntiJoinFilterTransposeRule.INSTANCE,
+            FlinkSemiAntiJoinJoinTransposeRule.INSTANCE))
         .build()
     )
 
@@ -78,4 +75,3 @@ class FlinkSemiAntiJoinProjectTransposeRuleTest extends TableTestBase {
   }
 
 }
-

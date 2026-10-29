@@ -20,6 +20,7 @@ package org.apache.flink.table.planner.plan.nodes.exec.stream;
 
 import org.apache.flink.FlinkVersion;
 import org.apache.flink.api.dag.Transformation;
+import org.apache.flink.configuration.ReadableConfig;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.planner.codegen.CodeGeneratorContext;
 import org.apache.flink.table.planner.codegen.agg.AggsHandlerCodeGenerator;
@@ -34,6 +35,7 @@ import org.apache.flink.table.planner.plan.nodes.exec.utils.ExecNodeUtil;
 import org.apache.flink.table.planner.plan.utils.AggregateInfoList;
 import org.apache.flink.table.planner.plan.utils.AggregateUtil;
 import org.apache.flink.table.planner.plan.utils.KeySelectorUtil;
+import org.apache.flink.table.planner.plan.utils.MinibatchUtil;
 import org.apache.flink.table.planner.utils.JavaScalaConversionUtil;
 import org.apache.flink.table.runtime.generated.GeneratedAggsHandleFunction;
 import org.apache.flink.table.runtime.keyselector.RowDataKeySelector;
@@ -85,6 +87,7 @@ public class StreamExecLocalGroupAggregate extends StreamExecAggregateBase {
     private final boolean needRetraction;
 
     public StreamExecLocalGroupAggregate(
+            ReadableConfig tableConfig,
             int[] grouping,
             AggregateCall[] aggCalls,
             boolean[] aggCallNeedRetractions,
@@ -95,6 +98,8 @@ public class StreamExecLocalGroupAggregate extends StreamExecAggregateBase {
         this(
                 ExecNodeContext.newNodeId(),
                 ExecNodeContext.newContext(StreamExecLocalGroupAggregate.class),
+                ExecNodeContext.newPersistedConfig(
+                        StreamExecLocalGroupAggregate.class, tableConfig),
                 grouping,
                 aggCalls,
                 aggCallNeedRetractions,
@@ -108,6 +113,7 @@ public class StreamExecLocalGroupAggregate extends StreamExecAggregateBase {
     public StreamExecLocalGroupAggregate(
             @JsonProperty(FIELD_NAME_ID) int id,
             @JsonProperty(FIELD_NAME_TYPE) ExecNodeContext context,
+            @JsonProperty(FIELD_NAME_CONFIGURATION) ReadableConfig persistedConfig,
             @JsonProperty(FIELD_NAME_GROUPING) int[] grouping,
             @JsonProperty(FIELD_NAME_AGG_CALLS) AggregateCall[] aggCalls,
             @JsonProperty(FIELD_NAME_AGG_CALL_NEED_RETRACTIONS) boolean[] aggCallNeedRetractions,
@@ -115,7 +121,7 @@ public class StreamExecLocalGroupAggregate extends StreamExecAggregateBase {
             @JsonProperty(FIELD_NAME_INPUT_PROPERTIES) List<InputProperty> inputProperties,
             @JsonProperty(FIELD_NAME_OUTPUT_TYPE) RowType outputType,
             @JsonProperty(FIELD_NAME_DESCRIPTION) String description) {
-        super(id, context, inputProperties, outputType, description);
+        super(id, context, persistedConfig, inputProperties, outputType, description);
         this.grouping = checkNotNull(grouping);
         this.aggCalls = checkNotNull(aggCalls);
         this.aggCallNeedRetractions = checkNotNull(aggCallNeedRetractions);
@@ -134,8 +140,9 @@ public class StreamExecLocalGroupAggregate extends StreamExecAggregateBase {
 
         final AggsHandlerCodeGenerator generator =
                 new AggsHandlerCodeGenerator(
-                        new CodeGeneratorContext(config.getTableConfig()),
-                        planner.getRelBuilder(),
+                        new CodeGeneratorContext(
+                                config, planner.getFlinkContext().getClassLoader()),
+                        planner.createRelBuilder(),
                         JavaScalaConversionUtil.toScala(inputRowType.getChildren()),
                         // the local aggregate result will be buffered, so need copy
                         true);
@@ -146,6 +153,7 @@ public class StreamExecLocalGroupAggregate extends StreamExecAggregateBase {
 
         final AggregateInfoList aggInfoList =
                 AggregateUtil.transformToStreamAggregateInfoList(
+                        planner.getTypeFactory(),
                         inputRowType,
                         JavaScalaConversionUtil.toScala(Arrays.asList(aggCalls)),
                         aggCallNeedRetractions,
@@ -159,17 +167,20 @@ public class StreamExecLocalGroupAggregate extends StreamExecAggregateBase {
 
         final RowDataKeySelector selector =
                 KeySelectorUtil.getRowDataSelector(
-                        grouping, (InternalTypeInfo<RowData>) inputTransform.getOutputType());
+                        planner.getFlinkContext().getClassLoader(),
+                        grouping,
+                        (InternalTypeInfo<RowData>) inputTransform.getOutputType());
 
         final MapBundleOperator<RowData, RowData, RowData, RowData> operator =
                 new MapBundleOperator<>(
-                        aggFunction, AggregateUtil.createMiniBatchTrigger(config), selector);
+                        aggFunction, MinibatchUtil.createMiniBatchTrigger(config), selector);
 
         return ExecNodeUtil.createOneInputTransformation(
                 inputTransform,
                 createTransformationMeta(LOCAL_GROUP_AGGREGATE_TRANSFORMATION, config),
                 operator,
                 InternalTypeInfo.of(getOutputType()),
-                inputTransform.getParallelism());
+                inputTransform.getParallelism(),
+                false);
     }
 }

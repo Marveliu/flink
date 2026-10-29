@@ -18,19 +18,19 @@
 package org.apache.flink.test.streaming.runtime;
 
 import org.apache.flink.api.common.functions.MapFunction;
+import org.apache.flink.api.common.functions.OpenContext;
 import org.apache.flink.api.common.functions.Partitioner;
 import org.apache.flink.api.common.functions.RichMapFunction;
 import org.apache.flink.api.common.functions.RuntimeContext;
 import org.apache.flink.api.java.tuple.Tuple1;
 import org.apache.flink.api.java.tuple.Tuple2;
-import org.apache.flink.configuration.Configuration;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.test.streaming.runtime.util.NoOpIntMap;
 import org.apache.flink.test.streaming.runtime.util.TestListResultSink;
 import org.apache.flink.test.util.AbstractTestBase;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.Arrays;
 import java.util.Comparator;
@@ -43,44 +43,44 @@ import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
 import static java.util.Collections.sort;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.fail;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.Assertions.fail;
 
 /** IT case that tests the different stream partitioning schemes. */
-@SuppressWarnings("serial")
-public class PartitionerITCase extends AbstractTestBase {
+class PartitionerITCase extends AbstractTestBase {
 
     private static final int PARALLELISM = 3;
 
     private static final List<String> INPUT = Arrays.asList("a", "b", "c", "d", "e", "f", "g");
 
-    @Test(expected = UnsupportedOperationException.class)
-    public void testForwardFailsLowToHighParallelism() throws Exception {
+    @Test
+    void testForwardFailsLowToHighParallelism() {
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
 
-        DataStream<Integer> src = env.fromElements(1, 2, 3);
+        DataStream<Integer> src = env.fromData(1, 2, 3);
 
         // this doesn't work because it goes from 1 to 3
         src.forward().map(new NoOpIntMap());
 
-        env.execute();
+        assertThatThrownBy(env::execute).isInstanceOf(UnsupportedOperationException.class);
     }
 
-    @Test(expected = UnsupportedOperationException.class)
-    public void testForwardFailsHightToLowParallelism() throws Exception {
+    @Test
+    void testForwardFailsHightToLowParallelism() throws Exception {
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
 
         // this does a rebalance that works
-        DataStream<Integer> src = env.fromElements(1, 2, 3).map(new NoOpIntMap());
+        DataStream<Integer> src = env.fromData(1, 2, 3).map(new NoOpIntMap());
 
         // this doesn't work because it goes from 3 to 1
         src.forward().map(new NoOpIntMap()).setParallelism(1);
 
-        env.execute();
+        assertThatThrownBy(env::execute).isInstanceOf(UnsupportedOperationException.class);
     }
 
     @Test
-    public void partitionerTest() {
+    void partitionerTest() throws Exception {
 
         TestListResultSink<Tuple2<Integer, String>> hashPartitionResultSink =
                 new TestListResultSink<Tuple2<Integer, String>>();
@@ -99,10 +99,10 @@ public class PartitionerITCase extends AbstractTestBase {
         env.setParallelism(PARALLELISM);
 
         DataStream<Tuple1<String>> src =
-                env.fromCollection(INPUT.stream().map(Tuple1::of).collect(Collectors.toList()));
+                env.fromData(INPUT.stream().map(Tuple1::of).collect(Collectors.toList()));
 
         // partition by hash
-        src.keyBy(0).map(new SubtaskIndexAssigner()).addSink(hashPartitionResultSink);
+        src.keyBy(x -> x.f0).map(new SubtaskIndexAssigner()).addSink(hashPartitionResultSink);
 
         // partition custom
         DataStream<Tuple2<Integer, String>> partitionCustom =
@@ -117,7 +117,7 @@ public class PartitionerITCase extends AbstractTestBase {
                                         }
                                     }
                                 },
-                                0)
+                                x -> x.f0)
                         .map(new SubtaskIndexAssigner());
 
         partitionCustom.addSink(customPartitionResultSink);
@@ -145,12 +145,7 @@ public class PartitionerITCase extends AbstractTestBase {
         // partition global
         src.global().map(new SubtaskIndexAssigner()).addSink(globalPartitionResultSink);
 
-        try {
-            env.execute();
-        } catch (Exception e) {
-            e.printStackTrace();
-            fail(e.getMessage());
-        }
+        env.execute();
 
         List<Tuple2<Integer, String>> hashPartitionResult = hashPartitionResultSink.getResult();
         List<Tuple2<Integer, String>> customPartitionResult = customPartitionResultSink.getResult();
@@ -186,9 +181,9 @@ public class PartitionerITCase extends AbstractTestBase {
             List<Tuple2<Integer, String>> customPartitionResult) {
         for (Tuple2<Integer, String> stringWithSubtask : customPartitionResult) {
             if (stringWithSubtask.f1.equals("c")) {
-                assertEquals(new Integer(2), stringWithSubtask.f0);
+                assertThat(stringWithSubtask.f0).isEqualTo(2);
             } else {
-                assertEquals(new Integer(0), stringWithSubtask.f0);
+                assertThat(stringWithSubtask.f0).isEqualTo(0);
             }
         }
     }
@@ -203,7 +198,7 @@ public class PartitionerITCase extends AbstractTestBase {
                                                 .mapToObj(i -> Tuple2.of(i, input)))
                         .collect(Collectors.toSet());
 
-        assertEquals(expectedResult, new HashSet<>(broadcastPartitionResult));
+        assertThat(new HashSet<>(broadcastPartitionResult)).isEqualTo(expectedResult);
     }
 
     private static void verifyRebalancePartitioning(
@@ -220,7 +215,7 @@ public class PartitionerITCase extends AbstractTestBase {
                                         Tuple2.of((offset + index) % PARALLELISM, INPUT.get(index)))
                         .collect(Collectors.toList());
 
-        assertEquals(expected, rebalancePartitionResult);
+        assertThat(rebalancePartitionResult).isEqualTo(expected);
     }
 
     private static void verifyGlobalPartitioning(
@@ -228,7 +223,7 @@ public class PartitionerITCase extends AbstractTestBase {
         final List<Tuple2<Integer, String>> expected =
                 INPUT.stream().map(i -> Tuple2.of(0, i)).collect(Collectors.toList());
 
-        assertEquals(expected, globalPartitionResult);
+        assertThat(globalPartitionResult).isEqualTo(expected);
     }
 
     private static class SubtaskIndexAssigner
@@ -238,10 +233,10 @@ public class PartitionerITCase extends AbstractTestBase {
         private int indexOfSubtask;
 
         @Override
-        public void open(Configuration parameters) throws Exception {
-            super.open(parameters);
+        public void open(OpenContext openContext) throws Exception {
+            super.open(openContext);
             RuntimeContext runtimeContext = getRuntimeContext();
-            indexOfSubtask = runtimeContext.getIndexOfThisSubtask();
+            indexOfSubtask = runtimeContext.getTaskInfo().getIndexOfThisSubtask();
         }
 
         @Override

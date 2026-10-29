@@ -15,42 +15,38 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.planner.codegen
 
-import org.apache.flink.configuration.Configuration
+import org.apache.flink.api.common.functions.DefaultOpenContext
+import org.apache.flink.configuration.ReadableConfig
 import org.apache.flink.metrics.Gauge
-import org.apache.flink.table.api.TableConfig
-import org.apache.flink.table.data.utils.JoinedRowData
 import org.apache.flink.table.data.{RowData, TimestampData}
+import org.apache.flink.table.data.utils.JoinedRowData
 import org.apache.flink.table.planner.codegen.CodeGenUtils._
-import org.apache.flink.table.planner.codegen.OperatorCodeGenerator.{INPUT_SELECTION, generateCollect}
+import org.apache.flink.table.planner.codegen.OperatorCodeGenerator.{generateCollect, INPUT_SELECTION}
 import org.apache.flink.table.runtime.generated.{GeneratedJoinCondition, GeneratedProjection}
-import org.apache.flink.table.runtime.hashtable.{LongHashPartition, LongHybridHashTable}
+import org.apache.flink.table.runtime.hashtable.{LongHashPartition, LongHybridHashTable, ProbeIterator}
 import org.apache.flink.table.runtime.operators.CodeGenOperatorFactory
-import org.apache.flink.table.runtime.operators.join.HashJoinType
+import org.apache.flink.table.runtime.operators.join.{HashJoinType, SortMergeJoinFunction}
 import org.apache.flink.table.runtime.typeutils.BinaryRowDataSerializer
-import org.apache.flink.table.types.logical.LogicalTypeRoot.{TIMESTAMP_WITHOUT_TIME_ZONE, _}
+import org.apache.flink.table.runtime.util.{RowIterator, StreamRecordCollector}
 import org.apache.flink.table.types.logical._
+import org.apache.flink.table.types.logical.LogicalTypeRoot._
 
-/**
-  * Generate a long key hash join operator using [[LongHybridHashTable]].
-  */
+/** Generate a long key hash join operator using [[LongHybridHashTable]]. */
 object LongHashJoinGenerator {
 
-  def support(
-      joinType: HashJoinType,
-      keyType: RowType,
-      filterNulls: Array[Boolean]): Boolean = {
+  def support(joinType: HashJoinType, keyType: RowType, filterNulls: Array[Boolean]): Boolean = {
     (joinType == HashJoinType.INNER ||
-        joinType == HashJoinType.SEMI ||
-        joinType == HashJoinType.ANTI ||
-        joinType == HashJoinType.PROBE_OUTER) &&
-        filterNulls.forall(b => b) &&
-        keyType.getFieldCount == 1 && {
+      joinType == HashJoinType.SEMI ||
+      joinType == HashJoinType.ANTI ||
+      joinType == HashJoinType.PROBE_OUTER) &&
+    filterNulls.forall(b => b) &&
+    keyType.getFieldCount == 1 && {
       keyType.getTypeAt(0).getTypeRoot match {
         case BIGINT | INTEGER | SMALLINT | TINYINT | FLOAT | DOUBLE | DATE |
-             TIME_WITHOUT_TIME_ZONE => true
+            TIME_WITHOUT_TIME_ZONE =>
+          true
         case TIMESTAMP_WITHOUT_TIME_ZONE =>
           val timestampType = keyType.getTypeAt(0).asInstanceOf[TimestampType]
           TimestampData.isCompact(timestampType.getPrecision)
@@ -64,10 +60,7 @@ object LongHashJoinGenerator {
     }
   }
 
-  private def genGetLongKey(
-      keyType: RowType,
-      keyMapping: Array[Int],
-      rowTerm: String): String = {
+  def genGetLongKey(keyType: RowType, keyMapping: Array[Int], rowTerm: String): String = {
     val singleType = keyType.getTypeAt(0)
     val getCode = rowFieldReadAccess(keyMapping(0), rowTerm, singleType)
     val term = singleType.getTypeRoot match {
@@ -80,22 +73,29 @@ object LongHashJoinGenerator {
     s"return $term;"
   }
 
-  def genAnyNullsInKeys(keyMapping: Array[Int], rowTerm: String): (String, String) = {
+  def genAnyNullsInKeys(
+      keyMapping: Array[Int],
+      rowTerm: String,
+      ctx: CodeGeneratorContext): (String, String) = {
     val builder = new StringBuilder()
-    val anyNullTerm = newName("anyNull")
-    keyMapping.foreach(key =>
-      builder.append(s"$anyNullTerm |= $rowTerm.isNullAt($key);")
-    )
-    (s"""
-       |boolean $anyNullTerm = false;
-       |$builder
-     """.stripMargin, anyNullTerm)
+    val anyNullTerm = newName(ctx, "anyNull")
+    keyMapping.foreach(key => builder.append(s"$anyNullTerm |= $rowTerm.isNullAt($key);"))
+    (
+      s"""
+         |boolean $anyNullTerm = false;
+         |$builder
+     """.stripMargin,
+      anyNullTerm)
   }
 
-  def genProjection(tableConfig: TableConfig, types: Array[LogicalType]): GeneratedProjection = {
+  def genProjection(
+      tableConfig: ReadableConfig,
+      classLoader: ClassLoader,
+      types: Array[LogicalType],
+      parentCtx: CodeGeneratorContext): GeneratedProjection = {
     val rowType = RowType.of(types: _*)
     ProjectionCodeGenerator.generateProjection(
-      CodeGeneratorContext.apply(tableConfig),
+      new CodeGeneratorContext(tableConfig, classLoader, parentCtx),
       "Projection",
       rowType,
       rowType,
@@ -103,7 +103,8 @@ object LongHashJoinGenerator {
   }
 
   def gen(
-      tableConfig: TableConfig,
+      tableConfig: ReadableConfig,
+      classLoader: ClassLoader,
       hashJoinType: HashJoinType,
       keyType: RowType,
       buildType: RowType,
@@ -113,19 +114,33 @@ object LongHashJoinGenerator {
       buildRowSize: Int,
       buildRowCount: Long,
       reverseJoinFunction: Boolean,
-      condFunc: GeneratedJoinCondition): CodeGenOperatorFactory[RowData] = {
+      condFunc: GeneratedJoinCondition,
+      leftIsBuild: Boolean,
+      compressionEnabled: Boolean,
+      compressionBlockSize: Int,
+      sortMergeJoinFunction: SortMergeJoinFunction): CodeGenOperatorFactory[RowData] = {
 
     val buildSer = new BinaryRowDataSerializer(buildType.getFieldCount)
     val probeSer = new BinaryRowDataSerializer(probeType.getFieldCount)
 
-    val tableTerm = newName("LongHashTable")
-    val ctx = CodeGeneratorContext(tableConfig)
+    val ctx = new CodeGeneratorContext(tableConfig, classLoader)
+    val tableTerm = newName(ctx, "LongHashTable")
     val buildSerTerm = ctx.addReusableObject(buildSer, "buildSer")
     val probeSerTerm = ctx.addReusableObject(probeSer, "probeSer")
 
-    val bGenProj = genProjection(tableConfig, buildType.getChildren.toArray(Array[LogicalType]()))
+    val bGenProj =
+      genProjection(
+        tableConfig,
+        classLoader,
+        buildType.getChildren.toArray(Array[LogicalType]()),
+        ctx)
     ctx.addReusableInnerClass(bGenProj.getClassName, bGenProj.getCode)
-    val pGenProj = genProjection(tableConfig, probeType.getChildren.toArray(Array[LogicalType]()))
+    val pGenProj =
+      genProjection(
+        tableConfig,
+        classLoader,
+        probeType.getChildren.toArray(Array[LogicalType]()),
+        ctx)
     ctx.addReusableInnerClass(pGenProj.getClassName, pGenProj.getCode)
     ctx.addReusableInnerClass(condFunc.getClassName, condFunc.getCode)
 
@@ -143,8 +158,19 @@ object LongHashJoinGenerator {
     val condRefs = ctx.addReusableObject(condFunc.getReferences, "condRefs")
     ctx.addReusableInitStatement(s"condFunc = new ${condFunc.getClassName}($condRefs);")
     ctx.addReusableOpenStatement(s"condFunc.setRuntimeContext(getRuntimeContext());")
-    ctx.addReusableOpenStatement(s"condFunc.open(new ${className[Configuration]}());")
+    ctx.addReusableOpenStatement(s"condFunc.open(new ${className[DefaultOpenContext]}());")
     ctx.addReusableCloseStatement(s"condFunc.close();")
+
+    val leftIsBuildTerm = newName(ctx, "leftIsBuild")
+    ctx.addReusableMember(s"private final boolean $leftIsBuildTerm = $leftIsBuild;")
+
+    val smjFunctionTerm = className[SortMergeJoinFunction]
+    ctx.addReusableMember(s"private final $smjFunctionTerm sortMergeJoinFunction;")
+    val smjFunctionRefs = ctx.addReusableObject(Array(sortMergeJoinFunction), "smjFunctionRefs")
+    ctx.addReusableInitStatement(s"sortMergeJoinFunction = $smjFunctionRefs[0];")
+
+    val fallbackSMJ = newName(ctx, "fallbackSMJ")
+    ctx.addReusableMember(s"private transient boolean $fallbackSMJ = false;")
 
     val gauge = classOf[Gauge[_]].getCanonicalName
     ctx.addReusableOpenStatement(
@@ -174,13 +200,14 @@ object LongHashJoinGenerator {
          |public class $tableTerm extends ${classOf[LongHybridHashTable].getCanonicalName} {
          |
          |  public $tableTerm() {
-         |    super(getContainingTask().getJobConfiguration(), getContainingTask(),
+         |    super(getContainingTask(),
+         |      $compressionEnabled, $compressionBlockSize,
          |      $buildSerTerm, $probeSerTerm,
          |      getContainingTask().getEnvironment().getMemoryManager(),
          |      computeMemorySize(),
          |      getContainingTask().getEnvironment().getIOManager(),
          |      $buildRowSize,
-         |      ${buildRowCount}L / getRuntimeContext().getNumberOfParallelSubtasks());
+         |      ${buildRowCount}L / getRuntimeContext().getTaskInfo().getNumberOfParallelSubtasks());
          |  }
          |
          |  @Override
@@ -210,8 +237,8 @@ object LongHashJoinGenerator {
     ctx.addReusableMember(s"$tableTerm table;")
     ctx.addReusableOpenStatement(s"table = new $tableTerm();")
 
-    val (nullCheckBuildCode, nullCheckBuildTerm) = genAnyNullsInKeys(buildKeyMapping, "row")
-    val (nullCheckProbeCode, nullCheckProbeTerm) = genAnyNullsInKeys(probeKeyMapping, "row")
+    val (nullCheckBuildCode, nullCheckBuildTerm) = genAnyNullsInKeys(buildKeyMapping, "row", ctx)
+    val (nullCheckProbeCode, nullCheckProbeTerm) = genAnyNullsInKeys(probeKeyMapping, "row", ctx)
 
     def collectCode(term1: String, term2: String) =
       if (reverseJoinFunction) {
@@ -303,16 +330,97 @@ object LongHashJoinGenerator {
          |}
        """.stripMargin)
 
-    ctx.addReusableCloseStatement(
+    // fallback to sort merge join in probe phase
+    val rowIter = classOf[RowIterator[_]].getCanonicalName
+    ctx.addReusableMember(s"""
+                             |private void fallbackSMJProcessPartition() throws Exception {
+                             |  if(!table.getPartitionsPendingForSMJ().isEmpty()) {
+                             |    table.releaseMemoryCacheForSMJ();
+                             |    LOG.info(
+                             |    "Fallback to sort merge join to process spilled partitions.");
+                             |    initialSortMergeJoinFunction();
+                             |    $fallbackSMJ = true;
+                             |
+                             |    for(${classOf[LongHashPartition].getCanonicalName} p : 
+                             |      table.getPartitionsPendingForSMJ()) {
+                             |      $rowIter<$BINARY_ROW> buildSideIter = 
+                             |      table.getSpilledPartitionBuildSideIter(p);
+                             |      while (buildSideIter.advanceNext()) {
+                             |        processSortMergeJoinElement1(buildSideIter.getRow());
+                             |      }
+                             |
+                             |      ${classOf[ProbeIterator].getCanonicalName} probeIter =
+                             |      table.getSpilledPartitionProbeSideIter(p);
+                             |      $BINARY_ROW probeNext;
+                             |      while ((probeNext = probeIter.next()) != null) {
+                             |        processSortMergeJoinElement2(probeNext);
+                             |      }
+                             |    }
+                             |
+                             |    closeHashTable();
+                             |
+                             |    sortMergeJoinFunction.endInput(1);
+                             |    sortMergeJoinFunction.endInput(2);
+                             |    LOG.info("Finish sort merge join for spilled partitions.");
+                             |  }
+                             |}
+       """.stripMargin)
+
+    val collector = classOf[StreamRecordCollector[_]].getCanonicalName
+    ctx.addReusableMember(s"""
+                             |private void initialSortMergeJoinFunction() throws Exception {
+                             |  sortMergeJoinFunction.open(
+                             |    true,
+                             |    this.getContainingTask(),
+                             |    this.getOperatorConfig(),
+                             |    new $collector<$ROW_DATA>(output),
+                             |    this.computeMemorySize(),
+                             |    this.getRuntimeContext(),
+                             |    this.getMetricGroup());
+                             |}
+       """.stripMargin)
+
+    ctx.addReusableMember(
       s"""
-         |if (this.table != null) {
-         |  this.table.close();
-         |  this.table.free();
-         |  this.table = null;
+         |private void processSortMergeJoinElement1($ROW_DATA rowData) throws Exception {
+         |  if($leftIsBuild) {
+         |    sortMergeJoinFunction.processElement1(rowData);
+         |  } else {
+         |    sortMergeJoinFunction.processElement2(rowData);
+         |  }
          |}
        """.stripMargin)
 
-    val buildEnd = newName("buildEnd")
+    ctx.addReusableMember(
+      s"""
+         |private void processSortMergeJoinElement2($ROW_DATA rowData) throws Exception {
+         |  if($leftIsBuild) {
+         |    sortMergeJoinFunction.processElement2(rowData);
+         |  } else {
+         |    sortMergeJoinFunction.processElement1(rowData);
+         |  }
+         |}
+       """.stripMargin)
+
+    ctx.addReusableMember(s"""
+                             |private void closeHashTable() {
+                             |  if (this.table != null) {
+                             |    this.table.close();
+                             |    this.table.free();
+                             |    this.table = null;
+                             |  }
+                             |}
+       """.stripMargin)
+
+    ctx.addReusableCloseStatement(s"""
+                                     |closeHashTable();
+                                     |
+                                     |if ($fallbackSMJ) {
+                                     |  sortMergeJoinFunction.close();
+                                     |}
+       """.stripMargin)
+
+    val buildEnd = newName(ctx, "buildEnd")
     ctx.addReusableMember(s"private transient boolean $buildEnd = false;")
 
     val genOp = OperatorCodeGenerator.generateTwoInputStreamOperator[RowData, RowData, RowData](
@@ -338,28 +446,28 @@ object LongHashJoinGenerator {
        """.stripMargin,
       buildType,
       probeType,
-      nextSelectionCode = Some(
-        s"""
-           |if ($buildEnd) {
-           |  return $INPUT_SELECTION.SECOND;
-           |} else {
-           |  return $INPUT_SELECTION.FIRST;
-           |}
+      nextSelectionCode = Some(s"""
+                                  |if ($buildEnd) {
+                                  |  return $INPUT_SELECTION.SECOND;
+                                  |} else {
+                                  |  return $INPUT_SELECTION.FIRST;
+                                  |}
          """.stripMargin),
-      endInputCode1 = Some(
-        s"""
-           |LOG.info("Finish build phase.");
-           |table.endBuild();
-           |$buildEnd = true;
+      endInputCode1 = Some(s"""
+                              |LOG.info("Finish build phase.");
+                              |table.endBuild();
+                              |$buildEnd = true;
        """.stripMargin),
-      endInputCode2 = Some(
-        s"""
-           |LOG.info("Finish probe phase.");
-           |while (this.table.nextMatching()) {
-           |  joinWithNextKey();
-           |}
-           |LOG.info("Finish rebuild phase.");
-         """.stripMargin))
+      endInputCode2 = Some(s"""
+                              |LOG.info("Finish probe phase.");
+                              |while (this.table.nextMatching()) {
+                              |  joinWithNextKey();
+                              |}
+                              |LOG.info("Finish rebuild phase.");
+                              |
+                              |fallbackSMJProcessPartition();
+         """.stripMargin)
+    )
 
     new CodeGenOperatorFactory[RowData](genOp)
   }

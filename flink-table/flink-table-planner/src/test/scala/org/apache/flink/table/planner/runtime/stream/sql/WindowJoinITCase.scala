@@ -15,42 +15,50 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.planner.runtime.stream.sql
 
-import org.apache.flink.api.common.restartstrategy.RestartStrategies
-import org.apache.flink.api.scala._
-import org.apache.flink.streaming.api.CheckpointingMode
+import org.apache.flink.configuration.{Configuration, RestartStrategyOptions}
+import org.apache.flink.core.execution.CheckpointingMode
 import org.apache.flink.table.api.bridge.scala._
+import org.apache.flink.table.api.config.ExecutionConfigOptions
 import org.apache.flink.table.planner.factories.TestValuesTableFactory
-import org.apache.flink.table.planner.runtime.utils.StreamingWithStateTestBase.{HEAP_BACKEND, ROCKSDB_BACKEND, StateBackendMode}
 import org.apache.flink.table.planner.runtime.utils.{FailingCollectionSource, StreamingWithStateTestBase, TestData, TestingAppendSink}
-import org.apache.flink.types.Row
+import org.apache.flink.table.planner.runtime.utils.StreamingWithStateTestBase.{HEAP_BACKEND, ROCKSDB_BACKEND, StateBackendMode}
+import org.apache.flink.testutils.junit.extensions.parameterized.{ParameterizedTestExtension, Parameters}
 
-import org.junit.Assert.assertEquals
-import org.junit.runner.RunWith
-import org.junit.runners.Parameterized
-import org.junit.{Before, Test}
-import java.time.ZoneId
+import org.assertj.core.api.Assertions.assertThat
+import org.junit.jupiter.api.{BeforeEach, TestTemplate}
+import org.junit.jupiter.api.extension.ExtendWith
 
+import java.time.{Duration, ZoneId}
 import java.util
 
 import scala.collection.JavaConversions._
 
-@RunWith(classOf[Parameterized])
-class WindowJoinITCase(mode: StateBackendMode, useTimestampLtz: Boolean)
+@ExtendWith(Array(classOf[ParameterizedTestExtension]))
+class WindowJoinITCase(mode: StateBackendMode, useTimestampLtz: Boolean, enableAsyncState: Boolean)
   extends StreamingWithStateTestBase(mode) {
 
   val SHANGHAI_ZONE = ZoneId.of("Asia/Shanghai")
 
-  @Before
+  @BeforeEach
   override def before(): Unit = {
     super.before()
     // enable checkpoint, we are using failing source to force have a complete checkpoint
     // and cover restore path
     env.enableCheckpointing(100, CheckpointingMode.EXACTLY_ONCE)
-    env.setRestartStrategy(RestartStrategies.fixedDelayRestart(1, 0))
+    val configuration = new Configuration()
+    configuration.set(RestartStrategyOptions.RESTART_STRATEGY, "fixeddelay")
+    configuration.set(RestartStrategyOptions.RESTART_STRATEGY_FIXED_DELAY_ATTEMPTS, Int.box(1))
+    configuration.set(
+      RestartStrategyOptions.RESTART_STRATEGY_FIXED_DELAY_DELAY,
+      Duration.ofMillis(0))
+    env.configure(configuration, Thread.currentThread.getContextClassLoader)
     FailingCollectionSource.reset()
+
+    tEnv.getConfig.set(
+      ExecutionConfigOptions.TABLE_EXEC_ASYNC_STATE_ENABLED,
+      Boolean.box(enableAsyncState))
 
     val dataId1 = TestValuesTableFactory.registerData(TestData.windowDataWithTimestamp)
     val dataIdWithLtz = TestValuesTableFactory.registerData(TestData.windowDataWithLtzInShanghai)
@@ -69,7 +77,7 @@ class WindowJoinITCase(mode: StateBackendMode, useTimestampLtz: Boolean)
          | WATERMARK for `rowtime` AS `rowtime` - INTERVAL '1' SECOND
          |) WITH (
          | 'connector' = 'values',
-         | 'data-id' = '${ if (useTimestampLtz) dataIdWithLtz else dataId1}',
+         | 'data-id' = '${if (useTimestampLtz) dataIdWithLtz else dataId1}',
          | 'failing-source' = 'true'
          |)
          |""".stripMargin)
@@ -92,14 +100,14 @@ class WindowJoinITCase(mode: StateBackendMode, useTimestampLtz: Boolean)
          | WATERMARK for `rowtime` AS `rowtime` - INTERVAL '1' SECOND
          |) WITH (
          | 'connector' = 'values',
-         | 'data-id' = '${ if (useTimestampLtz) dataIdWithLtz2 else dataId2}',
+         | 'data-id' = '${if (useTimestampLtz) dataIdWithLtz2 else dataId2}',
          | 'failing-source' = 'true'
          |)
          |""".stripMargin)
     tEnv.getConfig.setLocalTimeZone(SHANGHAI_ZONE)
   }
 
-  @Test
+  @TestTemplate
   def testInnerJoin(): Unit = {
     val sql =
       """
@@ -128,17 +136,18 @@ class WindowJoinITCase(mode: StateBackendMode, useTimestampLtz: Boolean)
         |""".stripMargin
 
     val sink = new TestingAppendSink
-    tEnv.sqlQuery(sql).toAppendStream[Row].addSink(sink)
+    tEnv.sqlQuery(sql).toDataStream.addSink(sink)
     env.execute()
 
     val expected = Seq(
       "b,2020-10-10T00:00:05,2020-10-10T00:00:10,2,2",
       "b,2020-10-10T00:00:15,2020-10-10T00:00:20,1,1",
       "b,2020-10-10T00:00:30,2020-10-10T00:00:35,1,1")
-    assertEquals(expected.sorted.mkString("\n"), sink.getAppendResults.sorted.mkString("\n"))
+    assertThat(sink.getAppendResults.sorted.mkString("\n"))
+      .isEqualTo(expected.sorted.mkString("\n"))
   }
 
-  @Test
+  @TestTemplate
   def testInnerJoinOnWTF(): Unit = {
     val sql =
       s"""
@@ -172,7 +181,7 @@ class WindowJoinITCase(mode: StateBackendMode, useTimestampLtz: Boolean)
          |""".stripMargin
 
     val sink = new TestingAppendSink
-    tEnv.sqlQuery(sql).toAppendStream[Row].addSink(sink)
+    tEnv.sqlQuery(sql).toDataStream.addSink(sink)
     env.execute()
 
     val expected = if (useTimestampLtz) {
@@ -188,7 +197,8 @@ class WindowJoinITCase(mode: StateBackendMode, useTimestampLtz: Boolean)
         "2020-10-09T16:00:16Z,4,4.0,4.0,4.44,Hi,b,2020-10-10 00:00:16.000," +
           "2020-10-10T00:00:15,2020-10-10T00:00:20,2020-10-09T16:00:19.999Z,4,Hi,b",
         "2020-10-09T16:00:34Z,1,3.0,3.0,3.33,Comment#3,b,2020-10-10 00:00:34.000," +
-          "2020-10-10T00:00:30,2020-10-10T00:00:35,2020-10-09T16:00:34.999Z,1,Comment#3,b")
+          "2020-10-10T00:00:30,2020-10-10T00:00:35,2020-10-09T16:00:34.999Z,1,Comment#3,b"
+      )
     } else {
       Seq(
         "2020-10-10T00:00:06,6,6.0,6.0,6.66,Hi,b,2020-10-10 00:00:06.000," +
@@ -202,12 +212,14 @@ class WindowJoinITCase(mode: StateBackendMode, useTimestampLtz: Boolean)
         "2020-10-10T00:00:16,4,4.0,4.0,4.44,Hi,b,2020-10-10 00:00:16.000," +
           "2020-10-10T00:00:15,2020-10-10T00:00:20,2020-10-10T00:00:19.999,4,Hi,b",
         "2020-10-10T00:00:34,1,3.0,3.0,3.33,Comment#3,b,2020-10-10 00:00:34.000," +
-          "2020-10-10T00:00:30,2020-10-10T00:00:35,2020-10-10T00:00:34.999,1,Comment#3,b")
+          "2020-10-10T00:00:30,2020-10-10T00:00:35,2020-10-10T00:00:34.999,1,Comment#3,b"
+      )
     }
-    assertEquals(expected.sorted.mkString("\n"), sink.getAppendResults.sorted.mkString("\n"))
+    assertThat(sink.getAppendResults.sorted.mkString("\n"))
+      .isEqualTo(expected.sorted.mkString("\n"))
   }
 
-  @Test
+  @TestTemplate
   def testInnerJoinOnWTFWithOffset(): Unit = {
     val sql =
       s"""
@@ -241,7 +253,7 @@ class WindowJoinITCase(mode: StateBackendMode, useTimestampLtz: Boolean)
          |""".stripMargin
 
     val sink = new TestingAppendSink
-    tEnv.sqlQuery(sql).toAppendStream[Row].addSink(sink)
+    tEnv.sqlQuery(sql).toDataStream.addSink(sink)
     env.execute()
 
     val expected = if (useTimestampLtz) {
@@ -257,7 +269,8 @@ class WindowJoinITCase(mode: StateBackendMode, useTimestampLtz: Boolean)
         "2020-10-09T16:00:16Z,4,4.0,4.0,4.44,Hi,b,2020-10-10 00:00:16.000," +
           "2020-10-10T00:00:16,2020-10-10T00:00:21,2020-10-09T16:00:20.999Z,4,Hi,b",
         "2020-10-09T16:00:34Z,1,3.0,3.0,3.33,Comment#3,b,2020-10-10 00:00:34.000," +
-          "2020-10-10T00:00:31,2020-10-10T00:00:36,2020-10-09T16:00:35.999Z,1,Comment#3,b")
+          "2020-10-10T00:00:31,2020-10-10T00:00:36,2020-10-09T16:00:35.999Z,1,Comment#3,b"
+      )
     } else {
       Seq(
         "2020-10-10T00:00:06,6,6.0,6.0,6.66,Hi,b,2020-10-10 00:00:06.000," +
@@ -271,12 +284,14 @@ class WindowJoinITCase(mode: StateBackendMode, useTimestampLtz: Boolean)
         "2020-10-10T00:00:16,4,4.0,4.0,4.44,Hi,b,2020-10-10 00:00:16.000," +
           "2020-10-10T00:00:16,2020-10-10T00:00:21,2020-10-10T00:00:20.999,4,Hi,b",
         "2020-10-10T00:00:34,1,3.0,3.0,3.33,Comment#3,b,2020-10-10 00:00:34.000," +
-          "2020-10-10T00:00:31,2020-10-10T00:00:36,2020-10-10T00:00:35.999,1,Comment#3,b")
+          "2020-10-10T00:00:31,2020-10-10T00:00:36,2020-10-10T00:00:35.999,1,Comment#3,b"
+      )
     }
-    assertEquals(expected.sorted.mkString("\n"), sink.getAppendResults.sorted.mkString("\n"))
+    assertThat(sink.getAppendResults.sorted.mkString("\n"))
+      .isEqualTo(expected.sorted.mkString("\n"))
   }
 
-  @Test
+  @TestTemplate
   def testInnerJoinOnWTFWithNegativeOffset(): Unit = {
     val sql =
       s"""
@@ -310,7 +325,7 @@ class WindowJoinITCase(mode: StateBackendMode, useTimestampLtz: Boolean)
          |""".stripMargin
 
     val sink = new TestingAppendSink
-    tEnv.sqlQuery(sql).toAppendStream[Row].addSink(sink)
+    tEnv.sqlQuery(sql).toDataStream.addSink(sink)
     env.execute()
 
     val expected = if (useTimestampLtz) {
@@ -326,7 +341,8 @@ class WindowJoinITCase(mode: StateBackendMode, useTimestampLtz: Boolean)
         "2020-10-09T16:00:16Z,4,4.0,4.0,4.44,Hi,b,2020-10-10 00:00:16.000," +
           "2020-10-10T00:00:14,2020-10-10T00:00:19,2020-10-09T16:00:18.999Z,4,Hi,b",
         "2020-10-09T16:00:34Z,1,3.0,3.0,3.33,Comment#3,b,2020-10-10 00:00:34.000," +
-          "2020-10-10T00:00:34,2020-10-10T00:00:39,2020-10-09T16:00:38.999Z,1,Comment#3,b")
+          "2020-10-10T00:00:34,2020-10-10T00:00:39,2020-10-09T16:00:38.999Z,1,Comment#3,b"
+      )
     } else {
       Seq(
         "2020-10-10T00:00:06,6,6.0,6.0,6.66,Hi,b,2020-10-10 00:00:06.000," +
@@ -340,12 +356,14 @@ class WindowJoinITCase(mode: StateBackendMode, useTimestampLtz: Boolean)
         "2020-10-10T00:00:16,4,4.0,4.0,4.44,Hi,b,2020-10-10 00:00:16.000," +
           "2020-10-10T00:00:14,2020-10-10T00:00:19,2020-10-10T00:00:18.999,4,Hi,b",
         "2020-10-10T00:00:34,1,3.0,3.0,3.33,Comment#3,b,2020-10-10 00:00:34.000," +
-          "2020-10-10T00:00:34,2020-10-10T00:00:39,2020-10-10T00:00:38.999,1,Comment#3,b")
+          "2020-10-10T00:00:34,2020-10-10T00:00:39,2020-10-10T00:00:38.999,1,Comment#3,b"
+      )
     }
-    assertEquals(expected.sorted.mkString("\n"), sink.getAppendResults.sorted.mkString("\n"))
+    assertThat(sink.getAppendResults.sorted.mkString("\n"))
+      .isEqualTo(expected.sorted.mkString("\n"))
   }
 
-  @Test
+  @TestTemplate
   def testInnerJoinWithIsNotDistinctFrom(): Unit = {
     val sql =
       """
@@ -375,18 +393,20 @@ class WindowJoinITCase(mode: StateBackendMode, useTimestampLtz: Boolean)
         |""".stripMargin
 
     val sink = new TestingAppendSink
-    tEnv.sqlQuery(sql).toAppendStream[Row].addSink(sink)
+    tEnv.sqlQuery(sql).toDataStream.addSink(sink)
     env.execute()
 
     val expected = Seq(
       "b,2020-10-10T00:00:05,2020-10-10T00:00:10,2,2",
       "b,2020-10-10T00:00:15,2020-10-10T00:00:20,1,1",
       "b,2020-10-10T00:00:30,2020-10-10T00:00:35,1,1",
-      "null,2020-10-10T00:00:30,2020-10-10T00:00:35,0,0")
-    assertEquals(expected.sorted.mkString("\n"), sink.getAppendResults.sorted.mkString("\n"))
+      "null,2020-10-10T00:00:30,2020-10-10T00:00:35,0,0"
+    )
+    assertThat(sink.getAppendResults.sorted.mkString("\n"))
+      .isEqualTo(expected.sorted.mkString("\n"))
   }
 
-  @Test
+  @TestTemplate
   def testInnerJoinWithIsNotDistinctFromOnWTF(): Unit = {
     val sql =
       s"""
@@ -420,7 +440,7 @@ class WindowJoinITCase(mode: StateBackendMode, useTimestampLtz: Boolean)
          |""".stripMargin
 
     val sink = new TestingAppendSink
-    tEnv.sqlQuery(sql).toAppendStream[Row].addSink(sink)
+    tEnv.sqlQuery(sql).toDataStream.addSink(sink)
     env.execute()
 
     val expected = if (useTimestampLtz) {
@@ -438,7 +458,8 @@ class WindowJoinITCase(mode: StateBackendMode, useTimestampLtz: Boolean)
         "2020-10-09T16:00:32Z,7,7.0,7.0,7.77,null,null,2020-10-10 00:00:32.000," +
           "2020-10-10T00:00:30,2020-10-10T00:00:35,2020-10-09T16:00:34.999Z,7,null,null",
         "2020-10-09T16:00:34Z,1,3.0,3.0,3.33,Comment#3,b,2020-10-10 00:00:34.000," +
-          "2020-10-10T00:00:30,2020-10-10T00:00:35,2020-10-09T16:00:34.999Z,1,Comment#3,b")
+          "2020-10-10T00:00:30,2020-10-10T00:00:35,2020-10-09T16:00:34.999Z,1,Comment#3,b"
+      )
     } else {
       Seq(
         "2020-10-10T00:00:06,6,6.0,6.0,6.66,Hi,b,2020-10-10 00:00:06.000," +
@@ -454,12 +475,14 @@ class WindowJoinITCase(mode: StateBackendMode, useTimestampLtz: Boolean)
         "2020-10-10T00:00:32,7,7.0,7.0,7.77,null,null,2020-10-10 00:00:32.000," +
           "2020-10-10T00:00:30,2020-10-10T00:00:35,2020-10-10T00:00:34.999,7,null,null",
         "2020-10-10T00:00:34,1,3.0,3.0,3.33,Comment#3,b,2020-10-10 00:00:34.000," +
-          "2020-10-10T00:00:30,2020-10-10T00:00:35,2020-10-10T00:00:34.999,1,Comment#3,b")
+          "2020-10-10T00:00:30,2020-10-10T00:00:35,2020-10-10T00:00:34.999,1,Comment#3,b"
+      )
     }
-    assertEquals(expected.sorted.mkString("\n"), sink.getAppendResults.sorted.mkString("\n"))
+    assertThat(sink.getAppendResults.sorted.mkString("\n"))
+      .isEqualTo(expected.sorted.mkString("\n"))
   }
 
-  @Test
+  @TestTemplate
   def testSemiJoinExists(): Unit = {
     val sql =
       """
@@ -488,17 +511,18 @@ class WindowJoinITCase(mode: StateBackendMode, useTimestampLtz: Boolean)
         |""".stripMargin
 
     val sink = new TestingAppendSink
-    tEnv.sqlQuery(sql).toAppendStream[Row].addSink(sink)
+    tEnv.sqlQuery(sql).toDataStream.addSink(sink)
     env.execute()
 
     val expected = Seq(
       "b,2020-10-10T00:00:05,2020-10-10T00:00:10,2",
       "b,2020-10-10T00:00:15,2020-10-10T00:00:20,1",
       "b,2020-10-10T00:00:30,2020-10-10T00:00:35,1")
-    assertEquals(expected.sorted.mkString("\n"), sink.getAppendResults.sorted.mkString("\n"))
+    assertThat(sink.getAppendResults.sorted.mkString("\n"))
+      .isEqualTo(expected.sorted.mkString("\n"))
   }
 
-  @Test
+  @TestTemplate
   def testSemiJoinExistsWTF(): Unit = {
     val sql =
       s"""
@@ -527,7 +551,7 @@ class WindowJoinITCase(mode: StateBackendMode, useTimestampLtz: Boolean)
          |""".stripMargin
 
     val sink = new TestingAppendSink
-    tEnv.sqlQuery(sql).toAppendStream[Row].addSink(sink)
+    tEnv.sqlQuery(sql).toDataStream.addSink(sink)
     env.execute()
 
     val expected = if (useTimestampLtz) {
@@ -539,7 +563,8 @@ class WindowJoinITCase(mode: StateBackendMode, useTimestampLtz: Boolean)
         "2020-10-09T16:00:16Z,4,4.0,4.0,4.44,Hi,b,2020-10-10 00:00:16.000," +
           "2020-10-10T00:00:15,2020-10-10T00:00:20,2020-10-09T16:00:19.999Z",
         "2020-10-09T16:00:34Z,1,3.0,3.0,3.33,Comment#3,b,2020-10-10 00:00:34.000," +
-          "2020-10-10T00:00:30,2020-10-10T00:00:35,2020-10-09T16:00:34.999Z")
+          "2020-10-10T00:00:30,2020-10-10T00:00:35,2020-10-09T16:00:34.999Z"
+      )
     } else {
       Seq(
         "2020-10-10T00:00:06,6,6.0,6.0,6.66,Hi,b,2020-10-10 00:00:06.000," +
@@ -549,12 +574,14 @@ class WindowJoinITCase(mode: StateBackendMode, useTimestampLtz: Boolean)
         "2020-10-10T00:00:16,4,4.0,4.0,4.44,Hi,b,2020-10-10 00:00:16.000," +
           "2020-10-10T00:00:15,2020-10-10T00:00:20,2020-10-10T00:00:19.999",
         "2020-10-10T00:00:34,1,3.0,3.0,3.33,Comment#3,b,2020-10-10 00:00:34.000," +
-          "2020-10-10T00:00:30,2020-10-10T00:00:35,2020-10-10T00:00:34.999")
+          "2020-10-10T00:00:30,2020-10-10T00:00:35,2020-10-10T00:00:34.999"
+      )
     }
-    assertEquals(expected.sorted.mkString("\n"), sink.getAppendResults.sorted.mkString("\n"))
+    assertThat(sink.getAppendResults.sorted.mkString("\n"))
+      .isEqualTo(expected.sorted.mkString("\n"))
   }
 
-  @Test
+  @TestTemplate
   def testSemiJoinIN(): Unit = {
     val sql =
       """
@@ -582,17 +609,18 @@ class WindowJoinITCase(mode: StateBackendMode, useTimestampLtz: Boolean)
         |""".stripMargin
 
     val sink = new TestingAppendSink
-    tEnv.sqlQuery(sql).toAppendStream[Row].addSink(sink)
+    tEnv.sqlQuery(sql).toDataStream.addSink(sink)
     env.execute()
 
     val expected = Seq(
       "b,2020-10-10T00:00:05,2020-10-10T00:00:10,2",
       "b,2020-10-10T00:00:15,2020-10-10T00:00:20,1",
       "b,2020-10-10T00:00:30,2020-10-10T00:00:35,1")
-    assertEquals(expected.sorted.mkString("\n"), sink.getAppendResults.sorted.mkString("\n"))
+    assertThat(sink.getAppendResults.sorted.mkString("\n"))
+      .isEqualTo(expected.sorted.mkString("\n"))
   }
 
-  @Test
+  @TestTemplate
   def testSemiJoinIN_WTF(): Unit = {
     val sql =
       s"""
@@ -621,7 +649,7 @@ class WindowJoinITCase(mode: StateBackendMode, useTimestampLtz: Boolean)
          |""".stripMargin
 
     val sink = new TestingAppendSink
-    tEnv.sqlQuery(sql).toAppendStream[Row].addSink(sink)
+    tEnv.sqlQuery(sql).toDataStream.addSink(sink)
     env.execute()
 
     val expected = if (useTimestampLtz) {
@@ -633,7 +661,8 @@ class WindowJoinITCase(mode: StateBackendMode, useTimestampLtz: Boolean)
         "2020-10-09T16:00:16Z,4,4.0,4.0,4.44,Hi,b,2020-10-10 00:00:16.000," +
           "2020-10-10T00:00:15,2020-10-10T00:00:20,2020-10-09T16:00:19.999Z",
         "2020-10-09T16:00:34Z,1,3.0,3.0,3.33,Comment#3,b,2020-10-10 00:00:34.000," +
-          "2020-10-10T00:00:30,2020-10-10T00:00:35,2020-10-09T16:00:34.999Z")
+          "2020-10-10T00:00:30,2020-10-10T00:00:35,2020-10-09T16:00:34.999Z"
+      )
     } else {
       Seq(
         "2020-10-10T00:00:06,6,6.0,6.0,6.66,Hi,b,2020-10-10 00:00:06.000," +
@@ -643,12 +672,14 @@ class WindowJoinITCase(mode: StateBackendMode, useTimestampLtz: Boolean)
         "2020-10-10T00:00:16,4,4.0,4.0,4.44,Hi,b,2020-10-10 00:00:16.000," +
           "2020-10-10T00:00:15,2020-10-10T00:00:20,2020-10-10T00:00:19.999",
         "2020-10-10T00:00:34,1,3.0,3.0,3.33,Comment#3,b,2020-10-10 00:00:34.000," +
-          "2020-10-10T00:00:30,2020-10-10T00:00:35,2020-10-10T00:00:34.999")
+          "2020-10-10T00:00:30,2020-10-10T00:00:35,2020-10-10T00:00:34.999"
+      )
     }
-    assertEquals(expected.sorted.mkString("\n"), sink.getAppendResults.sorted.mkString("\n"))
+    assertThat(sink.getAppendResults.sorted.mkString("\n"))
+      .isEqualTo(expected.sorted.mkString("\n"))
   }
 
-  @Test
+  @TestTemplate
   def testAntiJoinNotExists(): Unit = {
     val sql =
       """
@@ -677,17 +708,18 @@ class WindowJoinITCase(mode: StateBackendMode, useTimestampLtz: Boolean)
         |""".stripMargin
 
     val sink = new TestingAppendSink
-    tEnv.sqlQuery(sql).toAppendStream[Row].addSink(sink)
+    tEnv.sqlQuery(sql).toDataStream.addSink(sink)
     env.execute()
 
     val expected = Seq(
       "a,2020-10-10T00:00,2020-10-10T00:00:05,2",
       "a,2020-10-10T00:00:05,2020-10-10T00:00:10,1",
       "null,2020-10-10T00:00:30,2020-10-10T00:00:35,0")
-    assertEquals(expected.sorted.mkString("\n"), sink.getAppendResults.sorted.mkString("\n"))
+    assertThat(sink.getAppendResults.sorted.mkString("\n"))
+      .isEqualTo(expected.sorted.mkString("\n"))
   }
 
-  @Test
+  @TestTemplate
   def testAntiJoinNotExistsWTF(): Unit = {
     val sql =
       s"""
@@ -716,7 +748,7 @@ class WindowJoinITCase(mode: StateBackendMode, useTimestampLtz: Boolean)
          |""".stripMargin
 
     val sink = new TestingAppendSink
-    tEnv.sqlQuery(sql).toAppendStream[Row].addSink(sink)
+    tEnv.sqlQuery(sql).toDataStream.addSink(sink)
     env.execute()
 
     val expected = if (useTimestampLtz) {
@@ -732,7 +764,8 @@ class WindowJoinITCase(mode: StateBackendMode, useTimestampLtz: Boolean)
         "2020-10-09T16:00:08Z,3,null,3.0,3.33,Comment#2,a,2020-10-10 00:00:08.000," +
           "2020-10-10T00:00:05,2020-10-10T00:00:10,2020-10-09T16:00:09.999Z",
         "2020-10-09T16:00:32Z,7,7.0,7.0,7.77,null,null,2020-10-10 00:00:32.000," +
-          "2020-10-10T00:00:30,2020-10-10T00:00:35,2020-10-09T16:00:34.999Z")
+          "2020-10-10T00:00:30,2020-10-10T00:00:35,2020-10-09T16:00:34.999Z"
+      )
     } else {
       Seq(
         "2020-10-10T00:00:01,1,1.0,1.0,1.11,Hi,a,2020-10-10 00:00:01.000," +
@@ -746,12 +779,14 @@ class WindowJoinITCase(mode: StateBackendMode, useTimestampLtz: Boolean)
         "2020-10-10T00:00:08,3,null,3.0,3.33,Comment#2,a,2020-10-10 00:00:08.000," +
           "2020-10-10T00:00:05,2020-10-10T00:00:10,2020-10-10T00:00:09.999",
         "2020-10-10T00:00:32,7,7.0,7.0,7.77,null,null,2020-10-10 00:00:32.000," +
-          "2020-10-10T00:00:30,2020-10-10T00:00:35,2020-10-10T00:00:34.999")
+          "2020-10-10T00:00:30,2020-10-10T00:00:35,2020-10-10T00:00:34.999"
+      )
     }
-    assertEquals(expected.sorted.mkString("\n"), sink.getAppendResults.sorted.mkString("\n"))
+    assertThat(sink.getAppendResults.sorted.mkString("\n"))
+      .isEqualTo(expected.sorted.mkString("\n"))
   }
 
-  @Test
+  @TestTemplate
   def testAntiJoinNotIN(): Unit = {
     val sql =
       """
@@ -779,16 +814,16 @@ class WindowJoinITCase(mode: StateBackendMode, useTimestampLtz: Boolean)
         |""".stripMargin
 
     val sink = new TestingAppendSink
-    tEnv.sqlQuery(sql).toAppendStream[Row].addSink(sink)
+    tEnv.sqlQuery(sql).toDataStream.addSink(sink)
     env.execute()
 
-    val expected = Seq(
-      "a,2020-10-10T00:00,2020-10-10T00:00:05,2",
-      "a,2020-10-10T00:00:05,2020-10-10T00:00:10,1")
-    assertEquals(expected.sorted.mkString("\n"), sink.getAppendResults.sorted.mkString("\n"))
+    val expected =
+      Seq("a,2020-10-10T00:00,2020-10-10T00:00:05,2", "a,2020-10-10T00:00:05,2020-10-10T00:00:10,1")
+    assertThat(sink.getAppendResults.sorted.mkString("\n"))
+      .isEqualTo(expected.sorted.mkString("\n"))
   }
 
-  @Test
+  @TestTemplate
   def testAntiJoinNotIN_WTF(): Unit = {
     val sql =
       s"""
@@ -817,7 +852,7 @@ class WindowJoinITCase(mode: StateBackendMode, useTimestampLtz: Boolean)
          |""".stripMargin
 
     val sink = new TestingAppendSink
-    tEnv.sqlQuery(sql).toAppendStream[Row].addSink(sink)
+    tEnv.sqlQuery(sql).toDataStream.addSink(sink)
     env.execute()
 
     val expected = if (useTimestampLtz) {
@@ -831,7 +866,8 @@ class WindowJoinITCase(mode: StateBackendMode, useTimestampLtz: Boolean)
         "2020-10-09T16:00:04Z,5,5.0,5.0,5.55,null,a,2020-10-10 00:00:04.000," +
           "2020-10-10T00:00,2020-10-10T00:00:05,2020-10-09T16:00:04.999Z",
         "2020-10-09T16:00:08Z,3,null,3.0,3.33,Comment#2,a,2020-10-10 00:00:08.000," +
-          "2020-10-10T00:00:05,2020-10-10T00:00:10,2020-10-09T16:00:09.999Z")
+          "2020-10-10T00:00:05,2020-10-10T00:00:10,2020-10-09T16:00:09.999Z"
+      )
     } else {
       Seq(
         "2020-10-10T00:00:01,1,1.0,1.0,1.11,Hi,a,2020-10-10 00:00:01.000," +
@@ -843,12 +879,14 @@ class WindowJoinITCase(mode: StateBackendMode, useTimestampLtz: Boolean)
         "2020-10-10T00:00:04,5,5.0,5.0,5.55,null,a,2020-10-10 00:00:04.000," +
           "2020-10-10T00:00,2020-10-10T00:00:05,2020-10-10T00:00:04.999",
         "2020-10-10T00:00:08,3,null,3.0,3.33,Comment#2,a,2020-10-10 00:00:08.000," +
-          "2020-10-10T00:00:05,2020-10-10T00:00:10,2020-10-10T00:00:09.999")
+          "2020-10-10T00:00:05,2020-10-10T00:00:10,2020-10-10T00:00:09.999"
+      )
     }
-    assertEquals(expected.sorted.mkString("\n"), sink.getAppendResults.sorted.mkString("\n"))
+    assertThat(sink.getAppendResults.sorted.mkString("\n"))
+      .isEqualTo(expected.sorted.mkString("\n"))
   }
 
-  @Test
+  @TestTemplate
   def testLeftJoin(): Unit = {
     val sql =
       """
@@ -877,7 +915,7 @@ class WindowJoinITCase(mode: StateBackendMode, useTimestampLtz: Boolean)
         |""".stripMargin
 
     val sink = new TestingAppendSink
-    tEnv.sqlQuery(sql).toAppendStream[Row].addSink(sink)
+    tEnv.sqlQuery(sql).toDataStream.addSink(sink)
     env.execute()
 
     val expected = Seq(
@@ -886,11 +924,13 @@ class WindowJoinITCase(mode: StateBackendMode, useTimestampLtz: Boolean)
       "b,2020-10-10T00:00:05,2020-10-10T00:00:10,2,2",
       "b,2020-10-10T00:00:15,2020-10-10T00:00:20,1,1",
       "b,2020-10-10T00:00:30,2020-10-10T00:00:35,1,1",
-      "null,2020-10-10T00:00:30,2020-10-10T00:00:35,0,null")
-    assertEquals(expected.sorted.mkString("\n"), sink.getAppendResults.sorted.mkString("\n"))
+      "null,2020-10-10T00:00:30,2020-10-10T00:00:35,0,null"
+    )
+    assertThat(sink.getAppendResults.sorted.mkString("\n"))
+      .isEqualTo(expected.sorted.mkString("\n"))
   }
 
-  @Test
+  @TestTemplate
   def testLeftJoinWithIsNotDistinctFrom(): Unit = {
     val sql =
       """
@@ -920,7 +960,7 @@ class WindowJoinITCase(mode: StateBackendMode, useTimestampLtz: Boolean)
         |""".stripMargin
 
     val sink = new TestingAppendSink
-    tEnv.sqlQuery(sql).toAppendStream[Row].addSink(sink)
+    tEnv.sqlQuery(sql).toDataStream.addSink(sink)
     env.execute()
 
     val expected = Seq(
@@ -929,11 +969,13 @@ class WindowJoinITCase(mode: StateBackendMode, useTimestampLtz: Boolean)
       "b,2020-10-10T00:00:05,2020-10-10T00:00:10,2,2",
       "b,2020-10-10T00:00:15,2020-10-10T00:00:20,1,1",
       "b,2020-10-10T00:00:30,2020-10-10T00:00:35,1,1",
-      "null,2020-10-10T00:00:30,2020-10-10T00:00:35,0,0")
-    assertEquals(expected.sorted.mkString("\n"), sink.getAppendResults.sorted.mkString("\n"))
+      "null,2020-10-10T00:00:30,2020-10-10T00:00:35,0,0"
+    )
+    assertThat(sink.getAppendResults.sorted.mkString("\n"))
+      .isEqualTo(expected.sorted.mkString("\n"))
   }
 
-  @Test
+  @TestTemplate
   def testRightJoin(): Unit = {
     val sql =
       """
@@ -962,7 +1004,7 @@ class WindowJoinITCase(mode: StateBackendMode, useTimestampLtz: Boolean)
         |""".stripMargin
 
     val sink = new TestingAppendSink
-    tEnv.sqlQuery(sql).toAppendStream[Row].addSink(sink)
+    tEnv.sqlQuery(sql).toDataStream.addSink(sink)
     env.execute()
 
     val expected = Seq(
@@ -971,11 +1013,13 @@ class WindowJoinITCase(mode: StateBackendMode, useTimestampLtz: Boolean)
       "b,2020-10-10T00:00:05,2020-10-10T00:00:10,2,2",
       "b,2020-10-10T00:00:15,2020-10-10T00:00:20,1,1",
       "b,2020-10-10T00:00:30,2020-10-10T00:00:35,1,1",
-      "null,2020-10-10T00:00:30,2020-10-10T00:00:35,null,0")
-    assertEquals(expected.sorted.mkString("\n"), sink.getAppendResults.sorted.mkString("\n"))
+      "null,2020-10-10T00:00:30,2020-10-10T00:00:35,null,0"
+    )
+    assertThat(sink.getAppendResults.sorted.mkString("\n"))
+      .isEqualTo(expected.sorted.mkString("\n"))
   }
 
-  @Test
+  @TestTemplate
   def testRightJoinWithIsNotDistinctFrom(): Unit = {
     val sql =
       """
@@ -1005,7 +1049,7 @@ class WindowJoinITCase(mode: StateBackendMode, useTimestampLtz: Boolean)
         |""".stripMargin
 
     val sink = new TestingAppendSink
-    tEnv.sqlQuery(sql).toAppendStream[Row].addSink(sink)
+    tEnv.sqlQuery(sql).toDataStream.addSink(sink)
     env.execute()
 
     val expected = Seq(
@@ -1014,11 +1058,13 @@ class WindowJoinITCase(mode: StateBackendMode, useTimestampLtz: Boolean)
       "b,2020-10-10T00:00:05,2020-10-10T00:00:10,2,2",
       "b,2020-10-10T00:00:15,2020-10-10T00:00:20,1,1",
       "b,2020-10-10T00:00:30,2020-10-10T00:00:35,1,1",
-      "null,2020-10-10T00:00:30,2020-10-10T00:00:35,0,0")
-    assertEquals(expected.sorted.mkString("\n"), sink.getAppendResults.sorted.mkString("\n"))
+      "null,2020-10-10T00:00:30,2020-10-10T00:00:35,0,0"
+    )
+    assertThat(sink.getAppendResults.sorted.mkString("\n"))
+      .isEqualTo(expected.sorted.mkString("\n"))
   }
 
-  @Test
+  @TestTemplate
   def testOuterJoin(): Unit = {
     val sql =
       """
@@ -1048,7 +1094,7 @@ class WindowJoinITCase(mode: StateBackendMode, useTimestampLtz: Boolean)
         |""".stripMargin
 
     val sink = new TestingAppendSink
-    tEnv.sqlQuery(sql).toAppendStream[Row].addSink(sink)
+    tEnv.sqlQuery(sql).toDataStream.addSink(sink)
     env.execute()
 
     val expected = Seq(
@@ -1060,11 +1106,13 @@ class WindowJoinITCase(mode: StateBackendMode, useTimestampLtz: Boolean)
       "null,2020-10-10T00:00:30,2020-10-10T00:00:35,null,null,null,0,null",
       "null,null,null,a1,2020-10-10T00:00,2020-10-10T00:00:05,null,2",
       "null,null,null,a1,2020-10-10T00:00:05,2020-10-10T00:00:10,null,1",
-      "null,null,null,null,2020-10-10T00:00:30,2020-10-10T00:00:35,null,0")
-    assertEquals(expected.sorted.mkString("\n"), sink.getAppendResults.sorted.mkString("\n"))
+      "null,null,null,null,2020-10-10T00:00:30,2020-10-10T00:00:35,null,0"
+    )
+    assertThat(sink.getAppendResults.sorted.mkString("\n"))
+      .isEqualTo(expected.sorted.mkString("\n"))
   }
 
-  @Test
+  @TestTemplate
   def testOuterJoinWithIsNotDistinctFrom(): Unit = {
     val sql =
       """
@@ -1095,7 +1143,7 @@ class WindowJoinITCase(mode: StateBackendMode, useTimestampLtz: Boolean)
         |""".stripMargin
 
     val sink = new TestingAppendSink
-    tEnv.sqlQuery(sql).toAppendStream[Row].addSink(sink)
+    tEnv.sqlQuery(sql).toDataStream.addSink(sink)
     env.execute()
 
     val expected = Seq(
@@ -1107,19 +1155,24 @@ class WindowJoinITCase(mode: StateBackendMode, useTimestampLtz: Boolean)
       "null,2020-10-10T00:00:30,2020-10-10T00:00:35,null,2020-10-10T00:00:30," +
         "2020-10-10T00:00:35,0,0",
       "null,null,null,a1,2020-10-10T00:00,2020-10-10T00:00:05,null,2",
-      "null,null,null,a1,2020-10-10T00:00:05,2020-10-10T00:00:10,null,1")
-    assertEquals(expected.sorted.mkString("\n"), sink.getAppendResults.sorted.mkString("\n"))
+      "null,null,null,a1,2020-10-10T00:00:05,2020-10-10T00:00:10,null,1"
+    )
+    assertThat(sink.getAppendResults.sorted.mkString("\n"))
+      .isEqualTo(expected.sorted.mkString("\n"))
   }
 }
 
 object WindowJoinITCase {
 
-  @Parameterized.Parameters(name = "StateBackend={0}, UseTimestampLtz = {1}")
+  @Parameters(name = "StateBackend={0}, UseTimestampLtz = {1}, EnableAsyncState = {2}")
   def parameters(): util.Collection[Array[java.lang.Object]] = {
     Seq[Array[AnyRef]](
-      Array(HEAP_BACKEND, java.lang.Boolean.TRUE),
-      Array(HEAP_BACKEND, java.lang.Boolean.FALSE),
-      Array(ROCKSDB_BACKEND, java.lang.Boolean.TRUE),
-      Array(ROCKSDB_BACKEND, java.lang.Boolean.FALSE))
+      Array(HEAP_BACKEND, java.lang.Boolean.TRUE, Boolean.box(false)),
+      Array(HEAP_BACKEND, java.lang.Boolean.FALSE, Boolean.box(false)),
+      Array(HEAP_BACKEND, java.lang.Boolean.TRUE, Boolean.box(true)),
+      Array(HEAP_BACKEND, java.lang.Boolean.FALSE, Boolean.box(true)),
+      Array(ROCKSDB_BACKEND, java.lang.Boolean.TRUE, Boolean.box(false)),
+      Array(ROCKSDB_BACKEND, java.lang.Boolean.FALSE, Boolean.box(false))
+    )
   }
 }

@@ -15,49 +15,41 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.planner.codegen.calls
 
 import org.apache.flink.table.functions.SqlLikeUtils
+import org.apache.flink.table.planner.codegen.{CodeGeneratorContext, GeneratedExpression}
 import org.apache.flink.table.planner.codegen.CodeGenUtils.{className, newName, qualifyMethod}
 import org.apache.flink.table.planner.codegen.GenerateUtils.generateCallIfArgsNotNull
-import org.apache.flink.table.planner.codegen.{CodeGeneratorContext, GeneratedExpression}
 import org.apache.flink.table.runtime.functions.SqlLikeChainChecker
 import org.apache.flink.table.types.logical.{BooleanType, LogicalType}
+import org.apache.flink.table.utils.EncodingUtils
 
 import java.util.regex.Pattern
 
-/**
-  * Generates Like function call.
-  */
+/** Generates Like function call. */
 class LikeCallGen extends CallGenerator {
 
-  /**
-    * Accepts simple LIKE patterns like "abc%".
-    */
+  /** Accepts simple LIKE patterns like "abc%". */
   private val BEGIN_PATTERN = Pattern.compile("([^%]+)%")
 
-  /**
-    * Accepts simple LIKE patterns like "%abc".
-    */
+  /** Accepts simple LIKE patterns like "%abc". */
   private val END_PATTERN = Pattern.compile("%([^%]+)")
 
-  /**
-    * Accepts simple LIKE patterns like "%abc%".
-    */
+  /** Accepts simple LIKE patterns like "%abc%". */
   private val MIDDLE_PATTERN = Pattern.compile("%([^%]+)%")
 
-  /**
-    * Accepts simple LIKE patterns like "abc".
-    */
+  /** Accepts simple LIKE patterns like "abc". */
   private val NONE_PATTERN = Pattern.compile("[^%]+")
 
   override def generate(
       ctx: CodeGeneratorContext,
       operands: Seq[GeneratedExpression],
       returnType: LogicalType): GeneratedExpression = {
-    if ((operands.size == 2 && operands(1).literal) ||
-        (operands.size == 3 && operands(1).literal && operands(2).literal)) {
+    if (
+      (operands.size == 2 && operands(1).literal) ||
+      (operands.size == 3 && operands(1).literal && operands(2).literal)
+    ) {
       generateCallIfArgsNotNull(ctx, returnType, operands) {
         terms =>
           val pattern = operands(1).literalValue.get.toString
@@ -66,40 +58,47 @@ class LikeCallGen extends CallGenerator {
             !pattern.contains("_")
           } else {
             val escape = operands(2).literalValue.get.toString
-            if (escape.length != 1) {
-              throw SqlLikeUtils.invalidEscapeCharacter(escape)
-            }
-            val escapeChar = escape.charAt(0)
-            var matched = true
-            var i = 0
-            val newBuilder = new StringBuilder
-            while (i < pattern.length && matched) {
-              val c = pattern.charAt(i)
-              if (c == escapeChar) {
-                if (i == (pattern.length - 1)) {
-                  throw SqlLikeUtils.invalidEscapeSequence(pattern, i)
-                }
-                val nextChar = pattern.charAt(i + 1)
-                if (nextChar == '%') {
-                  matched = false
-                } else if ((nextChar == '_') || (nextChar == escapeChar)) {
-                  newBuilder.append(nextChar)
-                  i += 1
-                } else {
-                  throw SqlLikeUtils.invalidEscapeSequence(pattern, i)
-                }
-              } else if (c == '_') {
-                matched = false
-              } else {
-                newBuilder.append(c)
+            if (escape.isEmpty) {
+              !pattern.contains("_")
+            } else {
+              if (escape.length > 1) {
+                throw SqlLikeUtils.invalidEscapeCharacter(escape)
               }
-              i += 1
-            }
+              val escapeChar = escape.charAt(escape.length - 1)
+              if (escapeChar == 0) {
+                throw SqlLikeUtils.invalidEscapeCharacter(escape)
+              }
+              var matched = true
+              var i = 0
+              val newBuilder = new StringBuilder
+              while (i < pattern.length && matched) {
+                val c = pattern.charAt(i)
+                if (c == escapeChar) {
+                  if (i == (pattern.length - 1)) {
+                    throw SqlLikeUtils.invalidEscapeSequence(pattern, i)
+                  }
+                  val nextChar = pattern.charAt(i + 1)
+                  if (nextChar == '%') {
+                    matched = false
+                  } else if ((nextChar == '_') || (nextChar == escapeChar)) {
+                    newBuilder.append(nextChar)
+                    i += 1
+                  } else {
+                    throw SqlLikeUtils.invalidEscapeSequence(pattern, i)
+                  }
+                } else if (c == '_') {
+                  matched = false
+                } else {
+                  newBuilder.append(c)
+                }
+                i += 1
+              }
 
-            if (matched) {
-              newPattern = newBuilder.toString
+              if (matched) {
+                newPattern = newBuilder.toString
+              }
+              matched
             }
-            matched
           }
 
           if (allowQuick) {
@@ -107,42 +106,50 @@ class LikeCallGen extends CallGenerator {
             val beginMatcher = BEGIN_PATTERN.matcher(newPattern)
             val endMatcher = END_PATTERN.matcher(newPattern)
             val middleMatcher = MIDDLE_PATTERN.matcher(newPattern)
+            val escapedNewPattern = EncodingUtils.escapeJava(newPattern)
 
             if (noneMatcher.matches()) {
-              val reusePattern = ctx.addReusableEscapedStringConstant(newPattern)
+              val reusePattern = ctx.addReusablePreEscapedStringConstant(escapedNewPattern)
               s"${terms.head}.equals($reusePattern)"
             } else if (beginMatcher.matches()) {
-              val field = ctx.addReusableEscapedStringConstant(beginMatcher.group(1))
+              val escapedStartValue = EncodingUtils.escapeJava(beginMatcher.group(1))
+              val field = ctx.addReusablePreEscapedStringConstant(escapedStartValue)
               s"${terms.head}.startsWith($field)"
             } else if (endMatcher.matches()) {
-              val field = ctx.addReusableEscapedStringConstant(endMatcher.group(1))
+              val escapedEndValue = EncodingUtils.escapeJava(endMatcher.group(1))
+              val field = ctx.addReusablePreEscapedStringConstant(escapedEndValue)
               s"${terms.head}.endsWith($field)"
             } else if (middleMatcher.matches()) {
-              val field = ctx.addReusableEscapedStringConstant(middleMatcher.group(1))
+              val escapedMiddleValue = EncodingUtils.escapeJava(middleMatcher.group(1))
+              val field = ctx.addReusablePreEscapedStringConstant(escapedMiddleValue)
               s"${terms.head}.contains($field)"
             } else {
               val field = className[SqlLikeChainChecker]
-              val checker = newName("likeChainChecker")
-              ctx.addReusableMember(s"$field $checker = new $field(${"\""}$newPattern${"\""});")
+              val checker = newName(ctx, "likeChainChecker")
+              ctx.addReusableMember(
+                s"$field $checker = new $field(${"\""}$escapedNewPattern${"\""});")
               s"$checker.check(${terms.head})"
             }
           } else {
             // Complex
             val patternClass = className[Pattern]
             val likeClass = className[SqlLikeUtils]
-            val patternName = newName("pattern")
+            val patternName = newName(ctx, "pattern")
             val escape = if (operands.size == 2) {
               "null"
             } else {
+              val escapedEscapeLiteral =
+                EncodingUtils.escapeJava(operands(2).literalValue.get.toString)
               s"""
-                 |"${operands(2).literalValue.get}"
+                 |"$escapedEscapeLiteral"
                """.stripMargin
             }
+            val escapedPatternLiteral = EncodingUtils.escapeJava(pattern)
             ctx.addReusableMember(
               s"""
                  |$patternClass $patternName =
                  |  $patternClass.compile(
-                 |    $likeClass.sqlToRegexLike("${operands(1).literalValue.get}", $escape));
+                 |    $likeClass.sqlToRegexLike("$escapedPatternLiteral", $escape));
                  |""".stripMargin)
             s"$patternName.matcher(${terms.head}.toString()).matches()"
           }

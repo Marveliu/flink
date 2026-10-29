@@ -15,73 +15,75 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.planner.runtime.batch.sql
 
-import org.apache.flink.api.common.typeinfo.LocalTimeTypeInfo.LOCAL_DATE_TIME
-import org.apache.flink.api.common.typeinfo.TypeInformation
-import org.apache.flink.api.java.typeutils.RowTypeInfo
-import org.apache.flink.table.api.{TableSchema, Types}
+import org.apache.flink.table.planner.factories.TestValuesTableFactory
 import org.apache.flink.table.planner.runtime.utils.BatchTestBase
 import org.apache.flink.table.planner.runtime.utils.BatchTestBase.row
-import org.apache.flink.table.planner.utils.{TestTableSourceWithTime, WithoutTimeAttributesTableSource}
+import org.apache.flink.table.planner.utils.TestTableSourceSinks.createWithoutTimeAttributesTableSource
 import org.apache.flink.table.utils.DateTimeUtils.toLocalDateTime
-import org.junit.Test
-import java.lang.{Integer => JInt}
 
-import org.apache.flink.table.api.internal.TableEnvironmentInternal
+import org.junit.jupiter.api.Test
+
+import java.lang.{Integer => JInt}
 
 class TableScanITCase extends BatchTestBase {
 
   @Test
   def testTableSourceWithoutTimeAttribute(): Unit = {
     val tableName = "MyTable"
-    WithoutTimeAttributesTableSource.createTemporaryTable(tEnv, tableName)
+    createWithoutTimeAttributesTableSource(tEnv, tableName)
     checkResult(
       s"SELECT * from $tableName",
-      Seq(
-        row("Mary", 1L, 1),
-        row("Bob", 2L, 3))
+      Seq(row("Mary", 1L, 1), row("Bob", 2L, 3))
     )
   }
 
   @Test
   def testProctimeTableSource(): Unit = {
     val tableName = "MyTable"
-    val data = Seq("Mary", "Peter", "Bob", "Liz")
-    val schema = new TableSchema(Array("name", "ptime"), Array(Types.STRING, Types.LOCAL_DATE_TIME))
-    val returnType = Types.STRING
-
-    val tableSource = new TestTableSourceWithTime(true, schema, returnType, data, null, "ptime")
-    tEnv.asInstanceOf[TableEnvironmentInternal].registerTableSourceInternal(tableName, tableSource)
+    val dataId =
+      TestValuesTableFactory.registerData(Seq(row("Mary"), row("Peter"), row("Bob"), row("Liz")))
+    tEnv.executeSql(s"""
+                       |create table $tableName (
+                       |  name string,
+                       |  ptime as proctime()
+                       |) with (
+                       |  'connector' = 'values',
+                       |  'bounded' = 'true',
+                       |  'data-id' = '$dataId'
+                       |)
+                       |""".stripMargin)
 
     checkResult(
       s"SELECT name, CHAR_LENGTH(DATE_FORMAT(ptime, 'yyyy-MM-dd HH:mm')) FROM $tableName",
-      Seq(
-        row("Mary", 16),
-        row("Peter", 16),
-        row("Bob", 16),
-        row("Liz", 16))
+      Seq(row("Mary", 16), row("Peter", 16), row("Bob", 16), row("Liz", 16))
     )
   }
 
   @Test
   def testRowtimeTableSource(): Unit = {
     val tableName = "MyTable"
-    val data = Seq(
-      row("Mary", toLocalDateTime(1L), new JInt(10)),
-      row("Bob", toLocalDateTime(2L), new JInt(20)),
-      row("Mary", toLocalDateTime(2L), new JInt(30)),
-      row("Liz", toLocalDateTime(2001L), new JInt(40)))
-
-    val fieldNames = Array("name", "rtime", "amount")
-    val schema = new TableSchema(fieldNames, Array(Types.STRING, LOCAL_DATE_TIME, Types.INT))
-    val rowType = new RowTypeInfo(
-      Array(Types.STRING, LOCAL_DATE_TIME, Types.INT).asInstanceOf[Array[TypeInformation[_]]],
-      fieldNames)
-
-    val tableSource = new TestTableSourceWithTime(true, schema, rowType, data, "rtime", null)
-    tEnv.asInstanceOf[TableEnvironmentInternal].registerTableSourceInternal(tableName, tableSource)
+    val dataId =
+      TestValuesTableFactory.registerData(
+        Seq(
+          row("Mary", toLocalDateTime(1L), new JInt(10)),
+          row("Bob", toLocalDateTime(2L), new JInt(20)),
+          row("Mary", toLocalDateTime(2L), new JInt(30)),
+          row("Liz", toLocalDateTime(2001L), new JInt(40))
+        ))
+    tEnv.executeSql(s"""
+                       |create table $tableName (
+                       |  name string,
+                       |  rtime timestamp(3),
+                       |  amount int,
+                       |  watermark for rtime as rtime
+                       |) with (
+                       |  'connector' = 'values',
+                       |  'bounded' = 'true',
+                       |  'data-id' = '$dataId'
+                       |)
+                       |""".stripMargin)
 
     checkResult(
       s"SELECT * FROM $tableName",
@@ -89,7 +91,8 @@ class TableScanITCase extends BatchTestBase {
         row("Mary", toLocalDateTime(1L), new JInt(10)),
         row("Mary", toLocalDateTime(2L), new JInt(30)),
         row("Bob", toLocalDateTime(2L), new JInt(20)),
-        row("Liz", toLocalDateTime(2001L), new JInt(40)))
+        row("Liz", toLocalDateTime(2001L), new JInt(40))
+      )
     )
   }
 

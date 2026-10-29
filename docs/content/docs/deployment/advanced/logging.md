@@ -38,20 +38,59 @@ This allows you to use any logging framework that supports SLF4J, without having
 By default, [Log4j 2](https://logging.apache.org/log4j/2.x/index.html) is used as the underlying logging framework.
 
 
+### Structured logging
+
+Flink adds the following fields to [MDC](https://www.slf4j.org/api/org/slf4j/MDC.html) of most of the relevant log messages (experimental feature):
+- Job ID
+  - key: `flink-job-id`
+  - format: string
+  - length 32
+
+This is most useful in environments with structured logging and allows you to quickly filter the relevant logs.
+
+Additional fields can be published from the job configuration. See [Logging Context (MDC)]({{< ref "docs/ops/logging_context" >}}).
+
+The MDC is propagated by slf4j to the logging backend which usually adds it to the log records automatically (e.g. in [log4j2 json layout](https://logging.apache.org/log4j/2.x/manual/json-template-layout.html#event-template-resolver-mdc).
+
+#### Log4j 2 JsonTemplateLayout
+
+> JsonTemplateLayout is a customizable, efficient, and garbage-free JSON generating layout. It encodes LogEvents according to the structure described by the JSON template provided.
+
+The required jar `log4j-layout-template-json` is bundled in the flink-dist for convenience.
+
+For example templates, see the [Event Templates](https://logging.apache.org/log4j/2.x/manual/json-template-layout.html#event-templates).
+
+#### Log4j 2 PatternLayout
+
+Alternatively, it can be configured explicitly - [log4j pattern layout](https://logging.apache.org/log4j/1.2/apidocs/org/apache/log4j/PatternLayout.html) might look like this:
+
+`[%-32X{flink-job-id}] %c{0} %m%n`.
 
 ## Configuring Log4j 2
 
-Log4j 2 is controlled using property files.
+Log4j 2 is controlled using a mixture of property files and configuration.
+
+### Log4j 2 property files
 
 The Flink distribution ships with the following log4j properties files in the `conf` directory, which are used automatically if Log4j 2 is enabled:
 
-- `log4j-cli.properties`: used by the command line interface (e.g., `flink run`)
+- `log4j-cli.properties`: used by the command line interface (e.g., `flink run`, `sql-client`)
 - `log4j-session.properties`: used by the command line interface when starting a Kubernetes/Yarn session cluster (i.e., `kubernetes-session.sh`/`yarn-session.sh`)
 - `log4j-console.properties`: used for Job-/TaskManagers if they are run in the foreground (e.g., Kubernetes)
 - `log4j.properties`: used for Job-/TaskManagers by default
 
 Log4j periodically scans this file for changes and adjusts the logging behavior if necessary.
-By default this check happens every 30 seconds and is controlled by the `monitorInterval` setting in the Log4j properties files.
+By default, this check happens every 30 seconds and is controlled by the `monitorInterval` setting in the Log4j properties files.
+
+### Log4j 2 configuration
+
+The following [logging-related configuration options]({{< ref "docs/deployment/config">}}#jvm-and-logging-options) are available:
+
+| Configuration  | Description                                                             | Default                         |
+|----------------|-------------------------------------------------------------------------|---------------------------------|
+| `env.log.dir`  | The directory where the Flink logs are saved. Must be an absolute path. | `log` folder under Flink's home |
+| `env.log.level` | Root logger level.                                                      | `INFO`                          |
+| `env.log.max`  | The maximum number of old log files to keep.                            | 10                              |
 
 ### Compatibility with Log4j 1
 
@@ -59,38 +98,44 @@ Flink ships with the [Log4j API bridge](https://logging.apache.org/log4j/log4j-2
 
 If you have custom Log4j 1 properties files or code that relies on Log4j 1, please check out the official Log4j [compatibility](https://logging.apache.org/log4j/2.x/manual/compatibility.html) and [migration](https://logging.apache.org/log4j/2.x/manual/migration.html) guides.
 
-## Configuring Log4j1
+## Configuring Log4j 1 (reload4j) <a name="configuring-log4j1" />
 
-To use Flink with [Log4j 1](https://logging.apache.org/log4j/1.2/) you must ensure that:
-- `org.apache.logging.log4j:log4j-core`, `org.apache.logging.log4j:log4j-slf4j-impl` and `org.apache.logging.log4j:log4j-1.2-api` are not on the classpath,
-- `log4j:log4j`, `org.slf4j:slf4j-log4j12`, `org.apache.logging.log4j:log4j-to-slf4j` and `org.apache.logging.log4j:log4j-api` are on the classpath.
+To use Flink with [reload4j](https://reload4j.qos.ch/) you must ensure that:
+- `org.apache.logging.log4j:log4j-core`, `org.apache.logging.log4j:log4j-slf4j2-impl` and `org.apache.logging.log4j:log4j-1.2-api` are not on the classpath,
+- `ch.qos.reload4j:reload4j`, `org.slf4j:slf4j-reload4j`, `org.apache.logging.log4j:log4j-to-slf4j` and `org.apache.logging.log4j:log4j-api` are on the classpath.
 
 In the IDE this means you have to replace such dependencies defined in your pom, and possibly add exclusions on dependencies that transitively depend on them.
 
 For Flink distributions this means you have to
-- remove the `log4j-core`, `log4j-slf4j-impl` and `log4j-1.2-api` jars from the `lib` directory,
-- add the `log4j`, `slf4j-log4j12` and `log4j-to-slf4j` jars to the `lib` directory,
+- remove the `log4j-core`, `log4j-slf4j2-impl` and `log4j-1.2-api` jars from the `lib` directory,
+- add the `reload4j`, `slf4j-reload4j` and `log4j-to-slf4j` jars to the `lib` directory,
 - replace all log4j properties files in the `conf` directory with Log4j1-compliant versions.
 
-## Configuring logback
+{{< hint warning >}}
+[Reload4j](https://reload4j.qos.ch/) is a maintained fork of Log4j 1.2.17; it keeps the `org.apache.log4j` classes and the Log4j 1 configuration format.
+The original `log4j:log4j` artifact cannot be used, because its SLF4J binding (`org.slf4j:slf4j-log4j12`) exists for SLF4J 1.7 only and is ignored by the SLF4J 2 version Flink ships with.
+Use an `org.slf4j:slf4j-reload4j` version matching Flink's `slf4j-api` (2.x).
+{{< /hint >}}
 
-To use Flink with [logback](https://logback.qos.ch/) you must ensure that:
-- `org.apache.logging.log4j:log4j-slf4j-impl` is not on the classpath,
+## Configuring Logback
+
+To use Flink with [Logback](https://logback.qos.ch/) you must ensure that:
+- `org.apache.logging.log4j:log4j-slf4j2-impl` is not on the classpath,
 - `ch.qos.logback:logback-core` and `ch.qos.logback:logback-classic` are on the classpath.
 
 In the IDE this means you have to replace such dependencies defined in your pom, and possibly add exclusions on dependencies that transitively depend on them.
 
 For Flink distributions this means you have to
-- remove the `log4j-slf4j-impl` jar from the `lib` directory,
+- remove the `log4j-slf4j2-impl` jar from the `lib` directory,
 - add the `logback-core`, and `logback-classic` jars to the `lib` directory.
 
-The Flink distribution ships with the following logback configuration files in the `conf` directory, which are used automatically if logback is enabled:
+The Flink distribution ships with the following Logback configuration files in the `conf` directory, which are used automatically if Logback is enabled:
 - `logback-session.properties`: used by the command line interface when starting a Kubernetes/Yarn session cluster (i.e., `kubernetes-session.sh`/`yarn-session.sh`)
 - `logback-console.properties`: used for Job-/TaskManagers if they are run in the foreground (e.g., Kubernetes)
 - `logback.xml`: used for command line interface and Job-/TaskManagers by default
 
 {{< hint warning >}}
-Logback 1.3+ requires SLF4J 2, which is currently not supported.
+Flink uses SLF4J 2, Logback versions older than 1.3 will not work. Please use Logback 1.5 or newer.
 {{< /hint >}}
 
 ## Best practices for developers

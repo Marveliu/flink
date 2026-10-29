@@ -15,19 +15,19 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.planner.codegen.calls
 
-import org.apache.flink.table.planner.codegen.CodeGenUtils.{BINARY_STRING, className, newName, primitiveTypeTermForType}
+import org.apache.flink.table.planner.codegen.{CodeGeneratorContext, CodeGenUtils, GeneratedExpression}
+import org.apache.flink.table.planner.codegen.CodeGenUtils.{className, newName, primitiveTypeTermForType, BINARY_STRING}
 import org.apache.flink.table.planner.codegen.JsonGenerateUtils.createNodeTerm
-import org.apache.flink.table.planner.codegen.{CodeGeneratorContext, GeneratedExpression}
 import org.apache.flink.table.runtime.functions.SqlJsonUtils
 import org.apache.flink.table.types.logical.LogicalType
 
-import org.apache.calcite.rex.RexCall
+import org.apache.calcite.rex.{RexCall, RexProgram}
 
 /** [[CallGenerator]] for `JSON_STRING`. */
-class JsonStringCallGen(call: RexCall) extends CallGenerator {
+class JsonStringCallGen(call: RexCall, rexProgram: RexProgram) extends CallGenerator {
+
   private def jsonUtils = className[SqlJsonUtils]
 
   override def generate(
@@ -35,9 +35,10 @@ class JsonStringCallGen(call: RexCall) extends CallGenerator {
       operands: Seq[GeneratedExpression],
       returnType: LogicalType): GeneratedExpression = {
 
-    val valueTerm = createNodeTerm(ctx, operands.head, call.operands.get(0))
+    val exprs = CodeGenUtils.getExprsFromProgramOrNull(rexProgram)
+    val valueTerm = createNodeTerm(ctx, operands.head, call.operands.get(0), exprs)
 
-    val resultTerm = newName("result")
+    val resultTerm = newName(ctx, "result")
     val resultTermType = primitiveTypeTermForType(returnType)
     val resultCode = s"""
                         |${operands.map(_.code).mkString}

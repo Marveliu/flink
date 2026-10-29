@@ -25,10 +25,14 @@ import org.apache.flink.annotation.Internal;
 public abstract class ApiExpressionVisitor<R> implements ExpressionVisitor<R> {
 
     public final R visit(Expression other) {
-        if (other instanceof UnresolvedReferenceExpression) {
+        if (other instanceof UnresolvedTypeLiteralExpression) {
+            return visit((UnresolvedTypeLiteralExpression) other);
+        } else if (other instanceof UnresolvedReferenceExpression) {
             return visit((UnresolvedReferenceExpression) other);
         } else if (other instanceof TableReferenceExpression) {
             return visit((TableReferenceExpression) other);
+        } else if (other instanceof ModelReferenceExpression) {
+            return visit((ModelReferenceExpression) other);
         } else if (other instanceof LocalReferenceExpression) {
             return visit((LocalReferenceExpression) other);
         } else if (other instanceof LookupCallExpression) {
@@ -49,6 +53,8 @@ public abstract class ApiExpressionVisitor<R> implements ExpressionVisitor<R> {
 
     public abstract R visit(TableReferenceExpression tableReference);
 
+    public abstract R visit(ModelReferenceExpression modelReferenceExpression);
+
     public abstract R visit(LocalReferenceExpression localReference);
 
     /** For resolved expressions created by the planner. */
@@ -57,6 +63,8 @@ public abstract class ApiExpressionVisitor<R> implements ExpressionVisitor<R> {
     // --------------------------------------------------------------------------------------------
     // unresolved API expressions
     // --------------------------------------------------------------------------------------------
+
+    public abstract R visit(UnresolvedTypeLiteralExpression unresolvedTypeExpression);
 
     public abstract R visit(UnresolvedReferenceExpression unresolvedReference);
 

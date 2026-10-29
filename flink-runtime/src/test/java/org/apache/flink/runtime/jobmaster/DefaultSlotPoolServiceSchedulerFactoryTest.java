@@ -18,16 +18,19 @@
 
 package org.apache.flink.runtime.jobmaster;
 
-import org.apache.flink.configuration.CheckpointingOptions;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.JobManagerOptions;
 import org.apache.flink.configuration.SchedulerExecutionMode;
+import org.apache.flink.configuration.StateRecoveryOptions;
+import org.apache.flink.configuration.TaskManagerOptions;
 import org.apache.flink.runtime.jobgraph.JobType;
 import org.apache.flink.runtime.jobmaster.slotpool.PreferredAllocationRequestSlotMatchingStrategy;
 import org.apache.flink.runtime.jobmaster.slotpool.RequestSlotMatchingStrategy;
 import org.apache.flink.runtime.jobmaster.slotpool.SimpleRequestSlotMatchingStrategy;
+import org.apache.flink.runtime.jobmaster.slotpool.TasksBalancedRequestSlotMatchingStrategy;
 import org.apache.flink.runtime.scheduler.DefaultSchedulerFactory;
 import org.apache.flink.runtime.scheduler.adaptive.AdaptiveSchedulerFactory;
+import org.apache.flink.runtime.scheduler.adaptivebatch.AdaptiveBatchSchedulerFactory;
 import org.apache.flink.util.TestLoggerExtension;
 
 import org.junit.jupiter.api.Test;
@@ -38,35 +41,37 @@ import org.junit.jupiter.params.provider.MethodSource;
 
 import java.util.stream.Stream;
 
+import static org.apache.flink.configuration.TaskManagerOptions.TaskManagerLoadBalanceMode;
+import static org.apache.flink.runtime.jobmaster.DefaultSlotPoolServiceSchedulerFactory.getRequestSlotMatchingStrategy;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /** Tests for the {@link DefaultSlotPoolServiceSchedulerFactory}. */
 @ExtendWith(TestLoggerExtension.class)
-public class DefaultSlotPoolServiceSchedulerFactoryTest {
+class DefaultSlotPoolServiceSchedulerFactoryTest {
 
     @Test
-    public void testFallsBackToDefaultSchedulerIfBatchJob() {
+    void testFallsBackToDefaultSchedulerIfAdaptiveSchedulerInBatchJob() {
         final Configuration configuration = new Configuration();
         configuration.set(JobManagerOptions.SCHEDULER, JobManagerOptions.SchedulerType.Adaptive);
 
         final DefaultSlotPoolServiceSchedulerFactory defaultSlotPoolServiceSchedulerFactory =
                 DefaultSlotPoolServiceSchedulerFactory.fromConfiguration(
-                        configuration, JobType.BATCH);
+                        configuration, JobType.BATCH, true);
 
         assertThat(defaultSlotPoolServiceSchedulerFactory.getSchedulerNGFactory())
-                .isInstanceOf(DefaultSchedulerFactory.class);
+                .isInstanceOf(AdaptiveBatchSchedulerFactory.class);
         assertThat(defaultSlotPoolServiceSchedulerFactory.getSchedulerType())
-                .isEqualTo(JobManagerOptions.SchedulerType.Ng);
+                .isEqualTo(JobManagerOptions.SchedulerType.AdaptiveBatch);
     }
 
     @Test
-    public void testAdaptiveSchedulerForReactiveMode() {
+    void testAdaptiveSchedulerForReactiveMode() {
         final Configuration configuration = new Configuration();
         configuration.set(JobManagerOptions.SCHEDULER_MODE, SchedulerExecutionMode.REACTIVE);
 
         final DefaultSlotPoolServiceSchedulerFactory defaultSlotPoolServiceSchedulerFactory =
                 DefaultSlotPoolServiceSchedulerFactory.fromConfiguration(
-                        configuration, JobType.STREAMING);
+                        configuration, JobType.STREAMING, false);
 
         assertThat(defaultSlotPoolServiceSchedulerFactory.getSchedulerNGFactory())
                 .isInstanceOf(AdaptiveSchedulerFactory.class);
@@ -74,26 +79,126 @@ public class DefaultSlotPoolServiceSchedulerFactoryTest {
                 .isEqualTo(JobManagerOptions.SchedulerType.Adaptive);
     }
 
-    @ParameterizedTest
-    @MethodSource("testGetRequestSlotMatchingStrategy")
-    public void testGetRequestSlotMatchingStrategy(
-            boolean isLocalRecoveryEnabled, JobType jobType, RequestSlotMatchingStrategy expected) {
-        final Configuration configuration = new Configuration();
-        configuration.set(CheckpointingOptions.LOCAL_RECOVERY, isLocalRecoveryEnabled);
-        assertThat(
-                        DefaultSlotPoolServiceSchedulerFactory.getRequestSlotMatchingStrategy(
-                                configuration, jobType))
-                .isSameAs(expected);
+    @Test
+    void testFallBackSchedulerWithAdaptiveSchedulerTestProperty() {
+        String propertyValue = saveAdaptiveSchedulerTestPropertyValue();
+        System.setProperty("flink.tests.enable-adaptive-scheduler", "true");
+
+        DefaultSlotPoolServiceSchedulerFactory defaultSlotPoolServiceSchedulerFactory =
+                DefaultSlotPoolServiceSchedulerFactory.fromConfiguration(
+                        new Configuration(), JobType.BATCH, true);
+
+        assertThat(defaultSlotPoolServiceSchedulerFactory.getSchedulerNGFactory())
+                .isInstanceOf(AdaptiveBatchSchedulerFactory.class);
+        assertThat(defaultSlotPoolServiceSchedulerFactory.getSchedulerType())
+                .isEqualTo(JobManagerOptions.SchedulerType.AdaptiveBatch);
+
+        defaultSlotPoolServiceSchedulerFactory =
+                DefaultSlotPoolServiceSchedulerFactory.fromConfiguration(
+                        new Configuration(), JobType.STREAMING, false);
+
+        assertThat(defaultSlotPoolServiceSchedulerFactory.getSchedulerNGFactory())
+                .isInstanceOf(AdaptiveSchedulerFactory.class);
+        assertThat(defaultSlotPoolServiceSchedulerFactory.getSchedulerType())
+                .isEqualTo(JobManagerOptions.SchedulerType.Adaptive);
+
+        restoreAdaptiveSchedulerTestPropertiesValue(propertyValue);
     }
 
-    private static Stream<Arguments> testGetRequestSlotMatchingStrategy() {
+    @Test
+    void testFallBackSchedulerWithoutAdaptiveSchedulerTestProperty() {
+        String propertyValue = saveAdaptiveSchedulerTestPropertyValue();
+        System.clearProperty("flink.tests.enable-adaptive-scheduler");
+
+        DefaultSlotPoolServiceSchedulerFactory defaultSlotPoolServiceSchedulerFactory =
+                DefaultSlotPoolServiceSchedulerFactory.fromConfiguration(
+                        new Configuration(), JobType.BATCH, true);
+
+        assertThat(defaultSlotPoolServiceSchedulerFactory.getSchedulerNGFactory())
+                .isInstanceOf(AdaptiveBatchSchedulerFactory.class);
+        assertThat(defaultSlotPoolServiceSchedulerFactory.getSchedulerType())
+                .isEqualTo(JobManagerOptions.SchedulerType.AdaptiveBatch);
+
+        defaultSlotPoolServiceSchedulerFactory =
+                DefaultSlotPoolServiceSchedulerFactory.fromConfiguration(
+                        new Configuration(), JobType.STREAMING, false);
+
+        assertThat(defaultSlotPoolServiceSchedulerFactory.getSchedulerNGFactory())
+                .isInstanceOf(DefaultSchedulerFactory.class);
+        assertThat(defaultSlotPoolServiceSchedulerFactory.getSchedulerType())
+                .isEqualTo(JobManagerOptions.SchedulerType.Default);
+
+        restoreAdaptiveSchedulerTestPropertiesValue(propertyValue);
+    }
+
+    @ParameterizedTest
+    @MethodSource("getTestingParameters")
+    public void testGetRequestSlotMatchingStrategy(
+            boolean isLocalRecoveryEnabled,
+            JobType jobType,
+            TaskManagerLoadBalanceMode balanceMode,
+            RequestSlotMatchingStrategy expected) {
+        final Configuration configuration = new Configuration();
+        configuration.set(StateRecoveryOptions.LOCAL_RECOVERY, isLocalRecoveryEnabled);
+        configuration.set(TaskManagerOptions.TASK_MANAGER_LOAD_BALANCE_MODE, balanceMode);
+        assertThat(getRequestSlotMatchingStrategy(configuration, jobType)).isEqualTo(expected);
+    }
+
+    private static Stream<Arguments> getTestingParameters() {
         return Stream.of(
-                Arguments.of(false, JobType.BATCH, SimpleRequestSlotMatchingStrategy.INSTANCE),
-                Arguments.of(false, JobType.STREAMING, SimpleRequestSlotMatchingStrategy.INSTANCE),
-                Arguments.of(true, JobType.BATCH, SimpleRequestSlotMatchingStrategy.INSTANCE),
+                Arguments.of(
+                        false,
+                        JobType.BATCH,
+                        TaskManagerLoadBalanceMode.NONE,
+                        SimpleRequestSlotMatchingStrategy.INSTANCE),
+                Arguments.of(
+                        false,
+                        JobType.BATCH,
+                        TaskManagerLoadBalanceMode.TASKS,
+                        SimpleRequestSlotMatchingStrategy.INSTANCE),
+                Arguments.of(
+                        true,
+                        JobType.BATCH,
+                        TaskManagerLoadBalanceMode.NONE,
+                        SimpleRequestSlotMatchingStrategy.INSTANCE),
+                Arguments.of(
+                        true,
+                        JobType.BATCH,
+                        TaskManagerLoadBalanceMode.TASKS,
+                        SimpleRequestSlotMatchingStrategy.INSTANCE),
+                Arguments.of(
+                        false,
+                        JobType.STREAMING,
+                        TaskManagerLoadBalanceMode.NONE,
+                        SimpleRequestSlotMatchingStrategy.INSTANCE),
                 Arguments.of(
                         true,
                         JobType.STREAMING,
-                        PreferredAllocationRequestSlotMatchingStrategy.INSTANCE));
+                        TaskManagerLoadBalanceMode.NONE,
+                        PreferredAllocationRequestSlotMatchingStrategy.create(
+                                SimpleRequestSlotMatchingStrategy.INSTANCE)),
+                Arguments.of(
+                        true,
+                        JobType.STREAMING,
+                        TaskManagerLoadBalanceMode.TASKS,
+                        PreferredAllocationRequestSlotMatchingStrategy.create(
+                                TasksBalancedRequestSlotMatchingStrategy.INSTANCE)),
+                Arguments.of(
+                        false,
+                        JobType.STREAMING,
+                        TaskManagerLoadBalanceMode.TASKS,
+                        TasksBalancedRequestSlotMatchingStrategy.INSTANCE));
+    }
+
+    private String saveAdaptiveSchedulerTestPropertyValue() {
+        return (String) System.getProperty("flink.tests.enable-adaptive-scheduler");
+    }
+
+    private void restoreAdaptiveSchedulerTestPropertiesValue(String savedPropertyValue) {
+        if (savedPropertyValue == null) {
+            System.clearProperty("flink.tests.enable-adaptive-scheduler");
+        } else {
+            System.setProperty("flink.tests.enable-adaptive-scheduler", savedPropertyValue);
+        }
     }
 }

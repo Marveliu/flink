@@ -18,32 +18,36 @@
 
 package org.apache.flink.test.runtime;
 
+import org.apache.flink.api.common.JobExecutionResult;
 import org.apache.flink.api.common.functions.FlatJoinFunction;
 import org.apache.flink.api.common.io.GenericInputFormat;
 import org.apache.flink.api.common.io.NonParallelInput;
-import org.apache.flink.api.java.DataSet;
-import org.apache.flink.api.java.ExecutionEnvironment;
+import org.apache.flink.api.common.serialization.SimpleStringEncoder;
 import org.apache.flink.api.java.tuple.Tuple3;
 import org.apache.flink.api.java.tuple.Tuple5;
+import org.apache.flink.connector.file.sink.FileSink;
+import org.apache.flink.core.fs.Path;
+import org.apache.flink.streaming.api.datastream.DataStreamSource;
+import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
+import org.apache.flink.streaming.api.windowing.assigners.GlobalWindows;
 import org.apache.flink.test.util.JavaProgramTestBase;
 import org.apache.flink.util.Collector;
 
-import org.junit.Rule;
-import org.junit.rules.Timeout;
+import org.junit.jupiter.api.Timeout;
 
 import java.io.IOException;
 import java.util.Random;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Tests a self-join, which leads to a deadlock with large data sizes and PIPELINED-only execution.
  *
  * @see <a href="https://issues.apache.org/jira/browse/FLINK-1141">FLINK-1141</a>
  */
-public class SelfJoinDeadlockITCase extends JavaProgramTestBase {
+@Timeout(value = 120, unit = TimeUnit.SECONDS)
+class SelfJoinDeadlockITCase extends JavaProgramTestBase {
 
     protected String resultPath;
-
-    @Rule public Timeout globalTimeout = new Timeout(120 * 1000); // Set timeout for deadlocks
 
     @Override
     protected void preSubmit() throws Exception {
@@ -51,15 +55,30 @@ public class SelfJoinDeadlockITCase extends JavaProgramTestBase {
     }
 
     @Override
-    protected void testProgram() throws Exception {
-        ExecutionEnvironment env = ExecutionEnvironment.getExecutionEnvironment();
+    protected JobExecutionResult testProgram() throws Exception {
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
 
-        DataSet<Tuple3<Integer, Integer, String>> ds =
+        DataStreamSource<Tuple3<Integer, Integer, String>> ds =
                 env.createInput(new LargeJoinDataGeneratorInputFormat(1000000));
 
-        ds.join(ds).where(0).equalTo(1).with(new Joiner()).writeAsText(resultPath);
+        ds.join(ds)
+                .where(x -> x.f0)
+                .equalTo(x -> x.f1)
+                .window(GlobalWindows.createWithEndOfStreamTrigger())
+                .apply(new Joiner())
+                .sinkTo(
+                        FileSink.forRowFormat(
+                                        new Path(resultPath),
+                                        new SimpleStringEncoder<
+                                                Tuple5<
+                                                        Integer,
+                                                        Integer,
+                                                        Integer,
+                                                        String,
+                                                        String>>())
+                                .build());
 
-        env.execute("Local Selfjoin Test Job");
+        return env.execute("Local Selfjoin Test Job");
     }
 
     @SuppressWarnings("serial")

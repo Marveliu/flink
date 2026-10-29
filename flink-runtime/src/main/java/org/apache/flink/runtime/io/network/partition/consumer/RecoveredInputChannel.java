@@ -30,6 +30,7 @@ import org.apache.flink.runtime.io.network.buffer.Buffer;
 import org.apache.flink.runtime.io.network.logger.NetworkActionsLogger;
 import org.apache.flink.runtime.io.network.partition.ChannelStateHolder;
 import org.apache.flink.runtime.io.network.partition.ResultPartitionID;
+import org.apache.flink.runtime.io.network.partition.ResultSubpartitionIndexSet;
 import org.apache.flink.util.Preconditions;
 
 import org.slf4j.Logger;
@@ -53,7 +54,7 @@ public abstract class RecoveredInputChannel extends InputChannel implements Chan
     private static final Logger LOG = LoggerFactory.getLogger(RecoveredInputChannel.class);
 
     private final ArrayDeque<Buffer> receivedBuffers = new ArrayDeque<>();
-    private final CompletableFuture<?> stateConsumedFuture = new CompletableFuture<>();
+    private final CompletableFuture<Void> stateConsumedFuture = new CompletableFuture<>();
     protected final BufferManager bufferManager;
 
     @GuardedBy("receivedBuffers")
@@ -76,7 +77,7 @@ public abstract class RecoveredInputChannel extends InputChannel implements Chan
             SingleInputGate inputGate,
             int channelIndex,
             ResultPartitionID partitionId,
-            int consumedSubpartitionIndex,
+            ResultSubpartitionIndexSet consumedSubpartitionIndexSet,
             int initialBackoff,
             int maxBackoff,
             Counter numBytesIn,
@@ -86,13 +87,13 @@ public abstract class RecoveredInputChannel extends InputChannel implements Chan
                 inputGate,
                 channelIndex,
                 partitionId,
-                consumedSubpartitionIndex,
+                consumedSubpartitionIndexSet,
                 initialBackoff,
                 maxBackoff,
                 numBytesIn,
                 numBuffersIn);
 
-        bufferManager = new BufferManager(inputGate.getMemorySegmentProvider(), this, 0);
+        bufferManager = new BufferManager(inputGate.getMemorySegmentProvider(), this, 0, true);
         this.networkBuffersPerChannel = networkBuffersPerChannel;
     }
 
@@ -102,10 +103,14 @@ public abstract class RecoveredInputChannel extends InputChannel implements Chan
         this.channelStateWriter = checkNotNull(channelStateWriter);
     }
 
-    public final InputChannel toInputChannel() throws IOException {
-        Preconditions.checkState(
-                stateConsumedFuture.isDone(), "recovered state is not fully consumed");
-        final InputChannel inputChannel = toInputChannelInternal();
+    public final InputChannel toInputChannel(boolean needsRecovery) throws IOException {
+        // With checkpointing-during-recovery, data is spilled instead of queued here.
+        synchronized (receivedBuffers) {
+            Preconditions.checkState(receivedBuffers.isEmpty(), "Received buffer should be empty.");
+        }
+
+        final InputChannel inputChannel = toInputChannelInternal(needsRecovery);
+        inputChannel.setup();
         inputChannel.checkpointStopped(lastStoppedCheckpointId);
         return inputChannel;
     }
@@ -115,19 +120,22 @@ public abstract class RecoveredInputChannel extends InputChannel implements Chan
         this.lastStoppedCheckpointId = checkpointId;
     }
 
-    protected abstract InputChannel toInputChannelInternal() throws IOException;
+    /**
+     * Creates the physical {@link InputChannel}; {@code needsRecovery} controls whether it starts
+     * in recovery.
+     */
+    protected abstract InputChannel toInputChannelInternal(boolean needsRecovery)
+            throws IOException;
 
-    CompletableFuture<?> getStateConsumedFuture() {
+    @Override
+    public CompletableFuture<Void> getStateConsumedFuture() {
         return stateConsumedFuture;
     }
 
     public void onRecoveredStateBuffer(Buffer buffer) {
         boolean recycleBuffer = true;
         NetworkActionsLogger.traceRecover(
-                "InputChannelRecoveredStateHandler#recover",
-                buffer,
-                inputGate.getOwningTaskName(),
-                channelInfo);
+                "NoSpillingHandler#recover", buffer, inputGate.getOwningTaskName(), channelInfo);
         try {
             final boolean wasEmpty;
             synchronized (receivedBuffers) {
@@ -153,7 +161,8 @@ public abstract class RecoveredInputChannel extends InputChannel implements Chan
     }
 
     public void finishReadRecoveredState() throws IOException {
-        onRecoveredStateBuffer(EventSerializer.toBuffer(EndOfChannelStateEvent.INSTANCE, false));
+        onRecoveredStateBuffer(
+                EventSerializer.toBuffer(EndOfInputChannelStateEvent.INSTANCE, false));
         bufferManager.releaseFloatingBuffers();
         LOG.debug("{}/{} finished recovering input.", inputGate.getOwningTaskName(), channelInfo);
     }
@@ -171,7 +180,7 @@ public abstract class RecoveredInputChannel extends InputChannel implements Chan
 
         if (next == null) {
             return null;
-        } else if (isEndOfChannelStateEvent(next)) {
+        } else if (isEndOfInputChannelStateEvent(next)) {
             stateConsumedFuture.complete(null);
             return null;
         } else {
@@ -179,18 +188,23 @@ public abstract class RecoveredInputChannel extends InputChannel implements Chan
         }
     }
 
-    private boolean isEndOfChannelStateEvent(Buffer buffer) throws IOException {
+    private boolean isEndOfInputChannelStateEvent(Buffer buffer) throws IOException {
         if (buffer.isBuffer()) {
             return false;
         }
 
         AbstractEvent event = EventSerializer.fromBuffer(buffer, getClass().getClassLoader());
         buffer.setReaderIndex(0);
-        return event.getClass() == EndOfChannelStateEvent.class;
+        return event.getClass() == EndOfInputChannelStateEvent.class;
     }
 
     @Override
-    Optional<BufferAndAvailability> getNextBuffer() throws IOException {
+    protected int peekNextBufferSubpartitionIdInternal() throws IOException {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public Optional<BufferAndAvailability> getNextBuffer() throws IOException {
         checkError();
         return Optional.ofNullable(getNextRecoveredStateBuffer());
     }
@@ -225,7 +239,7 @@ public abstract class RecoveredInputChannel extends InputChannel implements Chan
     }
 
     @Override
-    final void requestSubpartition() {
+    final void requestSubpartitions() {
         throw new UnsupportedOperationException(
                 "RecoveredInputChannel should never request partition.");
     }
@@ -243,7 +257,7 @@ public abstract class RecoveredInputChannel extends InputChannel implements Chan
         }
     }
 
-    void releaseAllResources() throws IOException {
+    public void releaseAllResources() throws IOException {
         ArrayDeque<Buffer> releasedBuffers = new ArrayDeque<>();
         boolean shouldRelease = false;
 

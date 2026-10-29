@@ -17,33 +17,31 @@
  */
 package org.apache.flink.table.planner.plan.rules.physical.stream
 
-import org.apache.calcite.plan.{RelOptRule, RelTraitSet}
-import org.apache.calcite.rel.RelNode
-import org.apache.calcite.rel.convert.ConverterRule
 import org.apache.flink.table.planner.plan.nodes.FlinkConventions
 import org.apache.flink.table.planner.plan.nodes.logical.FlinkLogicalWatermarkAssigner
 import org.apache.flink.table.planner.plan.nodes.physical.stream.StreamPhysicalWatermarkAssigner
 
-/**
-  * Rule that converts [[FlinkLogicalWatermarkAssigner]] to [[StreamPhysicalWatermarkAssigner]].
-  */
-class StreamPhysicalWatermarkAssignerRule
-  extends ConverterRule(
-    classOf[FlinkLogicalWatermarkAssigner],
-    FlinkConventions.LOGICAL,
-    FlinkConventions.STREAM_PHYSICAL,
-    "StreamPhysicalWatermarkAssignerRule") {
+import org.apache.calcite.plan.{RelOptRule, RelTraitSet}
+import org.apache.calcite.rel.RelNode
+import org.apache.calcite.rel.convert.ConverterRule
+import org.apache.calcite.rel.convert.ConverterRule.Config
+
+import java.util.Collections
+
+/** Rule that converts [[FlinkLogicalWatermarkAssigner]] to [[StreamPhysicalWatermarkAssigner]]. */
+class StreamPhysicalWatermarkAssignerRule(config: Config) extends ConverterRule(config) {
 
   override def convert(rel: RelNode): RelNode = {
     val watermarkAssigner = rel.asInstanceOf[FlinkLogicalWatermarkAssigner]
-    val convertInput = RelOptRule.convert(
-      watermarkAssigner.getInput, FlinkConventions.STREAM_PHYSICAL)
+    val convertInput =
+      RelOptRule.convert(watermarkAssigner.getInput, FlinkConventions.STREAM_PHYSICAL)
     val traitSet: RelTraitSet = rel.getTraitSet.replace(FlinkConventions.STREAM_PHYSICAL)
 
     new StreamPhysicalWatermarkAssigner(
       watermarkAssigner.getCluster,
       traitSet,
       convertInput,
+      Collections.emptyList(),
       watermarkAssigner.rowtimeFieldIndex,
       watermarkAssigner.watermarkExpr
     )
@@ -51,5 +49,10 @@ class StreamPhysicalWatermarkAssignerRule
 }
 
 object StreamPhysicalWatermarkAssignerRule {
-  val INSTANCE = new StreamPhysicalWatermarkAssignerRule
+  val INSTANCE = new StreamPhysicalWatermarkAssignerRule(
+    Config.INSTANCE.withConversion(
+      classOf[FlinkLogicalWatermarkAssigner],
+      FlinkConventions.LOGICAL,
+      FlinkConventions.STREAM_PHYSICAL,
+      "StreamPhysicalWatermarkAssignerRule"))
 }

@@ -18,8 +18,8 @@
 
 package org.apache.flink.tests.util.flink;
 
+import org.apache.flink.test.util.JobSubmission;
 import org.apache.flink.tests.util.util.FactoryUtils;
-import org.apache.flink.util.ExternalResource;
 
 import java.io.IOException;
 import java.time.Duration;
@@ -29,7 +29,18 @@ import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
 /** Generic interface for interacting with Flink. */
-public interface FlinkResource extends ExternalResource {
+public interface FlinkResource {
+
+    /** Initializes the resource before a test starts. */
+    void before() throws Exception;
+
+    /** Cleans up the resource after a test completed successfully. */
+    void afterTestSuccess();
+
+    /** Cleans up the resource after a test failed. */
+    default void afterTestFailure() {
+        afterTestSuccess();
+    }
 
     /**
      * Starts a cluster.
@@ -44,6 +55,15 @@ public interface FlinkResource extends ExternalResource {
      * @param numTaskManagers number of task managers
      */
     ClusterController startCluster(int numTaskManagers) throws IOException;
+
+    /**
+     * Starts a sqlserver and returns the {@link GatewayController} which can be used to shut down
+     * the process.
+     *
+     * @return controller for interacting with the cluster
+     * @throws IOException
+     */
+    GatewayController startSqlGateway() throws IOException;
 
     /**
      * Searches the logs of all processes for the given pattern, and applies the given processor for

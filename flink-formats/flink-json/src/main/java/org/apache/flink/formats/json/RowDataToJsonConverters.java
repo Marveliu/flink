@@ -33,12 +33,14 @@ import org.apache.flink.table.types.logical.LogicalTypeFamily;
 import org.apache.flink.table.types.logical.MapType;
 import org.apache.flink.table.types.logical.MultisetType;
 import org.apache.flink.table.types.logical.RowType;
+import org.apache.flink.types.variant.Variant;
 
 import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.databind.JsonNode;
 import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.databind.ObjectMapper;
 import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.databind.node.ArrayNode;
 import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.databind.node.ObjectNode;
 
+import java.io.IOException;
 import java.io.Serializable;
 import java.math.BigDecimal;
 import java.time.LocalDate;
@@ -52,6 +54,7 @@ import static org.apache.flink.formats.common.TimeFormats.ISO8601_TIMESTAMP_WITH
 import static org.apache.flink.formats.common.TimeFormats.SQL_TIMESTAMP_FORMAT;
 import static org.apache.flink.formats.common.TimeFormats.SQL_TIMESTAMP_WITH_LOCAL_TIMEZONE_FORMAT;
 import static org.apache.flink.formats.common.TimeFormats.SQL_TIME_FORMAT;
+import static org.apache.flink.shaded.jackson2.com.fasterxml.jackson.core.StreamWriteFeature.WRITE_BIGDECIMAL_AS_PLAIN;
 
 /** Tool class used to convert from {@link RowData} to {@link JsonNode}. * */
 @Internal
@@ -68,13 +71,18 @@ public class RowDataToJsonConverters implements Serializable {
     /** The string literal when handling mode for map null key LITERAL. is */
     private final String mapNullKeyLiteral;
 
+    /** Flag indicating whether to ignore null fields. */
+    private final boolean ignoreNullFields;
+
     public RowDataToJsonConverters(
             TimestampFormat timestampFormat,
             JsonFormatOptions.MapNullKeyMode mapNullKeyMode,
-            String mapNullKeyLiteral) {
+            String mapNullKeyLiteral,
+            boolean ignoreNullFields) {
         this.timestampFormat = timestampFormat;
         this.mapNullKeyMode = mapNullKeyMode;
         this.mapNullKeyLiteral = mapNullKeyLiteral;
+        this.ignoreNullFields = ignoreNullFields;
     }
 
     /**
@@ -143,6 +151,8 @@ public class RowDataToJsonConverters implements Serializable {
                         new IntType());
             case ROW:
                 return createRowConverter((RowType) type);
+            case VARIANT:
+                return this::convertVariant;
             case RAW:
             default:
                 throw new UnsupportedOperationException("Not support to parse type: " + type);
@@ -152,8 +162,20 @@ public class RowDataToJsonConverters implements Serializable {
     private RowDataToJsonConverter createDecimalConverter() {
         return (mapper, reuse, value) -> {
             BigDecimal bd = ((DecimalData) value).toBigDecimal();
-            return mapper.getNodeFactory().numberNode(bd);
+            return mapper.getNodeFactory()
+                    .numberNode(
+                            mapper.isEnabled(WRITE_BIGDECIMAL_AS_PLAIN)
+                                    ? bd
+                                    : bd.stripTrailingZeros());
         };
+    }
+
+    private JsonNode convertVariant(ObjectMapper mapper, JsonNode reuse, Object value) {
+        try {
+            return mapper.readTree(((Variant) value).toJson());
+        } catch (IOException e) {
+            throw new JsonParseException("Unable to serialize VARIANT value.", e);
+        }
     }
 
     private RowDataToJsonConverter createDateConverter() {
@@ -167,7 +189,7 @@ public class RowDataToJsonConverters implements Serializable {
     private RowDataToJsonConverter createTimeConverter() {
         return (mapper, reuse, value) -> {
             int millisecond = (int) value;
-            LocalTime time = LocalTime.ofSecondOfDay(millisecond / 1000L);
+            LocalTime time = LocalTime.ofNanoOfDay(millisecond * 1000_000L);
             return mapper.getNodeFactory().textNode(SQL_TIME_FORMAT.format(time));
         };
     }
@@ -331,9 +353,11 @@ public class RowDataToJsonConverters implements Serializable {
                 String fieldName = fieldNames[i];
                 try {
                     Object field = fieldGetters[i].getFieldOrNull(row);
-                    node.set(
-                            fieldName,
-                            fieldConverters[i].convert(mapper, node.get(fieldName), field));
+                    if (field != null || !ignoreNullFields) {
+                        node.set(
+                                fieldName,
+                                fieldConverters[i].convert(mapper, node.get(fieldName), field));
+                    }
                 } catch (Throwable t) {
                     throw new RuntimeException(
                             String.format("Fail to serialize at field: %s.", fieldName), t);

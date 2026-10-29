@@ -77,12 +77,11 @@ public final class SubsequenceInputTypeStrategy implements InputTypeStrategy {
             if (splitDataTypes.isPresent()) {
                 result.addAll(splitDataTypes.get());
             } else {
-                if (throwOnFailure) {
-                    throw callContext.newValidationError(
-                            "Could not infer arguments in range: [%d, %d].",
-                            argumentsSplit.startIndex, argumentsSplit.endIndex);
-                }
-                return Optional.empty();
+                return callContext.fail(
+                        throwOnFailure,
+                        "Could not infer arguments in range: [%d, %d].",
+                        argumentsSplit.startIndex,
+                        argumentsSplit.endIndex);
             }
         }
 
@@ -199,6 +198,7 @@ public final class SubsequenceInputTypeStrategy implements InputTypeStrategy {
     }
 
     /** A Builder for {@link SubsequenceInputTypeStrategy}. */
+    @Internal
     public static final class SubsequenceStrategyBuilder {
         private final List<ArgumentsSplit> argumentsSplits = new ArrayList<>();
         private int currentPos = 0;
@@ -208,6 +208,19 @@ public final class SubsequenceInputTypeStrategy implements InputTypeStrategy {
             SequenceInputTypeStrategy singleArgumentStrategy =
                     new SequenceInputTypeStrategy(
                             Collections.singletonList(argumentTypeStrategy), null);
+            argumentsSplits.add(
+                    new ArgumentsSplit(currentPos, currentPos + 1, singleArgumentStrategy));
+            currentPos += 1;
+            return this;
+        }
+
+        /** Defines that we expect a single named argument at the next position. */
+        public SubsequenceStrategyBuilder argument(
+                String argumentName, ArgumentTypeStrategy argumentTypeStrategy) {
+            SequenceInputTypeStrategy singleArgumentStrategy =
+                    new SequenceInputTypeStrategy(
+                            Collections.singletonList(argumentTypeStrategy),
+                            Collections.singletonList(argumentName));
             argumentsSplits.add(
                     new ArgumentsSplit(currentPos, currentPos + 1, singleArgumentStrategy));
             currentPos += 1;

@@ -27,114 +27,104 @@ under the License.
 
 # State Processor API
 
-Apache Flink's State Processor API provides powerful functionality to reading, writing, and modifying savepoints and checkpoints using Flink’s DataStream API under `BATCH` execution.
-Due to the [interoperability of DataStream and Table API]({{< ref "docs/dev/table/data_stream_api" >}}), you can even use relational Table API or SQL queries to analyze and process state data.
+Apache Flink 的 State Processor API 提供了批模式 (BATCH) 下使用 DataStream API 读取、写入、修改 savepoint 和 checkpoint 的强大能力。
+由于 [DataStream 和 Table API 是等价的]({{< ref "docs/dev/table/data_stream_api" >}})，也可以使用 Table API 或 SQL 来分析和处理 savepoint 或 checkpoint 中的状态数据。
 
-For example, you can take a savepoint of a running stream processing application and analyze it with a DataStream batch program to verify that the application behaves correctly.
-Or you can read a batch of data from any store, preprocess it, and write the result to a savepoint that you use to bootstrap the state of a streaming application.
-It is also possible to fix inconsistent state entries.
-Finally, the State Processor API opens up many ways to evolve a stateful application that was previously blocked by parameter and design choices that could not be changed without losing all the state of the application after it was started.
-For example, you can now arbitrarily modify the data types of states, adjust the maximum parallelism of operators, split or merge operator state, re-assign operator UIDs, and so on.
+例如，可以获取一个正在运行的流应用程序的 savepoint，使用 State Processor API 在批模式下对该 savepoint 进行分析，以验证应用程序的行为是否正确；
+还可以从任意存储中读取并预处理一批数据后将结果写入一个 savepoint，然后基于这个 savepoint 初始化流应用程序的状态； State Processor API 也可以用来修复不一致的状态条目。
+State Processor API 为有状态应用程序的演化提供了新的方式。以前有状态应用程序不能够进行更改，否则会丢失所有状态。现在可以通过 State Processor API 修改状态的数据类型、调整操作符的最大并行度、拆分或合并操作符状态、重新分配操作符 UID 等。
 
-To get started with the state processor api, include the following library in your application.
+请在应用程序中包含以下库以使用 State Processor API。
 
 {{< artifact flink-state-processor-api >}}
 
-## Mapping Application State to DataSets
+## 从状态到数据集
 
-The State Processor API maps the state of a streaming application to one or more data sets that can be processed separately.
-In order to be able to use the API, you need to understand how this mapping works.
+State Processor API 将流应用程序的状态映射到若干个可以单独处理的数据集中，为了能使用 API，您需要先理解这种映射是如何工作的。
 
-But let us first have a look at what a stateful Flink job looks like.
-A Flink job is composed of operators; typically one or more source operators, a few operators for the actual processing, and one or more sink operators.
-Each operator runs in parallel in one or more tasks and can work with different types of state.
-An operator can have zero, one, or more *“operator states”* which are organized as lists that are scoped to the operator's tasks.
-If the operator is applied on a keyed stream, it can also have zero, one, or more *“keyed states”* which are scoped to a key that is extracted from each processed record.
-You can think of keyed state as a distributed key-value map.
+让我们先看看有状态的 Flink 作业是什么样子的。Flink 作业由算子 (Operator) 组成: 一个作业通常包括若干个 Source 算子，一些实际用于计算处理的算子以及若干个 Sink 算子。
+每个算子由若干个子任务并行运行，一个算子中可以有不同类型的 State。一个算子可以有若干个 operator state，这些状态被组织成列表，每个子任务的 State 对应列表中的一个元素。
+如果一个算子是 keyed stream 中的，则它可以有若干个 keyed state，用来存储从 record 中提取出的 key，keyed state 可以看作分布式键值映射。
 
-The following figure shows the application “MyApp” which consists of three operators called “Src”, “Proc”, and “Snk”.
-Src has one operator state (os1), Proc has one operator state (os2) and two keyed states (ks1, ks2) and Snk is stateless.
+下图展示了应用程序 MyApp 中的状态，它由三个名为 Src、Proc 和 Snk 的算子组成。Src 算子有一个 operator state (os1)，Proc 算子有一个 operator state (os2) 和两个 keyed state (ks1、ks2)，Snk 算子是无状态的。
 
 {{< img src="/fig/application-my-app-state-processor-api.png" width="600px" alt="Application: MyApp" >}}
 
-A savepoint or checkpoint of MyApp consists of the data of all states, organized in a way that the states of each task can be restored.
-When processing the data of a savepoint (or checkpoint) with a batch job, we need a mental model that maps the data of the individual tasks' states into data sets or tables.
-In fact, we can think of a savepoint as a database. Every operator (identified by its UID) represents a namespace.
-Each operator state of an operator is mapped to a dedicated table in the namespace with a single column that holds the state's data of all tasks.
-All keyed states of an operator are mapped to a single table consisting of a column for the key, and one column for each keyed state.
-The following figure shows how a savepoint of MyApp is mapped to a database.
+MyApp 的 savepoint 或 checkpoint 包含了所有状态数据，可以用来恢复每个子任务的状态。当使用批处理作业处理 savepoint/checkpoint 的数据时，我们需要一个映射模型，将各个任务的状态数据映射到数据集中。 
+事实上，可以将 savepoint 视为数据库，每个算子（由其 UID 标识）代表一个命名空间。算子的 operator state 可以映射为命名空间中一个单列的表，表中的一行代表一个子任务。
+算子所有的 keyed state 可以看作一个多列的表，每一列表示一个 keyed state。下图展示了 MyApp 的 savepoint 和数据集间的映射关系。
 
 {{< img src="/fig/database-my-app-state-processor-api.png" width="600px" alt="Database: MyApp" >}}
 
-The figure shows how the values of Src's operator state are mapped to a table with one column and five rows, one row for each of the list entries across all parallel tasks of Src.
-Operator state os2 of the operator “Proc” is similarly mapped to an individual table.
-The keyed states ks1 and ks2 are combined to a single table with three columns, one for the key, one for ks1 and one for ks2.
-The keyed table holds one row for each distinct key of both keyed states.
-Since the operator “Snk” does not have any state, its namespace is empty.
+上图显示了 Src 算子的 operator state 与数据集的映射，数据集的每一行表示一个 Src 算子的子任务的状态。
+Proc 算子的 os2 也类似地映射到一个单列的表。Proc 算子的 ks1 和 ks2 组合成一个三列的表，第一列表示key，第二列表示 ks1，第三列表示 ks2，每一行表示一个 key 的状态。
+Snk 算子没有状态，因此它的命名空间是空的。
 
-## Reading State
+## 算子的标识
 
-Reading state begins by specifying the path to a valid savepoint or checkpoint along with the `StateBackend` that should be used to restore the data.
-The compatibility guarantees for restoring state are identical to those when restoring a `DataStream` application.
+State Processor API 允许使用 [UIDs]({{< ref "docs/concepts/glossary" >}}#UID) 或 [UID hash]({{< ref "docs/concepts/glossary" >}}#UID-hashes)来识别算子：`OperatorIdentifier#forUid/forUidHash`。
+仅当无法使用 UID 时才应使用 UID hash，例如，当创建 [savepoint]({{< ref "docs/ops/state/savepoints" >}}) 的应用程序未指定 UID 或算子 UID 未知时。
+
+## 通过 State Processor API 读取状态
+
+读取状态首先需要指定 savepoint 或 checkpoint 的路径以及用于恢复数据的 `状态存储后端 (StateBackend)`。State processor API 恢复的状态与 DataStream 应用恢复的状态是一致的。
 
 ```java
 StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
 SavepointReader savepoint = SavepointReader.read(env, "hdfs://path/", new HashMapStateBackend());
 ```
 
-
 ### Operator State
 
-[Operator state]({{< ref "docs/dev/datastream/fault-tolerance/state" >}}#operator-state) is any non-keyed state in Flink.
-This includes, but is not limited to, any use of `CheckpointedFunction` or `BroadcastState` within an application.
-When reading operator state, users specify the operator uid, the state name, and the type information.
+Flink 中的 non-keyed state 被称为 [operator state]({{< ref "docs/dev/datastream/fault-tolerance/state" >}}#operator-state)。
+在应用程序中使用 `CheckpointedFunction` 或 `BroadcastState` 会生成 operator State。 读取 operator state 时，需要指定算子 UID、状态名称和类型信息。 
 
 #### Operator List State
 
-Operator state stored in a `CheckpointedFunction` using `getListState` can be read using `ExistingSavepoint#readListState`.
-The state name and type information should match those used to define the `ListStateDescriptor` that declared this state in the DataStream application.
+通过 `getListState` 存储在 `CheckpointedFunction` 中的 operator state 可以用 `SavepointReader#readListState` 读取。 
+状态名称和类型信息应该与定义在 DataStream 应用程序中声明此状态的 `ListStateDescriptor` 相匹配。
 
 ```java
 DataStream<Integer> listState  = savepoint.readListState<>(
-    "my-uid",
+    OperatorIdentifier.forUid("my-uid"),
     "list-state",
     Types.INT);
 ```
 
 #### Operator Union List State
 
-Operator state stored in a `CheckpointedFunction` using `getUnionListState` can be read using `ExistingSavepoint#readUnionState`.
-The state name and type information should match those used to define the `ListStateDescriptor` that declared this state in the DataStream application.
-The framework will return a _single_ copy of the state, equivalent to restoring a DataStream with parallelism 1.
+通过 `getUnionListState` 存储在 `CheckpointedFunction` 中的 operator state 可以用 `SavepointReader#readUnionState` 读取。 
+状态名称和类型信息应该与定义在 DataStream 应用程序中声明此状态的 `ListStateDescriptor` 相匹配。 
+State Processor API 将返回一个状态的 _单_ 副本，可以看作并发度为 1 的 DataStream 应用。
 
 ```java
 DataStream<Integer> listState  = savepoint.readUnionState<>(
-    "my-uid",
+    OperatorIdentifier.forUid("my-uid"),
     "union-state",
     Types.INT);
 ```
 
-#### Broadcast State
+#### 广播状态 Broadcast State
 
-[BroadcastState]({{< ref "docs/dev/datastream/fault-tolerance/broadcast_state" >}}) can be read using `ExistingSavepoint#readBroadcastState`.
-The state name and type information should match those used to define the `MapStateDescriptor` that declared this state in the DataStream application.
-The framework will return a _single_ copy of the state, equivalent to restoring a DataStream with parallelism 1.
+可以用 `SavepointReader#readBroadcastState` 读取 [BroadcastState]({{< ref "docs/dev/datastream/fault-tolerance/broadcast_state" >}})。
+状态名称和类型信息应该与定义在 DataStream 应用程序中声明此状态的 `MapStateDescriptor` 相匹配。
+State Processor API 将返回一个状态的 _单_ 副本，可以看作并发度为 1 的 DataStream 应用。
 
 ```java
 DataStream<Tuple2<Integer, Integer>> broadcastState = savepoint.readBroadcastState<>(
-    "my-uid",
+    OperatorIdentifier.forUid("my-uid"),
     "broadcast-state",
     Types.INT,
     Types.INT);
 ```
 
-#### Using Custom Serializers
+#### 使用自定义序列化器
 
-Each of the operator state readers support using custom `TypeSerializers` if one was used to define the `StateDescriptor` that wrote out the state.
+如果在写出状态时 `StateDescriptor` 使用了自定义的 `TypeSerializer`，Operator state 也支持使用自定义的 `TypeSerializers` 来读取。
 
 ```java
 DataStream<Integer> listState = savepoint.readListState<>(
-    "uid",
+    OperatorIdentifier.forUid("uid"),
     "list-state", 
     Types.INT,
     new MyCustomIntSerializer());
@@ -142,11 +132,11 @@ DataStream<Integer> listState = savepoint.readListState<>(
 
 ### Keyed State
 
-[Keyed state]({{< ref "docs/dev/datastream/fault-tolerance/state" >}}#keyed-state), or partitioned state, is any state that is partitioned relative to a key.
-When reading a keyed state, users specify the operator id and a `KeyedStateReaderFunction<KeyType, OutputType>`.
+[Keyed state]({{< ref "docs/dev/datastream/fault-tolerance/state" >}}#keyed-state)，又叫分区状态 (partitioned state)，是使用一个 key 进行分区的状态。
+当读取 keyed state 时，需要指定算子 id 和一个 `KeyedStateReaderFunction<KeyType, OutputType>`。
 
-The `KeyedStateReaderFunction` allows users to read arbitrary columns and complex state types such as ListState, MapState, and AggregatingState.
-This means if an operator contains a stateful process function such as:
+`KeyedStateReaderFunction` 允许用户读取任意列和复杂的状态类型，如 ListState, MapState, 和 AggregatingState。
+这意味着如果一个算子包含一个带状态的处理函数，如：
 
 ```java
 public class StatefulFunctionWithTime extends KeyedProcessFunction<Integer, Integer, Void> {
@@ -156,7 +146,7 @@ public class StatefulFunctionWithTime extends KeyedProcessFunction<Integer, Inte
    ListState<Long> updateTimes;
 
    @Override
-   public void open(Configuration parameters) {
+   public void open(OpenContext openContext) {
       ValueStateDescriptor<Integer> stateDescriptor = new ValueStateDescriptor<>("state", Types.INT);
       state = getRuntimeContext().getState(stateDescriptor);
 
@@ -172,10 +162,10 @@ public class StatefulFunctionWithTime extends KeyedProcessFunction<Integer, Inte
 }
 ```
 
-Then it can read by defining an output type and corresponding `KeyedStateReaderFunction`.
+算子中的状态可以通过定义输出类型和相应的 `KeyedStateReaderFunction` 来读取。
 
 ```java
-DataStream<KeyedState> keyedState = savepoint.readKeyedState("my-uid", new ReaderFunction());
+DataStream<KeyedState> keyedState = savepoint.readKeyedState(OperatorIdentifier.forUid("my-uid"), new ReaderFunction());
 
 public class KeyedState {
   public int key;
@@ -192,7 +182,7 @@ public class ReaderFunction extends KeyedStateReaderFunction<Integer, KeyedState
   ListState<Long> updateTimes;
 
   @Override
-  public void open(Configuration parameters) {
+  public void open(OpenContext openContext) {
     ValueStateDescriptor<Integer> stateDescriptor = new ValueStateDescriptor<>("state", Types.INT);
     state = getRuntimeContext().getState(stateDescriptor);
 
@@ -218,19 +208,117 @@ public class ReaderFunction extends KeyedStateReaderFunction<Integer, KeyedState
 }
 ```
 
-Along with reading registered state values, each key has access to a `Context` with metadata such as registered event time and processing time timers.
+除了读取注册的状态之外，每个 key 还可以访问包括 event time 和 processing time [计时器](https://nightlies.apache.org/flink/flink-docs-release-1.17/docs/concepts/time/)等元数据的 `Context`。
 
-**Note:** When using a `KeyedStateReaderFunction`, all state descriptors must be registered eagerly inside of open. Any attempt to call a `RuntimeContext#get*State` will result in a `RuntimeException`.
+**注意：** 当使用 `KeyedStateReaderFunction` 时，所有状态描述符必须在 `open` 函数中注册。 否则任何尝试调用 `RuntimeContext#get*State` 将导致 `RuntimeException`。
 
-### Window State
+#### Filtering Keys
 
-The state processor api supports reading state from a [window operator]({{< ref "docs/dev/datastream/operators/windows" >}}).
-When reading a window state, users specify the operator id, window assigner, and aggregation type.
+When you are only interested in state for a subset of keys, you can push a `SavepointKeyFilter` into the read instead of reading the whole keyed state and filtering afterward.
 
-Additionally, a `WindowReaderFunction` can be specified to enrich each read with additional information similar
-to a `WindowFunction` or `ProcessWindowFunction`.
+Depending on its type, a filter skips unnecessary reads at two levels:
 
-Suppose a DataStream application that counts the number of clicks per user per minute.
+* **Split pruning** — when the filter resolves to an exact set of keys (`SavepointKeyFilter.exact(...)`), Flink can determine up front which key groups own those keys and skips every other input split without ever opening it. This is the largest saving, but it only works for exact keys.
+* **Key-level filtering** — within each split, every key is tested and non-matching keys are skipped before their state is read. This applies to all filters; a range filter relies on this level alone, since it cannot prune splits.
+
+```java
+import org.apache.flink.state.api.filter.SavepointKeyFilter;
+
+// Read the state for a single key
+DataStream<KeyedState> singleKey = savepoint.readKeyedState(
+    OperatorIdentifier.forUid("my-uid"),
+    new ReaderFunction(),
+    Types.INT,
+    TypeInformation.of(KeyedState.class),
+    SavepointKeyFilter.exact(42));
+
+// Read the state for a finite set of keys
+DataStream<KeyedState> someKeys = savepoint.readKeyedState(
+    OperatorIdentifier.forUid("my-uid"),
+    new ReaderFunction(),
+    Types.INT,
+    TypeInformation.of(KeyedState.class),
+    SavepointKeyFilter.exact(Set.of(1, 2, 3)));
+
+// Read the state for a key range: 10 <= key < 100
+DataStream<KeyedState> keyRange = savepoint.readKeyedState(
+    OperatorIdentifier.forUid("my-uid"),
+    new ReaderFunction(),
+    Types.INT,
+    TypeInformation.of(KeyedState.class),
+    SavepointKeyFilter.range(10, true, 100, false));
+```
+
+`SavepointKeyFilter` provides the following factory methods:
+
+* `SavepointKeyFilter.exact(K key)` / `SavepointKeyFilter.exact(Set<K> keys)` — match a single key or a finite set of keys.
+* `SavepointKeyFilter.range(K lower, boolean lowerInclusive, K upper, boolean upperInclusive)` — match a range; `K` must implement `Comparable<K>`. Either bound may be `null` to leave that side unbounded.
+* `SavepointKeyFilter.range(K lower, boolean lowerInclusive, K upper, boolean upperInclusive, SerializableComparator<K> comparator)` — same, but with an explicit comparator for key types that do not implement `Comparable<K>`. The comparator must be serializable because the filter is shipped with the job; lambdas and method references assigned to `SerializableComparator` satisfy this automatically.
+
+When the built-in filters are not enough, you can implement the `SavepointKeyFilter<K>` interface yourself.
+For use with the DataStream API, only `test(K key)` has to be implemented; it is called for every key in each opened split and decides whether that key will be read.
+
+```java
+// Reads the state only for even keys
+public class EvenKeyFilter implements SavepointKeyFilter<Integer> {
+
+    @Override
+    public boolean test(Integer key) {
+        return key % 2 == 0;
+    }
+}
+
+DataStream<KeyedState> evenState = savepoint.readKeyedState(
+    OperatorIdentifier.forUid("my-uid"),
+    new ReaderFunction(),
+    Types.INT,
+    TypeInformation.of(KeyedState.class),
+    new EvenKeyFilter());
+```
+
+By default, a custom filter only enables key-level filtering — every split is still opened.
+If your filter resolves to a finite set of keys, additionally override `getExactKeys()` to return them; Flink then prunes the splits whose key groups cannot contain any of those keys, just like the built-in `exact(...)` filter.
+
+```java
+// Reads the state only for keys 0..max
+public class UpToKeyFilter implements SavepointKeyFilter<Integer> {
+
+    private final int max;
+
+    public UpToKeyFilter(int max) {
+        this.max = max;
+    }
+
+    @Override
+    public boolean test(Integer key) {
+        return key >= 0 && key <= max;
+    }
+
+    @Override
+    public Set<Integer> getExactKeys() {
+        // Enumerate the finite key set so Flink can prune splits up front
+        Set<Integer> keys = new HashSet<>();
+        for (int k = 0; k <= max; k++) {
+            keys.add(k);
+        }
+        return keys;
+    }
+}
+
+DataStream<KeyedState> firstKeys = savepoint.readKeyedState(
+    OperatorIdentifier.forUid("my-uid"),
+    new ReaderFunction(),
+    Types.INT,
+    TypeInformation.of(KeyedState.class),
+    new UpToKeyFilter(100));
+```
+
+### 窗口状态 Window State
+
+State Processor API 支持读取[窗口算子]({{< ref "docs/dev/datastream/operators/windows" >}})的状态，当读取窗口状态时，需要指定算子 id，窗口分配器和聚合类型。
+此外，可以指定类似于 `WindowFunction` 或 `ProcessWindowFunction` 的 `WindowReaderFunction` 来增强每次读取的附加信息。
+
+假设下面是一个统计用户每分钟点击次数的 DataStream 应用程序。
 
 ```java
 class Click {
@@ -262,18 +350,18 @@ class ClickCounter implements AggregateFunction<Click, Integer, Integer> {
 	}
 }
 
-DataStream<Click> clicks = . . . 
+DataStream<Click> clicks = ...;
 
 clicks
     .keyBy(click -> click.userId)
-    .window(TumblingEventTimeWindows.of(Time.minutes(1)))
+    .window(TumblingEventTimeWindows.of(Duration.ofMinutes(1)))
     .aggregate(new ClickCounter())
     .uid("click-window")
     .addSink(new Sink());
 
 ```
 
-This state can be read using the code below.
+它的状态可以通过如下方式读取。
 
 ```java
 
@@ -310,45 +398,39 @@ StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironm
 SavepointReader savepoint = SavepointReader.read(env, "hdfs://checkpoint-dir", new HashMapStateBackend());
 
 savepoint
-    .window(TumblingEventTimeWindows.of(Time.minutes(1)))
-    .aggregate("click-window", new ClickCounter(), new ClickReader(), Types.String, Types.INT, Types.INT)
+    .window(TumblingEventTimeWindows.of(Duration.ofMinutes(1)))
+    .aggregate("click-window", new ClickCounter(), new ClickReader(), Types.STRING, Types.INT, Types.INT)
     .print();
 
 ```
 
-Additionally, trigger state - from `CountTrigger`s or custom triggers - can be read using the method
-`Context#triggerState` inside the `WindowReaderFunction`.
+另外，可以通过 `WindowReaderFunction` 里的 `Context#triggerState` 方法读取 `CountTrigger` 或自定义触发器的状态。
 
-## Writing New Savepoints
+## 通过 State Processor API 生成新 savepoint
 
-`Savepoint`'s may also be written, which allows such use cases as bootstrapping state based on historical data.
-Each savepoint is made up of one or more `StateBootstrapTransformation`'s (explained below), each of which defines the state for an individual operator.
-
-{{< hint info >}}
-When using the `SavepointWriter`, your application must be executed under [BATCH]({{< ref "docs/dev/datastream/execution_mode" >}}) execution.
-{{< /hint >}}
+State processor API 可以用来生成 savepoint，这使得用户可以基于历史数据进行状态的初始化。
+每个 savepoint 可以由若干个 `StateBootstrapTransformation` 生成，每个 `StateBootstrapTransformation` 定义了一个算子的状态。
 
 {{< hint info >}}
-**Note** The state processor api does not currently provide a Scala API. As a result
-it will always auto-derive serializers using the Java type stack. To bootstrap
-a savepoint for the Scala DataStream API please manually pass in all type information.
+当使用 `SavepointWriter` 时，您的应用程序必须在 [批]({{< ref "docs/dev/datastream/execution_mode" >}}) 执行模式下运行。
 {{< /hint >}}
 
 ```java
 int maxParallelism = 128;
 
 SavepointWriter
-    .newSavepoint(new HashMapStateBackend(), maxParallelism)
-    .withOperator("uid1", transformation1)
-    .withOperator("uid2", transformation2)
+    .newSavepoint(env, new HashMapStateBackend(), maxParallelism)
+    .withOperator(OperatorIdentifier.forUid("uid1"), transformation1)
+    .withOperator(OperatorIdentifier.forUid("uid2"), transformation2)
     .write(savepointPath);
 ```
 
-The [UIDs]({{< ref "docs/ops/state/savepoints" >}}#assigning-operator-ids) associated with each operator must match one to one with the UIDs assigned to the operators in your `DataStream` application; these are how Flink knows what state maps to which operator.
+与每个算子关联的 [UID]({{< ref "docs/ops/state/savepoints" >}}#assigning-operator-ids) 必须与 DataStream 应用程序中分配给算子的 UID 一一对应；这样 Flink 才能知道什么状态映射到哪个算子。
 
 ### Operator State
 
 Simple operator state, using `CheckpointedFunction`, can be created using the `StateBootstrapFunction`.
+在 DataStream API 中通过 `CheckpointedFunction` 创建出的、简单的 operator state，在 state processor API 中可以用 `StateBootstrapFunction` 创建。
 
 ```java
 public class SimpleBootstrapFunction extends StateBootstrapFunction<Integer> {
@@ -378,9 +460,9 @@ StateBootstrapTransformation transformation = OperatorTransformation
     .transform(new SimpleBootstrapFunction());
 ```
 
-### Broadcast State
+### 广播状态 Broadcast State
 
-[BroadcastState]({{< ref "docs/dev/datastream/fault-tolerance/broadcast_state" >}}) can be written using a `BroadcastStateBootstrapFunction`. Similar to broadcast state in the `DataStream` API, the full state must fit in memory.
+[BroadcastState]({{< ref "docs/dev/datastream/fault-tolerance/broadcast_state" >}}) 可以用 `BroadcastStateBootstrapFunction` 生成。与 DataStream API 中的 broadcast state 一样，它的全部状态必须能完全放入内存。
 
 ```java
 public class CurrencyRate {
@@ -408,9 +490,9 @@ StateBootstrapTransformation<CurrencyRate> broadcastTransformation = OperatorTra
     .transform(new CurrencyBootstrapFunction());
 ```
 
-### Keyed State
+### 分区状态 Keyed State
 
-Keyed state for `ProcessFunction`'s and other `RichFunction` types can be written using a `KeyedStateBootstrapFunction`.
+`ProcessFunction` 和其他 `RichFunction` 中的 keyed state 可以用 `KeyedStateBootstrapFunction` 生成。
 
 ```java
 public class Account {
@@ -425,7 +507,7 @@ public class AccountBootstrapper extends KeyedStateBootstrapFunction<Integer, Ac
     ValueState<Double> state;
 
     @Override
-    public void open(Configuration parameters) {
+    public void open(OpenContext openContext) {
         ValueStateDescriptor<Double> descriptor = new ValueStateDescriptor<>("total",Types.DOUBLE);
         state = getRuntimeContext().getState(descriptor);
     }
@@ -446,17 +528,17 @@ StateBootstrapTransformation<Account> transformation = OperatorTransformation
     .transform(new AccountBootstrapper());
 ```
 
-The `KeyedStateBootstrapFunction` supports setting event time and processing time timers.
-The timers will not fire inside the bootstrap function and only become active once restored within a `DataStream` application.
-If a processing time timer is set but the state is not restored until after that time has passed, the timer will fire immediately upon start.
+`KeyedStateBootstrapFunction` 支持设置 event time 定时器和 processing time 定时器。
+计时器不会在 state processor API 的 bootstrap 函数内触发，只有在 DataStream 应用程序中恢复后才会激活。
+如果设置了 processing time 计时器，但直到该时间过去后状态才恢复，则计时器将在启动后立即触发。
 
-<span class="label label-danger">Attention</span> If your bootstrap function creates timers, the state can only be restored using one of the [process]({{< ref "docs/dev/datastream/operators/process_function" >}}) type functions.
+<span class="label label-danger">注意</span> 如果您的 bootstrap 函数创建了计时器，则只能使用 [process]({{< ref "docs/dev/datastream/operators/process_function" >}}) 类型的函数之一来恢复状态。
 
-### Window State
+### 窗口状态 Window State
 
-The state processor api supports writing state for the [window operator]({{< ref "docs/dev/datastream/operators/windows" >}}).
-When writing window state, users specify the operator id, window assigner, evictor, optional trigger, and aggregation type.
-It is important the configurations on the bootstrap transformation match the configurations on the DataStream window.
+State processor API 支持写出 [window operator]({{< ref "docs/dev/datastream/operators/windows" >}}) 的状态。
+当写出窗口状态时，需要指定算子 id、窗口分配器、淘汰器(evictor)、触发器(可选)以及聚合类型。
+State processor API 中 bootstrap transformation 的配置需要与 DataStream 窗口的配置相匹配。
 
 ```java
 public class Account {
@@ -474,17 +556,211 @@ DataStream<Account> accountDataSet = env.fromCollection(accounts);
 StateBootstrapTransformation<Account> transformation = OperatorTransformation
     .bootstrapWith(accountDataSet)
     .keyBy(acc -> acc.id)
-    .window(TumblingEventTimeWindows.of(Time.minutes(5)))
+    .window(TumblingEventTimeWindows.of(Duration.ofMinutes(5)))
     .reduce((left, right) -> left + right);
 ```
 
-## Modifying Savepoints
+## 修改 Savepoint
 
-Besides creating a savepoint from scratch, you can base one off an existing savepoint such as when bootstrapping a single new operator for an existing job.
+除了从头开始创建 savepoint 之外，您还可以基于现有 savepoint 修改，例如为现有作业初始化一个新的算子。
 
 ```java
 SavepointWriter
-    .fromExistingSavepoint(oldPath, new HashMapStateBackend())
-    .withOperator("uid", transformation)
+    .fromExistingSavepoint(env, oldPath, new HashMapStateBackend())
+    .withOperator(OperatorIdentifier.forUid("uid"), transformation)
     .write(newPath);
 ```
+
+### 更改 UID (hashes)
+
+`SavepointWriter#changeOperatorIdentifier` 可以用来修改一个算子的 [UIDs]({{< ref "docs/concepts/glossary" >}}#uid) 或 [UID hash]({{< ref "docs/concepts/glossary" >}}#uid-hash)。
+
+如果一个 `UID` 没有被显式地设置(自动生成的并且是未知的)，那么你可以通过提供 `UID hash` (通过解析 logs 获得 `UID hash`) 来为算子赋予一个 `UID`:
+```java
+savepointWriter
+    .changeOperatorIdentifier(
+        OperatorIdentifier.forUidHash("2feb7f8bcc404c3ac8a981959780bd78"),
+        OperatorIdentifier.forUid("new-uid"))
+    ...
+```
+
+也支持用新的 `UID` 替换就旧的 `UID`：
+```java
+savepointWriter
+    .changeOperatorIdentifier(
+        OperatorIdentifier.forUid("old-uid"),
+        OperatorIdentifier.forUid("new-uid"))
+    ...
+```
+
+## Table API
+
+### Getting started
+
+Before you interrogate state using the Table API, make sure to review our [Flink SQL]({{< ref "docs/sql/reference/overview" >}}) guidelines.
+
+IMPORTANT NOTE: State Table API only supports keyed state.
+
+### Metadata
+
+The following SQL table function allows users to read the metadata of savepoints and checkpoints in the following way:
+```SQL
+LOAD MODULE state;
+SELECT * FROM savepoint_metadata('/root/dir/of/checkpoint-data/chk-1');
+```
+
+The new table function creates a table with the following fixed schema:
+
+| Key                                      | Data type       | Description                                                                                                                                                                                     |
+|------------------------------------------|-----------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| checkpoint-id                            | BIGINT NOT NULL | Checkpoint ID.                                                                                                                                                                                  |
+| operator-name                            | STRING          | Operator Name.                                                                                                                                                                                  |
+| operator-uid                             | STRING          | Operator UID.                                                                                                                                                                                   |
+| operator-uid-hash                        | STRING NOT NULL | Operator UID hash.                                                                                                                                                                              |
+| operator-parallelism                     | INT NOT NULL    | Parallelism of the operator.                                                                                                                                                                    |
+| operator-max-parallelism                 | INT NOT NULL    | Maximum parallelism of the operator.                                                                                                                                                            |
+| operator-subtask-state-count             | INT NOT NULL    | Number of operator subtask states. It represents the state partition count divided by the operator's parallelism and might be 0 if the state is not partitioned (for example broadcast source). |
+| operator-coordinator-state-size-in-bytes | BIGINT NOT NULL | The operator’s coordinator state size in bytes, or zero if no coordinator state.                                                                                                                |
+| operator-total-size-in-bytes             | BIGINT NOT NULL | Total operator state size in bytes.                                                                                                                                                             |
+
+### Keyed State
+
+[Keyed state]({{< ref "docs/dev/datastream/fault-tolerance/state" >}}#keyed-state), also known as partitioned state, is any state that is partitioned relative to a key.
+
+The SQL connector allows users to read arbitrary columns as ValueState and complex state types such as ListState, MapState.
+This means if an operator contains a stateful process function such as:
+```java
+eventStream
+  .keyBy(e -> (Integer)e.key)
+  .process(new StatefulFunction())
+  .uid("my-uid");
+
+...
+
+public class Account {
+    private Integer id;
+    public Double amount;
+
+    public Integer getId() {
+        return id;
+    }
+
+    public void setId(Integer id) {
+        this.id = id;
+    }
+}
+
+@org.apache.avro.specific.AvroGenerated
+public class AvroRecord ... {
+    // Generated record which contains at least the following field: long longData
+}
+
+public class StatefulFunction extends KeyedProcessFunction<Integer, Integer, Void> {
+  private ValueState<Integer> myValueState;
+  private ValueState<Account> myAccountValueState;
+  private ListState<Integer> myListState;
+  private MapState<Integer, Integer> myMapState;
+  private ValueState<AvroRecord> myAvroState;
+
+  @Override
+  public void open(OpenContext openContext) {
+    myValueState = getRuntimeContext().getState(new ValueStateDescriptor<>("MyValueState", Integer.class));
+    myAccountValueState = getRuntimeContext().getState(new ValueStateDescriptor<>("MyAccountValueState", Account.class));
+    myValueState = getRuntimeContext().getListState(new ListStateDescriptor<>("MyListState", Integer.class));
+    myMapState = getRuntimeContext().getMapState(new MapStateDescriptor<>("MyMapState", Integer.class, Integer.class));
+    myAvroState = getRuntimeContext().getMapState(new ValueStateDescriptor<>("MyAvroState", new AvroTypeInfo<>(AvroRecord.class)));
+  }
+  ...
+}
+```
+
+Then it can read by querying a table created using the following SQL statement:
+```SQL
+CREATE TABLE state_table (
+  k INTEGER,
+  MyValueState INTEGER,
+  MyAccountValueState ROW<id INTEGER, amount DOUBLE>,
+  MyListState ARRAY<INTEGER>,
+  MyMapState MAP<INTEGER, INTEGER>,
+  MyAvroState ROW<longData bigint>,
+  PRIMARY KEY (k) NOT ENFORCED
+) WITH (
+  'connector' = 'savepoint',
+  'state.backend.type' = 'rocksdb',
+  'state.path' = '/root/dir/of/checkpoint-data/chk-1',
+  'operator.uid' = 'my-uid'
+);
+```
+
+#### Filter Pushdown on the Key Column
+
+When a query filters on the key column (the column declared as `PRIMARY KEY`), the savepoint connector automatically pushes the predicate down into the savepoint scan.
+As with the DataStream `SavepointKeyFilter`, point and `IN` lookups prune whole key groups, while range predicates narrow the per-split key iteration, so only the relevant state is read.
+
+```SQL
+-- Point lookup: reads only the key group that contains key 42
+SELECT * FROM state_table WHERE k = 42;
+
+-- Point lookups on a finite set of keys, only key groups that contain 1, 2, or 3 are read
+SELECT * FROM state_table WHERE k IN (1, 2, 3);
+
+-- Range scan, reads all key groups but filters out irrelevant keys before state is read
+SELECT * FROM state_table WHERE k >= 10 AND k < 100;
+SELECT * FROM state_table WHERE k BETWEEN 10 AND 100;
+```
+
+The following predicates on the key column can be pushed down:
+
+* `=` and `IN` — resolve to an exact set of keys and enable key-group pruning.
+* `<`, `<=`, `>`, `>=`, and `BETWEEN` — resolve to a key range and enable key-level filtering within each split.
+* `AND` — pushed down when **all** of its operands are range predicates; the ranges are intersected into a single, tighter range. If any operand is an equality/IN predicate, the entire AND expression is not pushed down — neither split pruning nor key-level filtering applies.
+* `OR` — pushed down when **every** branch resolves to exact keys (the branches are unioned into one key set, which is equivalent to an `IN`). If any branch is a range predicate, the entire OR expression is not pushed down.
+
+### Connector options
+
+#### General options
+| Option             | Required | Default | Type                                   | Description                                                                                                                                                                                                                          |
+|--------------------|----------|---------|----------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| connector          | required | (none)  | String                                 | Specify what connector to use, here should be 'savepoint'.                                                                                                                                                                           |
+| state.backend.type | optional | (none)  | Enum Possible values: hashmap, rocksdb | Defines the state backend which must be used for state reading. This must match with the value which was defined in Flink job which created the savepoint or checkpoint. If not provided then it falls back to `state.backend.type` in flink configuration. |
+| state.path         | required | (none)  | String                                 | Defines the state path which must be used for state reading. All file system that are supported by Flink can be used here.                                                                                                           |
+| operator.uid       | optional | (none)  | String                                 | Defines the operator UID which must be used for state reading (can't be used together with `operator.uid.hash`). Either `operator.uid` or `operator.uid.hash` must be specified.                                                     |
+| operator.uid.hash  | optional | (none)  | String                                 | Defines the operator UID hash which must be used for state reading (can't be used together with `operator.uid`). Either `operator.uid` or `operator.uid.hash` must be specified.                                                     |
+
+#### Connector options for column ‘#’
+| Option                           | Required | Default | Type                                   | Description                                                                                                                                                                                                                                                                      |
+|----------------------------------|----------|---------|----------------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| fields.#.state-name              | optional | (none)  | String                                 | Overrides the state name which must be used for state reading. This can be useful when the state name contains characters which are not compliant with SQL column names.                                                                                                         |
+| fields.#.state-type              | optional | (none)  | Enum Possible values: list, map, value | Defines the state type which must be used for state reading, including value, list and map. When it's not provided then it tries to infer from the SQL type (ARRAY=list, MAP=map, all others=value).                                                                             |
+| fields.#.key-class               | optional | (none)  | String                                 | Defines the format class scheme for decoding map key data (for ex. java.lang.Long). Either key-class or key-type-factory can be specified. When none of them are provided then the format class scheme tries to infer from the SQL type (only primitive types supported).        |
+| fields.#.key-type-factory        | optional | (none)  | String                                 | Defines the type information factory for decoding map key data. Either key-class or key-type-factory can be specified. When none of them are provided then the format class scheme tries to infer from the SQL type (only primitive types supported).                            |
+| fields.#.value-class             | optional | (none)  | String                                 | Defines the format class scheme for decoding value data (for ex. java.lang.Long). Either value-class or value-info-factory can be specified. When none of them are provided then the format class scheme tries to infer from the SQL type (only primitive types supported).      |
+| fields.#.value-type-factory      | optional | (none)  | String                                 | Defines the type information factory for decoding value data. Either value-class or value-type-factory can be specified. When none of them are provided then the format class scheme tries to infer from the SQL type (only primitive types supported).                          |
+
+### Default Data Type Mapping
+
+The state SQL connector infers the data type for primitive types when `fields.#.value-class` and `fields.#.key-class`
+are not defined. The following table shows the `Flink SQL type` -> `Java type` default mapping. If the mapping is not calculated properly
+then it can be overridden with the two mentioned config parameters on a per-column basis.
+
+| Flink SQL type          | Java type                                                               |
+|-------------------------|-------------------------------------------------------------------------|
+| CHAR / VARCHAR / STRING | java.lang.String                                                        |
+| BOOLEAN                 | boolean                                                                 |
+| BINARY / VARBINARY      | byte[]                                                                  |
+| DECIMAL                 | org.apache.flink.table.data.DecimalData                                 |
+| TINYINT                 | byte                                                                    |
+| SMALLINT                | short                                                                   |
+| INTEGER                 | int                                                                     |
+| BIGINT                  | long                                                                    |
+| FLOAT                   | float                                                                   |
+| DOUBLE                  | double                                                                  |
+| DATE                    | int                                                                     |
+| INTERVAL_YEAR_MONTH     | long                                                                    |
+| INTERVAL_DAY_TIME       | long                                                                    |
+| ARRAY                   | java.util.List                                                          |
+| MAP                     | java.util.Map                                                           |
+| ROW                     | java.util.List\<org.apache.flink.table.types.logical.RowType.RowField\> |
+
+SHORTCUT: When a complex java class is defined in a column with STRING SQL type then the class instance
+`toString` method result will be the column value. This can be useful when a quick explanatory query is required.

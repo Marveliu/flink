@@ -18,85 +18,74 @@
 ################################################################################
 
 OUT_TYPE="${1:-local}" # other type: s3
-SINK_TO_TEST="${2:-"StreamingFileSink"}"
 
-S3_PREFIX=temp/test_file_sink-$(uuidgen)
-OUTPUT_PATH="$TEST_DATA_DIR/$S3_PREFIX"
-S3_OUTPUT_PATH="s3://$IT_CASE_S3_BUCKET/$S3_PREFIX"
 source "$(dirname "$0")"/common.sh
-source "$(dirname "$0")"/common_s3.sh
-
-# randomly set up openSSL with dynamically/statically linked libraries
-OPENSSL_LINKAGE=$(if (( RANDOM % 2 )) ; then echo "dynamic"; else echo "static"; fi)
-echo "Executing test with ${OPENSSL_LINKAGE} openSSL linkage (random selection between 'dynamic' and 'static')"
-
-s3_setup hadoop
-set_conf_ssl "mutual" "OPENSSL" "${OPENSSL_LINKAGE}"
-set_config_key "metrics.fetcher.update-interval" "2000"
-# this test relies on global failovers
-set_config_key "jobmanager.execution.failover-strategy" "full"
-
-mkdir -p $OUTPUT_PATH
-
-if [ "${OUT_TYPE}" == "local" ]; then
-  echo "Use local output"
-  JOB_OUTPUT_PATH=${OUTPUT_PATH}
-elif [ "${OUT_TYPE}" == "s3" ]; then
-  echo "Use s3 output"
-  JOB_OUTPUT_PATH=${S3_OUTPUT_PATH}
-  set_config_key "state.checkpoints.dir" "s3://$IT_CASE_S3_BUCKET/$S3_PREFIX-chk"
-  mkdir -p "$OUTPUT_PATH-chk"
-else
-  echo "Unknown output type: ${OUT_TYPE}"
-  exit 1
-fi
-
-# make sure we delete the file at the end
-function out_cleanup {
-  s3_delete_by_full_path_prefix "$S3_PREFIX"
-  s3_delete_by_full_path_prefix "${S3_PREFIX}-chk"
-  rollback_openssl_lib
-}
-if [ "${OUT_TYPE}" == "s3" ]; then
-  on_exit out_cleanup
-fi
-
-TEST_PROGRAM_JAR="${END_TO_END_DIR}/flink-file-sink-test/target/FileSinkProgram.jar"
 
 ###################################
 # Get all lines in part files and sort them numerically.
 #
 # Globals:
-#   OUTPUT_PATH
+#   LOCAL_JOB_OUTPUT_PATH
 # Arguments:
 #   None
 # Returns:
 #   sorted content of part files
 ###################################
 function get_complete_result {
-  if [ "${OUT_TYPE}" == "s3" ]; then
-    s3_get_by_full_path_and_filename_prefix "$OUTPUT_PATH" "$S3_PREFIX" "part-" true
-  fi
-  find "${OUTPUT_PATH}" -type f \( -iname "part-*" \) -exec cat {} + | sort -g
+  find "${LOCAL_JOB_OUTPUT_PATH}" -type f \( -iname "part-*" \) -exec cat {} + | sort -g
 }
 
 ###################################
 # Get total number of lines in part files.
 #
 # Globals:
-#   S3_PREFIX
+#   LOCAL_JOB_OUTPUT_PATH
 # Arguments:
 #   None
 # Returns:
 #   line number in part files
 ###################################
 function get_total_number_of_valid_lines {
-  if [ "${OUT_TYPE}" == "local" ]; then
-    get_complete_result | wc -l | tr -d '[:space:]'
-  elif [ "${OUT_TYPE}" == "s3" ]; then
-    s3_get_number_of_lines_by_prefix "${S3_PREFIX}" "part-"
-  fi
+  get_complete_result | wc -l | tr -d '[:space:]'
 }
+
+if [ "${OUT_TYPE}" == "local" ]; then
+  echo "[INFO] Test run in local environment: No S3 environment is loaded."
+elif [ "${OUT_TYPE}" == "s3" ]; then
+  source "$(dirname "$0")"/common_s3_seaweedfs.sh
+  s3_setup hadoop
+
+  # overwrites implementation for local runs
+  function get_complete_result {
+    # copies the data from S3 to the local LOCAL_JOB_OUTPUT_PATH
+    s3_get_by_full_path_and_filename_prefix "$LOCAL_JOB_OUTPUT_PATH" "$S3_DATA_PREFIX" true "part-"
+
+    # and prints the sorted output
+    find "${LOCAL_JOB_OUTPUT_PATH}" -type f \( -iname "part-*" \) -exec cat {} + | sort -g
+  }
+
+  # make sure we delete the data of the current OpenSSL linkage iteration; also registered as a
+  # safety net for whichever iteration is active if the script exits unexpectedly
+  function out_cleanup {
+    s3_delete_by_full_path_prefix "${S3_DATA_PREFIX}"
+    s3_delete_by_full_path_prefix "${S3_CHECKPOINT_PREFIX}"
+  }
+  on_exit out_cleanup
+else
+  echo "[ERROR] Unknown out type: ${OUT_TYPE}"
+  exit 1
+fi
+
+set_config_key "metrics.fetcher.update-interval" "2000"
+# this test relies on global failovers
+set_config_key "jobmanager.execution.failover-strategy" "full"
+
+TEST_PROGRAM_JAR="${END_TO_END_DIR}/flink-file-sink-test/target/FileSinkProgram.jar"
+
+# set_conf_ssl moves netty libraries into FLINK_DIR; rolled back explicitly between iterations,
+# and registered here as a safety net for the currently active iteration if the script exits
+# unexpectedly
+on_exit rollback_openssl_lib
 
 ###################################
 # Waits until a number of values have been written within a timeout.
@@ -144,8 +133,7 @@ function run_file_sink_test {
   "${FLINK_DIR}/bin/taskmanager.sh" start
 
   echo "Submitting job."
-  CLIENT_OUTPUT=$("$FLINK_DIR/bin/flink" run -d "${TEST_PROGRAM_JAR}" --outputPath "${JOB_OUTPUT_PATH}" \
-    --sinkToTest "${SINK_TO_TEST}")
+  CLIENT_OUTPUT=$("$FLINK_DIR/bin/flink" run -d "${TEST_PROGRAM_JAR}" --outputPath "${JOB_OUTPUT_PATH}")
   JOB_ID=$(echo "${CLIENT_OUTPUT}" | grep "Job has been submitted with JobID" | sed 's/.* //g')
 
   if [[ -z $JOB_ID ]]; then
@@ -185,8 +173,56 @@ function run_file_sink_test {
 
   get_complete_result > "${TEST_DATA_DIR}/complete_result"
 
-  check_result_hash "File Streaming Sink" "$TEST_DATA_DIR/complete_result" "6727342fdd3aae2129e61fc8f433fb6f"
+  check_result_hash "File Sink" "$TEST_DATA_DIR/complete_result" "6727342fdd3aae2129e61fc8f433fb6f"
 }
 
-# usual runtime is ~6 minutes
-run_test_with_timeout 900 run_file_sink_test
+###################################
+# Runs the file sink test once, with the given OpenSSL linkage.
+#
+# Globals:
+#   TEST_DATA_DIR, OUT_TYPE, IT_CASE_S3_BUCKET
+# Arguments:
+#   $1: OpenSSL linkage, 'dynamic' or 'static'
+# Returns:
+#   None
+###################################
+function run_file_sink_test_with_linkage {
+  local openssl_linkage=$1
+
+  echo "Executing test with ${openssl_linkage} openSSL linkage"
+
+  # LOCAL_JOB_OUTPUT_PATH is a local folder that can be used as a download folder for remote data
+  # the helper functions will access this folder
+  local random_prefix="temp/test_file_sink-${openssl_linkage}-$(uuidgen)"
+  LOCAL_JOB_OUTPUT_PATH="$TEST_DATA_DIR/${random_prefix}"
+  mkdir -p "${LOCAL_JOB_OUTPUT_PATH}"
+
+  # JOB_OUTPUT_PATH is the location where the job writes its data to
+  JOB_OUTPUT_PATH="${LOCAL_JOB_OUTPUT_PATH}"
+
+  if [ "${OUT_TYPE}" == "s3" ]; then
+    # overwrites JOB_OUTPUT_PATH to point to S3
+    S3_DATA_PREFIX="${random_prefix}"
+    S3_CHECKPOINT_PREFIX="${random_prefix}-chk"
+    JOB_OUTPUT_PATH="s3://$IT_CASE_S3_BUCKET/${S3_DATA_PREFIX}"
+    set_config_key "execution.checkpointing.dir" "s3://$IT_CASE_S3_BUCKET/${S3_CHECKPOINT_PREFIX}"
+  fi
+
+  set_conf_ssl "mutual" "OPENSSL" "${openssl_linkage}"
+
+  run_test_with_timeout 900 run_file_sink_test
+
+  stop_cluster
+  # set_conf_ssl moves netty libraries into FLINK_DIR which we want to rollback before the next
+  # linkage is set up
+  rollback_openssl_lib
+
+  if [ "${OUT_TYPE}" == "s3" ]; then
+    out_cleanup
+  fi
+}
+
+# usual runtime is ~6 minutes per linkage
+for openssl_linkage in dynamic static; do
+  run_file_sink_test_with_linkage "${openssl_linkage}"
+done

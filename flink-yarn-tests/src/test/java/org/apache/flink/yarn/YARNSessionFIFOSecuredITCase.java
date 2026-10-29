@@ -28,38 +28,47 @@ import org.apache.flink.test.util.TestingSecurityContext;
 import org.apache.flink.yarn.configuration.YarnConfigOptions;
 import org.apache.flink.yarn.util.TestHadoopModuleFactory;
 
-import org.apache.flink.shaded.guava30.com.google.common.collect.Lists;
+import org.apache.flink.shaded.guava33.com.google.common.collect.Lists;
 
+import org.apache.hadoop.yarn.api.records.ApplicationAccessType;
 import org.apache.hadoop.yarn.api.records.ApplicationId;
+import org.apache.hadoop.yarn.api.records.ContainerId;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.security.AMRMTokenIdentifier;
+import org.apache.hadoop.yarn.server.nodemanager.NodeManager;
+import org.apache.hadoop.yarn.server.nodemanager.containermanager.container.Container;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.ResourceScheduler;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.fifo.FifoScheduler;
-import org.hamcrest.Matchers;
-import org.junit.AfterClass;
 import org.junit.Assert;
-import org.junit.BeforeClass;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.Callable;
+import java.util.function.Function;
+import java.util.stream.Collectors;
+import java.util.stream.IntStream;
+import java.util.stream.Stream;
+
+import static org.assertj.core.api.AssertionsForClassTypes.assertThat;
 
 /**
  * An extension of the {@link YARNSessionFIFOITCase} that runs the tests in a secured YARN cluster.
  */
-public class YARNSessionFIFOSecuredITCase extends YARNSessionFIFOITCase {
+class YARNSessionFIFOSecuredITCase extends YARNSessionFIFOITCase {
 
-    protected static final Logger LOG = LoggerFactory.getLogger(YARNSessionFIFOSecuredITCase.class);
+    private static final Logger log = LoggerFactory.getLogger(YARNSessionFIFOSecuredITCase.class);
 
-    @BeforeClass
-    public static void setup() {
+    @BeforeAll
+    static void setup() {
 
-        LOG.info("starting secure cluster environment for testing");
+        log.info("starting secure cluster environment for testing");
 
         YARN_CONFIGURATION.setClass(
                 YarnConfiguration.RM_SCHEDULER, FifoScheduler.class, ResourceScheduler.class);
@@ -75,9 +84,9 @@ public class YARNSessionFIFOSecuredITCase extends YARNSessionFIFOITCase {
                 SecureTestEnvironment.getTestKeytab());
 
         Configuration flinkConfig = new Configuration();
-        flinkConfig.setString(
+        flinkConfig.set(
                 SecurityOptions.KERBEROS_LOGIN_KEYTAB, SecureTestEnvironment.getTestKeytab());
-        flinkConfig.setString(
+        flinkConfig.set(
                 SecurityOptions.KERBEROS_LOGIN_PRINCIPAL,
                 SecureTestEnvironment.getHadoopServicePrincipal());
 
@@ -100,20 +109,16 @@ public class YARNSessionFIFOSecuredITCase extends YARNSessionFIFOITCase {
             // This is needed to ensure that SecurityUtils are run within a ugi.doAs section
             // Since we already logged in here in @BeforeClass, even a no-op security context will
             // still work.
-            Assert.assertTrue(
-                    "HadoopSecurityContext must be installed",
-                    SecurityUtils.getInstalledContext() instanceof HadoopSecurityContext);
+            assertThat(SecurityUtils.getInstalledContext())
+                    .isInstanceOf(HadoopSecurityContext.class);
             SecurityUtils.getInstalledContext()
                     .runSecured(
-                            new Callable<Object>() {
-                                @Override
-                                public Integer call() {
-                                    startYARNSecureMode(
-                                            YARN_CONFIGURATION,
-                                            SecureTestEnvironment.getHadoopServicePrincipal(),
-                                            SecureTestEnvironment.getTestKeytab());
-                                    return null;
-                                }
+                            () -> {
+                                startYARNSecureMode(
+                                        YARN_CONFIGURATION,
+                                        SecureTestEnvironment.getHadoopServicePrincipal(),
+                                        SecureTestEnvironment.getTestKeytab());
+                                return null;
                             });
 
         } catch (Exception e) {
@@ -122,14 +127,14 @@ public class YARNSessionFIFOSecuredITCase extends YARNSessionFIFOITCase {
         }
     }
 
-    @AfterClass
-    public static void teardownSecureCluster() {
-        LOG.info("tearing down secure cluster environment");
+    @AfterAll
+    static void teardownSecureCluster() {
+        log.info("tearing down secure cluster environment");
         SecureTestEnvironment.cleanup();
     }
 
-    @Test(timeout = 60000) // timeout after a minute.
-    public void testDetachedModeSecureWithPreInstallKeytab() throws Exception {
+    @Test
+    void testDetachedModeSecureWithPreInstallKeytab() throws Exception {
         runTest(
                 () -> {
                     Map<String, String> securityProperties = new HashMap<>();
@@ -151,14 +156,15 @@ public class YARNSessionFIFOSecuredITCase extends YARNSessionFIFOITCase {
                                 SecurityOptions.KERBEROS_LOGIN_PRINCIPAL.key(),
                                 SecureTestEnvironment.getHadoopServicePrincipal());
                     }
-                    final ApplicationId applicationId = runDetachedModeTest(securityProperties);
-                    verifyResultContainsKerberosKeytab(applicationId);
+                    final ApplicationId applicationId =
+                            runDetachedModeTest(securityProperties, VIEW_ACLS, MODIFY_ACLS);
+                    verifyResultContainsKerberosKeytab(applicationId, VIEW_ACLS, MODIFY_ACLS);
                 });
     }
 
-    @Test(timeout = 60000) // timeout after a minute.
+    @Test
     @Override
-    public void testDetachedMode() throws Exception {
+    void testDetachedMode() throws Exception {
         runTest(
                 () -> {
                     Map<String, String> securityProperties = new HashMap<>();
@@ -172,23 +178,29 @@ public class YARNSessionFIFOSecuredITCase extends YARNSessionFIFOITCase {
                                 SecurityOptions.KERBEROS_LOGIN_PRINCIPAL.key(),
                                 SecureTestEnvironment.getHadoopServicePrincipal());
                     }
-                    final ApplicationId applicationId = runDetachedModeTest(securityProperties);
-                    verifyResultContainsKerberosKeytab(applicationId);
+                    final ApplicationId applicationId =
+                            runDetachedModeTest(securityProperties, VIEW_ACLS, MODIFY_ACLS);
+                    verifyResultContainsKerberosKeytab(applicationId, VIEW_ACLS, MODIFY_ACLS);
+                    final ApplicationId applicationIdWithWildcard =
+                            runDetachedModeTest(
+                                    securityProperties,
+                                    VIEW_ACLS_WITH_WILDCARD,
+                                    MODIFY_ACLS_WITH_WILDCARD);
+                    verifyResultContainsKerberosKeytab(
+                            applicationIdWithWildcard, WILDCARD, WILDCARD);
                 });
     }
 
-    private static void verifyResultContainsKerberosKeytab(ApplicationId applicationId)
-            throws Exception {
+    private static void verifyResultContainsKerberosKeytab(
+            ApplicationId applicationId, String viewAcls, String modifyAcls) throws Exception {
         final String[] mustHave = {"Login successful for user", "using keytab file"};
-        final boolean jobManagerRunsWithKerberos =
-                verifyStringsInNamedLogFiles(mustHave, applicationId, "jobmanager.log");
-        final boolean taskManagerRunsWithKerberos =
-                verifyStringsInNamedLogFiles(mustHave, applicationId, "taskmanager.log");
-
-        Assert.assertThat(
-                "The JobManager and the TaskManager should both run with Kerberos.",
-                jobManagerRunsWithKerberos && taskManagerRunsWithKerberos,
-                Matchers.is(true));
+        for (final String logFile : new String[] {"jobmanager.log", "taskmanager.log"}) {
+            assertThat(verifyStringsInNamedLogFiles(mustHave, applicationId, logFile))
+                    .as(
+                            "Kerberos keytab login %s in %s or its rolled files for %s",
+                            Arrays.toString(mustHave), logFile, applicationId)
+                    .isTrue();
+        }
 
         final List<String> amRMTokens =
                 Lists.newArrayList(AMRMTokenIdentifier.KIND_NAME.toString());
@@ -199,14 +211,16 @@ public class YARNSessionFIFOSecuredITCase extends YARNSessionFIFOITCase {
         final boolean taskmanagerWithAmRmToken =
                 verifyTokenKindInContainerCredentials(amRMTokens, taskmanagerContainerId);
 
-        Assert.assertThat(
-                "The JobManager should have AMRMToken.",
-                jobmanagerWithAmRmToken,
-                Matchers.is(true));
-        Assert.assertThat(
-                "The TaskManager should not have AMRMToken.",
-                taskmanagerWithAmRmToken,
-                Matchers.is(false));
+        assertThat(jobmanagerWithAmRmToken).isTrue();
+        assertThat(taskmanagerWithAmRmToken).isFalse();
+
+        getRunningContainersAcls()
+                .forEach(
+                        (k, acls) -> {
+                            Assert.assertEquals(viewAcls, acls.get(ApplicationAccessType.VIEW_APP));
+                            Assert.assertEquals(
+                                    modifyAcls, acls.get(ApplicationAccessType.MODIFY_APP));
+                        });
     }
 
     /* For secure cluster testing, it is enough to run only one test and override below test methods
@@ -214,4 +228,51 @@ public class YARNSessionFIFOSecuredITCase extends YARNSessionFIFOITCase {
      */
     @Override
     public void testQueryCluster() {}
+
+    /**
+     * Returns a map of the application ACLs for all running containers in the YARN cluster. The map
+     * is keyed by container ID, and the values are maps of application access types to
+     * corresponding ACL strings.
+     *
+     * @return a map of the application ACLs for all running containers in the YARN cluster
+     */
+    private static Map<ContainerId, Map<ApplicationAccessType, String>> getRunningContainersAcls() {
+        return nodeManagersStream()
+                .flatMap(toContainersStream())
+                .collect(
+                        Collectors.toMap(
+                                Map.Entry::getKey, entry -> getApplicationACLs(entry.getValue())));
+    }
+
+    /**
+     * Returns a stream of NodeManager instances in the YARN cluster.
+     *
+     * @return a stream of NodeManager instances in the YARN cluster
+     */
+    private static Stream<NodeManager> nodeManagersStream() {
+        return IntStream.range(0, NUM_NODEMANAGERS).mapToObj(i -> yarnCluster.getNodeManager(i));
+    }
+
+    /**
+     * Returns a function that maps a NodeManager to a stream of container ID-container pairs. The
+     * resulting stream contains all containers currently running on the NodeManager.
+     *
+     * @return a function that maps a NodeManager to a stream of container ID-container pairs
+     */
+    private static Function<NodeManager, Stream<Map.Entry<ContainerId, Container>>>
+            toContainersStream() {
+        return nodeManager -> nodeManager.getNMContext().getContainers().entrySet().stream();
+    }
+
+    /**
+     * Returns a map of the application ACLs for the given container. The map is keyed by
+     * application access type, and the values are the corresponding ACL strings.
+     *
+     * @param container the container to retrieve the ACLs for
+     * @return a map of the application ACLs for the given container
+     */
+    private static Map<ApplicationAccessType, String> getApplicationACLs(
+            final Container container) {
+        return container.getLaunchContext().getApplicationACLs();
+    }
 }

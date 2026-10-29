@@ -34,21 +34,30 @@ The [predefined data sources]({{< ref "docs/dev/datastream/overview" >}}#data-so
 ingesting data from collections and iterators.
 The [predefined data sinks]({{< ref "docs/dev/datastream/overview" >}}#data-sinks) support writing to files, to stdout and stderr, and to sockets.
 
-## Bundled Connectors
+## Flink Project Connectors
 
-Connectors provide code for interfacing with various third-party systems. Currently these systems are supported:
+Connectors provide code for interfacing with various third-party systems. 
+Currently these systems are supported as part of the Apache Flink project:
 
- * [Apache Kafka]({{< ref "docs/connectors/datastream/kafka" >}}) (source/sink)
- * [Apache Cassandra]({{< ref "docs/connectors/datastream/cassandra" >}}) (sink)
- * [Amazon Kinesis Streams]({{< ref "docs/connectors/datastream/kinesis" >}}) (source/sink)
+ * [Cassandra]({{< ref "docs/connectors/datastream/cassandra" >}}) (source/sink)
+ * [DataGen]({{< ref "docs/connectors/datastream/datagen" >}}) (source)
+ * [Dynamic Kafka]({{< ref "docs/connectors/datastream/dynamic-kafka" >}}) (source)
+ * [DynamoDB]({{< ref "docs/connectors/datastream/dynamodb" >}}) (sink)
  * [Elasticsearch]({{< ref "docs/connectors/datastream/elasticsearch" >}}) (sink)
- * [FileSystem]({{< ref "docs/connectors/datastream/filesystem" >}}) (sink)
- * [RabbitMQ]({{< ref "docs/connectors/datastream/rabbitmq" >}}) (source/sink)
- * [Google PubSub]({{< ref "docs/connectors/datastream/pubsub" >}}) (source/sink)
+ * [FileSystem]({{< ref "docs/connectors/datastream/filesystem" >}}) (source/sink)
+ * [Firehose]({{< ref "docs/connectors/datastream/firehose" >}}) (sink)
+ * [Google Cloud PubSub]({{< ref "docs/connectors/datastream/pubsub" >}}) (source/sink)
+ * [HTTP]({{< ref "docs/connectors/datastream/http" >}}) (sink)
  * [Hybrid Source]({{< ref "docs/connectors/datastream/hybridsource" >}}) (source)
- * [Apache NiFi]({{< ref "docs/connectors/datastream/nifi" >}}) (source/sink)
- * [Apache Pulsar]({{< ref "docs/connectors/datastream/pulsar" >}}) (source)
- * [JDBC]({{< ref "docs/connectors/datastream/jdbc" >}}) (sink)
+ * [JDBC]({{< ref "docs/connectors/datastream/jdbc" >}}) (source/sink)
+ * [Kafka]({{< ref "docs/connectors/datastream/kafka" >}}) (source/sink)
+ * [Kinesis]({{< ref "docs/connectors/datastream/kinesis" >}}) (source/sink)
+ * [MongoDB]({{< ref "docs/connectors/datastream/mongodb" >}}) (source/sink)
+ * [Opensearch]({{< ref "docs/connectors/datastream/opensearch" >}}) (sink)
+ * [Prometheus]({{< ref "docs/connectors/datastream/prometheus" >}}) (sink)
+ * [Pulsar]({{< ref "docs/connectors/datastream/pulsar" >}}) (source/sink)
+ * [RabbitMQ]({{< ref "docs/connectors/datastream/rabbitmq" >}}) (source/sink)
+ * [SQS]({{< ref "docs/connectors/datastream/sqs" >}}) (sink)
 
 Keep in mind that to use one of these connectors in an application, additional third party
 components are usually required, e.g. servers for the data stores or message queues.
@@ -56,17 +65,37 @@ Note also that while the streaming connectors listed in this section are part of
 Flink project and are included in source releases, they are not included in the binary distributions. 
 Further instructions can be found in the corresponding subsections.
 
-Filesystem source formats are gradually replaced with new Flink Source API starting with Flink 1.14.0.
+{{< hint info >}}
+Because the flink-connector-base dependency has been bundled in flink-dist,
+these externalized connectors start to stop bundling the flink-connector-base dependency. See more
+in <a href="https://issues.apache.org/jira/browse/FLINK-30400">FLINK-30400</a>.
+If you need to run examples locally, make sure that the flink-connector-base dependency is
+provided and can be found in your own classpath.
+{{< /hint >}}
 
-## Connectors in Apache Bahir
+## Flink CDC
 
-Additional streaming connectors for Flink are being released through [Apache Bahir](https://bahir.apache.org/), including:
+[Flink CDC](https://nightlies.apache.org/flink/flink-cdc-docs-stable/) is an Apache Flink sub-project with its own releases. Its source connectors read
+changes directly from databases such as MySQL, PostgreSQL, Oracle, SQL Server, MongoDB and Db2. See
+the [Flink CDC sources](https://nightlies.apache.org/flink/flink-cdc-docs-stable/docs/connectors/flink-sources/overview/) for the supported databases and Flink versions.
 
- * [Apache ActiveMQ](https://bahir.apache.org/docs/flink/current/flink-streaming-activemq/) (source/sink)
- * [Apache Flume](https://bahir.apache.org/docs/flink/current/flink-streaming-flume/) (sink)
- * [Redis](https://bahir.apache.org/docs/flink/current/flink-streaming-redis/) (sink)
- * [Akka](https://bahir.apache.org/docs/flink/current/flink-streaming-akka/) (sink)
- * [Netty](https://bahir.apache.org/docs/flink/current/flink-streaming-netty/) (source)
+## Fault Tolerance Guarantees
+
+Flink recovers from failures by restarting from the last [checkpoint]({{< ref "docs/dev/datastream/fault-tolerance/checkpointing" >}}). Checkpointing is
+disabled by default. For exactly-once results, the source must be able to rewind to the position
+stored in the checkpoint, and the sink must take part in checkpointing, either by committing its
+writes transactionally or by writing idempotently. See [Stateful Stream Processing]({{< ref "docs/concepts/stateful-stream-processing" >}}#checkpointing) for how checkpoints work.
+
+Sinks built on the [Sink API]({{< ref "docs/internals/sinks" >}}) that support more than one
+guarantee take a {{< javadoc file="org/apache/flink/connector/base/DeliveryGuarantee.html" name="DeliveryGuarantee" >}}
+(`NONE`, `AT_LEAST_ONCE` or `EXACTLY_ONCE`) in their builder, for example the
+[Kafka sink]({{< ref "docs/connectors/datastream/kafka" >}}). Each connector's page documents the
+guarantees it provides.
+
+## Integrations Maintained by Other Projects
+
+Some projects maintain their own Flink integration, such as Apache Iceberg and Apache Paimon. See
+[Integrations Maintained by Other Projects]({{< ref "docs/connectors/other-projects/overview" >}}).
 
 ## Other Ways to Connect to Flink
 
@@ -77,15 +106,6 @@ One common pattern is to query an external database or web service in a `Map` or
 in order to enrich the primary datastream.
 Flink offers an API for [Asynchronous I/O]({{< ref "docs/dev/datastream/operators/asyncio" >}})
 to make it easier to do this kind of enrichment efficiently and robustly.
-
-### Queryable State
-
-When a Flink application pushes a lot of data to an external data store, this
-can become an I/O bottleneck.
-If the data involved has many fewer reads than writes, a better approach can be
-for an external application to pull from Flink the data it needs.
-The [Queryable State]({{< ref "docs/dev/datastream/fault-tolerance/queryable_state" >}}) interface
-enables this by allowing the state being managed by Flink to be queried on demand.
 
 {{< top >}}
 

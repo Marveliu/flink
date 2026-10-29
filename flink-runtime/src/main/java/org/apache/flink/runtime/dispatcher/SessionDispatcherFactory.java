@@ -18,10 +18,12 @@
 
 package org.apache.flink.runtime.dispatcher;
 
+import org.apache.flink.runtime.application.AbstractApplication;
 import org.apache.flink.runtime.dispatcher.cleanup.CheckpointResourcesCleanupRunnerFactory;
-import org.apache.flink.runtime.jobgraph.JobGraph;
+import org.apache.flink.runtime.highavailability.ApplicationResult;
 import org.apache.flink.runtime.jobmaster.JobResult;
 import org.apache.flink.runtime.rpc.RpcService;
+import org.apache.flink.streaming.api.graph.ExecutionPlan;
 
 import java.util.Collection;
 
@@ -33,11 +35,13 @@ public enum SessionDispatcherFactory implements DispatcherFactory {
     public StandaloneDispatcher createDispatcher(
             RpcService rpcService,
             DispatcherId fencingToken,
-            Collection<JobGraph> recoveredJobs,
+            Collection<ExecutionPlan> recoveredJobs,
             Collection<JobResult> recoveredDirtyJobResults,
+            Collection<AbstractApplication> recoveredApplications,
+            Collection<ApplicationResult> recoveredDirtyApplicationResults,
             DispatcherBootstrapFactory dispatcherBootstrapFactory,
-            PartialDispatcherServicesWithJobPersistenceComponents
-                    partialDispatcherServicesWithJobPersistenceComponents)
+            PartialDispatcherServicesWithPersistenceComponents
+                    partialDispatcherServicesWithPersistenceComponents)
             throws Exception {
         // create the default dispatcher
         return new StandaloneDispatcher(
@@ -45,9 +49,11 @@ public enum SessionDispatcherFactory implements DispatcherFactory {
                 fencingToken,
                 recoveredJobs,
                 recoveredDirtyJobResults,
+                recoveredApplications,
+                recoveredDirtyApplicationResults,
                 dispatcherBootstrapFactory,
                 DispatcherServices.from(
-                        partialDispatcherServicesWithJobPersistenceComponents,
+                        partialDispatcherServicesWithPersistenceComponents,
                         JobMasterServiceLeadershipRunnerFactory.INSTANCE,
                         CheckpointResourcesCleanupRunnerFactory.INSTANCE));
     }

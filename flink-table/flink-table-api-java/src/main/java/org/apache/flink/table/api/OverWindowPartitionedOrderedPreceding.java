@@ -19,11 +19,13 @@
 package org.apache.flink.table.api;
 
 import org.apache.flink.annotation.PublicEvolving;
-import org.apache.flink.table.delegation.ExpressionParser;
 import org.apache.flink.table.expressions.Expression;
 
+import javax.annotation.Nullable;
+
 import java.util.List;
-import java.util.Optional;
+
+import static org.apache.flink.table.expressions.ApiExpressionUtils.unresolvedRef;
 
 /** Partially defined over window with (optional) partitioning, order, and preceding. */
 @PublicEvolving
@@ -31,8 +33,8 @@ public final class OverWindowPartitionedOrderedPreceding {
 
     private final List<Expression> partitionBy;
     private final Expression orderBy;
-    private final Expression preceding;
-    private Optional<Expression> optionalFollowing = Optional.empty();
+    private final @Nullable Expression preceding;
+    private @Nullable Expression optionalFollowing = null;
 
     OverWindowPartitionedOrderedPreceding(
             List<Expression> partitionBy, Expression orderBy, Expression preceding) {
@@ -48,7 +50,7 @@ public final class OverWindowPartitionedOrderedPreceding {
      * @return the fully defined over window
      */
     public OverWindow as(String alias) {
-        return as(ExpressionParser.INSTANCE.parseExpression(alias));
+        return as(unresolvedRef(alias));
     }
 
     /**
@@ -66,21 +68,9 @@ public final class OverWindowPartitionedOrderedPreceding {
      *
      * @param following following offset that relative to the current row.
      * @return an over window with defined following
-     * @deprecated use {@link #following(Expression)}
-     */
-    @Deprecated
-    public OverWindowPartitionedOrderedPreceding following(String following) {
-        return this.following(ExpressionParser.INSTANCE.parseExpression(following));
-    }
-
-    /**
-     * Set the following offset (based on time or row-count intervals) for over window.
-     *
-     * @param following following offset that relative to the current row.
-     * @return an over window with defined following
      */
     public OverWindowPartitionedOrderedPreceding following(Expression following) {
-        optionalFollowing = Optional.of(following);
+        optionalFollowing = following;
         return this;
     }
 }

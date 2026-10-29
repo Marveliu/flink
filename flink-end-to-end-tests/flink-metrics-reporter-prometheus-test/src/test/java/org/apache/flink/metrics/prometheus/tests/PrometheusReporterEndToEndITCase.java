@@ -18,35 +18,34 @@
 
 package org.apache.flink.metrics.prometheus.tests;
 
-import org.apache.flink.configuration.ConfigConstants;
 import org.apache.flink.configuration.Configuration;
-import org.apache.flink.metrics.prometheus.PrometheusReporter;
+import org.apache.flink.configuration.MetricOptions;
 import org.apache.flink.metrics.prometheus.PrometheusReporterFactory;
 import org.apache.flink.tests.util.AutoClosableProcess;
 import org.apache.flink.tests.util.CommandLineWrapper;
-import org.apache.flink.tests.util.cache.DownloadCache;
+import org.apache.flink.tests.util.cache.DownloadCacheExtension;
 import org.apache.flink.tests.util.flink.ClusterController;
-import org.apache.flink.tests.util.flink.FlinkResource;
+import org.apache.flink.tests.util.flink.FlinkResourceExtension;
 import org.apache.flink.tests.util.flink.FlinkResourceSetup;
 import org.apache.flink.tests.util.flink.JarLocation;
 import org.apache.flink.tests.util.flink.LocalStandaloneFlinkResourceFactory;
+import org.apache.flink.testutils.junit.extensions.parameterized.ParameterizedTestExtension;
+import org.apache.flink.testutils.junit.extensions.parameterized.Parameters;
 import org.apache.flink.util.ExceptionUtils;
 import org.apache.flink.util.OperatingSystem;
 import org.apache.flink.util.ProcessorArchitecture;
-import org.apache.flink.util.TestLogger;
+import org.apache.flink.util.TestLoggerExtension;
 
 import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.databind.ObjectMapper;
 
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
 import okhttp3.Response;
-import org.junit.Assume;
-import org.junit.BeforeClass;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.TemporaryFolder;
-import org.junit.runner.RunWith;
-import org.junit.runners.Parameterized;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.TestTemplate;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.api.extension.RegisterExtension;
+import org.junit.jupiter.api.io.TempDir;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -59,28 +58,31 @@ import java.util.function.Consumer;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
-import static org.apache.flink.metrics.prometheus.tests.PrometheusReporterEndToEndITCase.TestParams.InstantiationType.FACTORY;
-import static org.apache.flink.metrics.prometheus.tests.PrometheusReporterEndToEndITCase.TestParams.InstantiationType.REFLECTION;
 import static org.apache.flink.tests.util.AutoClosableProcess.runBlocking;
 import static org.apache.flink.tests.util.AutoClosableProcess.runNonBlocking;
+import static org.assertj.core.api.Assumptions.assumeThat;
 
 /** End-to-end test for the PrometheusReporter. */
-@RunWith(Parameterized.class)
-public class PrometheusReporterEndToEndITCase extends TestLogger {
+@ExtendWith({ParameterizedTestExtension.class, TestLoggerExtension.class})
+class PrometheusReporterEndToEndITCase {
 
     private static final Logger LOG =
             LoggerFactory.getLogger(PrometheusReporterEndToEndITCase.class);
 
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
-    private static final String PROMETHEUS_VERSION = "2.4.3";
-    private static final String PROMETHEUS_FILE_NAME;
+    private static final String PROMETHEUS_VERSION = "3.11.2";
     private static final String PROMETHEUS_JAR_PREFIX = "flink-metrics-prometheus";
 
-    static {
-        final String base = "prometheus-" + PROMETHEUS_VERSION + '.';
-        final String os;
-        final String platform;
+    private static String prometheusFileName;
+
+    private static final Pattern LOG_REPORTER_PORT_PATTERN =
+            Pattern.compile(".*Started PrometheusReporter HTTP server on port ([0-9]+).*");
+
+    private static String getPrometheusFileName() {
+        String base = "prometheus-" + PROMETHEUS_VERSION + '.';
+        String os;
+        String platform;
         switch (OperatingSystem.getCurrentOperatingSystem()) {
             case MAC_OS:
                 os = "darwin";
@@ -110,19 +112,17 @@ public class PrometheusReporterEndToEndITCase extends TestLogger {
                 break;
         }
 
-        PROMETHEUS_FILE_NAME = base + os + "-" + platform;
+        return String.format("%s%s-%s", base, os, platform);
     }
 
-    private static final Pattern LOG_REPORTER_PORT_PATTERN =
-            Pattern.compile(".*Started PrometheusReporter HTTP server on port ([0-9]+).*");
-
-    @BeforeClass
-    public static void checkOS() {
-        Assume.assumeFalse("This test does not run on Windows.", OperatingSystem.isWindows());
+    @BeforeAll
+    static void beforeAll() {
+        assumeThat(OperatingSystem.isWindows()).as("This test does not run on Windows.").isFalse();
+        prometheusFileName = getPrometheusFileName();
     }
 
-    @Parameterized.Parameters(name = "{index}: {0}")
-    public static Collection<TestParams> testParameters() {
+    @Parameters(name = "{0}")
+    static Collection<TestParams> testParameters() {
         return Arrays.asList(
                 TestParams.from(
                         "Jar in 'lib'",
@@ -130,84 +130,58 @@ public class PrometheusReporterEndToEndITCase extends TestLogger {
                                 builder.moveJar(
                                         PROMETHEUS_JAR_PREFIX,
                                         JarLocation.PLUGINS,
-                                        JarLocation.LIB),
-                        REFLECTION),
-                TestParams.from(
-                        "Jar in 'lib'",
-                        builder ->
-                                builder.moveJar(
-                                        PROMETHEUS_JAR_PREFIX,
-                                        JarLocation.PLUGINS,
-                                        JarLocation.LIB),
-                        FACTORY),
-                TestParams.from("Jar in 'plugins'", builder -> {}, REFLECTION),
-                TestParams.from("Jar in 'plugins'", builder -> {}, FACTORY),
+                                        JarLocation.LIB)),
+                TestParams.from("Jar in 'plugins'", builder -> {}),
                 TestParams.from(
                         "Jar in 'lib' and 'plugins'",
                         builder -> {
                             builder.copyJar(
                                     PROMETHEUS_JAR_PREFIX, JarLocation.PLUGINS, JarLocation.LIB);
-                        },
-                        REFLECTION),
-                TestParams.from(
-                        "Jar in 'lib' and 'plugins'",
-                        builder -> {
-                            builder.copyJar(
-                                    PROMETHEUS_JAR_PREFIX, JarLocation.PLUGINS, JarLocation.LIB);
-                        },
-                        FACTORY));
+                        }));
     }
 
-    @Rule public final FlinkResource dist;
+    @RegisterExtension private final FlinkResourceExtension dist;
 
-    public PrometheusReporterEndToEndITCase(TestParams params) {
+    PrometheusReporterEndToEndITCase(TestParams params) {
         final FlinkResourceSetup.FlinkResourceSetupBuilder builder = FlinkResourceSetup.builder();
         params.getBuilderSetup().accept(builder);
-        builder.addConfiguration(getFlinkConfig(params.getInstantiationType()));
-        dist = new LocalStandaloneFlinkResourceFactory().create(builder.build());
+        builder.addConfiguration(getFlinkConfig());
+        dist =
+                new FlinkResourceExtension(
+                        new LocalStandaloneFlinkResourceFactory().create(builder.build()));
     }
 
-    @Rule public final TemporaryFolder tmp = new TemporaryFolder();
+    @TempDir private Path tmp;
 
-    @Rule public final DownloadCache downloadCache = DownloadCache.get();
+    @RegisterExtension
+    private final DownloadCacheExtension downloadCacheExtension = new DownloadCacheExtension();
 
-    private static Configuration getFlinkConfig(TestParams.InstantiationType instantiationType) {
+    private static Configuration getFlinkConfig() {
         final Configuration config = new Configuration();
 
-        switch (instantiationType) {
-            case FACTORY:
-                config.setString(
-                        ConfigConstants.METRICS_REPORTER_PREFIX
-                                + "prom."
-                                + ConfigConstants.METRICS_REPORTER_FACTORY_CLASS_SUFFIX,
-                        PrometheusReporterFactory.class.getName());
-                break;
-            case REFLECTION:
-                config.setString(
-                        ConfigConstants.METRICS_REPORTER_PREFIX
-                                + "prom."
-                                + ConfigConstants.METRICS_REPORTER_CLASS_SUFFIX,
-                        PrometheusReporter.class.getCanonicalName());
-        }
+        MetricOptions.forReporter(config, "prom")
+                .set(
+                        MetricOptions.REPORTER_FACTORY_CLASS,
+                        PrometheusReporterFactory.class.getName())
+                .setString("port", "9000-9100");
 
-        config.setString(ConfigConstants.METRICS_REPORTER_PREFIX + "prom.port", "9000-9100");
         return config;
     }
 
-    @Test
-    public void testReporter() throws Exception {
-        final Path tmpPrometheusDir = tmp.newFolder().toPath().resolve("prometheus");
-        final Path prometheusBinDir = tmpPrometheusDir.resolve(PROMETHEUS_FILE_NAME);
+    @TestTemplate
+    void testReporter() throws Exception {
+        final Path tmpPrometheusDir = tmp.resolve("prometheus");
+        final Path prometheusBinDir = tmpPrometheusDir.resolve(prometheusFileName);
         final Path prometheusConfig = prometheusBinDir.resolve("prometheus.yml");
         final Path prometheusBinary = prometheusBinDir.resolve("prometheus");
         Files.createDirectory(tmpPrometheusDir);
 
         final Path prometheusArchive =
-                downloadCache.getOrDownload(
+                downloadCacheExtension.getOrDownload(
                         "https://github.com/prometheus/prometheus/releases/download/v"
                                 + PROMETHEUS_VERSION
                                 + '/'
-                                + PROMETHEUS_FILE_NAME
+                                + prometheusFileName
                                 + ".tar.gz",
                         tmpPrometheusDir);
 
@@ -225,10 +199,11 @@ public class PrometheusReporterEndToEndITCase extends TestLogger {
                         .inPlace()
                         .build());
 
-        try (ClusterController ignored = dist.startCluster(1)) {
+        try (ClusterController ignored = dist.getFlinkResource().startCluster(1)) {
 
             final List<Integer> ports =
-                    dist.searchAllLogs(LOG_REPORTER_PORT_PATTERN, matcher -> matcher.group(1))
+                    dist.getFlinkResource()
+                            .searchAllLogs(LOG_REPORTER_PORT_PATTERN, matcher -> matcher.group(1))
                             .map(Integer::valueOf)
                             .collect(Collectors.toList());
 
@@ -257,7 +232,7 @@ public class PrometheusReporterEndToEndITCase extends TestLogger {
 
                 checkMetricAvailability(client, "flink_jobmanager_numRegisteredTaskManagers");
                 checkMetricAvailability(
-                        client, "flink_taskmanager_Status_Network_TotalMemorySegments");
+                        client, "flink_taskmanager_Status_Shuffle_Netty_TotalMemorySegments");
             }
         }
     }
@@ -320,45 +295,30 @@ public class PrometheusReporterEndToEndITCase extends TestLogger {
                 "Could not retrieve metric " + metric + " from Prometheus.", reportedException);
     }
 
-    static class TestParams {
+    private static class TestParams {
         private final String jarLocationDescription;
         private final Consumer<FlinkResourceSetup.FlinkResourceSetupBuilder> builderSetup;
-        private final InstantiationType instantiationType;
 
         private TestParams(
                 String jarLocationDescription,
-                Consumer<FlinkResourceSetup.FlinkResourceSetupBuilder> builderSetup,
-                InstantiationType instantiationType) {
+                Consumer<FlinkResourceSetup.FlinkResourceSetupBuilder> builderSetup) {
             this.jarLocationDescription = jarLocationDescription;
             this.builderSetup = builderSetup;
-            this.instantiationType = instantiationType;
         }
 
-        public static TestParams from(
+        private static TestParams from(
                 String jarLocationDesription,
-                Consumer<FlinkResourceSetup.FlinkResourceSetupBuilder> builderSetup,
-                InstantiationType instantiationType) {
-            return new TestParams(jarLocationDesription, builderSetup, instantiationType);
+                Consumer<FlinkResourceSetup.FlinkResourceSetupBuilder> builderSetup) {
+            return new TestParams(jarLocationDesription, builderSetup);
         }
 
-        public Consumer<FlinkResourceSetup.FlinkResourceSetupBuilder> getBuilderSetup() {
+        private Consumer<FlinkResourceSetup.FlinkResourceSetupBuilder> getBuilderSetup() {
             return builderSetup;
-        }
-
-        public InstantiationType getInstantiationType() {
-            return instantiationType;
         }
 
         @Override
         public String toString() {
-            return jarLocationDescription
-                    + ", instantiated via "
-                    + instantiationType.name().toLowerCase();
-        }
-
-        public enum InstantiationType {
-            REFLECTION,
-            FACTORY
+            return jarLocationDescription;
         }
     }
 }

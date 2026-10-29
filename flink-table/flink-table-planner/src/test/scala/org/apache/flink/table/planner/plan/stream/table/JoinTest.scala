@@ -15,20 +15,16 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.planner.plan.stream.table
 
-import org.apache.flink.api.scala._
 import org.apache.flink.table.api._
 import org.apache.flink.table.planner.utils.TableTestBase
 
-import org.junit.Test
+import org.junit.jupiter.api.Test
 
 import java.sql.Timestamp
 
-/**
-  * Tests for both windowed and non-windowed joins.
-  */
+/** Tests for both windowed and non-windowed joins. */
 class JoinTest extends TableTestBase {
 
   @Test
@@ -36,11 +32,12 @@ class JoinTest extends TableTestBase {
     val util = streamTestUtil()
     val left = util.addDataStream[(Long, Int, String)]("T1", 'a, 'b, 'c)
 
-    val right = util.addDataStream[(Long, Int, String)]("T2",'d, 'e, 'f)
+    val right = util.addDataStream[(Long, Int, String)]("T2", 'd, 'e, 'f)
 
-    val resultTable = left.join(right)
+    val resultTable = left
+      .join(right)
       .where(('a === 1 && 'd === 1) || ('b === 2 && 'd === 5))
-      .select('a,'b,'d,'e)
+      .select('a, 'b, 'd, 'e)
 
     util.verifyExecPlan(resultTable)
   }
@@ -50,11 +47,12 @@ class JoinTest extends TableTestBase {
     val util = streamTestUtil()
     val left = util.addDataStream[(Long, Int, String)]("T1", 'a, 'b, 'c)
 
-    val right = util.addDataStream[(Long, Int, String)]("T2",'d, 'e, 'f)
+    val right = util.addDataStream[(Long, Int, String)]("T2", 'd, 'e, 'f)
 
-    val resultTable = left.join(right)
+    val resultTable = left
+      .join(right)
       .where(('a === 0 && 'd === 3) || ('a === 1 && true))
-      .select('a,'b,'d,'e)
+      .select('a, 'b, 'd, 'e)
 
     util.verifyExecPlan(resultTable)
   }
@@ -64,11 +62,12 @@ class JoinTest extends TableTestBase {
     val util = streamTestUtil()
     val left = util.addDataStream[(Long, Int, String)]("T1", 'a, 'b, 'c)
 
-    val right = util.addDataStream[(Long, Int, String)]("T2",'d, 'e, 'f)
+    val right = util.addDataStream[(Long, Int, String)]("T2", 'd, 'e, 'f)
 
-    val resultTable = left.join(right)
+    val resultTable = left
+      .join(right)
       .where(('a === 0 && 'd === 3) || ('a === 1 && 'f.isNull))
-      .select('a,'b,'d,'e)
+      .select('a, 'b, 'd, 'e)
 
     util.verifyExecPlan(resultTable)
   }
@@ -79,9 +78,10 @@ class JoinTest extends TableTestBase {
     val util = streamTestUtil()
     val left = util.addDataStream[(Long, Int, String)]("T1", 'a, 'b, 'c, 'lrtime.rowtime)
 
-    val right = util.addDataStream[(Long, Int, String)]("T2",'d, 'e, 'f, 'rrtime.rowtime)
+    val right = util.addDataStream[(Long, Int, String)]("T2", 'd, 'e, 'f, 'rrtime.rowtime)
 
-    val resultTable = left.join(right)
+    val resultTable = left
+      .join(right)
       .where('a === 'd && 'lrtime >= 'rrtime - 5.minutes && 'lrtime < 'rrtime + 3.seconds)
       .select('a, 'e, 'lrtime)
 
@@ -93,9 +93,10 @@ class JoinTest extends TableTestBase {
     val util = streamTestUtil()
     val left = util.addDataStream[(Long, Int, String)]("T1", 'a, 'b, 'c, 'lptime.proctime)
 
-    val right = util.addDataStream[(Long, Int, String)]("T2",'d, 'e, 'f, 'rptime.proctime)
+    val right = util.addDataStream[(Long, Int, String)]("T2", 'd, 'e, 'f, 'rptime.proctime)
 
-    val resultTable = left.join(right)
+    val resultTable = left
+      .join(right)
       .where('a === 'd && 'lptime >= 'rptime - 1.second && 'lptime < 'rptime)
       .select('a, 'e, 'lptime)
 
@@ -105,27 +106,27 @@ class JoinTest extends TableTestBase {
   @Test
   def testProcTimeWindowInnerJoinWithEquiTimeAttrs(): Unit = {
     val util = streamTestUtil()
-    val left = util.addDataStream[(Long, Int, String)]("T1",'a, 'b, 'c, 'lptime.proctime)
+    val left = util.addDataStream[(Long, Int, String)]("T1", 'a, 'b, 'c, 'lptime.proctime)
 
-    val right = util.addDataStream[(Long, Int, String)]("T2",'d, 'e, 'f, 'rptime.proctime)
+    val right = util.addDataStream[(Long, Int, String)]("T2", 'd, 'e, 'f, 'rptime.proctime)
 
-    val resultTable = left.join(right)
+    val resultTable = left
+      .join(right)
       .where('a === 'd && 'lptime === 'rptime)
       .select('a, 'e, 'lptime)
 
     util.verifyExecPlan(resultTable)
   }
 
-  /**
-    * The time indicator can be accessed from non-time predicates now.
-    */
+  /** The time indicator can be accessed from non-time predicates now. */
   @Test
   def testRowTimeInnerJoinWithTimeAccessed(): Unit = {
     val util = streamTestUtil()
-    val left = util.addDataStream[(Long, Int, Timestamp)]("T1",'a, 'b, 'c, 'lrtime.rowtime)
-    val right = util.addDataStream[(Long, Int, Timestamp)]("T2",'d, 'e, 'f, 'rrtime.rowtime)
-    val resultTable = left.join(right)
-      .where('a ==='d && 'lrtime >= 'rrtime - 5.minutes && 'lrtime < 'rrtime && 'lrtime > 'f)
+    val left = util.addDataStream[(Long, Int, Timestamp)]("T1", 'a, 'b, 'c, 'lrtime.rowtime)
+    val right = util.addDataStream[(Long, Int, Timestamp)]("T2", 'd, 'e, 'f, 'rrtime.rowtime)
+    val resultTable = left
+      .join(right)
+      .where('a === 'd && 'lrtime >= 'rrtime - 5.minutes && 'lrtime < 'rrtime && 'lrtime > 'f)
 
     util.verifyExecPlan(resultTable)
   }
@@ -134,8 +135,8 @@ class JoinTest extends TableTestBase {
   @Test
   def testRowTimeWindowLeftOuterJoin(): Unit = {
     val util = streamTestUtil()
-    val left = util.addDataStream[(Long, Int, String)]("T1",'a, 'b, 'c, 'lrtime.rowtime)
-    val right = util.addDataStream[(Long, Int, String)]("T2",'d, 'e, 'f, 'rrtime.rowtime)
+    val left = util.addDataStream[(Long, Int, String)]("T1", 'a, 'b, 'c, 'lrtime.rowtime)
+    val right = util.addDataStream[(Long, Int, String)]("T2", 'd, 'e, 'f, 'rrtime.rowtime)
 
     val resultTable = left
       .leftOuterJoin(
@@ -149,9 +150,9 @@ class JoinTest extends TableTestBase {
   @Test
   def testProcTimeWindowLeftOuterJoin(): Unit = {
     val util = streamTestUtil()
-    val left = util.addDataStream[(Long, Int, String)]("T1",'a, 'b, 'c, 'lptime.proctime)
+    val left = util.addDataStream[(Long, Int, String)]("T1", 'a, 'b, 'c, 'lptime.proctime)
 
-    val right = util.addDataStream[(Long, Int, String)]("T2",'d, 'e, 'f, 'rptime.proctime)
+    val right = util.addDataStream[(Long, Int, String)]("T2", 'd, 'e, 'f, 'rptime.proctime)
 
     val resultTable = left
       .leftOuterJoin(right, 'a === 'd && 'lptime >= 'rptime - 1.second && 'lptime < 'rptime)
@@ -164,9 +165,9 @@ class JoinTest extends TableTestBase {
   @Test
   def testRowTimeWindowRightOuterJoin(): Unit = {
     val util = streamTestUtil()
-    val left = util.addDataStream[(Long, Int, String)]("T1",'a, 'b, 'c, 'lrtime.rowtime)
+    val left = util.addDataStream[(Long, Int, String)]("T1", 'a, 'b, 'c, 'lrtime.rowtime)
 
-    val right = util.addDataStream[(Long, Int, String)]("T2",'d, 'e, 'f, 'rrtime.rowtime)
+    val right = util.addDataStream[(Long, Int, String)]("T2", 'd, 'e, 'f, 'rrtime.rowtime)
 
     val resultTable = left
       .rightOuterJoin(
@@ -180,9 +181,9 @@ class JoinTest extends TableTestBase {
   @Test
   def testProcTimeWindowRightOuterJoin(): Unit = {
     val util = streamTestUtil()
-    val left = util.addDataStream[(Long, Int, String)]("T1",'a, 'b, 'c, 'lptime.proctime)
+    val left = util.addDataStream[(Long, Int, String)]("T1", 'a, 'b, 'c, 'lptime.proctime)
 
-    val right = util.addDataStream[(Long, Int, String)]("T2",'d, 'e, 'f, 'rptime.proctime)
+    val right = util.addDataStream[(Long, Int, String)]("T2", 'd, 'e, 'f, 'rptime.proctime)
 
     val resultTable = left
       .rightOuterJoin(right, 'a === 'd && 'lptime >= 'rptime - 1.second && 'lptime < 'rptime)
@@ -195,9 +196,9 @@ class JoinTest extends TableTestBase {
   @Test
   def testRowTimeWindowFullOuterJoin(): Unit = {
     val util = streamTestUtil()
-    val left = util.addDataStream[(Long, Int, String)]("T1",'a, 'b, 'c, 'lrtime.rowtime)
+    val left = util.addDataStream[(Long, Int, String)]("T1", 'a, 'b, 'c, 'lrtime.rowtime)
 
-    val right = util.addDataStream[(Long, Int, String)]("T2",'d, 'e, 'f, 'rrtime.rowtime)
+    val right = util.addDataStream[(Long, Int, String)]("T2", 'd, 'e, 'f, 'rrtime.rowtime)
 
     val resultTable = left
       .fullOuterJoin(
@@ -211,7 +212,7 @@ class JoinTest extends TableTestBase {
   @Test
   def testProcTimeWindowFullOuterJoin(): Unit = {
     val util = streamTestUtil()
-    val left = util.addDataStream[(Long, Int, String)]("T1",'a, 'b, 'c, 'lptime.proctime)
+    val left = util.addDataStream[(Long, Int, String)]("T1", 'a, 'b, 'c, 'lptime.proctime)
 
     val right = util.addDataStream[(Long, Int, String)]("T2", 'd, 'e, 'f, 'rptime.proctime)
 
@@ -226,11 +227,12 @@ class JoinTest extends TableTestBase {
   @Test
   def testRowTimeWindowOuterJoinOpt(): Unit = {
     val util = streamTestUtil()
-    val left = util.addDataStream[(Long, Int, String)]("T1",'a, 'b, 'c, 'lrtime.rowtime)
+    val left = util.addDataStream[(Long, Int, String)]("T1", 'a, 'b, 'c, 'lrtime.rowtime)
 
     val right = util.addDataStream[(Long, Int, String)]("T2", 'd, 'e, 'f, 'rrtime.rowtime)
 
-    val resultTable = left.leftOuterJoin(right)
+    val resultTable = left
+      .leftOuterJoin(right)
       .where('a === 'd && 'lrtime >= 'rrtime - 5.minutes && 'lrtime < 'rrtime + 3.seconds)
       .select('a, 'e, 'lrtime)
 

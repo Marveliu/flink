@@ -34,11 +34,11 @@ pygmentsUseClasses = true
   # we change the version for the complete docs when forking of a release branch
   # etc.
   # The full version string as referenced in Maven (e.g. 1.2.1)
-  Version = "1.16-SNAPSHOT"
+  Version = "2.5-SNAPSHOT"
 
   # For stable releases, leave the bugfix version out (e.g. 1.2). For snapshot
   # release this should be the same as the regular version
-  VersionTitle = "1.16-SNAPSHOT"
+  VersionTitle = "2.5-SNAPSHOT"
 
   # The branch for this version of Apache Flink
   Branch = "master"
@@ -62,20 +62,30 @@ pygmentsUseClasses = true
 
   JavaDocs = "//nightlies.apache.org/flink/flink-docs-master/api/java/"
 
-  ScalaDocs = "//nightlies.apache.org/flink/flink-docs-master/api/scala/index.html#org.apache.flink.api.scala.package"
-
   PyDocs = "//nightlies.apache.org/flink/flink-docs-master/api/python/"
 
   # External links at the bottom
   # of the menu
   MenuLinks = [
     ["Project Homepage", "//flink.apache.org"],
+    ["Flink CDC", "//nightlies.apache.org/flink/flink-cdc-docs-stable/"],
+    ["Flink Kubernetes Operator", "//nightlies.apache.org/flink/flink-kubernetes-operator-docs-stable/"],
+    ["Flink Agents", "//nightlies.apache.org/flink/flink-agents-docs-latest/"],
     ["JavaDocs", "//nightlies.apache.org/flink/flink-docs-master/api/java/"],
-    ["ScalaDocs", "//nightlies.apache.org/flink/flink-docs-master/api/scala/index.html#org.apache.flink.api.scala.package"],
     ["PyDocs", "//nightlies.apache.org/flink/flink-docs-master/api/python/"]
   ]
 
   PreviousDocs = [
+    ["2.3", "http://nightlies.apache.org/flink/flink-docs-release-2.3"],
+    ["2.2", "http://nightlies.apache.org/flink/flink-docs-release-2.2"],
+    ["2.1", "http://nightlies.apache.org/flink/flink-docs-release-2.1"],
+    ["2.0", "http://nightlies.apache.org/flink/flink-docs-release-2.0"],
+    ["1.20", "http://nightlies.apache.org/flink/flink-docs-release-1.20"],
+    ["1.19", "http://nightlies.apache.org/flink/flink-docs-release-1.19"],
+    ["1.18", "http://nightlies.apache.org/flink/flink-docs-release-1.18"],
+    ["1.17", "http://nightlies.apache.org/flink/flink-docs-release-1.17"],
+    ["1.16", "http://nightlies.apache.org/flink/flink-docs-release-1.16"],
+    ["1.15", "http://nightlies.apache.org/flink/flink-docs-release-1.15"],
     ["1.14", "http://nightlies.apache.org/flink/flink-docs-release-1.14"],
     ["1.13", "http://nightlies.apache.org/flink/flink-docs-release-1.13"],
     ["1.12", "http://nightlies.apache.org/flink/flink-docs-release-1.12"],
@@ -96,6 +106,8 @@ pygmentsUseClasses = true
 [markup]
 [markup.goldmark.renderer]
   unsafe = true
+[markup.tableOfContents]
+  startLevel = 1
 
 [languages]
 [languages.en]
@@ -107,3 +119,21 @@ pygmentsUseClasses = true
   languageName = '中文版'
   contentDir = 'content.zh'
   weight = 2
+
+[module]
+[[module.imports]]
+  path = 'connectors'
+[[module.imports.mounts]]
+  source = 'content'
+  target = 'content'
+  lang = 'en'
+[[module.imports.mounts]]
+  source = 'content.zh'
+  target = 'content'
+  lang = 'zh'
+[[module.imports.mounts]]
+  source = 'layouts'
+  target = 'layouts'
+[[module.imports.mounts]]
+  source = 'data'
+  target = 'data'

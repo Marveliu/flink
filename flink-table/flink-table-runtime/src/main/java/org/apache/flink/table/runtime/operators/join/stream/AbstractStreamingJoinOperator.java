@@ -18,8 +18,7 @@
 
 package org.apache.flink.table.runtime.operators.join.stream;
 
-import org.apache.flink.api.java.tuple.Tuple2;
-import org.apache.flink.configuration.Configuration;
+import org.apache.flink.api.common.functions.DefaultOpenContext;
 import org.apache.flink.streaming.api.operators.AbstractStreamOperator;
 import org.apache.flink.streaming.api.operators.TimestampedCollector;
 import org.apache.flink.streaming.api.operators.TwoInputStreamOperator;
@@ -27,17 +26,15 @@ import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.runtime.generated.GeneratedJoinCondition;
 import org.apache.flink.table.runtime.generated.JoinCondition;
 import org.apache.flink.table.runtime.operators.join.JoinConditionWithNullFilters;
-import org.apache.flink.table.runtime.operators.join.stream.state.JoinInputSideSpec;
 import org.apache.flink.table.runtime.operators.join.stream.state.JoinRecordStateView;
 import org.apache.flink.table.runtime.operators.join.stream.state.OuterJoinRecordStateView;
+import org.apache.flink.table.runtime.operators.join.stream.utils.JoinInputSideSpec;
 import org.apache.flink.table.runtime.typeutils.InternalTypeInfo;
-import org.apache.flink.util.IterableIterator;
 
-import java.util.ArrayList;
 import java.util.Iterator;
-import java.util.List;
+import java.util.function.Function;
 
-import static org.apache.flink.util.Preconditions.checkNotNull;
+import static org.apache.flink.util.Preconditions.checkState;
 
 /**
  * Abstract implementation for streaming unbounded Join operator which defines some member fields
@@ -60,7 +57,8 @@ public abstract class AbstractStreamingJoinOperator extends AbstractStreamOperat
 
     private final boolean[] filterNullKeys;
 
-    protected final long stateRetentionTime;
+    protected final long leftStateRetentionTime;
+    protected final long rightStateRetentionTime;
 
     protected transient JoinConditionWithNullFilters joinCondition;
     protected transient TimestampedCollector<RowData> collector;
@@ -72,13 +70,15 @@ public abstract class AbstractStreamingJoinOperator extends AbstractStreamOperat
             JoinInputSideSpec leftInputSideSpec,
             JoinInputSideSpec rightInputSideSpec,
             boolean[] filterNullKeys,
-            long stateRetentionTime) {
+            long leftStateRetentionTime,
+            long rightStateRetentionTime) {
         this.leftType = leftType;
         this.rightType = rightType;
         this.generatedJoinCondition = generatedJoinCondition;
         this.leftInputSideSpec = leftInputSideSpec;
         this.rightInputSideSpec = rightInputSideSpec;
-        this.stateRetentionTime = stateRetentionTime;
+        this.leftStateRetentionTime = leftStateRetentionTime;
+        this.rightStateRetentionTime = rightStateRetentionTime;
         this.filterNullKeys = filterNullKeys;
     }
 
@@ -89,7 +89,7 @@ public abstract class AbstractStreamingJoinOperator extends AbstractStreamOperat
                 generatedJoinCondition.newInstance(getRuntimeContext().getUserCodeClassLoader());
         this.joinCondition = new JoinConditionWithNullFilters(condition, filterNullKeys, this);
         this.joinCondition.setRuntimeContext(getRuntimeContext());
-        this.joinCondition.open(new Configuration());
+        this.joinCondition.open(DefaultOpenContext.INSTANCE);
 
         this.collector = new TimestampedCollector<>(output);
     }
@@ -102,110 +102,63 @@ public abstract class AbstractStreamingJoinOperator extends AbstractStreamOperat
         }
     }
 
-    /**
-     * The {@link AssociatedRecords} is the records associated to the input row. It is a wrapper of
-     * {@code List<OuterRecord>} which provides two helpful methods {@link #getRecords()} and {@link
-     * #getOuterRecords()}. See the method Javadoc for more details.
-     */
-    protected static final class AssociatedRecords {
-        private final List<OuterRecord> records;
+    /** Wrap the passed iterator with filter and mapper. */
+    private static <I, O> Iterator<O> collect(
+            final Iterator<I> delegate, Function<I, Boolean> matcher, Function<I, O> mapper) {
+        return new Iterator<O>() {
+            private I next;
 
-        private AssociatedRecords(List<OuterRecord> records) {
-            checkNotNull(records);
-            this.records = records;
-        }
+            @Override
+            public boolean hasNext() {
+                advance();
+                return next != null;
+            }
 
-        public boolean isEmpty() {
-            return records.isEmpty();
-        }
+            @Override
+            public O next() {
+                checkState(hasNext());
+                I tmp = next;
+                next = null;
+                return mapper.apply(tmp);
+            }
 
-        public int size() {
-            return records.size();
-        }
-
-        /**
-         * Gets the iterable of records. This is usually be called when the {@link
-         * AssociatedRecords} is from inner side.
-         */
-        public Iterable<RowData> getRecords() {
-            return new RecordsIterable(records);
-        }
-
-        /**
-         * Gets the iterable of {@link OuterRecord} which composites record and numOfAssociations.
-         * This is usually be called when the {@link AssociatedRecords} is from outer side.
-         */
-        public Iterable<OuterRecord> getOuterRecords() {
-            return records;
-        }
-
-        /**
-         * Creates an {@link AssociatedRecords} which represents the records associated to the input
-         * row.
-         */
-        public static AssociatedRecords of(
-                RowData input,
-                boolean inputIsLeft,
-                JoinRecordStateView otherSideStateView,
-                JoinCondition condition)
-                throws Exception {
-            List<OuterRecord> associations = new ArrayList<>();
-            if (otherSideStateView instanceof OuterJoinRecordStateView) {
-                OuterJoinRecordStateView outerStateView =
-                        (OuterJoinRecordStateView) otherSideStateView;
-                Iterable<Tuple2<RowData, Integer>> records =
-                        outerStateView.getRecordsAndNumOfAssociations();
-                for (Tuple2<RowData, Integer> record : records) {
-                    boolean matched =
-                            inputIsLeft
-                                    ? condition.apply(input, record.f0)
-                                    : condition.apply(record.f0, input);
-                    if (matched) {
-                        associations.add(new OuterRecord(record.f0, record.f1));
-                    }
-                }
-            } else {
-                Iterable<RowData> records = otherSideStateView.getRecords();
-                for (RowData record : records) {
-                    boolean matched =
-                            inputIsLeft
-                                    ? condition.apply(input, record)
-                                    : condition.apply(record, input);
-                    if (matched) {
-                        // use -1 as the default number of associations
-                        associations.add(new OuterRecord(record, -1));
+            private void advance() {
+                while (next == null && delegate.hasNext()) {
+                    I record = delegate.next();
+                    if (matcher.apply(record)) {
+                        next = record;
                     }
                 }
             }
-            return new AssociatedRecords(associations);
-        }
+        };
     }
 
-    /** A lazy Iterable which transform {@code List<OuterReocord>} to {@code Iterable<RowData>}. */
-    private static final class RecordsIterable implements IterableIterator<RowData> {
-        private final List<OuterRecord> records;
-        private int index = 0;
-
-        private RecordsIterable(List<OuterRecord> records) {
-            this.records = records;
-        }
-
-        @Override
-        public Iterator<RowData> iterator() {
-            index = 0;
-            return this;
-        }
-
-        @Override
-        public boolean hasNext() {
-            return index < records.size();
-        }
-
-        @Override
-        public RowData next() {
-            RowData row = records.get(index).record;
-            index++;
-            return row;
+    /** Creates an {@link Iterator} over the records associated to the input row. */
+    protected static Iterator<OuterRecord> iterator(
+            RowData input,
+            boolean inputIsLeft,
+            JoinRecordStateView otherSideStateView,
+            JoinCondition condition)
+            throws Exception {
+        if (otherSideStateView instanceof OuterJoinRecordStateView) {
+            return collect(
+                    ((OuterJoinRecordStateView) otherSideStateView)
+                            .getRecordsAndNumOfAssociations()
+                            .iterator(),
+                    record ->
+                            inputIsLeft
+                                    ? condition.apply(input, record.f0)
+                                    : condition.apply(record.f0, input),
+                    record -> new OuterRecord(record.f0, record.f1));
+        } else {
+            return collect(
+                    otherSideStateView.getRecords().iterator(),
+                    record ->
+                            inputIsLeft
+                                    ? condition.apply(input, record)
+                                    : condition.apply(record, input),
+                    // use -1 as the default number of associations
+                    record -> new OuterRecord(record, -1));
         }
     }
 

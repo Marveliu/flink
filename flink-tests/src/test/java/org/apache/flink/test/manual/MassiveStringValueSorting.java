@@ -19,6 +19,7 @@
 package org.apache.flink.test.manual;
 
 import org.apache.flink.api.common.ExecutionConfig;
+import org.apache.flink.api.common.serialization.SerializerConfigImpl;
 import org.apache.flink.api.common.typeinfo.TypeHint;
 import org.apache.flink.api.common.typeutils.TypeComparator;
 import org.apache.flink.api.common.typeutils.TypeSerializer;
@@ -36,8 +37,6 @@ import org.apache.flink.runtime.operators.testutils.DummyInvokable;
 import org.apache.flink.types.StringValue;
 import org.apache.flink.util.MutableObjectIterator;
 
-import org.junit.Assert;
-
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
 import java.io.File;
@@ -45,6 +44,9 @@ import java.io.FileReader;
 import java.io.FileWriter;
 import java.io.IOException;
 import java.util.Random;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.fail;
 
 /** Test {@link ExternalSorter} on a large set of {@link StringValue}. */
 public class MassiveStringValueSorting {
@@ -127,8 +129,8 @@ public class MassiveStringValueSorting {
                 while ((nextVerify = verifyReader.readLine()) != null) {
                     nextFromFlinkSort = sortedData.next(nextFromFlinkSort);
 
-                    Assert.assertNotNull(nextFromFlinkSort);
-                    Assert.assertEquals(nextVerify, nextFromFlinkSort.getValue());
+                    assertThat((CharSequence) nextFromFlinkSort).isNotNull();
+                    assertThat(nextFromFlinkSort.getValue()).isEqualTo(nextVerify);
                 }
             } finally {
                 if (reader != null) {
@@ -147,7 +149,7 @@ public class MassiveStringValueSorting {
         } catch (Exception e) {
             System.err.println(e.getMessage());
             e.printStackTrace();
-            Assert.fail(e.getMessage());
+            fail(e.getMessage());
         } finally {
             if (input != null) {
                 //noinspection ResultOfMethodCallIgnored
@@ -214,7 +216,7 @@ public class MassiveStringValueSorting {
                                 new TypeHint<Tuple2<StringValue, StringValue[]>>() {}.getTypeInfo();
 
                 TypeSerializer<Tuple2<StringValue, StringValue[]>> serializer =
-                        typeInfo.createSerializer(new ExecutionConfig());
+                        typeInfo.createSerializer(new SerializerConfigImpl());
                 TypeComparator<Tuple2<StringValue, StringValue[]>> comparator =
                         typeInfo.createComparator(
                                 new int[] {0}, new boolean[] {true}, 0, new ExecutionConfig());
@@ -243,7 +245,7 @@ public class MassiveStringValueSorting {
                 //					Tuple2<String, String[]> wi = new Tuple2<String, String[]>("", new
                 // String[0]);
                 //					while ((wi = inputIterator.next(wi)) != null) {
-                //						Assert.assertTrue(nks.write(wi));
+                //						assertThat(nks.write(wi)).isTrue();
                 //					}
                 //
                 //					new QuickSort().sort(nks);
@@ -274,14 +276,13 @@ public class MassiveStringValueSorting {
                     num++;
 
                     nextFromFlinkSort = sortedData.next(nextFromFlinkSort);
-                    Assert.assertNotNull(nextFromFlinkSort);
-
-                    Assert.assertEquals(nextVerify.f0, nextFromFlinkSort.f0);
-                    Assert.assertArrayEquals(nextVerify.f1, nextFromFlinkSort.f1);
+                    assertThat(nextFromFlinkSort).isNotNull();
+                    assertThat((CharSequence) nextFromFlinkSort.f0).isEqualTo(nextVerify.f0);
+                    assertThat(nextFromFlinkSort.f1).isEqualTo(nextVerify.f1);
                 }
 
-                Assert.assertNull(sortedData.next(nextFromFlinkSort));
-                Assert.assertEquals(numStrings, num);
+                assertThat(sortedData.next(nextFromFlinkSort)).isNull();
+                assertThat(num).isEqualTo(numStrings);
 
             } finally {
                 if (reader != null) {
@@ -300,7 +301,7 @@ public class MassiveStringValueSorting {
         } catch (Exception e) {
             System.err.println(e.getMessage());
             e.printStackTrace();
-            Assert.fail(e.getMessage());
+            fail(e.getMessage());
         } finally {
             if (input != null) {
                 //noinspection ResultOfMethodCallIgnored
@@ -388,9 +389,7 @@ public class MassiveStringValueSorting {
         bld.append(prefix);
 
         File f = File.createTempFile("strings", "txt");
-        BufferedWriter wrt = null;
-        try {
-            wrt = new BufferedWriter(new FileWriter(f));
+        try (BufferedWriter wrt = new BufferedWriter(new FileWriter(f))) {
 
             for (int i = 0; i < numStrings; i++) {
                 bld.setLength(resetValue);
@@ -405,10 +404,6 @@ public class MassiveStringValueSorting {
                 wrt.write(str);
                 wrt.newLine();
             }
-        } finally {
-            if (wrt != null) {
-                wrt.close();
-            }
         }
 
         return f;
@@ -420,9 +415,7 @@ public class MassiveStringValueSorting {
         final StringBuilder bld = new StringBuilder();
 
         File f = File.createTempFile("strings", "txt");
-        BufferedWriter wrt = null;
-        try {
-            wrt = new BufferedWriter(new FileWriter(f));
+        try (BufferedWriter wrt = new BufferedWriter(new FileWriter(f))) {
 
             for (int i = 0; i < numStrings; i++) {
                 bld.setLength(0);
@@ -446,10 +439,6 @@ public class MassiveStringValueSorting {
 
                 wrt.write(str);
                 wrt.newLine();
-            }
-        } finally {
-            if (wrt != null) {
-                wrt.close();
             }
         }
 

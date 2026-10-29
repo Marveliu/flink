@@ -15,22 +15,21 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.planner.plan.schema
 
 import org.apache.flink.table.planner.calcite.{FlinkTypeFactory, FlinkTypeSystem}
 
-import org.junit.Assert.assertEquals
-import org.junit.Test
+import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Test
 
-/**
- * Tests for TimeIndicatorRelDataType.
- */
+/** Tests for TimeIndicatorRelDataType. */
 class TimeIndicatorRelDataTypeTest {
 
   @Test
-  def testGenerateTypeString() {
-    val typeFactory = new FlinkTypeFactory(new FlinkTypeSystem)
+  def testGenerateTypeString(): Unit = {
+    val typeFactory = new FlinkTypeFactory(
+      classOf[TimeIndicatorRelDataTypeTest].getClassLoader,
+      FlinkTypeSystem.INSTANCE)
     assertEquals(
       "TIMESTAMP_LTZ(3) *PROCTIME* NOT NULL",
       typeFactory.createProctimeIndicatorType(false).getFullTypeString)

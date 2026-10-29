@@ -15,7 +15,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.planner.runtime.utils
 
 import org.apache.flink.api.common.functions.MapFunction
@@ -25,28 +24,28 @@ import org.apache.flink.api.common.typeinfo.TypeInformation
 import org.apache.flink.api.java.tuple.{Tuple2 => JTuple2}
 import org.apache.flink.api.java.typeutils.{RowTypeInfo, TupleTypeInfo}
 import org.apache.flink.configuration.Configuration
+import org.apache.flink.legacy.table.sinks.{AppendStreamTableSink, RetractStreamTableSink, UpsertStreamTableSink}
 import org.apache.flink.runtime.state.{FunctionInitializationContext, FunctionSnapshotContext}
 import org.apache.flink.streaming.api.checkpoint.CheckpointedFunction
 import org.apache.flink.streaming.api.datastream.{DataStream, DataStreamSink}
-import org.apache.flink.streaming.api.functions.sink.RichSinkFunction
-import org.apache.flink.table.api.Types
-import org.apache.flink.table.data.util.DataFormatConverters
+import org.apache.flink.streaming.api.functions.sink.legacy.RichSinkFunction
 import org.apache.flink.table.data.{GenericRowData, RowData}
+import org.apache.flink.table.data.util.DataFormatConverters
+import org.apache.flink.table.legacy.api.Types
 import org.apache.flink.table.runtime.types.TypeInfoLogicalTypeConverter.fromTypeInfoToLogicalType
 import org.apache.flink.table.runtime.typeutils.InternalTypeInfo
 import org.apache.flink.table.runtime.util.RowDataTestUtil
-import org.apache.flink.table.sinks._
 import org.apache.flink.table.types.utils.TypeConversions
 import org.apache.flink.types.Row
 
 import _root_.java.lang.{Boolean => JBoolean}
 import _root_.java.util.TimeZone
 import _root_.java.util.concurrent.atomic.AtomicInteger
-import java.util
-
 import _root_.scala.collection.JavaConverters._
 import _root_.scala.collection.mutable
 import _root_.scala.collection.mutable.ArrayBuffer
+
+import java.util
 
 object StreamTestSink {
 
@@ -99,17 +98,14 @@ abstract class AbstractExactlyOnceSink[T] extends RichSinkFunction[T] with Check
       }
     }
 
-    val taskId = getRuntimeContext.getIndexOfThisSubtask
+    val taskId = getRuntimeContext.getTaskInfo.getIndexOfThisSubtask
     StreamTestSink.synchronized(
       StreamTestSink.globalResults(idx) += (taskId -> localResults)
     )
   }
 
   override def snapshotState(context: FunctionSnapshotContext): Unit = {
-    resultsState.clear()
-    for (value <- localResults) {
-      resultsState.add(value)
-    }
+    resultsState.update(localResults.asJava)
   }
 
   protected def clearAndStashGlobalResults(): Unit = {
@@ -125,23 +121,20 @@ abstract class AbstractExactlyOnceSink[T] extends RichSinkFunction[T] with Check
   protected def getResults: List[String] = {
     clearAndStashGlobalResults()
     val result = ArrayBuffer.empty[String]
-    this.globalResults.foreach {
-      case (_, list) => result ++= list
-    }
+    this.globalResults.foreach { case (_, list) => result ++= list }
     result.toList
   }
 }
 
 final class StringSink[T] extends AbstractExactlyOnceSink[T]() {
-  override def invoke(value: T) {
+  override def invoke(value: T): Unit = {
     localResults += value.toString
   }
 
   override def getResults: List[String] = super.getResults
 }
 
-final class TestingAppendRowDataSink(
-    rowTypeInfo: InternalTypeInfo[RowData], tz: TimeZone)
+final class TestingAppendRowDataSink(rowTypeInfo: InternalTypeInfo[RowData], tz: TimeZone)
   extends AbstractExactlyOnceSink[RowData] {
 
   def this(rowTypeInfo: InternalTypeInfo[RowData]) {
@@ -207,7 +200,7 @@ final class TestingUpsertSink(keys: Array[Int], tz: TimeZone)
       }
     }
 
-    val taskId = getRuntimeContext.getIndexOfThisSubtask
+    val taskId = getRuntimeContext.getTaskInfo.getIndexOfThisSubtask
     StreamTestSink.synchronized {
       StreamTestSink.globalUpsertResults(idx) += (taskId -> localUpsertResults)
     }
@@ -228,9 +221,10 @@ final class TestingUpsertSink(keys: Array[Int], tz: TimeZone)
       wrapRow.setField(0, d._1)
       wrapRow.setField(1, d._2)
       val converter =
-        DataFormatConverters.getConverterForDataType(
-          TypeConversions.fromLegacyInfoToDataType(
-            new TupleTypeInfo(Types.BOOLEAN, new RowTypeInfo(fieldTypes: _*))))
+        DataFormatConverters
+          .getConverterForDataType(
+            TypeConversions.fromLegacyInfoToDataType(
+              new TupleTypeInfo(Types.BOOLEAN, new RowTypeInfo(fieldTypes: _*))))
           .asInstanceOf[DataFormatConverters.DataFormatConverter[RowData, JTuple2[JBoolean, Row]]]
       val v = converter.toExternal(wrapRow)
       val rowString = TestSinkUtil.rowToString(v.f1, tz)
@@ -242,9 +236,10 @@ final class TestingUpsertSink(keys: Array[Int], tz: TimeZone)
       } else {
         val oldValue = localUpsertResults.remove(keyString)
         if (oldValue.isEmpty) {
-          throw new RuntimeException("Tried to delete a value that wasn't inserted first. " +
-            "This is probably an incorrectly implemented test. " +
-            "Try to set the parallelism of the sink to 1.")
+          throw new RuntimeException(
+            "Tried to delete a value that wasn't inserted first. " +
+              "This is probably an incorrectly implemented test. " +
+              "Try to set the parallelism of the sink to 1.")
         }
       }
     }
@@ -255,9 +250,7 @@ final class TestingUpsertSink(keys: Array[Int], tz: TimeZone)
   def getUpsertResults: List[String] = {
     clearAndStashGlobalResults()
     val result = ArrayBuffer.empty[String]
-    this.globalUpsertResults.foreach {
-      case (_, map) => map.foreach(result += _._2)
-    }
+    this.globalUpsertResults.foreach { case (_, map) => map.foreach(result += _._2) }
     result.toList
   }
 }
@@ -298,9 +291,7 @@ final class TestingUpsertTableSink(val keys: Array[Int], val tz: TimeZone)
   }
 
   override def getRecordType: TypeInformation[RowData] =
-    InternalTypeInfo.ofFields(
-      fTypes.map(fromTypeInfoToLogicalType),
-      fNames)
+    InternalTypeInfo.ofFields(fTypes.map(fromTypeInfoToLogicalType), fNames)
 
   override def getFieldNames: Array[String] = fNames
 
@@ -308,20 +299,19 @@ final class TestingUpsertTableSink(val keys: Array[Int], val tz: TimeZone)
 
   override def consumeDataStream(
       dataStream: DataStream[JTuple2[JBoolean, RowData]]): DataStreamSink[_] = {
-    dataStream.map(new MapFunction[JTuple2[JBoolean, RowData], (Boolean, RowData)] {
-      override def map(value: JTuple2[JBoolean, RowData]): (Boolean, RowData) = {
-        (value.f0, value.f1)
-      }
-    })
+    dataStream
+      .map(new MapFunction[JTuple2[JBoolean, RowData], (Boolean, RowData)] {
+        override def map(value: JTuple2[JBoolean, RowData]): (Boolean, RowData) = {
+          (value.f0, value.f1)
+        }
+      })
       .setParallelism(dataStream.getParallelism)
       .addSink(sink)
-      .name(s"TestingUpsertTableSink(keys=${
-        if (keys != null) {
+      .name(s"TestingUpsertTableSink(keys=${if (keys != null) {
           "(" + keys.mkString(",") + ")"
         } else {
           "null"
-        }
-      })")
+        }})")
       .setParallelism(dataStream.getParallelism)
   }
 
@@ -352,7 +342,9 @@ final class TestingAppendTableSink(tz: TimeZone) extends AppendStreamTableSink[R
   }
 
   override def consumeDataStream(dataStream: DataStream[Row]): DataStreamSink[_] = {
-    dataStream.addSink(sink).name("TestingAppendTableSink")
+    dataStream
+      .addSink(sink)
+      .name("TestingAppendTableSink")
       .setParallelism(dataStream.getParallelism)
   }
 
@@ -378,8 +370,7 @@ final class TestingAppendTableSink(tz: TimeZone) extends AppendStreamTableSink[R
   def getResults: List[String] = sink.getAppendResults
 }
 
-class TestingOutputFormat[T](tz: TimeZone)
-  extends OutputFormat[T] {
+class TestingOutputFormat[T](tz: TimeZone) extends OutputFormat[T] {
 
   val index: Int = StreamTestSink.getNewSinkId
   var localRetractResults: ArrayBuffer[String] = _
@@ -392,10 +383,10 @@ class TestingOutputFormat[T](tz: TimeZone)
 
   def configure(var1: Configuration): Unit = {}
 
-  def open(taskNumber: Int, numTasks: Int): Unit = {
+  override def open(context: OutputFormat.InitializationContext): Unit = {
     localRetractResults = mutable.ArrayBuffer.empty[String]
     StreamTestSink.synchronized {
-      StreamTestSink.globalResults(index) += (taskNumber -> localRetractResults)
+      StreamTestSink.globalResults(index) += (context.getTaskNumber -> localRetractResults)
     }
   }
 
@@ -421,15 +412,12 @@ class TestingOutputFormat[T](tz: TimeZone)
   def getResults: List[String] = {
     clearAndStashGlobalResults()
     val result = ArrayBuffer.empty[String]
-    this.globalResults.foreach {
-      case (_, list) => result ++= list
-    }
+    this.globalResults.foreach { case (_, list) => result ++= list }
     result.toList
   }
 }
 
-class TestingRetractSink(tz: TimeZone)
-  extends AbstractExactlyOnceSink[(Boolean, Row)] {
+class TestingRetractSink(tz: TimeZone) extends AbstractExactlyOnceSink[(Boolean, Row)] {
   protected var retractResultsState: ListState[String] = _
   protected var localRetractResults: ArrayBuffer[String] = _
 
@@ -450,7 +438,7 @@ class TestingRetractSink(tz: TimeZone)
       }
     }
 
-    val taskId = getRuntimeContext.getIndexOfThisSubtask
+    val taskId = getRuntimeContext.getTaskInfo.getIndexOfThisSubtask
     StreamTestSink.synchronized {
       StreamTestSink.globalRetractResults(idx) += (taskId -> localRetractResults)
     }
@@ -476,9 +464,10 @@ class TestingRetractSink(tz: TimeZone)
         if (index >= 0) {
           localRetractResults.remove(index)
         } else {
-          throw new RuntimeException("Tried to retract a value that wasn't added first. " +
-            "This is probably an incorrectly implemented test. " +
-            "Try to set the parallelism of the sink to 1.")
+          throw new RuntimeException(
+            "Tried to retract a value that wasn't added first. " +
+              "This is probably an incorrectly implemented test. " +
+              "Try to set the parallelism of the sink to 1.")
         }
       }
     }
@@ -489,9 +478,7 @@ class TestingRetractSink(tz: TimeZone)
   def getRetractResults: List[String] = {
     clearAndStashGlobalResults()
     val result = ArrayBuffer.empty[String]
-    this.globalRetractResults.foreach {
-      case (_, list) => result ++= list
-    }
+    this.globalRetractResults.foreach { case (_, list) => result ++= list }
     result.toList
   }
 }
@@ -508,11 +495,13 @@ final class TestingRetractTableSink(tz: TimeZone) extends RetractStreamTableSink
 
   override def consumeDataStream(
       dataStream: DataStream[JTuple2[JBoolean, Row]]): DataStreamSink[_] = {
-    dataStream.map(new MapFunction[JTuple2[JBoolean, Row], (Boolean, Row)] {
-      override def map(value: JTuple2[JBoolean, Row]): (Boolean, Row) = {
-        (value.f0, value.f1)
-      }
-    }).setParallelism(dataStream.getParallelism)
+    dataStream
+      .map(new MapFunction[JTuple2[JBoolean, Row], (Boolean, Row)] {
+        override def map(value: JTuple2[JBoolean, Row]): (Boolean, Row) = {
+          (value.f0, value.f1)
+        }
+      })
+      .setParallelism(dataStream.getParallelism)
       .addSink(sink)
       .name("TestingRetractTableSink")
       .setParallelism(dataStream.getParallelism)

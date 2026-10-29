@@ -15,14 +15,13 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.api.bridge.scala
 
 import org.apache.flink.annotation.PublicEvolving
 import org.apache.flink.api.common.typeinfo.TypeInformation
-import org.apache.flink.streaming.api.scala.DataStream
-import org.apache.flink.table.api.internal.TableImpl
+import org.apache.flink.streaming.api.datastream.DataStream
 import org.apache.flink.table.api.{DataTypes, Schema, Table, TableException, ValidationException}
+import org.apache.flink.table.api.internal.TableImpl
 import org.apache.flink.table.connector.ChangelogMode
 import org.apache.flink.table.types.{AbstractDataType, DataType}
 import org.apache.flink.types.Row
@@ -30,8 +29,16 @@ import org.apache.flink.types.Row
 /**
  * Holds methods to convert a [[Table]] into a [[DataStream]].
  *
- * @param table The [[Table]] to convert.
+ * @param table
+ *   The [[Table]] to convert.
+ * @deprecated
+ *   All Flink Scala APIs are deprecated and will be removed in a future Flink major version. You
+ *   can still build your application in Scala, but you should move to the Java version of either
+ *   the DataStream and/or Table API.
+ * @see
+ *   <a href="https://s.apache.org/flip-265">FLIP-265 Deprecate and remove Scala API support</a>
  */
+@deprecated(org.apache.flink.table.api.FLIP_265_WARNING, since = "1.18.0")
 @PublicEvolving
 class TableConversions(table: Table) {
 
@@ -44,7 +51,8 @@ class TableConversions(table: Table) {
    *
    * See [[StreamTableEnvironment.toDataStream(Table)]] for more information.
    *
-   * @return The converted [[DataStream]].
+   * @return
+   *   The converted [[DataStream]].
    */
   def toDataStream: DataStream[Row] = {
     internalEnv match {
@@ -53,7 +61,7 @@ class TableConversions(table: Table) {
       case _ =>
         throw new ValidationException(
           "Table cannot be converted into a Scala DataStream. " +
-          "It is not part of a Scala StreamTableEnvironment.")
+            "It is not part of a Scala StreamTableEnvironment.")
     }
   }
 
@@ -64,9 +72,10 @@ class TableConversions(table: Table) {
    *
    * See [[StreamTableEnvironment.toDataStream(Table, Class)]] for more information.
    *
-   * @param targetClass The [[Class]] that decides about the final external representation in
-   *                    [[DataStream]] records.
-   * @return The converted [[DataStream]].
+   * @param targetClass
+   *   The [[Class]] that decides about the final external representation in [[DataStream]] records.
+   * @return
+   *   The converted [[DataStream]].
    */
   def toDataStream[T](targetClass: Class[T]): DataStream[T] = {
     internalEnv match {
@@ -75,7 +84,7 @@ class TableConversions(table: Table) {
       case _ =>
         throw new ValidationException(
           "Table cannot be converted into a Scala DataStream. " +
-          "It is not part of a Scala StreamTableEnvironment.")
+            "It is not part of a Scala StreamTableEnvironment.")
     }
   }
 
@@ -86,9 +95,11 @@ class TableConversions(table: Table) {
    *
    * See [[StreamTableEnvironment.toDataStream(Table, AbstractDataType)]] for more information.
    *
-   * @param targetDataType The [[DataType]] that decides about the final external
-   *                       representation in [[DataStream]] records.
-   * @return The converted [[DataStream]].
+   * @param targetDataType
+   *   The [[DataType]] that decides about the final external representation in [[DataStream]]
+   *   records.
+   * @return
+   *   The converted [[DataStream]].
    */
   def toDataStream[T](targetDataType: AbstractDataType[_]): DataStream[T] = {
     internalEnv match {
@@ -97,7 +108,7 @@ class TableConversions(table: Table) {
       case _ =>
         throw new ValidationException(
           "Table cannot be converted into a Scala DataStream. " +
-          "It is not part of a Scala StreamTableEnvironment.")
+            "It is not part of a Scala StreamTableEnvironment.")
     }
   }
 
@@ -108,7 +119,8 @@ class TableConversions(table: Table) {
    *
    * See [[StreamTableEnvironment.toChangelogStream(Table)]] for more information.
    *
-   * @return The converted changelog stream of [[Row]].
+   * @return
+   *   The converted changelog stream of [[Row]].
    */
   def toChangelogStream: DataStream[Row] = {
     internalEnv match {
@@ -117,7 +129,7 @@ class TableConversions(table: Table) {
       case _ =>
         throw new ValidationException(
           "Table cannot be converted into a Scala DataStream. " +
-          "It is not part of a Scala StreamTableEnvironment.")
+            "It is not part of a Scala StreamTableEnvironment.")
     }
   }
 
@@ -128,9 +140,11 @@ class TableConversions(table: Table) {
    *
    * See [[StreamTableEnvironment.toChangelogStream(Table, Schema)]] for more information.
    *
-   * @param targetSchema The [[Schema]] that decides about the final external representation
-   *                     in [[DataStream]] records.
-   * @return The converted changelog stream of [[Row]].
+   * @param targetSchema
+   *   The [[Schema]] that decides about the final external representation in [[DataStream]]
+   *   records.
+   * @return
+   *   The converted changelog stream of [[Row]].
    */
   def toChangelogStream(targetSchema: Schema): DataStream[Row] = {
     internalEnv match {
@@ -139,7 +153,7 @@ class TableConversions(table: Table) {
       case _ =>
         throw new ValidationException(
           "Table cannot be converted into a Scala DataStream. " +
-          "It is not part of a Scala StreamTableEnvironment.")
+            "It is not part of a Scala StreamTableEnvironment.")
     }
   }
 
@@ -151,12 +165,14 @@ class TableConversions(table: Table) {
    * See [[StreamTableEnvironment.toChangelogStream(Table, Schema, ChangelogMode)]] for more
    * information.
    *
-   * @param targetSchema The [[Schema]] that decides about the final external representation
-   *                     in [[DataStream]] records.
-   * @param changelogMode The required kinds of changes in the result changelog. An exception will
-   *                      be thrown if the given updating table cannot be represented in this
-   *                      changelog mode.
-   * @return The converted changelog stream of [[Row]].
+   * @param targetSchema
+   *   The [[Schema]] that decides about the final external representation in [[DataStream]]
+   *   records.
+   * @param changelogMode
+   *   The required kinds of changes in the result changelog. An exception will be thrown if the
+   *   given updating table cannot be represented in this changelog mode.
+   * @return
+   *   The converted changelog stream of [[Row]].
    */
   def toChangelogStream(targetSchema: Schema, changelogMode: ChangelogMode): DataStream[Row] = {
     internalEnv match {
@@ -165,7 +181,7 @@ class TableConversions(table: Table) {
       case _ =>
         throw new ValidationException(
           "Table cannot be converted into a Scala DataStream. " +
-          "It is not part of a Scala StreamTableEnvironment.")
+            "It is not part of a Scala StreamTableEnvironment.")
     }
   }
 
@@ -174,24 +190,27 @@ class TableConversions(table: Table) {
   // ----------------------------------------------------------------------------------------------
 
   /**
-    * Converts the given [[Table]] into an append [[DataStream]] of a specified type.
-    *
-    * The [[Table]] must only have insert (append) changes. If the [[Table]] is also modified
-    * by update or delete changes, the conversion will fail.
-    *
-    * The fields of the [[Table]] are mapped to [[DataStream]] fields as follows:
-    * - [[org.apache.flink.types.Row]] and Scala Tuple types: Fields are mapped by position, field
-    * types must match.
-    * - POJO [[DataStream]] types: Fields are mapped by field name, field types must match.
-    *
-    * @tparam T The type of the resulting [[DataStream]].
-    * @return The converted [[DataStream]].
-    * @deprecated Use [[toDataStream(Table, Class)]] instead. It integrates with the new type
-    *             system and supports all kinds of [[DataTypes]] that the table runtime can produce.
-    *             The semantics might be slightly different for raw and structured types. Use
-    *             `toDataStream(DataTypes.of(Types.of[Class]))` if [[TypeInformation]]
-    *             should be used as source of truth.
-    */
+   * Converts the given [[Table]] into an append [[DataStream]] of a specified type.
+   *
+   * The [[Table]] must only have insert (append) changes. If the [[Table]] is also modified by
+   * update or delete changes, the conversion will fail.
+   *
+   * The fields of the [[Table]] are mapped to [[DataStream]] fields as follows:
+   *   - [[org.apache.flink.types.Row]] and Scala Tuple types: Fields are mapped by position, field
+   *     types must match.
+   *   - POJO [[DataStream]] types: Fields are mapped by field name, field types must match.
+   *
+   * @tparam T
+   *   The type of the resulting [[DataStream]].
+   * @return
+   *   The converted [[DataStream]].
+   * @deprecated
+   *   Use [[toDataStream(Table, Class)]] instead. It integrates with the new type system and
+   *   supports all kinds of [[DataTypes]] that the table runtime can produce. The semantics might
+   *   be slightly different for raw and structured types. Use
+   *   `toDataStream(DataTypes.of(Types.of[Class]))` if [[TypeInformation]] should be used as source
+   *   of truth.
+   */
   @deprecated
   def toAppendStream[T: TypeInformation]: DataStream[T] = {
     internalEnv match {
@@ -204,15 +223,17 @@ class TableConversions(table: Table) {
     }
   }
 
-  /** Converts the [[Table]] to a [[DataStream]] of add and retract messages.
-    * The message will be encoded as [[Tuple2]]. The first field is a [[Boolean]] flag,
-    * the second field holds the record of the specified type [[T]].
-    *
-    * A true [[Boolean]] flag indicates an add message, a false flag indicates a retract message.
-    * @deprecated Use [[toChangelogStream(Table, Schema)]] instead. It integrates with the new
-    *             type system and supports all kinds of [[DataTypes]] and every [[ChangelogMode]]
-    *             that the table runtime can produce.
-    */
+  /**
+   * Converts the [[Table]] to a [[DataStream]] of add and retract messages. The message will be
+   * encoded as [[Tuple2]]. The first field is a [[Boolean]] flag, the second field holds the record
+   * of the specified type [[T]].
+   *
+   * A true [[Boolean]] flag indicates an add message, a false flag indicates a retract message.
+   * @deprecated
+   *   Use [[toChangelogStream(Table, Schema)]] instead. It integrates with the new type system and
+   *   supports all kinds of [[DataTypes]] and every [[ChangelogMode]] that the table runtime can
+   *   produce.
+   */
   @deprecated
   def toRetractStream[T: TypeInformation]: DataStream[(Boolean, T)] = {
     internalEnv match {
@@ -225,4 +246,3 @@ class TableConversions(table: Table) {
     }
   }
 }
-

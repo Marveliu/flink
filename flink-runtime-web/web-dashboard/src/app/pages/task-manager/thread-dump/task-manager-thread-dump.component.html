@@ -21,10 +21,36 @@
   [nzLoading]="loading"
   [ngModel]="dump"
   [nzEditorOption]="editorOptions"
+  (nzEditorInitialized)="nzEditorInitialized($event)"
 ></nz-code-editor>
-<flink-refresh-download
-  [compactMode]="true"
-  [downloadHref]="'taskmanagers/' + taskManagerDetail?.id + '/thread-dump'"
-  [downloadName]="'taskmanager_' + taskManagerDetail?.id + '_thread_dump'"
-  (reload)="reload()"
-></flink-refresh-download>
+<div class="thread-dump-toolbar">
+  <nz-space-compact class="thread-dump-mode-group">
+    <a
+      nz-button
+      nzSize="small"
+      [nzType]="mode === 'lite' ? 'primary' : 'default'"
+      nz-tooltip
+      nzTooltipTitle="Stack traces only, no lock info (jstack without -l). Negligible JVM pause."
+      (click)="selectMode('lite')"
+    >
+      Lite
+    </a>
+    <a
+      nz-button
+      nzSize="small"
+      [nzType]="mode === 'full' ? 'primary' : 'default'"
+      [nzDanger]="true"
+      nz-tooltip
+      nzTooltipTitle="Adds locked monitors and j.u.c. synchronizers (jstack -l). Pauses the JVM in a safepoint for a duration that scales with heap size and thread count — seconds on large TMs."
+      (click)="selectMode('full')"
+    >
+      Full
+      <i nz-icon nzType="exclamation-circle" nzTheme="fill" class="thread-dump-mode-warn"></i>
+    </a>
+  </nz-space-compact>
+  <flink-addon-compact
+    [downloadHref]="downloadUrl"
+    [downloadName]="downloadName"
+    (reload)="reload()"
+  ></flink-addon-compact>
+</div>

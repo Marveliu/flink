@@ -20,7 +20,7 @@ package org.apache.flink.runtime.entrypoint;
 
 import org.apache.flink.configuration.ClusterOptions;
 import org.apache.flink.configuration.Configuration;
-import org.apache.flink.runtime.dispatcher.ExecutionGraphInfoStore;
+import org.apache.flink.runtime.dispatcher.ArchivedApplicationStore;
 import org.apache.flink.runtime.entrypoint.component.DefaultDispatcherResourceManagerComponentFactory;
 import org.apache.flink.runtime.entrypoint.component.DispatcherResourceManagerComponentFactory;
 import org.apache.flink.runtime.resourcemanager.StandaloneResourceManagerFactory;
@@ -28,30 +28,33 @@ import org.apache.flink.runtime.testutils.TestJvmProcess;
 import org.apache.flink.runtime.util.ClusterUncaughtExceptionHandler;
 import org.apache.flink.util.FatalExitExceptionHandler;
 import org.apache.flink.util.OperatingSystem;
-import org.apache.flink.util.TestLogger;
+import org.apache.flink.util.TestLoggerExtension;
 import org.apache.flink.util.concurrent.ScheduledExecutor;
 
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 
 import java.io.IOException;
 
-import static org.hamcrest.CoreMatchers.is;
-import static org.junit.Assert.assertThat;
-import static org.junit.Assume.assumeTrue;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assumptions.assumeThat;
 
 /** Integration test to check exit behaviour for the {@link ClusterUncaughtExceptionHandler}. */
-public class ClusterUncaughtExceptionHandlerITCase extends TestLogger {
+@Tag("org.apache.flink.testutils.junit.FailsOnJava25")
+@ExtendWith(TestLoggerExtension.class)
+class ClusterUncaughtExceptionHandlerITCase {
 
-    @Before
-    public void ensureSupportedOS() {
+    @BeforeEach
+    void ensureSupportedOS() {
         // based on the assumption in JvmExitOnFatalErrorTest, and manual testing on Mac, we do not
         // support all platforms (in particular not Windows)
-        assumeTrue(OperatingSystem.isLinux() || OperatingSystem.isMac());
+        assumeThat(OperatingSystem.isLinux() || OperatingSystem.isMac()).isTrue();
     }
 
     @Test
-    public void testExitDueToUncaughtException() throws Exception {
+    void testExitDueToUncaughtException() throws Exception {
         final ForcedJVMExitProcess testProcess =
                 new ForcedJVMExitProcess(ClusterTestingEntrypoint.class);
 
@@ -64,7 +67,7 @@ public class ClusterUncaughtExceptionHandlerITCase extends TestLogger {
                     FatalExitExceptionHandler
                             .EXIT_CODE; // for FAIL mode, exit is done using this handler.
             int unsignedIntegerExitCode = ((byte) signedIntegerExitCode) & 0xFF;
-            assertThat(testProcess.exitCode(), is(unsignedIntegerExitCode));
+            assertThat(testProcess.exitCode()).isEqualTo(unsignedIntegerExitCode);
             success = true;
         } finally {
             if (!success) {
@@ -97,7 +100,7 @@ public class ClusterUncaughtExceptionHandlerITCase extends TestLogger {
         }
 
         @Override
-        protected ExecutionGraphInfoStore createSerializableExecutionGraphStore(
+        protected ArchivedApplicationStore createArchivedApplicationStore(
                 Configuration configuration, ScheduledExecutor scheduledExecutor)
                 throws IOException {
             return null;
@@ -130,7 +133,7 @@ public class ClusterUncaughtExceptionHandlerITCase extends TestLogger {
         }
 
         @Override
-        public String[] getJvmArgs() {
+        public String[] getMainMethodArgs() {
             return new String[0];
         }
 

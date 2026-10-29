@@ -1,0 +1,2168 @@
+---
+title: "Data Types"
+weight: 2
+type: docs
+aliases:
+  - /dev/table/types.html
+  - /docs/dev/table/types/
+  - /docs/sql/data-types/
+  - /dev/python/table-api-users-guide/python_types.html
+  - /docs/dev/table/python/python_types/
+---
+<!--
+Licensed to the Apache Software Foundation (ASF) under one
+or more contributor license agreements.  See the NOTICE file
+distributed with this work for additional information
+regarding copyright ownership.  The ASF licenses this file
+to you under the Apache License, Version 2.0 (the
+"License"); you may not use this file except in compliance
+with the License.  You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.
+-->
+
+# Data Types
+
+Flink SQL has a rich set of native data types available to users.
+
+Data Type
+---------
+
+A *data type* describes the logical type of a value in the table ecosystem.
+It can be used to declare input and/or output types of operations.
+
+Flink's data types are similar to the SQL standard's *data type* terminology but also contain information
+about the nullability of a value for efficient handling of scalar expressions.
+
+Examples of data types are:
+- `INT`
+- `INT NOT NULL`
+- `INTERVAL DAY TO SECOND(3)`
+- `ROW<myField ARRAY<BOOLEAN>, myOtherField TIMESTAMP(3)>`
+
+A list of all pre-defined data types can be found [below](#list-of-data-types).
+
+### Data Types in the Table API
+
+{{< tabs "datatypes" >}}
+{{< tab "Java/Scala" >}}
+Users of the JVM-based API work with instances of `org.apache.flink.table.types.DataType` within the Table API or when
+defining connectors, catalogs, or user-defined functions. 
+
+A `DataType` instance has two responsibilities:
+- **Declaration of a logical type** which does not imply a concrete physical representation for transmission
+or storage but defines the boundaries between JVM-based/Python languages and the table ecosystem.
+- *Optional:* **Giving hints about the physical representation of data to the planner** which is useful at the edges to other APIs.
+
+For JVM-based languages, all pre-defined data types are available in `org.apache.flink.table.api.DataTypes`.
+{{< /tab >}}
+{{< tab "Python" >}}
+Users of the Python API work with instances of `pyflink.table.types.DataType` within the Python Table API or when 
+defining Python user-defined functions.
+
+A `DataType` instance has such a responsibility:
+- **Declaration of a logical type** which does not imply a concrete physical representation for transmission
+or storage but defines the boundaries between Python languages and the table ecosystem.
+
+For Python language, those types are available in `pyflink.table.types.DataTypes`.
+{{< /tab >}}
+{{< /tabs >}}
+
+{{< tabs "84cf5e1c-c899-42cb-8fdf-6ae59fdd012c" >}}
+{{< tab "Java" >}}
+It is recommended to add a star import to your table programs for having a fluent API:
+
+```java
+import static org.apache.flink.table.api.DataTypes.*;
+
+DataType t = INTERVAL(DAY(), SECOND(3));
+```
+{{< /tab >}}
+{{< tab "Scala" >}}
+It is recommended to add a star import to your table programs for having a fluent API:
+
+```scala
+import org.apache.flink.table.api.DataTypes._
+
+val t: DataType = INTERVAL(DAY(), SECOND(3))
+```
+{{< /tab >}}
+{{< tab "Python" >}}
+
+```python
+from pyflink.table.types import DataTypes
+
+t = DataTypes.INTERVAL(DataTypes.DAY(), DataTypes.SECOND(3))
+```
+{{< /tab >}}
+{{< /tabs >}}
+
+#### Data Type and Python Type Mapping
+
+For Python user-defined functions, the inputs will be converted to Python objects corresponding to the data type and the type of the user-defined function result must also match the defined data type.
+
+For vectorized Python UDFs, the input types and output type are `pandas.Series`. The element type of the `pandas.Series` corresponds to the specified data type.
+
+| Data Type | Python Type | Pandas Type |
+|-----------|-------------|-------------|
+| `BOOLEAN` | `bool` | `numpy.bool_` |
+| `TINYINT` | `int` | `numpy.int8` |
+| `SMALLINT` | `int` | `numpy.int16` |
+| `INT` | `int` | `numpy.int32` |
+| `BIGINT` | `int` | `numpy.int64` |
+| `FLOAT` | `float` | `numpy.float32` |
+| `DOUBLE` | `float` | `numpy.float64` |
+| `VARCHAR` | `str` | `str` |
+| `VARBINARY` | `bytes` | `bytes` |
+| `DECIMAL` | `decimal.Decimal` | `decimal.Decimal` |
+| `DATE` | `datetime.date` | `datetime.date` |
+| `TIME` | `datetime.time` | `datetime.time` |
+| `TIMESTAMP` | `datetime.datetime` | `datetime.datetime` |
+| `TIMESTAMP_LTZ` | `datetime.datetime` | `datetime.datetime` |
+| `INTERVAL YEAR TO MONTH` | `int` | Not supported |
+| `INTERVAL DAY TO SECOND` | `datetime.timedelta` | Not supported |
+| `ARRAY` | `list` | `numpy.ndarray` |
+| `MULTISET` | `list` | Not supported |
+| `MAP` | `dict` | Not supported |
+| `ROW` | `pyflink.common.Row` | `dict` |
+
+#### Physical Hints
+
+Physical hints are required at the edges of the table ecosystem where the SQL-based type system ends and
+programming-specific data types are required. Hints indicate the data format that an implementation
+expects.
+
+For example, a data source could express that it produces values for logical `TIMESTAMP`s using a `java.sql.Timestamp` class
+instead of using `java.time.LocalDateTime` which would be the default. With this information, the runtime is able to convert
+the produced class into its internal data format. In return, a data sink can declare the data format it consumes from the runtime.
+
+Here are some examples of how to declare a bridging conversion class:
+
+{{< tabs "hints" >}}
+{{< tab "Java" >}}
+```java
+// tell the runtime to not produce or consume java.time.LocalDateTime instances
+// but java.sql.Timestamp
+DataType t = DataTypes.TIMESTAMP(3).bridgedTo(java.sql.Timestamp.class);
+
+// tell the runtime to not produce or consume boxed integer arrays
+// but primitive int arrays
+DataType t = DataTypes.ARRAY(DataTypes.INT().notNull()).bridgedTo(int[].class);
+```
+{{< /tab >}}
+{{< tab "Scala" >}}
+```scala
+// tell the runtime to not produce or consume java.time.LocalDateTime instances
+// but java.sql.Timestamp
+val t: DataType = DataTypes.TIMESTAMP(3).bridgedTo(classOf[java.sql.Timestamp])
+
+// tell the runtime to not produce or consume boxed integer arrays
+// but primitive int arrays
+val t: DataType = DataTypes.ARRAY(DataTypes.INT().notNull()).bridgedTo(classOf[Array[Int]])
+```
+{{< /tab >}}
+{{< /tabs >}}
+
+<span class="label label-danger">Attention</span> Please note that physical hints are usually only required if the
+API is extended. Users of predefined sources/sinks/functions do not need to define such hints. Hints within
+a table program (e.g. `field.cast(TIMESTAMP(3).bridgedTo(Timestamp.class))`) are ignored.
+
+List of Data Types
+------------------
+
+This section lists all pre-defined data types.
+{{< tabs "datatypesimport" >}}
+{{< tab "Java/Scala" >}}
+For the JVM-based Table API those types are also available in `org.apache.flink.table.api.DataTypes`.
+{{< /tab >}}
+{{< tab "Python" >}}
+For the Python Table API, those types are available in `pyflink.table.types.DataTypes`.
+{{< /tab >}}
+{{< /tabs >}}
+
+The default planner supports the following set of SQL types:
+
+| Data Type        | Remarks for Data Type                              |
+|:-----------------|:---------------------------------------------------|
+| `CHAR`           |                                                    |
+| `VARCHAR`        |                                                    |
+| `STRING`         |                                                    |
+| `BOOLEAN`        |                                                    |
+| `BINARY`         |                                                    |
+| `VARBINARY`      |                                                    |
+| `BYTES`          |                                                    |
+| `DECIMAL`        | Supports fixed precision and scale.                |
+| `DESCRIPTOR`     | Only supported for process table functions (PTFs). |
+| `TINYINT`        |                                                    |
+| `SMALLINT`       |                                                    |
+| `INTEGER`        |                                                    |
+| `BIGINT`         |                                                    |
+| `FLOAT`          |                                                    |
+| `DOUBLE`         |                                                    |
+| `DATE`           |                                                    |
+| `TIME`           | Supports only a precision of `0`.                  |
+| `TIMESTAMP`      |                                                    |
+| `TIMESTAMP_LTZ`  |                                                    |
+| `INTERVAL`       | Supports only interval of `MONTH` and `SECOND(3)`. |
+| `ARRAY`          |                                                    |
+| `MULTISET`       |                                                    |
+| `MAP`            |                                                    |
+| `ROW`            |                                                    |
+| `RAW`            |                                                    |
+| Structured types | Only exposed in user-defined functions yet.        |
+| `VARIANT`        |                                                    |
+| `BITMAP`         |                                                    |
+
+### Character Strings
+
+#### `CHAR`
+
+Data type of a fixed-length character string.
+
+**Declaration**
+
+{{< tabs "d937c413-bace-4c17-9bc0-8899dac482ae" >}}
+{{< tab "SQL" >}}
+```text
+CHAR
+CHAR(n)
+```
+{{< /tab >}}
+{{< tab "Java/Scala" >}}
+```java
+DataTypes.CHAR(n)
+```
+
+**Bridging to JVM Types**
+
+| Java Type                               | Input | Output | Remarks                  |
+|:----------------------------------------|:-----:|:------:|:-------------------------|
+|`java.lang.String`                       | X     | X      | *Default*                |
+|`byte[]`                                 | X     | X      | Assumes UTF-8 encoding.  |
+|`org.apache.flink.table.data.StringData` | X     | X      | Internal data structure. |
+
+{{< /tab >}}
+{{< tab "Python" >}}
+```python
+Not supported.
+```
+{{< /tab >}}
+{{< /tabs >}}
+
+
+The type can be declared using `CHAR(n)` where `n` is the number of code points. `n` must have a value between `1`
+and `2,147,483,647` (both inclusive). If no length is specified, `n` is equal to `1`.
+
+
+#### `VARCHAR` / `STRING`
+
+Data type of a variable-length character string.
+
+**Declaration**
+
+{{< tabs "3e9c301a-f481-477f-aaa1-f26239481b74" >}}
+{{< tab "SQL" >}}
+```text
+VARCHAR
+VARCHAR(n)
+
+STRING
+```
+{{< /tab >}}
+{{< tab "Java/Scala" >}}
+```java
+DataTypes.VARCHAR(n)
+
+DataTypes.STRING()
+```
+
+**Bridging to JVM Types**
+
+| Java Type                               | Input | Output | Remarks                  |
+|:----------------------------------------|:-----:|:------:|:-------------------------|
+|`java.lang.String`                       | X     | X      | *Default*                |
+|`byte[]`                                 | X     | X      | Assumes UTF-8 encoding.  |
+|`org.apache.flink.table.data.StringData` | X     | X      | Internal data structure. |
+
+{{< /tab >}}
+{{< tab "Python" >}}
+```python
+DataTypes.VARCHAR(n)
+
+DataTypes.STRING()
+```
+
+<span class="label label-danger">Attention</span> The specified maximum number of code points `n` in `DataTypes.VARCHAR(n)` must be `2,147,483,647` currently.
+{{< /tab >}}
+{{< /tabs >}}
+
+The type can be declared using `VARCHAR(n)` where `n` is the maximum number of code points. `n` must have a value
+between `1` and `2,147,483,647` (both inclusive). If no length is specified, `n` is equal to `1`.
+
+`STRING` is a synonym for `VARCHAR(2147483647)`.
+
+### Binary Strings
+
+#### `BINARY`
+
+Data type of a fixed-length binary string (=a sequence of bytes).
+
+**Declaration**
+
+{{< tabs "2152b311-40e1-4d92-8b99-1b84a4692073" >}}
+{{< tab "SQL" >}}
+```text
+BINARY
+BINARY(n)
+```
+{{< /tab >}}
+{{< tab "Java/Scala" >}}
+```java
+DataTypes.BINARY(n)
+```
+
+**Bridging to JVM Types**
+
+| Java Type          | Input | Output | Remarks                 |
+|:-------------------|:-----:|:------:|:------------------------|
+|`byte[]`            | X     | X      | *Default*               |
+
+{{< /tab >}}
+{{< tab "Python" >}}
+```python
+Not supported.
+```
+{{< /tab >}}
+{{< /tabs >}}
+
+The type can be declared using `BINARY(n)` where `n` is the number of bytes. `n` must have a value
+between `1` and `2,147,483,647` (both inclusive). If no length is specified, `n` is equal to `1`.
+
+
+#### `VARBINARY` / `BYTES`
+
+Data type of a variable-length binary string (=a sequence of bytes).
+
+**Declaration**
+
+{{< tabs "5761633b-a968-4328-81f8-1f36ab67bcab" >}}
+{{< tab "SQL" >}}
+```text
+VARBINARY
+VARBINARY(n)
+
+BYTES
+```
+{{< /tab >}}
+{{< tab "Java/Scala" >}}
+```java
+DataTypes.VARBINARY(n)
+
+DataTypes.BYTES()
+```
+
+**Bridging to JVM Types**
+
+| Java Type          | Input | Output | Remarks                 |
+|:-------------------|:-----:|:------:|:------------------------|
+|`byte[]`            | X     | X      | *Default*               |
+
+{{< /tab >}}
+{{< tab "Python" >}}
+```python
+DataTypes.VARBINARY(n)
+
+DataTypes.BYTES()
+```
+
+<span class="label label-danger">Attention</span> The specified maximum number of bytes `n` in `DataTypes.VARBINARY(n)` must be `2,147,483,647` currently.
+{{< /tab >}}
+{{< /tabs >}}
+
+The type can be declared using `VARBINARY(n)` where `n` is the maximum number of bytes. `n` must
+have a value between `1` and `2,147,483,647` (both inclusive). If no length is specified, `n` is
+equal to `1`.
+
+`BYTES` is a synonym for `VARBINARY(2147483647)`.
+
+### Exact Numerics
+
+#### `DECIMAL`
+
+Data type of a decimal number with fixed precision and scale.
+
+**Declaration**
+
+{{< tabs "923d4502-4db8-462d-9d4c-4d3d3445ddac" >}}
+{{< tab "SQL" >}}
+```text
+DECIMAL
+DECIMAL(p)
+DECIMAL(p, s)
+
+DEC
+DEC(p)
+DEC(p, s)
+
+NUMERIC
+NUMERIC(p)
+NUMERIC(p, s)
+```
+{{< /tab >}}
+{{< tab "Java/Scala" >}}
+```java
+DataTypes.DECIMAL(p, s)
+```
+
+**Bridging to JVM Types**
+
+| Java Type                                | Input | Output | Remarks                  |
+|:-----------------------------------------|:-----:|:------:|:-------------------------|
+|`java.math.BigDecimal`                    | X     | X      | *Default*                |
+|`org.apache.flink.table.data.DecimalData` | X     | X      | Internal data structure. |
+
+{{< /tab >}}
+{{< tab "Python" >}}
+```python
+DataTypes.DECIMAL(p, s)
+```
+
+<span class="label label-danger">Attention</span> The `precision` and `scale` specified in `DataTypes.DECIMAL(p, s)` must be `38` and `18` separately currently.
+{{< /tab >}}
+{{< /tabs >}}
+
+The type can be declared using `DECIMAL(p, s)` where `p` is the number of digits in a
+number (*precision*) and `s` is the number of digits to the right of the decimal point
+in a number (*scale*). `p` must have a value between `1` and `38` (both inclusive). `s`
+must have a value between `0` and `p` (both inclusive). The default value for `p` is 10.
+The default value for `s` is `0`.
+
+**Note**: The definitions of precision and scale are inconsistent between the SQL standard and
+Java's BigDecimal. For example, the exact value 0.011 is treated as `DECIMAL(4, 3)` in SQL, whereas
+its BigDecimal representation has a precision of 2 and a scale of 3.
+
+`NUMERIC(p, s)` and `DEC(p, s)` are synonyms for this type.
+
+#### `TINYINT`
+
+Data type of a 1-byte signed integer with values from `-128` to `127`.
+
+**Declaration**
+
+{{< tabs "5754537d-071a-4793-a6a4-bf61c546799c" >}}
+{{< tab "SQL" >}}
+```text
+TINYINT
+```
+{{< /tab >}}
+{{< tab "Java/Scala" >}}
+```java
+DataTypes.TINYINT()
+```
+
+**Bridging to JVM Types**
+
+| Java Type          | Input | Output | Remarks                                      |
+|:-------------------|:-----:|:------:|:---------------------------------------------|
+|`java.lang.Byte`    | X     | X      | *Default*                                    |
+|`byte`              | X     | (X)    | Output only if type is not nullable.         |
+
+{{< /tab >}}
+{{< tab "Python" >}}
+```python
+DataTypes.TINYINT()
+```
+{{< /tab >}}
+{{< /tabs >}}
+
+#### `SMALLINT`
+
+Data type of a 2-byte signed integer with values from `-32,768` to `32,767`.
+
+**Declaration**
+
+{{< tabs "4678d5ed-d2e1-4e47-bd74-7a2ce4e5f624" >}}
+{{< tab "SQL" >}}
+```text
+SMALLINT
+```
+{{< /tab >}}
+{{< tab "Java/Scala" >}}
+```java
+DataTypes.SMALLINT()
+```
+
+**Bridging to JVM Types**
+
+| Java Type          | Input | Output | Remarks                                      |
+|:-------------------|:-----:|:------:|:---------------------------------------------|
+|`java.lang.Short`   | X     | X      | *Default*                                    |
+|`short`             | X     | (X)    | Output only if type is not nullable.         |
+
+{{< /tab >}}
+{{< tab "Python" >}}
+```python
+DataTypes.SMALLINT()
+```
+{{< /tab >}}
+{{< /tabs >}}
+
+#### `INT`
+
+Data type of a 4-byte signed integer with values from `-2,147,483,648` to `2,147,483,647`.
+
+**Declaration**
+
+{{< tabs "68c86706-bd0c-4fdc-a113-950c6bd68402" >}}
+{{< tab "SQL" >}}
+```text
+INT
+
+INTEGER
+```
+{{< /tab >}}
+{{< tab "Java/Scala" >}}
+```java
+DataTypes.INT()
+```
+
+**Bridging to JVM Types**
+
+| Java Type          | Input | Output | Remarks                                      |
+|:-------------------|:-----:|:------:|:---------------------------------------------|
+|`java.lang.Integer` | X     | X      | *Default*                                    |
+|`int`               | X     | (X)    | Output only if type is not nullable.         |
+
+{{< /tab >}}
+{{< tab "Python" >}}
+```python
+DataTypes.INT()
+```
+{{< /tab >}}
+{{< /tabs >}}
+
+`INTEGER` is a synonym for this type.
+
+#### `BIGINT`
+
+Data type of an 8-byte signed integer with values from `-9,223,372,036,854,775,808` to
+`9,223,372,036,854,775,807`.
+
+**Declaration**
+
+{{< tabs "1506658c-be8d-472c-aacd-1479af0850fa" >}}
+{{< tab "SQL" >}}
+```text
+BIGINT
+```
+{{< /tab >}}
+{{< tab "Java/Scala" >}}
+```java
+DataTypes.BIGINT()
+```
+
+**Bridging to JVM Types**
+
+| Java Type          | Input | Output | Remarks                                      |
+|:-------------------|:-----:|:------:|:---------------------------------------------|
+|`java.lang.Long`    | X     | X      | *Default*                                    |
+|`long`              | X     | (X)    | Output only if type is not nullable.         |
+
+{{< /tab >}}
+{{< tab "Python" >}}
+```python
+DataTypes.BIGINT()
+```
+{{< /tab >}}
+{{< /tabs >}}
+
+### Approximate Numerics
+
+#### `FLOAT`
+
+Data type of a 4-byte single precision floating point number.
+
+Compared to the SQL standard, the type does not take parameters.
+
+**Declaration**
+
+{{< tabs "b0b09ce1-0ab5-4dda-983d-5cec7b9cd49f" >}}
+{{< tab "SQL" >}}
+```text
+FLOAT
+```
+{{< /tab >}}
+{{< tab "Java/Scala" >}}
+```java
+DataTypes.FLOAT()
+```
+
+**Bridging to JVM Types**
+
+| Java Type          | Input | Output | Remarks                                      |
+|:-------------------|:-----:|:------:|:---------------------------------------------|
+|`java.lang.Float`   | X     | X      | *Default*                                    |
+|`float`             | X     | (X)    | Output only if type is not nullable.         |
+
+{{< /tab >}}
+{{< tab "Python" >}}
+```python
+DataTypes.FLOAT()
+```
+{{< /tab >}}
+{{< /tabs >}}
+
+#### `DOUBLE`
+
+Data type of an 8-byte double precision floating point number.
+
+**Declaration**
+
+{{< tabs "10f7cbc5-8269-44d1-9295-9219ceb77a2f" >}}
+{{< tab "SQL" >}}
+```text
+DOUBLE
+
+DOUBLE PRECISION
+```
+{{< /tab >}}
+{{< tab "Java/Scala" >}}
+```java
+DataTypes.DOUBLE()
+```
+
+**Bridging to JVM Types**
+
+| Java Type          | Input | Output | Remarks                                      |
+|:-------------------|:-----:|:------:|:---------------------------------------------|
+|`java.lang.Double`  | X     | X      | *Default*                                    |
+|`double`            | X     | (X)    | Output only if type is not nullable.         |
+
+{{< /tab >}}
+{{< tab "Python" >}}
+```python
+DataTypes.DOUBLE()
+```
+{{< /tab >}}
+{{< /tabs >}}
+
+`DOUBLE PRECISION` is a synonym for this type.
+
+### Date and Time
+
+#### `DATE`
+
+Data type of a date consisting of `year-month-day` with values ranging from `0000-01-01`
+to `9999-12-31`.
+
+Compared to the SQL standard, the range starts at year `0000`.
+
+**Declaration**
+
+{{< tabs "ce6ab001-794e-4124-985b-d942bc6727e3" >}}
+{{< tab "SQL" >}}
+```text
+DATE
+```
+{{< /tab >}}
+{{< tab "Java/Scala" >}}
+```java
+DataTypes.DATE()
+```
+
+**Bridging to JVM Types**
+
+| Java Type            | Input | Output | Remarks                                      |
+|:---------------------|:-----:|:------:|:---------------------------------------------|
+|`java.time.LocalDate` | X     | X      | *Default*                                    |
+|`java.sql.Date`       | X     | X      |                                              |
+|`java.lang.Integer`   | X     | X      | Describes the number of days since epoch.    |
+|`int`                 | X     | (X)    | Describes the number of days since epoch.<br>Output only if type is not nullable. |
+
+{{< /tab >}}
+{{< tab "Python" >}}
+```python
+DataTypes.DATE()
+```
+{{< /tab >}}
+{{< /tabs >}}
+
+#### `TIME`
+
+Data type of a time *without* time zone consisting of `hour:minute:second[.fractional]` with
+up to nanosecond precision and values ranging from `00:00:00.000000000` to
+`23:59:59.999999999`.
+
+{{< tabs "time" >}}
+{{< tab "SQL/Java/Scala" >}}
+Compared to the SQL standard, leap seconds (`23:59:60` and `23:59:61`) are not supported as
+the semantics are closer to `java.time.LocalTime`. A time *with* time zone is not provided.
+{{< /tab >}}
+{{< tab "Python" >}}
+Compared to the SQL standard, leap seconds (`23:59:60` and `23:59:61`) are not supported.
+A time *with* time zone is not provided.
+{{< /tab >}}
+{{< /tabs >}}
+
+**Declaration**
+
+{{< tabs "c44284f9-1674-45e7-87b2-3e1da2e8a182" >}}
+{{< tab "SQL" >}}
+```text
+TIME
+TIME(p)
+```
+{{< /tab >}}
+{{< tab "Java/Scala" >}}
+```java
+DataTypes.TIME(p)
+```
+
+**Bridging to JVM Types**
+
+| Java Type            | Input | Output | Remarks                                             |
+|:---------------------|:-----:|:------:|:----------------------------------------------------|
+|`java.time.LocalTime` | X     | X      | *Default*                                           |
+|`java.sql.Time`       | X     | X      |                                                     |
+|`java.lang.Integer`   | X     | X      | Describes the number of milliseconds of the day.    |
+|`int`                 | X     | (X)    | Describes the number of milliseconds of the day.<br>Output only if type is not nullable. |
+|`java.lang.Long`      | X     | X      | Describes the number of nanoseconds of the day.     |
+|`long`                | X     | (X)    | Describes the number of nanoseconds of the day.<br>Output only if type is not nullable. |
+
+{{< /tab >}}
+{{< tab "Python" >}}
+```python
+DataTypes.TIME(p)
+```
+
+<span class="label label-danger">Attention</span> The `precision` specified in `DataTypes.TIME(p)` must be `0` currently.
+{{< /tab >}}
+{{< /tabs >}}
+
+The type can be declared using `TIME(p)` where `p` is the number of digits of fractional
+seconds (*precision*). `p` must have a value between `0` and `9` (both inclusive). If no
+precision is specified, `p` is equal to `0`.
+
+#### `TIMESTAMP`
+
+Data type of a timestamp *without* time zone consisting of `year-month-day hour:minute:second[.fractional]`
+with up to nanosecond precision and values ranging from `0000-01-01 00:00:00.000000000` to
+`9999-12-31 23:59:59.999999999`.
+
+{{< tabs "timestamps" >}}
+{{< tab "SQL/Java/Scala" >}}
+Compared to the SQL standard, leap seconds (`23:59:60` and `23:59:61`) are not supported as
+the semantics are closer to `java.time.LocalDateTime`.
+
+A conversion from and to `BIGINT` (a JVM `long` type) is not supported as this would imply a time
+zone. However, this type is time zone free. For more `java.time.Instant`-like semantics use
+`TIMESTAMP_LTZ`.
+{{< /tab >}}
+{{< tab "Python" >}}
+Compared to the SQL standard, leap seconds (`23:59:60` and `23:59:61`) are not supported.
+
+A conversion from and to `BIGINT` is not supported as this would imply a time zone.
+However, this type is time zone free. If you have such a requirement please use `TIMESTAMP_LTZ`.
+{{< /tab >}}
+{{< /tabs >}}
+
+**Declaration**
+
+{{< tabs "5ba9017d-ae5f-4129-b7d7-bed06e6e2598" >}}
+{{< tab "SQL" >}}
+```text
+TIMESTAMP
+TIMESTAMP(p)
+
+TIMESTAMP WITHOUT TIME ZONE
+TIMESTAMP(p) WITHOUT TIME ZONE
+```
+{{< /tab >}}
+{{< tab "Java/Scala" >}}
+```java
+DataTypes.TIMESTAMP(p)
+```
+
+**Bridging to JVM Types**
+
+| Java Type                                  | Input | Output | Remarks                  |
+|:-------------------------------------------|:-----:|:------:|:-------------------------|
+|`java.time.LocalDateTime`                   | X     | X      | *Default*                |
+|`java.sql.Timestamp`                        | X     | X      |                          |
+|`org.apache.flink.table.data.TimestampData` | X     | X      | Internal data structure. |
+
+{{< /tab >}}
+{{< tab "Python" >}}
+```python
+DataTypes.TIMESTAMP(p)
+```
+
+<span class="label label-danger">Attention</span> The `precision` specified in `DataTypes.TIMESTAMP(p)` must be `3` currently.
+{{< /tab >}}
+{{< /tabs >}}
+
+The type can be declared using `TIMESTAMP(p)` where `p` is the number of digits of fractional
+seconds (*precision*). `p` must have a value between `0` and `9` (both inclusive). If no precision
+is specified, `p` is equal to `6`.
+
+`TIMESTAMP(p) WITHOUT TIME ZONE` is a synonym for this type.
+
+#### `TIMESTAMP WITH TIME ZONE`
+
+Data type of a timestamp *with* time zone consisting of `year-month-day hour:minute:second[.fractional] zone`
+with up to nanosecond precision and values ranging from `0000-01-01 00:00:00.000000000 +14:59` to
+`9999-12-31 23:59:59.999999999 -14:59`.
+
+{{< tabs "timestamps" >}}
+{{< tab "SQL/Java/Scala" >}}
+Compared to the SQL standard, leap seconds (`23:59:60` and `23:59:61`) are not supported as the semantics
+are closer to `java.time.OffsetDateTime`.
+{{< /tab >}}
+{{< tab "Python" >}}
+Compared to the SQL standard, leap seconds (`23:59:60` and `23:59:61`) are not supported.
+{{< /tab >}}
+{{< /tabs >}}
+
+Compared to `TIMESTAMP_LTZ`, the time zone offset information is physically
+stored in every datum. It is used individually for every computation, visualization, or communication
+to external systems.
+
+**Declaration**
+
+{{< tabs "47663464-5865-44be-b23d-c03c9ec2b186" >}}
+{{< tab "SQL" >}}
+```text
+TIMESTAMP WITH TIME ZONE
+TIMESTAMP(p) WITH TIME ZONE
+```
+{{< /tab >}}
+{{< tab "Java/Scala" >}}
+```java
+DataTypes.TIMESTAMP_WITH_TIME_ZONE(p)
+```
+
+**Bridging to JVM Types**
+
+| Java Type                 | Input | Output | Remarks              |
+|:--------------------------|:-----:|:------:|:---------------------|
+|`java.time.OffsetDateTime` | X     | X      | *Default*            |
+|`java.time.ZonedDateTime`  | X     |        | Ignores the zone ID. |
+
+{{< /tab >}}
+{{< tab "Python" >}}
+```python
+Not supported.
+```
+{{< /tab >}}
+{{< /tabs >}}
+
+{{< tabs "timestamps" >}}
+{{< tab "SQL/Java/Scala" >}}
+The type can be declared using `TIMESTAMP(p) WITH TIME ZONE` where `p` is the number of digits of
+fractional seconds (*precision*). `p` must have a value between `0` and `9` (both inclusive). If no
+precision is specified, `p` is equal to `6`.
+{{< /tab >}}
+{{< tab "Python" >}}
+{{< /tab >}}
+{{< /tabs >}}
+
+#### `TIMESTAMP_LTZ`
+
+Data type of a timestamp *with local* time zone consisting of `year-month-day hour:minute:second[.fractional] zone`
+with up to nanosecond precision and values ranging from `0000-01-01 00:00:00.000000000 +14:59` to
+`9999-12-31 23:59:59.999999999 -14:59`.
+
+{{< tabs "timestamps" >}}
+{{< tab "SQL/Java/Scala" >}}
+Leap seconds (`23:59:60` and `23:59:61`) are not supported as the semantics are closer to `java.time.OffsetDateTime`.
+
+Compared to `TIMESTAMP WITH TIME ZONE`, the time zone offset information is not stored physically
+in every datum. Instead, the type assumes `java.time.Instant` semantics in UTC time zone at
+the edges of the table ecosystem. Every datum is interpreted in the local time zone configured in
+the current session for computation and visualization.
+{{< /tab >}}
+{{< tab "Python" >}}
+Leap seconds (`23:59:60` and `23:59:61`) are not supported.
+
+Compared to `TIMESTAMP WITH TIME ZONE`, the time zone offset information is not stored physically
+in every datum. 
+Every datum is interpreted in the local time zone configured in the current session for computation and visualization.
+{{< /tab >}}
+{{< /tabs >}}
+
+This type fills the gap between time zone free and time zone mandatory timestamp types by allowing
+the interpretation of UTC timestamps according to the configured session time zone.
+
+**Declaration**
+
+{{< tabs "75734ebe-7f16-4df8-83e9-99fcd2a28527" >}}
+{{< tab "SQL" >}}
+```text
+TIMESTAMP_LTZ
+TIMESTAMP_LTZ(p)
+
+TIMESTAMP WITH LOCAL TIME ZONE
+TIMESTAMP(p) WITH LOCAL TIME ZONE
+```
+{{< /tab >}}
+{{< tab "Java/Scala" >}}
+```java
+DataTypes.TIMESTAMP_LTZ(p)
+DataTypes.TIMESTAMP_WITH_LOCAL_TIME_ZONE(p)
+```
+
+**Bridging to JVM Types**
+
+| Java Type          | Input | Output | Remarks                                           |
+|:-------------------|:-----:|:------:|:--------------------------------------------------|
+|`java.time.Instant` | X     | X      | *Default*                                         |
+|`java.lang.Integer` | X     | X      | Describes the number of seconds since epoch.      |
+|`int`               | X     | (X)    | Describes the number of seconds since epoch.<br>Output only if type is not nullable. |
+|`java.lang.Long`    | X     | X      | Describes the number of milliseconds since epoch. |
+|`long`              | X     | (X)    | Describes the number of milliseconds since epoch.<br>Output only if type is not nullable. |
+|`java.sql.Timestamp`| X     | X      | Describes the number of milliseconds since epoch. |
+|`org.apache.flink.table.data.TimestampData` | X     | X      | Internal data structure. |
+
+{{< /tab >}}
+{{< tab "Python" >}}
+```python
+DataTypes.TIMESTAMP_LTZ(p)
+DataTypes.TIMESTAMP_WITH_LOCAL_TIME_ZONE(p)
+```
+
+<span class="label label-danger">Attention</span> The `precision` specified in `DataTypes.TIMESTAMP_LTZ(p)` must be `3` currently.
+{{< /tab >}}
+{{< /tabs >}}
+
+The type can be declared using `TIMESTAMP_LTZ(p)` where `p` is the number
+of digits of fractional seconds (*precision*). `p` must have a value between `0` and `9`
+(both inclusive). If no precision is specified, `p` is equal to `6`.
+
+`TIMESTAMP(p) WITH LOCAL TIME ZONE` is a synonym for this type.
+
+#### `INTERVAL YEAR TO MONTH`
+
+Data type for a group of year-month interval types.
+
+The type must be parameterized to one of the following resolutions:
+- interval of years,
+- interval of years to months,
+- or interval of months.
+
+An interval of year-month consists of `+years-months` with values ranging from `-9999-11` to
+`+9999-11`.
+
+The value representation is the same for all types of resolutions. For example, an interval
+of months of 50 is always represented in an interval-of-years-to-months format (with default
+year precision): `+04-02`.
+
+**Declaration**
+
+{{< tabs "6d3ddd2e-5751-45af-a153-aecfaf561f41" >}}
+{{< tab "SQL" >}}
+```text
+INTERVAL YEAR
+INTERVAL YEAR(p)
+INTERVAL YEAR(p) TO MONTH
+INTERVAL MONTH
+```
+{{< /tab >}}
+{{< tab "Java/Scala" >}}
+```java
+DataTypes.INTERVAL(DataTypes.YEAR())
+DataTypes.INTERVAL(DataTypes.YEAR(p))
+DataTypes.INTERVAL(DataTypes.YEAR(p), DataTypes.MONTH())
+DataTypes.INTERVAL(DataTypes.MONTH())
+```
+
+**Bridging to JVM Types**
+
+| Java Type          | Input | Output | Remarks                            |
+|:-------------------|:-----:|:------:|:-----------------------------------|
+|`java.time.Period`  | X     | X      | Ignores the `days` part. *Default* |
+|`java.lang.Integer` | X     | X      | Describes the number of months.    |
+|`int`               | X     | (X)    | Describes the number of months.<br>Output only if type is not nullable. |
+
+{{< /tab >}}
+{{< tab "Python" >}}
+```python
+DataTypes.INTERVAL(DataTypes.YEAR())
+DataTypes.INTERVAL(DataTypes.YEAR(p))
+DataTypes.INTERVAL(DataTypes.YEAR(p), DataTypes.MONTH())
+DataTypes.INTERVAL(DataTypes.MONTH())
+```
+{{< /tab >}}
+{{< /tabs >}}
+
+The type can be declared using the above combinations where `p` is the number of digits of years
+(*year precision*). `p` must have a value between `1` and `4` (both inclusive). If no year precision
+is specified, `p` is equal to `2`.
+
+#### `INTERVAL DAY TO SECOND`
+
+Data type for a group of day-time interval types.
+
+The type must be parameterized to one of the following resolutions with up to nanosecond precision:
+- interval of days,
+- interval of days to hours,
+- interval of days to minutes,
+- interval of days to seconds,
+- interval of hours,
+- interval of hours to minutes,
+- interval of hours to seconds,
+- interval of minutes,
+- interval of minutes to seconds,
+- or interval of seconds.
+
+An interval of day-time consists of `+days hours:months:seconds.fractional` with values ranging from
+`-999999 23:59:59.999999999` to `+999999 23:59:59.999999999`. The value representation is the same
+for all types of resolutions. For example, an interval of seconds of 70 is always represented in
+an interval-of-days-to-seconds format (with default precisions): `+00 00:01:10.000000`.
+
+**Declaration**
+
+{{< tabs "89aea284-08df-4671-b323-366f668304e7" >}}
+{{< tab "SQL" >}}
+```text
+INTERVAL DAY
+INTERVAL DAY(p1)
+INTERVAL DAY(p1) TO HOUR
+INTERVAL DAY(p1) TO MINUTE
+INTERVAL DAY(p1) TO SECOND(p2)
+INTERVAL HOUR
+INTERVAL HOUR TO MINUTE
+INTERVAL HOUR TO SECOND(p2)
+INTERVAL MINUTE
+INTERVAL MINUTE TO SECOND(p2)
+INTERVAL SECOND
+INTERVAL SECOND(p2)
+```
+{{< /tab >}}
+{{< tab "Java/Scala" >}}
+```java
+DataTypes.INTERVAL(DataTypes.DAY())
+DataTypes.INTERVAL(DataTypes.DAY(p1))
+DataTypes.INTERVAL(DataTypes.DAY(p1), DataTypes.HOUR())
+DataTypes.INTERVAL(DataTypes.DAY(p1), DataTypes.MINUTE())
+DataTypes.INTERVAL(DataTypes.DAY(p1), DataTypes.SECOND(p2))
+DataTypes.INTERVAL(DataTypes.HOUR())
+DataTypes.INTERVAL(DataTypes.HOUR(), DataTypes.MINUTE())
+DataTypes.INTERVAL(DataTypes.HOUR(), DataTypes.SECOND(p2))
+DataTypes.INTERVAL(DataTypes.MINUTE())
+DataTypes.INTERVAL(DataTypes.MINUTE(), DataTypes.SECOND(p2))
+DataTypes.INTERVAL(DataTypes.SECOND())
+DataTypes.INTERVAL(DataTypes.SECOND(p2))
+```
+
+**Bridging to JVM Types**
+
+| Java Type           | Input | Output | Remarks                               |
+|:--------------------|:-----:|:------:|:--------------------------------------|
+|`java.time.Duration` | X     | X      | *Default*                             |
+|`java.lang.Long`     | X     | X      | Describes the number of milliseconds. |
+|`long`               | X     | (X)    | Describes the number of milliseconds.<br>Output only if type is not nullable. |
+
+{{< /tab >}}
+{{< tab "Python" >}}
+```python
+DataTypes.INTERVAL(DataTypes.DAY())
+DataTypes.INTERVAL(DataTypes.DAY(p1))
+DataTypes.INTERVAL(DataTypes.DAY(p1), DataTypes.HOUR())
+DataTypes.INTERVAL(DataTypes.DAY(p1), DataTypes.MINUTE())
+DataTypes.INTERVAL(DataTypes.DAY(p1), DataTypes.SECOND(p2))
+DataTypes.INTERVAL(DataTypes.HOUR())
+DataTypes.INTERVAL(DataTypes.HOUR(), DataTypes.MINUTE())
+DataTypes.INTERVAL(DataTypes.HOUR(), DataTypes.SECOND(p2))
+DataTypes.INTERVAL(DataTypes.MINUTE())
+DataTypes.INTERVAL(DataTypes.MINUTE(), DataTypes.SECOND(p2))
+DataTypes.INTERVAL(DataTypes.SECOND())
+DataTypes.INTERVAL(DataTypes.SECOND(p2))
+```
+{{< /tab >}}
+{{< /tabs >}}
+
+The type can be declared using the above combinations where `p1` is the number of digits of days
+(*day precision*) and `p2` is the number of digits of fractional seconds (*fractional precision*).
+`p1` must have a value between `1` and `6` (both inclusive). `p2` must have a value between `0`
+and `9` (both inclusive). If no `p1` is specified, it is equal to `2` by default. If no `p2` is
+specified, it is equal to `6` by default.
+
+### Constructed Data Types
+
+#### `ARRAY`
+
+Data type of an array of elements with same subtype.
+
+Compared to the SQL standard, the maximum cardinality of an array cannot be specified but is
+fixed at `2,147,483,647`. Also, any valid type is supported as a subtype.
+
+**Declaration**
+
+{{< tabs "74fa3a61-58ee-4ba6-b757-d0a401f20f7a" >}}
+{{< tab "SQL" >}}
+```text
+ARRAY<t>
+t ARRAY
+```
+{{< /tab >}}
+{{< tab "Java/Scala" >}}
+```java
+DataTypes.ARRAY(t)
+```
+
+**Bridging to JVM Types**
+
+| Java Type                              | Input | Output | Remarks                           |
+|:---------------------------------------|:-----:|:------:|:----------------------------------|
+|*t*`[]`                                 | (X)   | (X)    | Depends on the subtype. *Default* |
+| `java.util.List<t>`                    | X     | X      |                                   |
+| *subclass* of `java.util.List<t>`      | X     |        |                                   |
+|`org.apache.flink.table.data.ArrayData` | X     | X      | Internal data structure.          |
+
+{{< /tab >}}
+{{< tab "Python" >}}
+```python
+DataTypes.ARRAY(t)
+```
+{{< /tab >}}
+{{< /tabs >}}
+
+The type can be declared using `ARRAY<t>` where `t` is the data type of the contained
+elements.
+
+`t ARRAY` is a synonym for being closer to the SQL standard. For example, `INT ARRAY` is
+equivalent to `ARRAY<INT>`.
+
+#### `MAP`
+
+Data type of an associative array that maps keys (including `NULL`) to values (including `NULL`). A map
+cannot contain duplicate keys; each key can map to at most one value.
+
+There is no restriction of element types; it is the responsibility of the user to ensure uniqueness.
+
+The map type is an extension to the SQL standard.
+
+**Declaration**
+
+{{< tabs "a1a3a740-4781-4098-9cef-ef860e728514" >}}
+{{< tab "SQL" >}}
+```text
+MAP<kt, vt>
+```
+{{< /tab >}}
+{{< tab "Java/Scala" >}}
+```java
+DataTypes.MAP(kt, vt)
+```
+
+**Bridging to JVM Types**
+
+| Java Type                             | Input | Output | Remarks                  |
+|:--------------------------------------|:-----:|:------:|:-------------------------|
+| `java.util.Map<kt, vt>`               | X     | X      | *Default*                |
+| *subclass* of `java.util.Map<kt, vt>` | X     |        |                          |
+|`org.apache.flink.table.data.MapData`  | X     | X      | Internal data structure. |
+
+{{< /tab >}}
+{{< tab "Python" >}}
+```python
+DataTypes.MAP(kt, vt)
+```
+{{< /tab >}}
+{{< /tabs >}}
+
+The type can be declared using `MAP<kt, vt>` where `kt` is the data type of the key elements
+and `vt` is the data type of the value elements.
+
+#### `MULTISET`
+
+Data type of a multiset (=bag). Unlike a set, it allows for multiple instances for each of its
+elements with a common subtype. Each unique value (including `NULL`) is mapped to some multiplicity.
+
+There is no restriction of element types; it is the responsibility of the user to ensure uniqueness.
+
+**Declaration**
+
+{{< tabs "a6db836a-7554-4dab-8f5f-3fefabb4fc27" >}}
+{{< tab "SQL" >}}
+```text
+MULTISET<t>
+t MULTISET
+```
+{{< /tab >}}
+{{< tab "Java/Scala" >}}
+```java
+DataTypes.MULTISET(t)
+```
+
+**Bridging to JVM Types**
+
+| Java Type                             | Input | Output | Remarks                                                  |
+|:--------------------------------------|:-----:|:------:|:---------------------------------------------------------|
+|`java.util.Map<t, java.lang.Integer>`  | X     | X      | Assigns each value to an integer multiplicity. *Default* |
+| *subclass* of `java.util.Map<t, java.lang.Integer>>` | X     |        |                                           |
+|`org.apache.flink.table.data.MapData`  | X     | X      | Internal data structure.                                 |
+
+{{< /tab >}}
+{{< tab "Python" >}}
+```python
+DataTypes.MULTISET(t)
+```
+{{< /tab >}}
+{{< /tabs >}}
+
+The type can be declared using `MULTISET<t>` where `t` is the data type
+of the contained elements.
+
+`t MULTISET` is a synonym for being closer to the SQL standard. For example, `INT MULTISET` is
+equivalent to `MULTISET<INT>`.
+
+#### `ROW`
+
+Data type of a sequence of fields.
+
+A field consists of a field name, field type, and an optional description. The most specific type
+of a row of a table is a row type. In this case, each column of the row corresponds to the field
+of the row type that has the same ordinal position as the column.
+
+Compared to the SQL standard, an optional field description simplifies the handling with complex
+structures.
+
+A row type is similar to the `STRUCT` type known from other non-standard-compliant frameworks.
+
+**Declaration**
+
+{{< tabs "d81eee80-a9a8-421e-b976-977de85bde77" >}}
+{{< tab "SQL" >}}
+```sql
+ROW<n0 t0, n1 t1, ...>
+ROW<n0 t0 'd0', n1 t1 'd1', ...>
+
+ROW(n0 t0, n1 t1, ...)
+ROW(n0 t0 'd0', n1 t1 'd1', ...)
+```
+{{< /tab >}}
+{{< tab "Java/Scala" >}}
+```java
+DataTypes.ROW(DataTypes.FIELD(n0, t0), DataTypes.FIELD(n1, t1), ...)
+DataTypes.ROW(DataTypes.FIELD(n0, t0, d0), DataTypes.FIELD(n1, t1, d1), ...)
+```
+
+**Bridging to JVM Types**
+
+| Java Type                            | Input | Output | Remarks                  |
+|:-------------------------------------|:-----:|:------:|:-------------------------|
+|`org.apache.flink.types.Row`          | X     | X      | *Default*                |
+|`org.apache.flink.table.data.RowData` | X     | X      | Internal data structure. |
+
+{{< /tab >}}
+{{< tab "Python" >}}
+```python
+DataTypes.ROW([DataTypes.FIELD(n0, t0), DataTypes.FIELD(n1, t1), ...])
+DataTypes.ROW([DataTypes.FIELD(n0, t0, d0), DataTypes.FIELD(n1, t1, d1), ...])
+```
+{{< /tab >}}
+{{< /tabs >}}
+
+The type can be declared using `ROW<n0 t0 'd0', n1 t1 'd1', ...>` where `n` is the unique name of
+a field, `t` is the logical type of a field, `d` is the description of a field.
+
+`ROW(...)` is a synonym for being closer to the SQL standard. For example, `ROW(myField INT, myOtherField BOOLEAN)` is
+equivalent to `ROW<myField INT, myOtherField BOOLEAN>`.
+
+### User-Defined Data Types
+
+#### `STRUCTURED`
+
+Data type for a user-defined object.
+
+Compared to `ROW`, which may also be considered a "struct-like" type, structured types are distinguishable even if they
+contain the same set of fields. For example, `Visit(amount DOUBLE)` is distinct from `Interaction(amount DOUBLE)` due
+its identifier.
+
+Similar to classes in object-oriented programming languages, structured types are identified by a class name and contain
+zero, one or more attributes. Each attribute has a name, a type, and an optional description. A type cannot be defined
+in such a way that one of its attribute types (transitively) refers to itself.
+
+Structured types are internally converted by the system into suitable data structures. Serialization and equality checks
+are managed by the system based on the logical type.
+
+{{< tabs "udt" >}}
+{{< tab "SQL" >}}
+```sql
+STRUCTURED<'c', n0 t0, n1 t1, ...>
+STRUCTURED<'c', n0 t0, n1 t1 'd1', ...>
+```
+The type can be declared using `STRUCTURED<'c', n0 t0 'd0', n1 t1 'd1', ...>` where `c` is the class name, `n` is the
+unique name of a field, `t` is the logical type of a field, `d` is the optional description of a field.
+{{< /tab >}}
+
+{{< tab "Java/Scala" >}}
+Usually structured types are defined **inline** and can be reflectively extracted from a corresponding implementation class.
+For example, in the signature of an `eval()` method for functions. This is useful when programmatically defining a table
+program. They enable reusing existing JVM classes without manually defining the schema of a data type again.
+
+If the class name matches a class in the classpath, the system will convert a structured object to a JVM object at the edges
+of the table ecosystem (e.g. when bridging to a function or connector). The implementation class must provide either a
+zero-argument constructor or a full constructor that assigns all attributes.
+
+But the class name does not need to be resolvable in the classpath, it may be used solely to distinguish between objects with
+identical attribute sets. However, in Table API and UDF calls, the system will attempt to resolve the class name to an
+actual implementation class. If resolution fails, `Row` is used as a fallback.
+
+Inline structured types can be created from regular POJOs (Plain Old Java Objects) if the implementation class meets the
+following requirements:
+- The class must be globally accessible which means it must be declared `public`, `static`, and not `abstract`.
+- The class must offer a default constructor with zero arguments or a full constructor that assigns all
+fields.
+- All fields of the class must be readable by either `public` declaration or a getter that follows common
+coding style such as `getField()`, `isField()`, `field()`.
+- All fields of the class must be writable by either `public` declaration, fully assigning constructor,
+or a setter that follows common coding style such as `setField(...)`, `field(...)`.
+- All fields must be mapped to a data type either implicitly via reflective extraction or explicitly
+using the `@DataTypeHint` [annotations](#data-type-annotations).
+- Fields that are declared `static` or `transient` are ignored.
+
+The reflective extraction supports arbitrary nesting of fields as long as a field type does not
+(transitively) refer to itself.
+
+The declared field class (e.g. `public int age;`) must be contained in the list of supported JVM
+bridging classes defined for every data type in this document (e.g. `java.lang.Integer` or `int` for `INT`).
+
+For some classes an annotation is required in order to map the class to a data type (e.g. `@DataTypeHint("DECIMAL(10, 2)")`
+to assign a fixed precision and scale for `java.math.BigDecimal`).
+{{< /tab >}}
+{{< tab "Python" >}}
+```python
+Not supported.
+```
+{{< /tab >}}
+{{< /tabs >}}
+
+**Declaration**
+
+{{< tabs "c5e5527b-b09d-4dc5-9549-8fd2bfc7cc2a" >}}
+{{< tab "Java/Scala" >}}
+Structured types are usually declared via their implementation classes:
+
+```java
+// A simple POJO that qualifies as a structured type.
+// Note: Without a fully assigning constructor, the order of fields will be alphabetical.
+// The final data type will be:
+// STRUCTURED<'com.myorg.Customer', active BOOLEAN, id INT NOT NULL, name STRING, properties MAP<STRING, STRING>>
+class Customer {
+  public int id;
+  public String name;
+  public Map<String, String> properties;
+  public boolean active;
+}
+
+// A POJO with a fully assigning constructor defining the field order.
+// The final data type will be:
+// STRUCTURED<'com.myorg.Customer', id INT NOT NULL, name STRING, properties MAP<STRING, STRING>, active BOOLEAN>
+class Customer {
+  public int id;
+  public String name;
+  public Map<String, String> properties;
+  public boolean active;
+
+  public Customer(int id, String name, Map<String, String> properties, boolean active) {
+    this.id = id;
+    this.name = name;
+    this.properties = properties;
+    this.active = active;
+  }
+}
+
+// A POJO that uses the @DataTypeHint annotations for supporting the reflective extraction.
+// The final data type will be:
+// STRUCTURED<'com.myorg.Customer', age INT NOT NULL, modelClass RAW(...), name STRING, totalBalance DECIMAL(10, 2)>
+class Customer {
+
+    // extract fields automatically
+    public int age;
+    public String name;
+
+    // enrich the extraction with precision information
+    public @DataTypeHint("DECIMAL(10, 2)") BigDecimal totalBalance;
+
+    // enrich the extraction with forcing using RAW types
+    public @DataTypeHint("RAW") Class<?> modelClass;
+}
+```
+
+Or via explicit declaration:
+```java
+// Provide an implementation class
+DataTypes.STRUCTURED(MyPojo.class, DataTypes.FIELD(n0, t0), DataTypes.FIELD(n1, t1), ...);
+
+// Provide a class name only, the class is resolved only if available in the classpath
+DataTypes.STRUCTURED("com.myorg.MyPojo", DataTypes.FIELD(n0, t0), DataTypes.FIELD(n1, t1), ...);
+
+// Full example
+DataTypes.STRUCTURED(
+  Customer.class,
+  DataTypes.FIELD("age", DataTypes.INT().notNull()),
+  DataTypes.FIELD("name", DataTypes.STRING())
+);
+```
+
+Or via explicit extraction:
+```java
+DataTypes.of(Class);
+
+// For example:
+DataTypes.of(Customer.class);
+```
+
+**Bridging to JVM Types**
+
+| Java Type                            | Input | Output | Remarks                                 |
+|:-------------------------------------|:-----:|:------:|:----------------------------------------|
+|*class*                               | X     | X      | Originating class or subclasses (for input) or <br>superclasses (for output). *Default* |
+|`org.apache.flink.types.Row`          | X     | X      | Represent the structured type as a row. |
+|`org.apache.flink.table.data.RowData` | X     | X      | Internal data structure.                |
+
+{{< /tab >}}
+{{< tab "Python" >}}
+```python
+Not supported.
+```
+{{< /tab >}}
+{{< /tabs >}}
+
+### Other Data Types
+
+#### `BOOLEAN`
+
+Data type of a boolean with a (possibly) three-valued logic of `TRUE`, `FALSE`, and `UNKNOWN`.
+
+**Declaration**
+
+{{< tabs "8dfc33fb-c7e5-43c4-ade0-bfc197d46aef" >}}
+{{< tab "SQL" >}}
+```text
+BOOLEAN
+```
+{{< /tab >}}
+{{< tab "Java/Scala" >}}
+```java
+DataTypes.BOOLEAN()
+```
+
+**Bridging to JVM Types**
+
+| Java Type          | Input | Output | Remarks                              |
+|:-------------------|:-----:|:------:|:-------------------------------------|
+|`java.lang.Boolean` | X     | X      | *Default*                            |
+|`boolean`           | X     | (X)    | Output only if type is not nullable. |
+
+{{< /tab >}}
+{{< tab "Python" >}}
+```python
+DataTypes.BOOLEAN()
+```
+{{< /tab >}}
+{{< /tabs >}}
+
+#### `DESCRIPTOR`
+
+Data type for describing an arbitrary, unvalidated list of columns.
+
+This type is the return type of calls to ``DESCRIPTOR(`c0`, `c1`)``. The type is
+intended to be used in arguments of process table functions (PTFs).
+
+The runtime does not support this type. It is a pure helper type during translation
+and planning. Table columns cannot be declared with this type. Functions cannot declare
+return types of this type.
+
+**Declaration**
+
+{{< tabs "25c30432-8460-441d-a036-9416d8202882" >}}
+{{< tab "SQL" >}}
+```text
+DESCRIPTOR
+```
+{{< /tab >}}
+{{< tab "Java/Scala" >}}
+```java
+DataTypes.DESCRIPTOR()
+```
+
+**Bridging to JVM Types**
+
+| Java Type                            | Input | Output | Remarks    |
+|:-------------------------------------|:-----:|:------:|:-----------|
+| `org.apache.flink.types.ColumnList`  | X     | X      | *Default*  |
+
+{{< /tab >}}
+{{< /tabs >}}
+
+#### `VARIANT`
+
+Data type of semi-structured data.
+
+The type supports storing any semi-structured data, including `ARRAY`, `MAP`(with keys of type 
+`STRING`), and scalar types. The data type of the fields are stored in the data structure, which is 
+close to the semantics of JSON. Compared to `ROW` and `STRUCTURED` type, `VARIANT` type has the 
+flexibility to support highly nested and evolving schema.
+
+`VARIANT` allows for deeply nested data structures, such as arrays within arrays, maps within maps, 
+or combinations of both. This capability makes `VARIANT` ideal for scenarios where data complexity 
+and nesting are significant.
+
+`VARIANT` allows schema evolution, enabling the storage of data with changing or unknown schemas 
+without requiring upfront schema definition. For example, if a new field is added to the data, it 
+can be directly incorporated into the `VARIANT` data without modifying the table schema. This is 
+particularly useful in dynamic environments where schemas may evolve over time.
+
+A `VARIANT` stores a single value of one of the following kinds: `NULL`, `BOOLEAN`, `TINYINT`,
+`SMALLINT`, `INT`, `BIGINT`, `FLOAT`, `DOUBLE`, `DECIMAL` (up to precision 38), `STRING`, `DATE`,
+`TIME`, `TIMESTAMP`, `TIMESTAMP_LTZ`, `BYTES`, `UUID`, or a nested array or object. `TIME` is stored
+with microsecond precision, and `TIMESTAMP` and `TIMESTAMP_LTZ` with microsecond or nanosecond
+precision.
+
+The `PARSE_JSON` function produces only the kinds that JSON syntax can express:
+
+| JSON input                                          | Stored `VARIANT` kind                           |
+|-----------------------------------------------------|-------------------------------------------------|
+| `null`                                              | `NULL`                                          |
+| `true` / `false`                                    | `BOOLEAN`                                       |
+| Integer within the 64-bit signed range              | smallest of `TINYINT`/`SMALLINT`/`INT`/`BIGINT` |
+| Integer beyond 64-bit, up to 38 significant digits  | `DECIMAL`                                       |
+| Decimal in plain notation, up to precision/scale 38 | `DECIMAL`                                       |
+| Number in scientific notation, e.g. `1.5e3`         | `DOUBLE`                                        |
+| Number exceeding 38 digits of precision or scale    | `DOUBLE`                                        |
+| String                                              | `STRING`                                        |
+| Array                                               | array (elements encoded by the same rules)      |
+| Object                                              | object (values encoded by the same rules)       |
+
+Because JSON has no literal for them, `PARSE_JSON` never produces `FLOAT`, `DATE`, `TIME`,
+`TIMESTAMP`, `TIMESTAMP_LTZ`, `BYTES`, or `UUID`.
+
+The JSON specification has no `NaN` or infinity literals, so `PARSE_JSON('NaN')`,
+`PARSE_JSON('Infinity')`, and `PARSE_JSON('-Infinity')` fail. `PARSE_JSON('1e400')` fails as well
+because a value outside the `DOUBLE` range cannot be stored as a finite number. In all of these
+cases `TRY_PARSE_JSON` returns `NULL`.
+To store one of these values, cast the number to a `VARIANT` instead of parsing it, for example
+`CAST(CAST('Infinity' AS DOUBLE) AS VARIANT)`.
+
+`PARSE_XML` maps an XML document to an object, see
+[XML to VARIANT]({{< ref "docs/sql/functions/built-in-functions" >}}#xml-to-variant).
+
+A `VARIANT` can be converted to a scalar type with `CAST` or `TRY_CAST`. A cast succeeds only when
+the target holds the stored value without reinterpreting it, so a value is never wrapped or rounded
+to make it fit. Otherwise `CAST` fails and `TRY_CAST` returns `NULL`. `VARIANT_GET` and
+`TRY_VARIANT_GET` read the value at a
+[path]({{< ref "docs/sql/functions/built-in-functions" >}}#variant-paths) such as `'$.items[0].qty'`
+and cast it by the same rules, returning `NULL` when nothing is at the path.
+
+| Stored kind     | Succeeds for                                        |
+|-----------------|-----------------------------------------------------|
+| numeric kinds   | any numeric target that holds the value             |
+| `BOOLEAN`       | `BOOLEAN`                                           |
+| `DATE`          | `DATE`                                              |
+| `TIME`          | `TIME(p)`                                           |
+| `TIMESTAMP`     | `TIMESTAMP(p)`                                      |
+| `TIMESTAMP_LTZ` | `TIMESTAMP_LTZ(p)`                                  |
+| `BYTES`         | `BINARY(n)`, `VARBINARY(n)`, and a character string |
+| `UUID`          | `UUID`                                              |
+| any scalar      | `STRING`, `CHAR(n)`, `VARCHAR(n)`                   |
+| `NULL`          | SQL `NULL` for any nullable target                  |
+
+The conditions above mean:
+
+- An **integer target** needs the value in range and without a fractional part, so
+  `PARSE_JSON('7.0')` reaches `INT` as `7` while `PARSE_JSON('7.2')` does not, and
+  `CAST(PARSE_JSON('1000') AS TINYINT)` fails instead of wrapping.
+- A **`DECIMAL`** target has to fit the precision and the scale. Trailing zeros may be appended, so
+  `42` reaches `DECIMAL(5, 2)` as `42.00`, but a scale that would have to round is rejected.
+- **`FLOAT`** and **`DOUBLE`** are approximate by definition, so they take any numeric kind and drop
+  decimal digits, rejecting only a magnitude out of range such as `1e40` to a `FLOAT`.
+- A **length or precision** is adjusted the same way a regular cast into that type would: a value
+  longer than the target is trimmed, fractional seconds beyond the target precision are truncated,
+  and the fixed width types `CHAR(n)` and `BINARY(n)` pad a shorter value.
+- A **`TIME`** value keeps only millisecond precision, the resolution Flink's runtime `TIME` type
+  supports, so `TIME(4)` through `TIME(9)` behave like `TIME(3)`.
+
+To reach a type the table does not list, wrap the cast in a regular cast. Only the inner cast is a
+`VARIANT` cast, so the outer one applies the usual rules and may round, truncate, or overflow:
+
+```sql
+CAST(CAST(PARSE_JSON('1000') AS SMALLINT) AS TINYINT)     -- returns -24 (after overflow)
+CAST(CAST(PARSE_JSON('3.9') AS DECIMAL(2, 1)) AS INT)     -- returns 3 (truncated)
+```
+
+A cast to a character string renders the value exactly as a regular SQL cast of the stored kind
+would, so a boolean becomes `TRUE`, a timestamp uses the SQL format, a `TIMESTAMP_LTZ` is shifted into
+the session time zone, and a binary value is read as UTF-8. An object or an array has no scalar
+form, so it renders like a regular `ARRAY` or `MAP` cast to a string: an array as `[e1, e2]` and an
+object as `{k1=v1, k2=v2}`, with each value rendered by these same rules and a nested variant null
+shown as `NULL`. A string is never quoted, at any depth. Use `JSON_STRING` for the JSON form with
+quoted strings. A variant that stores a JSON `null` casts to SQL `NULL`.
+
+Printed results, for example in the SQL client, render a `VARIANT` the same way as
+`CAST(v AS STRING)`. A binary value prints as `x'68656c6c6f'`, a variant `null` as `NULL` where a
+SQL `NULL` prints as `<NULL>`, a variant type written by a newer version as `<UNKNOWN>`, and other
+data that cannot be decoded as `<INVALID>`. A `TIMESTAMP_LTZ` prints in the session time zone.
+
+A `VARIANT` can also be cast to a constructed target, which imposes a schema on it. A variant array
+casts to `ARRAY<T>`. The variant must be an array, otherwise the cast fails. Each element is itself a
+`VARIANT`, so it casts to the element type `T` by the same rules, recursively. A leaf is never parsed
+either, so a stored string does not reach an integer target. Cast the leaf to `STRING` first and
+convert with a regular cast.
+
+- Each element casts to `T`. A variant null element maps to SQL `NULL` when `T` is nullable and fails
+  the cast when `T` is `NOT NULL`. An empty array casts to an empty `ARRAY<T>`.
+- `ARRAY<VARIANT>` is the identity element: it shreds one level and keeps each element as a variant. A
+  null element stays a variant null rather than becoming SQL `NULL`.
+
+If any element cast fails, the whole cast fails, and `TRY_CAST` returns `NULL` for the entire value
+rather than a partial result. An element type with no variant counterpart, such as
+`ARRAY<INTERVAL YEAR TO MONTH>`, is rejected at validation.
+
+The following examples use `a` for `PARSE_JSON('[1, 2, 3]')` and `m` for the mixed array
+`PARSE_JSON('[1, "a"]')`:
+
+```sql
+CAST(a AS ARRAY<INT>)      -- [1, 2, 3]
+CAST(a AS ARRAY<STRING>)   -- ['1', '2', '3'], each element rendered like the scalar cast
+CAST(m AS ARRAY<INT>)      -- fails on "a", a stored string is not parsed into an integer
+CAST(m AS ARRAY<STRING>)   -- ['1', 'a'], a heterogeneous array still renders each element
+CAST(m AS ARRAY<VARIANT>)  -- [1, "a"] as variants, one level shredded
+```
+
+A variant object casts to `ROW` or `STRUCTURED`, which likewise imposes a schema on it. The variant
+must be an object, otherwise the cast fails. Each field is itself a `VARIANT`, so it casts to its
+declared type by the same rules, recursively. Fields match by name and name matching is case
+sensitive. A `ROW` declared without field names uses the default names `f0`, `f1`, and so on, which
+must then be present in the object.
+
+- A field absent from the object fails the cast, whether the target field is nullable or not.
+- A field present but set to a variant null maps to SQL `NULL` when the field is nullable and fails
+  the cast when the target is `NOT NULL`.
+- Object fields the target does not name are dropped, so the row is a projection.
+- A `ROW` or `STRUCTURED` whose fields are `VARIANT` is the identity on those fields: it shreds one
+  level and keeps the rest semi-structured. A field set to a variant null stays a variant null
+  rather than becoming SQL `NULL`.
+
+If any field cast fails, the whole cast fails, and `TRY_CAST` returns `NULL` for the entire value
+rather than a partial result.
+
+The following examples use `o` for `PARSE_JSON('{"id": 7, "name": "ada", "email": null}')`:
+
+```sql
+CAST(o AS ROW<`id` INT, `name` STRING>)         -- (7, 'ada')
+CAST(o AS ROW<`name` STRING, `id` INT>)         -- ('ada', 7), the order of target fields is free
+CAST(o AS ROW<`id` INT, `email` STRING>)        -- (7, NULL), a field present as a variant null maps to NULL
+CAST(o AS ROW<`id` INT, `phone` STRING>)        -- fails, the field 'phone' is not present in the VARIANT
+CAST(o AS ROW<`id` VARIANT, `email` VARIANT>)   -- (7, null), each field kept as a variant, the variant null preserved
+```
+
+A variant object also casts to `MAP<STRING, V>`, the schemaless read of an object. Each field name
+becomes a key and each value casts to `V` by the same rules, recursively. The key type must be a
+character string, since a variant object's keys are always strings, and a non-string key type is
+rejected at validation. This is the way to read an object whose keys are not known in advance.
+
+- A value present but set to a variant null maps to SQL `NULL` when `V` is nullable and fails the
+  cast when `V` is `NOT NULL`. An empty object casts to an empty map.
+- A `MAP<STRING, VARIANT>` is the identity on its values: it shreds one level and keeps each value a
+  variant, a variant null included.
+
+The following examples reuse `o` for `PARSE_JSON('{"id": 7, "name": "ada", "email": null}')`:
+
+```sql
+CAST(o AS MAP<STRING, STRING>)   -- {id=7, name=ada, email=NULL}, each value rendered like the scalar cast
+CAST(o AS MAP<STRING, VARIANT>)  -- values kept as variants, the variant null included
+CAST(o AS MAP<INT, STRING>)      -- fails at validation, a MAP key must be a character string
+```
+
+A scalar value can also be cast to a `VARIANT` with `CAST` or `TRY_CAST`. Only a type that a
+`VARIANT` kind holds without loss is supported, and any other type, such as `INTERVAL`, `RAW`, or
+`BITMAP`, is rejected at validation. The value keeps the kind of its SQL type:
+
+| Input type                                 | Stored `VARIANT` kind                           |
+|--------------------------------------------|-------------------------------------------------|
+| `BOOLEAN`                                  | `BOOLEAN`                                       |
+| `TINYINT`, `SMALLINT`, `INTEGER`, `BIGINT` | `TINYINT`, `SMALLINT`, `INT`, `BIGINT`          |
+| `FLOAT`, `DOUBLE`, `DECIMAL`               | `FLOAT`, `DOUBLE`, `DECIMAL`                    |
+| `CHAR`, `VARCHAR`, `STRING`                | `STRING`                                        |
+| `BINARY`, `VARBINARY`, `BYTES`             | `BYTES`                                         |
+| `DATE`, `TIME`, `UUID`                     | `DATE`, `TIME`, `UUID`                          |
+| `TIMESTAMP`, `TIMESTAMP_LTZ`               | `TIMESTAMP`, `TIMESTAMP_LTZ`                    |
+
+- An integer keeps the width of its SQL type, so a `BIGINT` is stored as a `BIGINT` even when the
+  value would fit a smaller kind. `PARSE_JSON('1')` instead picks the smallest kind, a `TINYINT`.
+  Either way it casts back to any integer type that holds the value.
+- A character string is stored as a `STRING` and is never parsed. Use `PARSE_JSON` to parse JSON text.
+- A `TIMESTAMP(p)` or `TIMESTAMP_LTZ(p)` keeps its declared precision. Up to a precision of 6 it is
+  stored with microseconds, and above with nanoseconds, even when the value has no digits below a
+  microsecond. Nanoseconds only cover 1677-09-21 to 2262-04-11, so for a precision above 6 a value
+  outside that range fails the cast, and `TRY_CAST` returns `NULL`.
+- A `TIME` holds the milliseconds of one day. Only a source or a function can produce a value
+  outside that range, but such a value fails the cast, and `TRY_CAST` returns `NULL`.
+- A `NaN` or infinite `FLOAT` or `DOUBLE` is stored as is, although `PARSE_JSON` rejects them. A
+  `VARIANT` is not limited to JSON, but JSON has no literal for them. So `JSON_STRING` fails on such
+  a variant, and so does writing it to a sink with the `json` or `raw` format, which fails the job.
+  Printing it and casting it to `STRING` show `NaN`, and it casts back to `FLOAT` or `DOUBLE`
+  unchanged.
+- A `VARIANT` holds at most 16 MiB, so a string or binary value can have at most 16,777,211 bytes.
+  A longer value fails the cast, and `TRY_CAST` returns `NULL`.
+- A SQL `NULL` casts to a SQL `NULL`, not to a variant null.
+- The cast is never applied implicitly, so writing an `INT` into a `VARIANT` column needs an explicit
+  `CAST`.
+- A constructed type casts element by element when its element, field, or value type casts to
+  `VARIANT`, for example `ARRAY<INT>` to `ARRAY<VARIANT>`. A `NULL` element stays a SQL `NULL`. A
+  whole constructed value can also become a single `VARIANT`, see below.
+- As a `MAP` key or a `MULTISET` element, two `VARIANT` values match only when their binary
+  encodings match. So a `1` cast from `INT` does not match a `1` cast from `BIGINT` or parsed by
+  `PARSE_JSON('1')`.
+
+```sql
+CAST(42 AS VARIANT)                          -- 42, stored as an INT
+CAST(CAST(1 AS BIGINT) AS VARIANT)           -- 1, stored as a BIGINT
+CAST('{"a": 1}' AS VARIANT)                  -- the string '{"a": 1}', not an object
+CAST(NULL AS VARIANT)                        -- NULL
+CAST(CAST('NaN' AS DOUBLE) AS VARIANT)       -- NaN, stored as a DOUBLE
+CAST(INTERVAL '2' DAY AS VARIANT)            -- fails at validation
+CAST(ARRAY[1, NULL] AS ARRAY<VARIANT>)       -- [1, NULL], each element a VARIANT, the NULL stays SQL NULL
+```
+
+A whole `ARRAY`, `MAP`, `ROW`, or `STRUCTURED` value can also be cast into a single `VARIANT`. An
+`ARRAY` becomes a variant array, and a `MAP`, `ROW`, or `STRUCTURED` value a variant object. Each
+leaf is stored by the rules above, so the cast is supported only when every leaf type casts to
+`VARIANT`.
+
+- A `ROW` or `STRUCTURED` value is keyed by its field names.
+- A `MAP` needs a character string key, which becomes the object key. A `NULL` key fails the cast.
+  If a key appears twice, the last value is kept.
+- A variant object sorts its keys by their UTF-8 bytes, so neither the field order of a `ROW` nor
+  the entry order of a `MAP` is kept.
+- A `NULL` element, field, or map value becomes a variant null, so an array keeps its length and an
+  object keeps its keys. A cast element by element differs here: `ARRAY<INT>` to `ARRAY<VARIANT>`
+  keeps a SQL `NULL`, while `ARRAY<INT>` to `VARIANT` turns it into a variant null.
+- A nested `VARIANT` is embedded as is.
+- The whole value must fit into the 16 MiB of a `VARIANT`. Any `ARRAY` or `MAP` can exceed it, and so
+  can a `ROW` with a nested `VARIANT` or with fields whose declared sizes add up to more. The cast
+  then fails, and `TRY_CAST` returns `NULL` for the whole value.
+- Casting the `VARIANT` back to the original type returns the original value, since a cast to `ROW`
+  matches fields by name. There are two exceptions:
+  - A SQL `NULL` in a `VARIANT` field, in an `ARRAY<VARIANT>`, or as a value of a
+    `MAP<STRING, VARIANT>` comes back as a variant null.
+  - A `MAP` that holds a key twice comes back with only the last value for that key.
+
+The following examples use `r` for a column of type `ROW<name STRING, id INT>` that holds
+`('ada', 7)`:
+
+```sql
+CAST(ARRAY[1, NULL] AS VARIANT)              -- [1, null], the NULL becomes a variant null
+CAST(MAP['b', 2, 'a', 1] AS VARIANT)         -- {"a": 1, "b": 2}
+CAST(r AS VARIANT)                           -- {"id": 7, "name": "ada"}
+CAST(MAP[1, 'a'] AS VARIANT)                 -- fails at validation, a MAP key must be a character string
+CAST(ARRAY[INTERVAL '1' DAY] AS VARIANT)     -- fails at validation
+```
+
+A `VARIANT` has no equality and no order, because one value has many valid binary encodings. The
+objects `{"a": 1, "b": 2}` and `{"b": 2, "a": 1}` hold the same value, and so do a `1` stored as a
+`TINYINT` and a `1` stored as a `BIGINT`. So a query cannot use a `VARIANT`, or a type that contains
+one, where it compares values. Examples are a `GROUP BY`, `ORDER BY`, or join key,
+`SELECT DISTINCT`, a comparison such as `=` or `<`, and the array elements of `ARRAY_CONTAINS`.
+
+Such a query fails before it runs. Cast the value to a concrete type first, or use `TRY_CAST` when
+some values do not fit the type. A `VARIANT` can still be selected, read with field access, checked
+with `IS NULL`, cast, and passed to aggregate functions such as `COUNT`, `FIRST_VALUE`, and
+`LAST_VALUE`.
+
+```sql
+SELECT v['a'], COUNT(*) FROM t GROUP BY v['a']                             -- fails
+SELECT CAST(v['a'] AS INT), COUNT(*) FROM t GROUP BY CAST(v['a'] AS INT)   -- one group per number
+SELECT * FROM t WHERE v['a'] = PARSE_JSON('1')                             -- fails
+SELECT * FROM t WHERE CAST(v['a'] AS INT) = 1                              -- compares the number
+```
+
+**Declaration**
+
+{{< tabs "25c30432-8460-441d-a036-9416d8202882" >}}
+{{< tab "SQL" >}}
+```text
+VARIANT
+```
+
+Variant type is usually produced by the `PARSE_JSON` or `PARSE_XML` function. For example:
+
+```sql
+SELECT PARSE_JSON('{"a":1,"b":["a","b","c"]}') AS v
+SELECT PARSE_XML('<a><b>1</b><b>2</b></a>') AS v
+```
+
+{{< /tab >}}
+{{< tab "Java/Scala" >}}
+```java
+DataTypes.VARIANT()
+```
+
+**Bridging to JVM Types**
+
+| Java Type                                | Input | Output | Remarks   |
+|:-----------------------------------------|:-----:|:------:|:----------|
+| `org.apache.flink.types.variant.Variant` |   X   |   X    | *Default* |
+
+`Variant#toJson()` returns valid JSON and fails for values such as `NaN`. `Variant#toString()` is
+for debugging: it never fails, but can be lossy. Both render a `TIMESTAMP_LTZ` in UTC.
+
+{{< /tab >}}
+{{< /tabs >}}
+
+#### `BITMAP`
+
+Data type of bitmap data that stores 32-bit integers in a compressed form using [RoaringBitmap](https://roaringbitmap.org/).
+
+The bitmap type is useful for efficiently representing and querying large sets of integers. It supports
+a variety of built-in [scalar functions]({{< ref "docs/sql/functions/built-in-functions" >}}#bitmap-functions) and
+[aggregate functions]({{< ref "docs/sql/functions/built-in-functions" >}}#bitmap-aggregate-functions).
+
+The bitmap type is an extension to the SQL standard.
+
+**Declaration**
+
+{{< tabs "c8a3f1e2-7d5b-4a9e-b6c0-1e2f3a4b5c6d" >}}
+{{< tab "SQL" >}}
+```text
+BITMAP
+```
+
+Bitmap type can be created from an `ARRAY<INT>` using the `BITMAP_BUILD` function. For example:
+
+```sql
+SELECT BITMAP_BUILD(ARRAY[1, 2, 3, 4, 5])
+```
+
+{{< /tab >}}
+{{< tab "Java/Scala" >}}
+```java
+DataTypes.BITMAP()
+```
+
+**Bridging to JVM Types**
+
+| Java Type                                      | Input | Output | Remarks   |
+|:-----------------------------------------------|:-----:|:------:|:----------|
+| `org.apache.flink.types.bitmap.Bitmap`         |   X   |   X    | *Default* |
+
+{{< /tab >}}
+{{< /tabs >}}
+
+#### `RAW`
+
+Data type of an arbitrary serialized type. This type is a black box within the table ecosystem
+and is only deserialized at the edges.
+
+The raw type is an extension to the SQL standard.
+
+**Declaration**
+
+{{< tabs "529ac5b5-0fb4-4004-a2da-0a9915b2b36b" >}}
+{{< tab "SQL" >}}
+```text
+RAW('class', 'snapshot')
+```
+{{< /tab >}}
+{{< tab "Java/Scala" >}}
+```java
+DataTypes.RAW(class, serializer)
+
+DataTypes.RAW(class)
+```
+
+**Bridging to JVM Types**
+
+| Java Type         | Input | Output | Remarks                              |
+|:------------------|:-----:|:------:|:-------------------------------------------|
+|*class*            | X     | X      | Originating class or subclasses (for input) or <br>superclasses (for output). *Default* |
+|`byte[]`           |       | X      |                                      |
+|`org.apache.flink.table.data.RawValueData` | X     | X      | Internal data structure. |
+
+{{< /tab >}}
+{{< tab "Python" >}}
+```python
+Not supported.
+```
+{{< /tab >}}
+{{< /tabs >}}
+
+{{< tabs "raw" >}}
+{{< tab "SQL/Java/Scala" >}}
+The type can be declared using `RAW('class', 'snapshot')` where `class` is the originating class and
+`snapshot` is the serialized `TypeSerializerSnapshot` in Base64 encoding. Usually, the type string is not
+declared directly but is generated while persisting the type.
+
+In the API, the `RAW` type can be declared either by directly supplying a `Class` + `TypeSerializer` or
+by passing `Class` and letting the framework extract `Class` + `TypeSerializer` from there.
+{{< /tab >}}
+{{< tab "Python" >}}
+{{< /tab >}}
+{{< /tabs >}}
+
+#### `NULL`
+
+Data type for representing untyped `NULL` values.
+
+The null type is an extension to the SQL standard. A null type has no other value
+except `NULL`, thus, it can be cast to any nullable type similar to JVM semantics.
+
+This type helps in representing unknown types in API calls that use a `NULL` literal
+as well as bridging to formats such as JSON or Avro that define such a type as well.
+
+This type is not very useful in practice and is just mentioned here for completeness.
+
+**Declaration**
+
+{{< tabs "45f4daee-66be-4a39-a445-874d79e7b248" >}}
+{{< tab "SQL" >}}
+```text
+NULL
+```
+{{< /tab >}}
+{{< tab "Java/Scala" >}}
+```java
+DataTypes.NULL()
+```
+
+**Bridging to JVM Types**
+
+| Java Type         | Input | Output | Remarks                              |
+|:------------------|:-----:|:------:|:-------------------------------------|
+|`java.lang.Object` | X     | X      | *Default*                            |
+|*any class*        |       | (X)    | Any non-primitive type.              |
+
+{{< /tab >}}
+{{< tab "Python" >}}
+```python
+Not supported.
+```
+{{< /tab >}}
+{{< /tabs >}}
+
+Casting
+-------
+
+Flink Table API and SQL can perform casting between a defined `input` type and `target` type. While some
+casting operations can always succeed regardless of the input value, others can fail at runtime
+(i.e. where there is no way to create a value for the target type). For example, it is always
+possible to convert `INT` to `STRING`, but you cannot always convert a `STRING` to `INT`.
+
+During the planning stage, the query validator rejects queries for invalid type pairs with
+a `ValidationException`, e.g. when trying to cast a `TIMESTAMP` to an `INTERVAL`.
+Valid type pairs that can fail at runtime will be accepted by the query validator, 
+but requires the user to correctly handle failures.
+
+In Flink Table API and SQL, casting can be performed by using one of the two following built-in functions:
+
+* `CAST`: The regular cast function defined by the SQL standard. It can fail the job if the cast operation is fallible and the provided input is not valid. The type inference will preserve the nullability of the input type.
+* `TRY_CAST`: An extension to the regular cast function which returns `NULL` in case the cast operation fails. Its return type is always nullable.
+
+For example:
+
+```sql
+CAST('42' AS INT) --- returns 42 of type INT NOT NULL
+CAST(NULL AS VARCHAR) --- returns NULL of type VARCHAR
+CAST('non-number' AS INT) --- throws an exception and fails the job
+
+TRY_CAST('42' AS INT) --- returns 42 of type INT
+TRY_CAST(NULL AS VARCHAR) --- returns NULL of type VARCHAR
+TRY_CAST('non-number' AS INT) --- returns NULL of type INT
+COALESCE(TRY_CAST('non-number' AS INT), 0) --- returns 0 of type INT NOT NULL
+```
+
+The matrix below describes the supported cast pairs, where "Y" means supported, "!" means fallible, "N" means unsupported:
+
+| Input\Target                           | `CHAR`¹/<br/>`VARCHAR`¹/<br/>`STRING` | `BINARY`¹/<br/>`VARBINARY`¹/<br/>`BYTES` | `BOOLEAN` | `DECIMAL` | `TINYINT` | `SMALLINT` | `INTEGER` | `BIGINT` | `FLOAT` | `DOUBLE` | `DATE` | `TIME` | `TIMESTAMP` | `TIMESTAMP_LTZ` | `INTERVAL` | `ARRAY` | `MULTISET` | `MAP` | `ROW` | `STRUCTURED` | `RAW` | `VARIANT` | `BITMAP` |
+|:---------------------------------------|:-------------------------------------:|:----------------------------------------:|:---------:|:---------:|:---------:|:----------:|:---------:|:--------:|:-------:|:--------:|:------:|:------:|:-----------:|:---------------:|:----------:|:-------:|:----------:|:-----:|:-----:|:------------:|:-----:|:---------:|:--------:|
+| `CHAR`/<br/>`VARCHAR`/<br/>`STRING`    |                   Y                   |                    !                     |     !     |     !     |     !     |     !      |     !     |    !     |    !    |    !     |   !    |   !    |      !      |        !        |     N      |    N    |     N      |   N   |   N   |      N       |   N   |     !     |    N     |
+| `BINARY`/<br/>`VARBINARY`/<br/>`BYTES` |                   Y                   |                    Y                     |     N     |     N     |     N     |     N      |     N     |    N     |    N    |    N     |   N    |   N    |      N      |        N        |     N      |    N    |     N      |   N   |   N   |      N       |   N   |     !     |    N     |
+| `BOOLEAN`                              |                   Y                   |                    N                     |     Y     |     Y     |     Y     |     Y      |     Y     |    Y     |    Y    |    Y     |   N    |   N    |      N      |        N        |     N      |    N    |     N      |   N   |   N   |      N       |   N   |     Y     |    N     |
+| `DECIMAL`                              |                   Y                   |                    N                     |     Y     |     Y     |     Y     |     Y      |     Y     |    Y     |    Y    |    Y     |   N    |   N    |      N      |        N        |     N      |    N    |     N      |   N   |   N   |      N       |   N   |     Y     |    N     |
+| `TINYINT`                              |                   Y                   |                    N                     |     Y     |     Y     |     Y     |     Y      |     Y     |    Y     |    Y    |    Y     |   N    |   N    |     N²      |       N²        |     N      |    N    |     N      |   N   |   N   |      N       |   N   |     Y     |    N     |
+| `SMALLINT`                             |                   Y                   |                    N                     |     Y     |     Y     |     Y     |     Y      |     Y     |    Y     |    Y    |    Y     |   N    |   N    |     N²      |       N²        |     N      |    N    |     N      |   N   |   N   |      N       |   N   |     Y     |    N     |
+| `INTEGER`                              |                   Y                   |                    N                     |     Y     |     Y     |     Y     |     Y      |     Y     |    Y     |    Y    |    Y     |   N    |   N    |     N²      |       N²        |     Y⁵     |    N    |     N      |   N   |   N   |      N       |   N   |     Y     |    N     |
+| `BIGINT`                               |                   Y                   |                    N                     |     Y     |     Y     |     Y     |     Y      |     Y     |    Y     |    Y    |    Y     |   N    |   N    |     N²      |       N²        |     Y⁶     |    N    |     N      |   N   |   N   |      N       |   N   |     Y     |    N     |
+| `FLOAT`                                |                   Y                   |                    N                     |     Y     |     Y     |     Y     |     Y      |     Y     |    Y     |    Y    |    Y     |   N    |   N    |      N      |        N        |     N      |    N    |     N      |   N   |   N   |      N       |   N   |     Y     |    N     |
+| `DOUBLE`                               |                   Y                   |                    N                     |     Y     |     Y     |     Y     |     Y      |     Y     |    Y     |    Y    |    Y     |   N    |   N    |      N      |        N        |     N      |    N    |     N      |   N   |   N   |      N       |   N   |     Y     |    N     |
+| `DATE`                                 |                   Y                   |                    N                     |     N     |     N     |     N     |     N      |     N     |    N     |    N    |    N     |   Y    |   N    |      Y      |        Y        |     N      |    N    |     N      |   N   |   N   |      N       |   N   |     Y     |    N     |
+| `TIME`                                 |                   Y                   |                    N                     |     N     |     N     |     N     |     N      |     N     |    N     |    N    |    N     |   N    |   Y    |      Y      |        Y        |     N      |    N    |     N      |   N   |   N   |      N       |   N   |     !     |    N     |
+| `TIMESTAMP`                            |                   Y                   |                    N                     |     N     |     N     |     N     |     N      |     N     |    N     |    N    |    N     |   Y    |   Y    |      Y      |        Y        |     N      |    N    |     N      |   N   |   N   |      N       |   N   |     !     |    N     |
+| `TIMESTAMP_LTZ`                        |                   Y                   |                    N                     |     N     |     N     |     N     |     N      |     N     |    N     |    N    |    N     |   Y    |   Y    |      Y      |        Y        |     N      |    N    |     N      |   N   |   N   |      N       |   N   |     !     |    N     |
+| `INTERVAL`                             |                   Y                   |                    N                     |     N     |     N     |     N     |     N      |    Y⁵     |    Y⁶    |    N    |    N     |   N    |   N    |      N      |        N        |     Y      |    N    |     N      |   N   |   N   |      N       |   N   |     N     |    N     |
+| `ARRAY`                                |                   Y                   |                    N                     |     N     |     N     |     N     |     N      |     N     |    N     |    N    |    N     |   N    |   N    |      N      |        N        |     N      |   !³    |     N      |   N   |   N   |      N       |   N   |     !⁸    |    N     |
+| `MULTISET`                             |                   Y                   |                    N                     |     N     |     N     |     N     |     N      |     N     |    N     |    N    |    N     |   N    |   N    |      N      |        N        |     N      |    N    |     !³     |   N   |   N   |      N       |   N   |     N     |    N     |
+| `MAP`                                  |                   Y                   |                    N                     |     N     |     N     |     N     |     N      |     N     |    N     |    N    |    N     |   N    |   N    |      N      |        N        |     N      |    N    |     N      |  !³   |   N   |      N       |   N   |     !⁸    |    N     |
+| `ROW`                                  |                   Y                   |                    N                     |     N     |     N     |     N     |     N      |     N     |    N     |    N    |    N     |   N    |   N    |      N      |        N        |     N      |    N    |     N      |   N   |  !³   |      N       |   N   |     !⁸    |    N     |
+| `STRUCTURED`                           |                   Y                   |                    N                     |     N     |     N     |     N     |     N      |     N     |    N     |    N    |    N     |   N    |   N    |      N      |        N        |     N      |    N    |     N      |   N   |   N   |      !³      |   N   |     !⁸    |    N     |
+| `RAW`                                  |                   Y                   |                    !                     |     N     |     N     |     N     |     N      |     N     |    N     |    N    |    N     |   N    |   N    |      N      |        N        |     N      |    N    |     N      |   N   |   N   |      N       |  Y⁴   |     N     |    N     |
+| `VARIANT`                              |                   !                   |                    !                     |     !     |     !     |     !     |     !      |     !     |    !     |    !    |    !     |   !    |   !    |      !      |        !        |     N      |   !³    |     N      |  !³   |  !³   |      !³      |   N   |     Y     |    N     |
+| `BITMAP`                               |                   Y                   |                   Y⁷                     |     N     |     N     |     N     |     N      |     N     |    N     |    N    |    N     |   N    |   N    |      N      |        N        |     N      |    N    |     N      |   N   |   N   |      N       |   N   |     N     |    N     |
+
+Notes:
+
+1. All the casting to constant length or variable length will also trim and pad accordingly to the type definition.
+2. `TO_TIMESTAMP` and `TO_TIMESTAMP_LTZ` must be used instead of `CAST`/`TRY_CAST`.
+3. Supported iff the children type pairs are supported. Fallible iff the children type pairs are fallible.
+4. Supported iff the `RAW` class and serializer are equals.
+5. Supported iff `INTERVAL` is a `MONTH TO YEAR` range.
+6. Supported iff `INTERVAL` is a `DAY TO TIME` range.
+7. Supported only for unbounded `VARBINARY` (`BYTES`), because trimming or padding would corrupt the serialized bitmap data.
+8. Supported iff every leaf type casts to `VARIANT` and every `MAP` key is a character string. Always fallible for `ARRAY` and `MAP`. Fallible for `ROW` and `STRUCTURED` iff a field is fallible, a field is a `VARIANT`, or the declared sizes of the fields can exceed the 16 MiB of a `VARIANT`.
+
+Also note that a cast of a `NULL` value will always return `NULL`, 
+regardless of whether the function used is `CAST` or `TRY_CAST`.
+
+### Legacy casting
+
+Pre Flink 1.15 casting behaviour can be enabled by setting `table.exec.legacy-cast-behaviour` to `enabled`.
+In Flink 1.15 this flag is disabled by default.
+
+In particular, this will:
+
+* Disable trimming/padding for casting to `CHAR`/`VARCHAR`/`BINARY`/`VARBINARY`
+* `CAST` never fails but returns `NULL`, behaving as `TRY_CAST` but without inferring the correct type
+* Formatting of some casting to `CHAR`/`VARCHAR`/`STRING` produces slightly different results.
+
+{{< hint warning >}}
+We **discourage** the use of this flag and we **strongly suggest** for new projects to keep this flag disabled and use the new casting behaviour.
+This flag will be removed in the next Flink versions.
+{{< /hint >}}
+
+Data Type Extraction
+--------------------
+
+{{< tabs "extraction" >}}
+{{< tab "Java/Scala" >}}
+At many locations in the API, Flink tries to automatically extract data type from class information using
+reflection to avoid repetitive manual schema work. However, extracting a data type reflectively is not always
+successful because logical information might be missing. Therefore, it might be necessary to add additional
+information close to a class or field declaration for supporting the extraction logic.
+
+The following table lists classes that can be implicitly mapped to a data type without requiring further information.
+
+If you intend to implement classes in Scala, *it is recommended to use boxed types* (e.g. `java.lang.Integer`)
+instead of Scala's primitives. Scala's primitives (e.g. `Int` or `Double`) are compiled to JVM primitives (e.g.
+`int`/`double`) and result in `NOT NULL` semantics as shown in the table below. Furthermore, Scala primitives that
+are used in generics (e.g. `java.util.Map[Int, Double]`) are erased during compilation and lead to class
+information similar to `java.util.Map[java.lang.Object, java.lang.Object]`.
+
+| Class                       | Data Type                           |
+|:----------------------------|:------------------------------------|
+| `java.lang.String`          | `STRING`                            |
+| `java.lang.Boolean`         | `BOOLEAN`                           |
+| `boolean`                   | `BOOLEAN NOT NULL`                  |
+| `java.lang.Byte`            | `TINYINT`                           |
+| `byte`                      | `TINYINT NOT NULL`                  |
+| `java.lang.Short`           | `SMALLINT`                          |
+| `short`                     | `SMALLINT NOT NULL`                 |
+| `java.lang.Integer`         | `INT`                               |
+| `int`                       | `INT NOT NULL`                      |
+| `java.lang.Long`            | `BIGINT`                            |
+| `long`                      | `BIGINT NOT NULL`                   |
+| `java.lang.Float`           | `FLOAT`                             |
+| `float`                     | `FLOAT NOT NULL`                    |
+| `java.lang.Double`          | `DOUBLE`                            |
+| `double`                    | `DOUBLE NOT NULL`                   |
+| `java.sql.Date`             | `DATE`                              |
+| `java.time.LocalDate`       | `DATE`                              |
+| `java.sql.Time`             | `TIME(0)`                           |
+| `java.time.LocalTime`       | `TIME(9)`                           |
+| `java.sql.Timestamp`        | `TIMESTAMP(9)`                      |
+| `java.time.LocalDateTime`   | `TIMESTAMP(9)`                      |
+| `java.time.OffsetDateTime`  | `TIMESTAMP(9) WITH TIME ZONE`       |
+| `java.time.Instant`         | `TIMESTAMP_LTZ(9)`                  |
+| `java.time.Duration`        | `INTERVAL SECOND(9)`                |
+| `java.time.Period`          | `INTERVAL YEAR(4) TO MONTH`         |
+| `byte[]`                    | `BYTES`                             |
+| `T[]`                       | `ARRAY<T>`                          |
+| `java.util.Map<K, V>`       | `MAP<K, V>`                         |
+| structured type `T`         | anonymous structured type `T`       |
+
+Other JVM bridging classes mentioned in this document require a `@DataTypeHint` annotation.
+
+_Data type hints_ can parameterize or replace the default extraction logic of individual function parameters
+and return types, structured classes, or fields of structured classes. An implementer can choose to what
+extent the default extraction logic should be modified by declaring a `@DataTypeHint` annotation.
+
+The `@DataTypeHint` annotation provides a set of optional hint parameters. Some of those parameters are shown in the
+following example. More information can be found in the documentation of the annotation class.
+{{< /tab >}}
+{{< tab "Python" >}}
+{{< /tab >}}
+{{< /tabs >}}
+
+{{< tabs "1387e5a8-9081-43be-8e11-e5fbeab0f123" >}}
+{{< tab "Java" >}}
+```java
+import org.apache.flink.table.annotation.DataTypeHint;
+
+class User {
+
+    // defines an INT data type with a default conversion class `java.lang.Integer`
+    public @DataTypeHint("INT") Object o;
+
+    // defines a TIMESTAMP data type of millisecond precision with an explicit conversion class
+    public @DataTypeHint(value = "TIMESTAMP(3)", bridgedTo = java.sql.Timestamp.class) Object o;
+
+    // enrich the extraction with forcing using a RAW type
+    public @DataTypeHint("RAW") Class<?> modelClass;
+
+    // defines that all occurrences of java.math.BigDecimal (also in nested fields) will be
+    // extracted as DECIMAL(12, 2)
+    public @DataTypeHint(defaultDecimalPrecision = 12, defaultDecimalScale = 2) AccountStatement stmt;
+
+    // defines that whenever a type cannot be mapped to a data type, instead of throwing
+    // an exception, always treat it as a RAW type
+    public @DataTypeHint(allowRawGlobally = HintFlag.TRUE) ComplexModel model;
+}
+```
+{{< /tab >}}
+{{< tab "Scala" >}}
+```scala
+import org.apache.flink.table.annotation.DataTypeHint
+
+class User {
+
+    // defines an INT data type with a default conversion class `java.lang.Integer`
+    @DataTypeHint("INT")
+    var o: AnyRef
+
+    // defines a TIMESTAMP data type of millisecond precision with an explicit conversion class
+    @DataTypeHint(value = "TIMESTAMP(3)", bridgedTo = java.sql.Timestamp.class)
+    var o: AnyRef
+
+    // enrich the extraction with forcing using a RAW type
+    @DataTypeHint("RAW")
+    var modelClass: Class[_]
+
+    // defines that all occurrences of java.math.BigDecimal (also in nested fields) will be
+    // extracted as DECIMAL(12, 2)
+    @DataTypeHint(defaultDecimalPrecision = 12, defaultDecimalScale = 2)
+    var stmt: AccountStatement
+
+    // defines that whenever a type cannot be mapped to a data type, instead of throwing
+    // an exception, always treat it as a RAW type
+    @DataTypeHint(allowRawGlobally = HintFlag.TRUE)
+    var model: ComplexModel
+}
+```
+{{< /tab >}}
+{{< tab "Python" >}}
+```python
+Not supported.
+```
+{{< /tab >}}
+{{< /tabs >}}
+
+{{< top >}}

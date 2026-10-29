@@ -26,10 +26,6 @@ under the License.
 
 # Handling Application Parameters
 
-
-
-Handling Application Parameters
--------------------------------
 Almost all Flink applications, both batch and streaming, rely on external configuration parameters.
 They are used to specify input and output sources (like paths or addresses), system parameters (parallelism, runtime configuration), and application specific parameters (typically used within user functions).
 
@@ -48,13 +44,13 @@ The `ParameterTool` provides a set of predefined static methods for reading the 
 The following method will read a [Properties](https://docs.oracle.com/javase/tutorial/essential/environment/properties.html) file and provide the key/value pairs:
 ```java
 String propertiesFilePath = "/home/sam/flink/myjob.properties";
-ParameterTool parameter = ParameterTool.fromPropertiesFile(propertiesFilePath);
+ParameterTool parameters = ParameterTool.fromPropertiesFile(propertiesFilePath);
 
 File propertiesFile = new File(propertiesFilePath);
-ParameterTool parameter = ParameterTool.fromPropertiesFile(propertiesFile);
+ParameterTool parameters = ParameterTool.fromPropertiesFile(propertiesFile);
 
-InputStream propertiesFileInputStream = new FileInputStream(file);
-ParameterTool parameter = ParameterTool.fromPropertiesFile(propertiesFileInputStream);
+InputStream propertiesFileInputStream = new FileInputStream(propertiesFile);
+ParameterTool parameters = ParameterTool.fromPropertiesFile(propertiesFileInputStream);
 ```
 
 
@@ -63,8 +59,9 @@ ParameterTool parameter = ParameterTool.fromPropertiesFile(propertiesFileInputSt
 This allows getting arguments like `--input hdfs:///mydata --elements 42` from the command line.
 ```java
 public static void main(String[] args) {
-    ParameterTool parameter = ParameterTool.fromArgs(args);
+    ParameterTool parameters = ParameterTool.fromArgs(args);
     // .. regular code ..
+}
 ```
 
 
@@ -73,7 +70,7 @@ public static void main(String[] args) {
 When starting a JVM, you can pass system properties to it: `-Dinput=hdfs:///mydata`. You can also initialize the `ParameterTool` from these system properties:
 
 ```java
-ParameterTool parameter = ParameterTool.fromSystemProperties();
+ParameterTool parameters = ParameterTool.fromSystemProperties();
 ```
 
 
@@ -86,15 +83,15 @@ Now that we've got the parameters from somewhere (see above) we can use them in 
 The `ParameterTool` itself has methods for accessing the values.
 ```java
 ParameterTool parameters = // ...
-parameter.getRequired("input");
-parameter.get("output", "myDefaultValue");
-parameter.getLong("expectedCount", -1L);
-parameter.getNumberOfParameters()
+parameters.getRequired("input");
+parameters.get("output", "myDefaultValue");
+parameters.getLong("expectedCount", -1L);
+parameters.getNumberOfParameters();
 // .. there are more methods available.
 ```
 
 You can use the return values of these methods directly in the `main()` method of the client submitting the application.
-For example, you could set the parallelism of a operator like this:
+For example, you could set the parallelism of an operator like this:
 
 ```java
 ParameterTool parameters = ParameterTool.fromArgs(args);
@@ -132,8 +129,7 @@ public static final class Tokenizer extends RichFlatMapFunction<String, Tuple2<S
 
     @Override
     public void flatMap(String value, Collector<Tuple2<String, Integer>> out) {
-	ParameterTool parameters = (ParameterTool)
-	    getRuntimeContext().getExecutionConfig().getGlobalJobParameters();
+	ParameterTool parameters = ParameterTool.fromMap(getRuntimeContext().getGlobalJobParameters());
 	parameters.getRequired("input");
 	// .. do more ..
 ```

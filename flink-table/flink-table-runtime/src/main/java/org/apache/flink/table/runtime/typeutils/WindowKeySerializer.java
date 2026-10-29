@@ -21,10 +21,10 @@ package org.apache.flink.table.runtime.typeutils;
 import org.apache.flink.api.common.typeutils.CompositeTypeSerializerSnapshot;
 import org.apache.flink.api.common.typeutils.TypeSerializer;
 import org.apache.flink.api.common.typeutils.TypeSerializerSnapshot;
+import org.apache.flink.core.memory.AbstractPagedInputView;
+import org.apache.flink.core.memory.AbstractPagedOutputView;
 import org.apache.flink.core.memory.DataInputView;
 import org.apache.flink.core.memory.DataOutputView;
-import org.apache.flink.runtime.memory.AbstractPagedInputView;
-import org.apache.flink.runtime.memory.AbstractPagedOutputView;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.data.binary.BinaryRowData;
 import org.apache.flink.table.runtime.util.WindowKey;
@@ -177,9 +177,7 @@ public class WindowKeySerializer extends PagedTypeSerializer<WindowKey> {
         private static final int CURRENT_VERSION = 1;
 
         /** This empty nullary constructor is required for deserializing the configuration. */
-        public WindowKeySerializerSnapshot() {
-            super(WindowKeySerializer.class);
-        }
+        public WindowKeySerializerSnapshot() {}
 
         public WindowKeySerializerSnapshot(WindowKeySerializer serializerInstance) {
             super(serializerInstance);

@@ -19,32 +19,34 @@
 package org.apache.flink.test.windowing.sessionwindows;
 
 import org.apache.flink.api.common.JobExecutionResult;
-import org.apache.flink.api.java.tuple.Tuple;
+import org.apache.flink.api.common.typeinfo.Types;
 import org.apache.flink.streaming.api.datastream.WindowedStream;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
-import org.apache.flink.streaming.api.functions.source.SourceFunction;
+import org.apache.flink.streaming.api.functions.source.legacy.SourceFunction;
 import org.apache.flink.streaming.api.functions.windowing.RichWindowFunction;
 import org.apache.flink.streaming.api.functions.windowing.WindowFunction;
 import org.apache.flink.streaming.api.watermark.Watermark;
 import org.apache.flink.streaming.api.windowing.assigners.EventTimeSessionWindows;
-import org.apache.flink.streaming.api.windowing.time.Time;
 import org.apache.flink.streaming.api.windowing.triggers.EventTimeTrigger;
 import org.apache.flink.streaming.api.windowing.triggers.PurgingTrigger;
 import org.apache.flink.streaming.api.windowing.windows.TimeWindow;
 import org.apache.flink.test.util.AbstractTestBase;
 import org.apache.flink.util.Collector;
 
-import org.junit.Assert;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.BitSet;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.fail;
+
 /** ITCase for Session Windows. */
-public class SessionWindowITCase extends AbstractTestBase {
+class SessionWindowITCase extends AbstractTestBase {
 
     // seed for the pseudo random engine of this test
     private static final long RANDOM_SEED = 1234567;
@@ -87,27 +89,28 @@ public class SessionWindowITCase extends AbstractTestBase {
     private static final String SESSION_COUNTER_LATE_KEY = "ALL_SESSIONS_LATE_COUNT";
 
     @Test
-    public void testSessionWindowing() throws Exception {
+    void testSessionWindowing() throws Exception {
         SessionEventGeneratorDataSource dataSource = new SessionEventGeneratorDataSource();
         runTest(dataSource, new ValidatingWindowFunction());
     }
 
     private void runTest(
             SourceFunction<SessionEvent<Integer, TestEventPayload>> dataSource,
-            WindowFunction<SessionEvent<Integer, TestEventPayload>, String, Tuple, TimeWindow>
+            WindowFunction<SessionEvent<Integer, TestEventPayload>, String, Integer, TimeWindow>
                     windowFunction)
             throws Exception {
 
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
-        WindowedStream<SessionEvent<Integer, TestEventPayload>, Tuple, TimeWindow> windowedStream =
-                env.addSource(dataSource)
-                        .keyBy("sessionKey")
-                        .window(
-                                EventTimeSessionWindows.withGap(
-                                        Time.milliseconds(MAX_SESSION_EVENT_GAP_MS)));
+        WindowedStream<SessionEvent<Integer, TestEventPayload>, Integer, TimeWindow>
+                windowedStream =
+                        env.addSource(dataSource)
+                                .keyBy(SessionEvent::getSessionKey, Types.INT)
+                                .window(
+                                        EventTimeSessionWindows.withGap(
+                                                Duration.ofMillis(MAX_SESSION_EVENT_GAP_MS)));
 
         if (ALLOWED_LATENESS_MS != Long.MAX_VALUE) {
-            windowedStream = windowedStream.allowedLateness(Time.milliseconds(ALLOWED_LATENESS_MS));
+            windowedStream = windowedStream.allowedLateness(Duration.ofMillis(ALLOWED_LATENESS_MS));
         }
 
         if (PURGE_WINDOW_ON_FIRE) {
@@ -120,24 +123,24 @@ public class SessionWindowITCase extends AbstractTestBase {
         // check that overall event counts match with our expectations. remember that late events
         // within lateness will
         // each trigger a window!
-        Assert.assertEquals(
-                (LATE_EVENTS_PER_SESSION + 1) * NUMBER_OF_SESSIONS * EVENTS_PER_SESSION,
-                (long) result.getAccumulatorResult(SESSION_COUNTER_ON_TIME_KEY));
-        Assert.assertEquals(
-                NUMBER_OF_SESSIONS * (LATE_EVENTS_PER_SESSION * (LATE_EVENTS_PER_SESSION + 1) / 2),
-                (long) result.getAccumulatorResult(SESSION_COUNTER_LATE_KEY));
+        assertThat((long) result.getAccumulatorResult(SESSION_COUNTER_ON_TIME_KEY))
+                .isEqualTo((LATE_EVENTS_PER_SESSION + 1) * NUMBER_OF_SESSIONS * EVENTS_PER_SESSION);
+        assertThat((long) result.getAccumulatorResult(SESSION_COUNTER_LATE_KEY))
+                .isEqualTo(
+                        NUMBER_OF_SESSIONS
+                                * (LATE_EVENTS_PER_SESSION * (LATE_EVENTS_PER_SESSION + 1) / 2));
     }
 
     /** Window function that performs correctness checks for this test case. */
     private static final class ValidatingWindowFunction
             extends RichWindowFunction<
-                    SessionEvent<Integer, TestEventPayload>, String, Tuple, TimeWindow> {
+                    SessionEvent<Integer, TestEventPayload>, String, Integer, TimeWindow> {
 
         static final long serialVersionUID = 865723993979L;
 
         @Override
         public void apply(
-                Tuple tuple,
+                Integer i,
                 TimeWindow timeWindow,
                 Iterable<SessionEvent<Integer, TestEventPayload>> input,
                 Collector<String> output)
@@ -179,7 +182,7 @@ public class SessionWindowITCase extends AbstractTestBase {
                     lateWithingBits.set(evt.getEventValue().getEventId() - EVENTS_PER_SESSION);
                 } else {
 
-                    Assert.fail("Illegal event type in window " + timeWindow + ": " + evt);
+                    fail("Illegal event type in window " + timeWindow + ": " + evt);
                 }
             }
 
@@ -189,14 +192,14 @@ public class SessionWindowITCase extends AbstractTestBase {
             if (sessionEvents.size() >= EVENTS_PER_SESSION) { // on time events case or non-purging
 
                 // check that the expected amount if events is in the window
-                Assert.assertEquals(onTimeCount, EVENTS_PER_SESSION);
+                assertThat(onTimeCount).isEqualTo(EVENTS_PER_SESSION);
 
                 // check that no duplicate events happened
-                Assert.assertEquals(onTimeBits.cardinality(), onTimeCount);
-                Assert.assertEquals(lateWithingBits.cardinality(), lateCount);
+                assertThat(onTimeBits.cardinality()).isEqualTo(onTimeCount);
+                assertThat(lateWithingBits.cardinality()).isEqualTo(lateCount);
             } else {
 
-                Assert.fail(
+                fail(
                         "Event count for session window "
                                 + timeWindow
                                 + " is too low: "

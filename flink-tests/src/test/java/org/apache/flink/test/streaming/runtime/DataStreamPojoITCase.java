@@ -18,23 +18,28 @@
 package org.apache.flink.test.streaming.runtime;
 
 import org.apache.flink.api.common.functions.FlatMapFunction;
+import org.apache.flink.api.common.typeinfo.Types;
 import org.apache.flink.api.common.typeutils.CompositeType;
+import org.apache.flink.api.java.tuple.Tuple2;
+import org.apache.flink.api.java.tuple.Tuple3;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.test.util.AbstractTestBase;
 import org.apache.flink.util.Collector;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
+
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Integration test for streaming programs using POJOs and key selectors.
  *
  * <p>See FLINK-3697
  */
-public class DataStreamPojoITCase extends AbstractTestBase {
+class DataStreamPojoITCase extends AbstractTestBase {
     static List<Data> elements = new ArrayList<>();
 
     static {
@@ -48,18 +53,22 @@ public class DataStreamPojoITCase extends AbstractTestBase {
 
     /** Test composite key on the Data POJO (with nested fields). */
     @Test
-    public void testCompositeKeyOnNestedPojo() throws Exception {
+    void testCompositeKeyOnNestedPojo() throws Exception {
         StreamExecutionEnvironment see = StreamExecutionEnvironment.getExecutionEnvironment();
         see.getConfig().disableObjectReuse();
         see.setParallelism(3);
 
-        DataStream<Data> dataStream = see.fromCollection(elements);
+        DataStream<Data> dataStream = see.fromData(elements);
 
         DataStream<Data> summedStream =
                 dataStream
-                        .keyBy("aaa", "abc", "wxyz")
+                        .keyBy(
+                                x -> Tuple3.of(x.aaa, x.abc, x.wxyz),
+                                Types.TUPLE(Types.INT, Types.INT, Types.LONG))
                         .sum("sum")
-                        .keyBy("aaa", "abc", "wxyz")
+                        .keyBy(
+                                x -> Tuple3.of(x.aaa, x.abc, x.wxyz),
+                                Types.TUPLE(Types.INT, Types.INT, Types.LONG))
                         .flatMap(
                                 new FlatMapFunction<Data, Data>() {
                                     private static final long serialVersionUID =
@@ -100,18 +109,22 @@ public class DataStreamPojoITCase extends AbstractTestBase {
 
     /** Test composite & nested key on the Data POJO. */
     @Test
-    public void testNestedKeyOnNestedPojo() throws Exception {
+    void testNestedKeyOnNestedPojo() throws Exception {
         StreamExecutionEnvironment see = StreamExecutionEnvironment.getExecutionEnvironment();
         see.getConfig().disableObjectReuse();
         see.setParallelism(4);
 
-        DataStream<Data> dataStream = see.fromCollection(elements);
+        DataStream<Data> dataStream = see.fromData(elements);
 
         DataStream<Data> summedStream =
                 dataStream
-                        .keyBy("aaa", "stats.count")
+                        .keyBy(
+                                x -> Tuple2.of(x.aaa, x.stats.count),
+                                Types.TUPLE(Types.INT, Types.LONG))
                         .sum("sum")
-                        .keyBy("aaa", "stats.count")
+                        .keyBy(
+                                x -> Tuple2.of(x.aaa, x.stats.count),
+                                Types.TUPLE(Types.INT, Types.LONG))
                         .flatMap(
                                 new FlatMapFunction<Data, Data>() {
                                     private static final long serialVersionUID =
@@ -155,18 +168,18 @@ public class DataStreamPojoITCase extends AbstractTestBase {
     }
 
     @Test
-    public void testNestedPojoFieldAccessor() throws Exception {
+    void testNestedPojoFieldAccessor() throws Exception {
         StreamExecutionEnvironment see = StreamExecutionEnvironment.getExecutionEnvironment();
         see.getConfig().disableObjectReuse();
         see.setParallelism(4);
 
-        DataStream<Data> dataStream = see.fromCollection(elements);
+        DataStream<Data> dataStream = see.fromData(elements);
 
         DataStream<Data> summedStream =
                 dataStream
-                        .keyBy("aaa")
+                        .keyBy(x -> x.aaa)
                         .sum("stats.count")
-                        .keyBy("aaa")
+                        .keyBy(x -> x.aaa)
                         .flatMap(
                                 new FlatMapFunction<Data, Data>() {
                                     Data[] first = new Data[3];
@@ -194,12 +207,19 @@ public class DataStreamPojoITCase extends AbstractTestBase {
         see.execute();
     }
 
-    @Test(expected = CompositeType.InvalidFieldReferenceException.class)
-    public void testFailOnNestedPojoFieldAccessor() throws Exception {
+    @Test
+    void testFailOnNestedPojoFieldAccessor() throws Exception {
         StreamExecutionEnvironment see = StreamExecutionEnvironment.getExecutionEnvironment();
 
-        DataStream<Data> dataStream = see.fromCollection(elements);
-        dataStream.keyBy("aaa", "stats.count").sum("stats.nonExistingField");
+        DataStream<Data> dataStream = see.fromData(elements);
+        assertThatThrownBy(
+                        () ->
+                                dataStream
+                                        .keyBy(
+                                                x -> Tuple2.of(x.aaa, x.stats.count),
+                                                Types.TUPLE(Types.INT, Types.LONG))
+                                        .sum("stats.nonExistingField"))
+                .isInstanceOf(CompositeType.InvalidFieldReferenceException.class);
     }
 
     /** POJO. */

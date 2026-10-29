@@ -18,17 +18,18 @@
 
 package org.apache.flink.runtime.heartbeat;
 
-import org.apache.flink.core.testutils.FlinkMatchers;
+import org.apache.flink.core.testutils.FlinkAssertions;
 import org.apache.flink.core.testutils.OneShotLatch;
 import org.apache.flink.runtime.clusterframework.types.ResourceID;
 import org.apache.flink.runtime.rpc.exceptions.RecipientUnreachableException;
 import org.apache.flink.testutils.TestingUtils;
+import org.apache.flink.testutils.executor.TestExecutorResource;
 import org.apache.flink.util.TestLogger;
 import org.apache.flink.util.concurrent.FutureUtils;
 import org.apache.flink.util.concurrent.ManuallyTriggeredScheduledExecutor;
 import org.apache.flink.util.concurrent.ScheduledExecutorServiceAdapter;
 
-import org.hamcrest.Matcher;
+import org.junit.ClassRule;
 import org.junit.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -42,23 +43,23 @@ import java.util.Map;
 import java.util.Queue;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 
-import static org.hamcrest.Matchers.greaterThanOrEqualTo;
-import static org.hamcrest.Matchers.hasSize;
-import static org.hamcrest.Matchers.is;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertThat;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** Tests for the {@link HeartbeatManager}. */
 public class HeartbeatManagerTest extends TestLogger {
+
+    @ClassRule
+    public static final TestExecutorResource<ScheduledExecutorService> EXECUTOR_RESOURCE =
+            TestingUtils.defaultExecutorResource();
+
     private static final Logger LOG = LoggerFactory.getLogger(HeartbeatManagerTest.class);
     public static final long HEARTBEAT_INTERVAL = 50L;
     public static final long HEARTBEAT_TIMEOUT = 200L;
@@ -89,7 +90,7 @@ public class HeartbeatManagerTest extends TestLogger {
                         FAILED_RPC_THRESHOLD,
                         ownResourceID,
                         heartbeatListener,
-                        TestingUtils.defaultScheduledExecutor(),
+                        new ScheduledExecutorServiceAdapter(EXECUTOR_RESOURCE.getExecutor()),
                         LOG);
 
         final ArrayBlockingQueue<Integer> reportedPayloadsHeartbeatTarget =
@@ -108,12 +109,12 @@ public class HeartbeatManagerTest extends TestLogger {
         final String inputPayload1 = "foobar";
         heartbeatManager.requestHeartbeat(targetResourceID, inputPayload1);
 
-        assertThat(reportedPayloads.take(), is(inputPayload1));
-        assertThat(reportedPayloadsHeartbeatTarget.take(), is(outputPayload));
+        assertThat(reportedPayloads.take()).isEqualTo(inputPayload1);
+        assertThat(reportedPayloadsHeartbeatTarget.take()).isEqualTo(outputPayload);
 
         final String inputPayload2 = "barfoo";
         heartbeatManager.receiveHeartbeat(targetResourceID, inputPayload2);
-        assertThat(reportedPayloads.take(), is(inputPayload2));
+        assertThat(reportedPayloads.take()).isEqualTo(inputPayload2);
     }
 
     /** Tests that the heartbeat monitors are updated when receiving a new heartbeat signal. */
@@ -149,9 +150,9 @@ public class HeartbeatManagerTest extends TestLogger {
         final List<ScheduledFuture<?>> scheduledTasksAfterHeartbeat =
                 manuallyTriggeredScheduledExecutor.getAllScheduledTasks();
 
-        assertThat(scheduledTasksAfterHeartbeat, hasSize(2));
+        assertThat(scheduledTasksAfterHeartbeat).hasSize(2);
         // the first scheduled future should be cancelled by the heartbeat update
-        assertTrue(scheduledTasksAfterHeartbeat.get(0).isCancelled());
+        assertThat(scheduledTasksAfterHeartbeat.get(0).isCancelled()).isTrue();
     }
 
     /** Tests that a heartbeat timeout is signaled if the heartbeat is not reported in time. */
@@ -176,7 +177,7 @@ public class HeartbeatManagerTest extends TestLogger {
                         FAILED_RPC_THRESHOLD,
                         ownResourceID,
                         heartbeatListener,
-                        TestingUtils.defaultScheduledExecutor(),
+                        new ScheduledExecutorServiceAdapter(EXECUTOR_RESOURCE.getExecutor()),
                         LOG);
 
         final HeartbeatTarget<Integer> heartbeatTarget =
@@ -189,12 +190,12 @@ public class HeartbeatManagerTest extends TestLogger {
             Thread.sleep(HEARTBEAT_INTERVAL);
         }
 
-        assertFalse(timeoutFuture.isDone());
+        FlinkAssertions.assertThatFuture(timeoutFuture).eventuallySucceeds();
 
         ResourceID timeoutResourceID =
                 timeoutFuture.get(2 * HEARTBEAT_TIMEOUT, TimeUnit.MILLISECONDS);
 
-        assertEquals(targetResourceID, timeoutResourceID);
+        assertThat(targetResourceID).isEqualTo(timeoutResourceID);
     }
 
     /**
@@ -238,7 +239,7 @@ public class HeartbeatManagerTest extends TestLogger {
                         FAILED_RPC_THRESHOLD,
                         resourceIdTarget,
                         heartbeatListenerTarget,
-                        TestingUtils.defaultScheduledExecutor(),
+                        new ScheduledExecutorServiceAdapter(EXECUTOR_RESOURCE.getExecutor()),
                         LOG);
 
         HeartbeatManagerSenderImpl<Integer, String> heartbeatManagerSender =
@@ -248,7 +249,7 @@ public class HeartbeatManagerTest extends TestLogger {
                         FAILED_RPC_THRESHOLD,
                         resourceIDSender,
                         heartbeatListenerSender,
-                        TestingUtils.defaultScheduledExecutor(),
+                        new ScheduledExecutorServiceAdapter(EXECUTOR_RESOURCE.getExecutor()),
                         LOG);
 
         heartbeatManagerTarget.monitorTarget(resourceIDSender, heartbeatManagerSender);
@@ -256,20 +257,19 @@ public class HeartbeatManagerTest extends TestLogger {
 
         Thread.sleep(2 * HEARTBEAT_TIMEOUT);
 
-        assertFalse(targetHeartbeatTimeoutFuture.isDone());
+        assertThat(targetHeartbeatTimeoutFuture).isNotDone();
 
         heartbeatManagerTarget.stop();
 
         ResourceID timeoutResourceID =
                 targetHeartbeatTimeoutFuture.get(2 * HEARTBEAT_TIMEOUT, TimeUnit.MILLISECONDS);
 
-        assertThat(timeoutResourceID, is(resourceIdTarget));
+        assertThat(timeoutResourceID).isEqualTo(resourceIdTarget);
 
         int numberHeartbeats = (int) (2 * HEARTBEAT_TIMEOUT / HEARTBEAT_INTERVAL);
 
-        final Matcher<Integer> numberHeartbeatsMatcher = greaterThanOrEqualTo(numberHeartbeats / 2);
-        assertThat(numReportPayloadCallsTarget.get(), is(numberHeartbeatsMatcher));
-        assertThat(numReportPayloadCallsSender.get(), is(numberHeartbeatsMatcher));
+        assertThat(numReportPayloadCallsTarget.get()).isGreaterThanOrEqualTo(numberHeartbeats / 2);
+        assertThat(numReportPayloadCallsSender.get()).isGreaterThanOrEqualTo(numberHeartbeats / 2);
     }
 
     /** Tests that after unmonitoring a target, there won't be a timeout triggered. */
@@ -294,7 +294,7 @@ public class HeartbeatManagerTest extends TestLogger {
                         FAILED_RPC_THRESHOLD,
                         resourceID,
                         heartbeatListener,
-                        TestingUtils.defaultScheduledExecutor(),
+                        new ScheduledExecutorServiceAdapter(EXECUTOR_RESOURCE.getExecutor()),
                         LOG);
 
         final HeartbeatTarget<Integer> heartbeatTarget =
@@ -303,12 +303,9 @@ public class HeartbeatManagerTest extends TestLogger {
 
         heartbeatManager.unmonitorTarget(targetID);
 
-        try {
-            timeoutFuture.get(2 * heartbeatTimeout, TimeUnit.MILLISECONDS);
-            fail("Timeout should time out.");
-        } catch (TimeoutException ignored) {
-            // the timeout should not be completed since we unmonitored the target
-        }
+        assertThatThrownBy(() -> timeoutFuture.get(2 * heartbeatTimeout, TimeUnit.MILLISECONDS))
+                // the timeout should not be completed since we unmonitored the target
+                .isInstanceOf(TimeoutException.class);
     }
 
     /** Tests that the last heartbeat from an unregistered target equals -1. */
@@ -325,11 +322,11 @@ public class HeartbeatManagerTest extends TestLogger {
                         FAILED_RPC_THRESHOLD,
                         resourceId,
                         heartbeatListener,
-                        TestingUtils.defaultScheduledExecutor(),
+                        new ScheduledExecutorServiceAdapter(EXECUTOR_RESOURCE.getExecutor()),
                         LOG);
 
         try {
-            assertEquals(-1L, heartbeatManager.getLastHeartbeatFrom(ResourceID.generate()));
+            assertThat(heartbeatManager.getLastHeartbeatFrom(ResourceID.generate())).isEqualTo(-1L);
         } finally {
             heartbeatManager.stop();
         }
@@ -348,20 +345,21 @@ public class HeartbeatManagerTest extends TestLogger {
                         FAILED_RPC_THRESHOLD,
                         resourceId,
                         new TestingHeartbeatListenerBuilder<>().createNewTestingHeartbeatListener(),
-                        TestingUtils.defaultScheduledExecutor(),
+                        new ScheduledExecutorServiceAdapter(EXECUTOR_RESOURCE.getExecutor()),
                         LOG);
 
         try {
             heartbeatManager.monitorTarget(
                     target, new TestingHeartbeatTargetBuilder<>().createTestingHeartbeatTarget());
 
-            assertEquals(0L, heartbeatManager.getLastHeartbeatFrom(target));
+            assertThat(heartbeatManager.getLastHeartbeatFrom(target)).isZero();
 
             final long currentTime = System.currentTimeMillis();
 
             heartbeatManager.receiveHeartbeat(target, null);
 
-            assertTrue(heartbeatManager.getLastHeartbeatFrom(target) >= currentTime);
+            assertThat(heartbeatManager.getLastHeartbeatFrom(target))
+                    .isGreaterThanOrEqualTo(currentTime);
         } finally {
             heartbeatManager.stop();
         }
@@ -413,7 +411,7 @@ public class HeartbeatManagerTest extends TestLogger {
                         FAILED_RPC_THRESHOLD,
                         ResourceID.generate(),
                         testingHeartbeatListener,
-                        TestingUtils.defaultScheduledExecutor(),
+                        new ScheduledExecutorServiceAdapter(EXECUTOR_RESOURCE.getExecutor()),
                         LOG);
 
         try {
@@ -421,10 +419,11 @@ public class HeartbeatManagerTest extends TestLogger {
             heartbeatManager.monitorTarget(specialTargetId, specialHeartbeatTarget);
 
             heartbeatManager.requestHeartbeat(someTargetId, null);
-            assertThat(someHeartbeatPayloadFuture.get(), is(payloads.get(someTargetId)));
+            assertThat(someHeartbeatPayloadFuture.get()).isEqualTo(payloads.get(someTargetId));
 
             heartbeatManager.requestHeartbeat(specialTargetId, null);
-            assertThat(specialHeartbeatPayloadFuture.get(), is(payloads.get(specialTargetId)));
+            assertThat(specialHeartbeatPayloadFuture.get())
+                    .isEqualTo(payloads.get(specialTargetId));
         } finally {
             heartbeatManager.stop();
         }
@@ -474,9 +473,10 @@ public class HeartbeatManagerTest extends TestLogger {
             someTargetReceivedLatch.await(5, TimeUnit.SECONDS);
             specialTargetReceivedLatch.await(5, TimeUnit.SECONDS);
 
-            assertEquals(defaultResponse, someHeartbeatTarget.getLastRequestedHeartbeatPayload());
-            assertEquals(
-                    specialResponse, specialHeartbeatTarget.getLastRequestedHeartbeatPayload());
+            assertThat(defaultResponse)
+                    .isEqualTo(someHeartbeatTarget.getLastRequestedHeartbeatPayload());
+            assertThat(specialResponse)
+                    .isEqualTo(specialHeartbeatTarget.getLastRequestedHeartbeatPayload());
         } finally {
             heartbeatManager.stop();
             scheduledThreadPoolExecutor.shutdown();
@@ -511,7 +511,7 @@ public class HeartbeatManagerTest extends TestLogger {
                         1,
                         ResourceID.generate(),
                         testingHeartbeatListener,
-                        TestingUtils.defaultScheduledExecutor(),
+                        new ScheduledExecutorServiceAdapter(EXECUTOR_RESOURCE.getExecutor()),
                         LOG);
 
         try {
@@ -551,7 +551,7 @@ public class HeartbeatManagerTest extends TestLogger {
                         failedRpcRequestsUntilUnreachable,
                         ResourceID.generate(),
                         testingHeartbeatListener,
-                        TestingUtils.defaultScheduledExecutor(),
+                        new ScheduledExecutorServiceAdapter(EXECUTOR_RESOURCE.getExecutor()),
                         LOG);
 
         try {
@@ -560,9 +560,8 @@ public class HeartbeatManagerTest extends TestLogger {
             for (int i = 0; i < failedRpcRequestsUntilUnreachable - 1; i++) {
                 heartbeatManager.requestHeartbeat(someTargetId, null);
 
-                assertThat(
-                        unreachableTargetFuture,
-                        FlinkMatchers.willNotComplete(willNotCompleteWithin));
+                FlinkAssertions.assertThatFuture(unreachableTargetFuture)
+                        .willNotCompleteWithin(willNotCompleteWithin);
             }
 
             heartbeatManager.requestHeartbeat(someTargetId, null);
@@ -601,7 +600,7 @@ public class HeartbeatManagerTest extends TestLogger {
                         -1, // disable rpc request checking
                         ResourceID.generate(),
                         testingHeartbeatListener,
-                        TestingUtils.defaultScheduledExecutor(),
+                        new ScheduledExecutorServiceAdapter(EXECUTOR_RESOURCE.getExecutor()),
                         LOG);
 
         try {
@@ -611,8 +610,8 @@ public class HeartbeatManagerTest extends TestLogger {
                 heartbeatManager.requestHeartbeat(someTargetId, null);
             }
 
-            assertThat(
-                    unreachableTargetFuture, FlinkMatchers.willNotComplete(willNotCompleteWithin));
+            FlinkAssertions.assertThatFuture(unreachableTargetFuture)
+                    .willNotCompleteWithin(willNotCompleteWithin);
         } finally {
             heartbeatManager.stop();
         }
@@ -650,7 +649,7 @@ public class HeartbeatManagerTest extends TestLogger {
                         3,
                         ResourceID.generate(),
                         testingHeartbeatListener,
-                        TestingUtils.defaultScheduledExecutor(),
+                        new ScheduledExecutorServiceAdapter(EXECUTOR_RESOURCE.getExecutor()),
                         LOG);
 
         try {
@@ -660,8 +659,8 @@ public class HeartbeatManagerTest extends TestLogger {
                 heartbeatManager.requestHeartbeat(someTargetId, null);
             }
 
-            assertThat(
-                    unreachableTargetFuture, FlinkMatchers.willNotComplete(willNotCompleteWithin));
+            FlinkAssertions.assertThatFuture(unreachableTargetFuture)
+                    .willNotCompleteWithin(willNotCompleteWithin);
         } finally {
             heartbeatManager.stop();
         }

@@ -18,8 +18,10 @@
 
 package org.apache.flink.api.common.functions;
 
+import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.Public;
-import org.apache.flink.configuration.Configuration;
+import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.configuration.ReadableConfig;
 
 /**
  * An base interface for all rich user-defined functions. This class defines methods for the life
@@ -35,17 +37,17 @@ public interface RichFunction extends Function {
      * part of an iteration, this method will be invoked at the beginning of each iteration
      * superstep.
      *
-     * <p>The configuration object passed to the function can be used for configuration and
-     * initialization. The configuration contains all parameters that were configured on the
-     * function in the program composition.
+     * <p>The openContext object passed to the function can be used for configuration and
+     * initialization. The openContext contains some necessary information that were configured on
+     * the function in the program composition.
      *
      * <pre>{@code
      * public class MyFilter extends RichFilterFunction<String> {
      *
      *     private String searchString;
      *
-     *     public void open(Configuration parameters) {
-     *         this.searchString = parameters.getString("foo");
+     *     public void open(OpenContext openContext) {
+     *         // initialize the value of searchString
      *     }
      *
      *     public boolean filter(String value) {
@@ -54,15 +56,14 @@ public interface RichFunction extends Function {
      * }
      * }</pre>
      *
-     * <p>By default, this method does nothing.
-     *
-     * @param parameters The configuration containing the parameters attached to the contract.
+     * @param openContext The context containing information about the context in which the function
+     *     is opened.
      * @throws Exception Implementations may forward exceptions, which are caught by the runtime.
      *     When the runtime catches an exception, it aborts the task and lets the fail-over logic
      *     decide whether to retry the task execution.
-     * @see org.apache.flink.configuration.Configuration
      */
-    void open(Configuration parameters) throws Exception;
+    @PublicEvolving
+    void open(OpenContext openContext) throws Exception;
 
     /**
      * Tear-down method for the user code. It is called after the last call to the main working
@@ -113,4 +114,30 @@ public interface RichFunction extends Function {
      * @param t The runtime context.
      */
     void setRuntimeContext(RuntimeContext t);
+
+    /**
+     * Can be overridden to enable interruptible timers for this particular function even if config
+     * option is enabled. By default, interruptible timers are disabled. NOTE: operator that
+     * executes the function is expected to:
+     *
+     * <ol>
+     *   <li>Inherit org.apache.flink.streaming.api.operators.AbstractStreamOperator or
+     *       org.apache.flink.streaming.api.operators.AbstractStreamOperatorV2 (or handle watermarks
+     *       similarly)
+     *   <li>Pass {@link org.apache.flink.api.common.operators.MailboxExecutor MailboxExecutor} to
+     *       it in one of the following ways:
+     *       <ul>
+     *         <li>Pass org.apache.flink.streaming.api.operators.StreamOperatorParameters to super
+     *             constructor
+     *         <li>Set via
+     *             org.apache.flink.streaming.api.operators.YieldingOperator.setMailboxExecutor
+     *         <li>Set via org.apache.flink.streaming.api.operators.YieldingOperatorFactory
+     *       </ul>
+     *   <li>Not override watermark handling methods or call super
+     * </ol>
+     */
+    @Internal
+    default boolean useInterruptibleTimers(ReadableConfig config) {
+        return false;
+    }
 }

@@ -15,19 +15,18 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.planner.plan.utils
 
 import org.apache.flink.table.api.ValidationException
+import org.apache.flink.table.planner.codegen.CodeGenException
 import org.apache.flink.table.planner.codegen.MatchCodeGenerator.ALL_PATTERN_VARIABLE
 import org.apache.flink.table.planner.functions.sql.FlinkSqlOperatorTable
 import org.apache.flink.table.planner.plan.logical.MatchRecognize
 import org.apache.flink.table.planner.plan.nodes.exec.spec.{MatchSpec, PartitionSpec}
 
-import org.apache.calcite.rex.{RexCall, RexNode, RexPatternFieldRef}
-import org.apache.calcite.sql.fun.SqlStdOperatorTable
-
 import _root_.scala.collection.JavaConversions._
+import org.apache.calcite.rex.{RexCall, RexNode, RexNodeAndFieldIndex, RexPatternFieldRef}
+import org.apache.calcite.sql.fun.SqlStdOperatorTable
 
 object MatchUtil {
 
@@ -40,25 +39,32 @@ object MatchUtil {
       if (call.operands.size() == 0) {
         Some(ALL_PATTERN_VARIABLE)
       } else {
-        call.operands.map(n => n.accept(this)).reduce((op1, op2) => (op1, op2) match {
-          case (None, None) => None
-          case (x, None) => x
-          case (None, x) => x
-          case (Some(var1), Some(var2)) if var1.equals(var2) =>
-            Some(var1)
-          case _ =>
-            throw new ValidationException(s"Aggregation must be applied to a single pattern " +
-              s"variable. Malformed expression: $call")
-        })
+        call.operands
+          .map(n => n.accept(this))
+          .reduce(
+            (op1, op2) =>
+              (op1, op2) match {
+                case (None, None) => None
+                case (x, None) => x
+                case (None, x) => x
+                case (Some(var1), Some(var2)) if var1.equals(var2) =>
+                  Some(var1)
+                case _ =>
+                  throw new ValidationException(
+                    s"Aggregation must be applied to a single pattern " +
+                      s"variable. Malformed expression: $call")
+              })
       }
     }
 
     override def visitNode(rexNode: RexNode): Option[String] = None
+
+    override def visitNodeAndFieldIndex(nodeAndFieldIndex: RexNodeAndFieldIndex): Option[String] = {
+      throw new CodeGenException("RexNodeAndFieldIndex are not supported yet.")
+    }
   }
 
-  /**
-   * Convert [[MatchRecognize]] to [[MatchSpec]].
-   */
+  /** Convert [[MatchRecognize]] to [[MatchSpec]]. */
   def createMatchSpec(logicalMatch: MatchRecognize): MatchSpec = {
     new MatchSpec(
       logicalMatch.pattern,

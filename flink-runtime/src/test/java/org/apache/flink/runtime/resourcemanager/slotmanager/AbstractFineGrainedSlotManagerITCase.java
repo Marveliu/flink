@@ -17,8 +17,9 @@
 
 package org.apache.flink.runtime.resourcemanager.slotmanager;
 
+import org.apache.flink.api.common.ApplicationID;
 import org.apache.flink.api.common.JobID;
-import org.apache.flink.api.java.tuple.Tuple6;
+import org.apache.flink.api.java.tuple.Tuple7;
 import org.apache.flink.runtime.clusterframework.types.AllocationID;
 import org.apache.flink.runtime.clusterframework.types.ResourceID;
 import org.apache.flink.runtime.clusterframework.types.ResourceProfile;
@@ -37,7 +38,8 @@ import org.apache.flink.runtime.taskexecutor.exceptions.SlotAllocationException;
 import org.apache.flink.runtime.testutils.SystemExitTrackingSecurityManager;
 import org.apache.flink.util.function.FunctionUtils;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Tag;
+import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -46,16 +48,13 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicInteger;
 
-import static org.hamcrest.Matchers.empty;
-import static org.hamcrest.Matchers.equalTo;
-import static org.hamcrest.Matchers.is;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertThat;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /** IT Cases of {@link FineGrainedSlotManager}. */
-public abstract class AbstractFineGrainedSlotManagerITCase extends FineGrainedSlotManagerTestBase {
+abstract class AbstractFineGrainedSlotManagerITCase extends FineGrainedSlotManagerTestBase {
 
     // ---------------------------------------------------------------------------------------------
     // Requirement declaration
@@ -65,16 +64,20 @@ public abstract class AbstractFineGrainedSlotManagerITCase extends FineGrainedSl
      * Tests that a requirement declaration with no free slots will trigger the resource allocation.
      */
     @Test
-    public void testRequirementDeclarationWithoutFreeSlotsTriggersWorkerAllocation()
-            throws Exception {
+    void testRequirementDeclarationWithoutFreeSlotsTriggersWorkerAllocation() throws Exception {
         final ResourceRequirements resourceRequirements = createResourceRequirementsForSingleSlot();
 
         final CompletableFuture<WorkerResourceSpec> allocateResourceFuture =
                 new CompletableFuture<>();
         new Context() {
             {
-                resourceActionsBuilder.setAllocateResourceConsumer(
-                        allocateResourceFuture::complete);
+                resourceAllocatorBuilder.setDeclareResourceNeededConsumer(
+                        (resourceDeclarations) -> {
+                            assertThat(resourceDeclarations).hasSize(1);
+                            ResourceDeclaration resourceDeclaration =
+                                    resourceDeclarations.iterator().next();
+                            allocateResourceFuture.complete(resourceDeclaration.getSpec());
+                        });
                 runTest(
                         () -> {
                             runInMainThread(
@@ -89,9 +92,43 @@ public abstract class AbstractFineGrainedSlotManagerITCase extends FineGrainedSl
         };
     }
 
+    /**
+     * Tests that resources continue to be considered missing if we cannot allocate more resources.
+     */
+    @Test
+    void testRequirementDeclarationWithResourceAllocationFailure() throws Exception {
+        final ResourceRequirements resourceRequirements = createResourceRequirementsForSingleSlot();
+
+        final CompletableFuture<Void> allocateResourceFuture = new CompletableFuture<>();
+        new Context() {
+            {
+                resourceAllocatorBuilder
+                        .setDeclareResourceNeededConsumer(
+                                (resourceDeclarations) -> allocateResourceFuture.complete(null))
+                        .setIsSupportedSupplier(() -> false);
+                runTest(
+                        () -> {
+                            runInMainThread(
+                                    () ->
+                                            getSlotManager()
+                                                    .processResourceRequirements(
+                                                            resourceRequirements));
+
+                            assertFutureNotComplete(allocateResourceFuture);
+                            assertThat(
+                                            getTotalResourceCount(
+                                                    getResourceTracker()
+                                                            .getMissingResources()
+                                                            .get(resourceRequirements.getJobId())))
+                                    .isEqualTo(1);
+                        });
+            }
+        };
+    }
+
     /** Tests that resource requirements can be fulfilled with resource that are currently free. */
     @Test
-    public void testRequirementDeclarationWithFreeResource() throws Exception {
+    void testRequirementDeclarationWithFreeResource() throws Exception {
         testRequirementDeclaration(
                 RequirementDeclarationScenario
                         .TASK_EXECUTOR_REGISTRATION_BEFORE_REQUIREMENT_DECLARATION);
@@ -102,7 +139,7 @@ public abstract class AbstractFineGrainedSlotManagerITCase extends FineGrainedSl
      * requirement declaration.
      */
     @Test
-    public void testRequirementDeclarationWithPendingResource() throws Exception {
+    void testRequirementDeclarationWithPendingResource() throws Exception {
         testRequirementDeclaration(
                 RequirementDeclarationScenario
                         .TASK_EXECUTOR_REGISTRATION_AFTER_REQUIREMENT_DECLARATION);
@@ -119,19 +156,22 @@ public abstract class AbstractFineGrainedSlotManagerITCase extends FineGrainedSl
             throws Exception {
         final ResourceID resourceID = ResourceID.generate();
         final JobID jobId = new JobID();
+        final ApplicationID applicationId = new ApplicationID();
         final SlotID slotId = SlotID.getDynamicSlotID(resourceID);
         final String targetAddress = "localhost";
         final ResourceRequirements requirements =
                 ResourceRequirements.create(
                         jobId,
+                        applicationId,
                         targetAddress,
                         Collections.singleton(
                                 ResourceRequirement.create(DEFAULT_SLOT_RESOURCE_PROFILE, 1)));
 
         final CompletableFuture<
-                        Tuple6<
+                        Tuple7<
                                 SlotID,
                                 JobID,
+                                ApplicationID,
                                 AllocationID,
                                 ResourceProfile,
                                 String,
@@ -141,8 +181,8 @@ public abstract class AbstractFineGrainedSlotManagerITCase extends FineGrainedSl
         final TaskExecutorGateway taskExecutorGateway =
                 new TestingTaskExecutorGatewayBuilder()
                         .setRequestSlotFunction(
-                                tuple6 -> {
-                                    requestFuture.complete(tuple6);
+                                tuple7 -> {
+                                    requestFuture.complete(tuple7);
                                     return CompletableFuture.completedFuture(Acknowledge.get());
                                 })
                         .createTestingTaskExecutorGateway();
@@ -185,30 +225,74 @@ public abstract class AbstractFineGrainedSlotManagerITCase extends FineGrainedSl
                                                                 DEFAULT_SLOT_RESOURCE_PROFILE));
                             }
 
-                            assertThat(
-                                    assertFutureCompleteAndReturn(requestFuture),
-                                    is(
-                                            equalTo(
-                                                    Tuple6.of(
-                                                            slotId,
-                                                            jobId,
-                                                            assertFutureCompleteAndReturn(
-                                                                            requestFuture)
-                                                                    .f2,
-                                                            DEFAULT_SLOT_RESOURCE_PROFILE,
-                                                            targetAddress,
-                                                            getResourceManagerId()))));
+                            assertThat(assertFutureCompleteAndReturn(requestFuture))
+                                    .isEqualTo(
+                                            Tuple7.of(
+                                                    slotId,
+                                                    jobId,
+                                                    applicationId,
+                                                    assertFutureCompleteAndReturn(requestFuture).f3,
+                                                    DEFAULT_SLOT_RESOURCE_PROFILE,
+                                                    targetAddress,
+                                                    getResourceManagerId()));
 
                             final TaskManagerSlotInformation slot =
                                     getTaskManagerTracker()
                                             .getAllocatedOrPendingSlot(
-                                                    assertFutureCompleteAndReturn(requestFuture).f2)
+                                                    assertFutureCompleteAndReturn(requestFuture).f3)
                                             .get();
 
-                            assertEquals(
-                                    "The slot has not been allocated to the expected allocation id.",
-                                    assertFutureCompleteAndReturn(requestFuture).f2,
-                                    slot.getAllocationId());
+                            assertThat(assertFutureCompleteAndReturn(requestFuture).f3)
+                                    .as(
+                                            "The slot has not been allocated to the expected allocation id.")
+                                    .isEqualTo(slot.getAllocationId());
+                        });
+            }
+        };
+    }
+
+    /**
+     * Tests that blocked slots cannot be used to fulfill requirements, will trigger the new
+     * resource allocation.
+     */
+    @Test
+    void testRequirementDeclarationWithBlockedSlotsTriggersWorkerAllocation() throws Exception {
+        final ResourceRequirements resourceRequirements = createResourceRequirementsForSingleSlot();
+
+        final CompletableFuture<WorkerResourceSpec> allocateResourceFuture =
+                new CompletableFuture<>();
+
+        final ResourceID blockedTaskManager = ResourceID.generate();
+        final TaskExecutorGateway taskExecutorGateway =
+                new TestingTaskExecutorGatewayBuilder().createTestingTaskExecutorGateway();
+        final TaskExecutorConnection taskManagerConnection =
+                new TaskExecutorConnection(blockedTaskManager, taskExecutorGateway);
+
+        new Context() {
+            {
+                setBlockedTaskManagerChecker(blockedTaskManager::equals);
+                resourceAllocatorBuilder.setDeclareResourceNeededConsumer(
+                        (resourceDeclarations) -> {
+                            assertThat(resourceDeclarations).hasSize(1);
+                            ResourceDeclaration resourceDeclaration =
+                                    resourceDeclarations.iterator().next();
+                            allocateResourceFuture.complete(resourceDeclaration.getSpec());
+                        });
+                runTest(
+                        () -> {
+                            runInMainThread(
+                                    () -> {
+                                        getSlotManager()
+                                                .registerTaskManager(
+                                                        taskManagerConnection,
+                                                        new SlotReport(),
+                                                        DEFAULT_TOTAL_RESOURCE_PROFILE,
+                                                        DEFAULT_SLOT_RESOURCE_PROFILE);
+                                        getSlotManager()
+                                                .processResourceRequirements(resourceRequirements);
+                                    });
+
+                            assertFutureCompleteAndReturn(allocateResourceFuture);
                         });
             }
         };
@@ -219,8 +303,8 @@ public abstract class AbstractFineGrainedSlotManagerITCase extends FineGrainedSl
      * allocated after a pending slot request has been fulfilled but not yet freed.
      */
     @Test
-    public void testDuplicateResourceRequirementDeclarationAfterSuccessfulAllocation()
-            throws Exception {
+    void testDuplicateResourceRequirementDeclarationAfterSuccessfulAllocation() throws Exception {
+        final AtomicInteger requestCount = new AtomicInteger(0);
         final List<CompletableFuture<Void>> allocateResourceFutures = new ArrayList<>();
         allocateResourceFutures.add(new CompletableFuture<>());
         allocateResourceFutures.add(new CompletableFuture<>());
@@ -228,12 +312,13 @@ public abstract class AbstractFineGrainedSlotManagerITCase extends FineGrainedSl
 
         new Context() {
             {
-                resourceActionsBuilder.setAllocateResourceConsumer(
-                        ignored -> {
-                            if (allocateResourceFutures.get(0).isDone()) {
-                                allocateResourceFutures.get(1).complete(null);
-                            } else {
-                                allocateResourceFutures.get(0).complete(null);
+                resourceAllocatorBuilder.setDeclareResourceNeededConsumer(
+                        (resourceDeclarations) -> {
+                            if (!resourceDeclarations.isEmpty()) {
+                                assertThat(requestCount).hasValueLessThan(2);
+                                allocateResourceFutures
+                                        .get(requestCount.getAndIncrement())
+                                        .complete(null);
                             }
                         });
                 runTest(
@@ -257,15 +342,13 @@ public abstract class AbstractFineGrainedSlotManagerITCase extends FineGrainedSl
     }
 
     @Test
-    public void testResourceCanBeAllocatedForDifferentJobWithDeclarationBeforeSlotFree()
-            throws Exception {
+    void testResourceCanBeAllocatedForDifferentJobWithDeclarationBeforeSlotFree() throws Exception {
         testResourceCanBeAllocatedForDifferentJobAfterFree(
                 SecondRequirementDeclarationTime.BEFORE_FREE);
     }
 
     @Test
-    public void testResourceCanBeAllocatedForDifferentJobWithDeclarationAfterSlotFree()
-            throws Exception {
+    void testResourceCanBeAllocatedForDifferentJobWithDeclarationAfterSlotFree() throws Exception {
         testResourceCanBeAllocatedForDifferentJobAfterFree(
                 SecondRequirementDeclarationTime.AFTER_FREE);
     }
@@ -291,11 +374,11 @@ public abstract class AbstractFineGrainedSlotManagerITCase extends FineGrainedSl
         final TaskExecutorGateway taskExecutorGateway =
                 new TestingTaskExecutorGatewayBuilder()
                         .setRequestSlotFunction(
-                                tuple6 -> {
+                                tuple7 -> {
                                     if (!allocationIdFuture1.isDone()) {
-                                        allocationIdFuture1.complete(tuple6.f2);
+                                        allocationIdFuture1.complete(tuple7.f3);
                                     } else {
-                                        allocationIdFuture2.complete(tuple6.f2);
+                                        allocationIdFuture2.complete(tuple7.f3);
                                     }
                                     return CompletableFuture.completedFuture(Acknowledge.get());
                                 })
@@ -328,10 +411,9 @@ public abstract class AbstractFineGrainedSlotManagerITCase extends FineGrainedSl
                                             .getAllocatedOrPendingSlot(allocationId1)
                                             .get();
 
-                            assertEquals(
-                                    "The slot has not been allocated to the expected job id.",
-                                    resourceRequirements1.getJobId(),
-                                    slot.getJobId());
+                            assertThat(resourceRequirements1.getJobId())
+                                    .as("The slot has not been allocated to the expected job id.")
+                                    .isEqualTo(slot.getJobId());
 
                             if (secondRequirementDeclarationTime
                                     == SecondRequirementDeclarationTime.BEFORE_FREE) {
@@ -374,10 +456,122 @@ public abstract class AbstractFineGrainedSlotManagerITCase extends FineGrainedSl
                                                     assertFutureCompleteAndReturn(
                                                             allocationIdFuture2))
                                             .get();
-                            assertEquals(
-                                    "The slot has not been allocated to the expected job id.",
-                                    resourceRequirements2.getJobId(),
-                                    slot.getJobId());
+                            assertThat(resourceRequirements2.getJobId())
+                                    .as("The slot has not been allocated to the expected job id.")
+                                    .isEqualTo(slot.getJobId());
+                        });
+            }
+        };
+    }
+
+    @Test
+    void testRegisterPendingResourceAfterClearingRequirement() throws Exception {
+        final CompletableFuture<AllocationID> allocationIdFuture = new CompletableFuture<>();
+        final CompletableFuture<Void> allocateResourceFutures = new CompletableFuture<>();
+        final CompletableFuture<Void> registerFuture = new CompletableFuture<>();
+        final ResourceRequirements resourceRequirements = createResourceRequirementsForSingleSlot();
+        final TaskExecutorGateway taskExecutorGateway =
+                new TestingTaskExecutorGatewayBuilder()
+                        .setRequestSlotFunction(
+                                tuple7 -> {
+                                    allocationIdFuture.complete(tuple7.f3);
+                                    return CompletableFuture.completedFuture(Acknowledge.get());
+                                })
+                        .createTestingTaskExecutorGateway();
+        final ResourceID resourceID = ResourceID.generate();
+        final TaskExecutorConnection taskManagerConnection =
+                new TaskExecutorConnection(resourceID, taskExecutorGateway);
+        final SlotReport slotReport = new SlotReport();
+        new Context() {
+            {
+                resourceAllocatorBuilder.setDeclareResourceNeededConsumer(
+                        (ignored) -> allocateResourceFutures.complete(null));
+                runTest(
+                        () -> {
+                            runInMainThread(
+                                    () ->
+                                            getSlotManager()
+                                                    .processResourceRequirements(
+                                                            resourceRequirements));
+                            assertFutureCompleteAndReturn(allocateResourceFutures);
+                            assertThat(getResourceTracker().getMissingResources()).hasSize(1);
+
+                            runInMainThreadAndWait(
+                                    () ->
+                                            getSlotManager()
+                                                    .clearResourceRequirements(
+                                                            resourceRequirements.getJobId()));
+                            assertThat(getResourceTracker().getMissingResources()).isEmpty();
+
+                            runInMainThread(
+                                    () -> {
+                                        getSlotManager()
+                                                .registerTaskManager(
+                                                        taskManagerConnection,
+                                                        slotReport,
+                                                        DEFAULT_TOTAL_RESOURCE_PROFILE,
+                                                        DEFAULT_SLOT_RESOURCE_PROFILE);
+                                        registerFuture.complete(null);
+                                    });
+                            assertFutureCompleteAndReturn(registerFuture);
+                            assertFutureNotComplete(allocationIdFuture);
+                            assertThat(getTaskManagerTracker().getPendingTaskManagers()).isEmpty();
+                        });
+            }
+        };
+    }
+
+    @Test
+    void testRegisterPendingResourceAfterEmptyResourceRequirement() throws Exception {
+        final CompletableFuture<AllocationID> allocationIdFuture = new CompletableFuture<>();
+        final CompletableFuture<Void> allocateResourceFutures = new CompletableFuture<>();
+        final CompletableFuture<Void> registerFuture = new CompletableFuture<>();
+        final ResourceRequirements resourceRequirements = createResourceRequirementsForSingleSlot();
+        final TaskExecutorGateway taskExecutorGateway =
+                new TestingTaskExecutorGatewayBuilder()
+                        .setRequestSlotFunction(
+                                tuple7 -> {
+                                    allocationIdFuture.complete(tuple7.f3);
+                                    return CompletableFuture.completedFuture(Acknowledge.get());
+                                })
+                        .createTestingTaskExecutorGateway();
+        final ResourceID resourceID = ResourceID.generate();
+        final TaskExecutorConnection taskManagerConnection =
+                new TaskExecutorConnection(resourceID, taskExecutorGateway);
+        final SlotReport slotReport = new SlotReport();
+        new Context() {
+            {
+                resourceAllocatorBuilder.setDeclareResourceNeededConsumer(
+                        (ignored) -> allocateResourceFutures.complete(null));
+                runTest(
+                        () -> {
+                            runInMainThread(
+                                    () ->
+                                            getSlotManager()
+                                                    .processResourceRequirements(
+                                                            resourceRequirements));
+                            assertFutureCompleteAndReturn(allocateResourceFutures);
+                            runInMainThread(
+                                    () -> {
+                                        getSlotManager()
+                                                .processResourceRequirements(
+                                                        ResourceRequirements.empty(
+                                                                resourceRequirements.getJobId(),
+                                                                resourceRequirements
+                                                                        .getApplicationId(),
+                                                                resourceRequirements
+                                                                        .getTargetAddress()));
+                                        getSlotManager()
+                                                .registerTaskManager(
+                                                        taskManagerConnection,
+                                                        slotReport,
+                                                        DEFAULT_TOTAL_RESOURCE_PROFILE,
+                                                        DEFAULT_SLOT_RESOURCE_PROFILE);
+                                        registerFuture.complete(null);
+                                    });
+                            assertFutureCompleteAndReturn(registerFuture);
+                            assertFutureNotComplete(allocationIdFuture);
+                            assertThat(getTaskManagerTracker().getPendingTaskManagers()).isEmpty();
                         });
             }
         };
@@ -388,20 +582,22 @@ public abstract class AbstractFineGrainedSlotManagerITCase extends FineGrainedSl
      * managers.
      */
     @Test
-    public void testRequestNewResources() throws Exception {
+    void testRequestNewResources() throws Exception {
         final JobID jobId = new JobID();
+        final AtomicInteger requestCount = new AtomicInteger(0);
         final List<CompletableFuture<Void>> allocateResourceFutures = new ArrayList<>();
         allocateResourceFutures.add(new CompletableFuture<>());
         allocateResourceFutures.add(new CompletableFuture<>());
 
         new Context() {
             {
-                resourceActionsBuilder.setAllocateResourceConsumer(
-                        ignored -> {
-                            if (allocateResourceFutures.get(0).isDone()) {
-                                allocateResourceFutures.get(1).complete(null);
-                            } else {
-                                allocateResourceFutures.get(0).complete(null);
+                resourceAllocatorBuilder.setDeclareResourceNeededConsumer(
+                        (resourceDeclarations) -> {
+                            if (!resourceDeclarations.isEmpty()) {
+                                assertThat(requestCount).hasValueLessThan(2);
+                                allocateResourceFutures
+                                        .get(requestCount.getAndIncrement())
+                                        .complete(null);
                             }
                         });
                 runTest(
@@ -436,12 +632,22 @@ public abstract class AbstractFineGrainedSlotManagerITCase extends FineGrainedSl
     // Slot allocation failure handling
     // ---------------------------------------------------------------------------------------------
 
+    /** Tests that if a slot allocation times out we try to allocate another slot. */
+    @Test
+    void testSlotRequestTimeout() throws Exception {
+        testSlotRequestFailureWithException(new TimeoutException("timeout"));
+    }
+
     /**
      * Tests that the SlotManager retries allocating a slot if the TaskExecutor#requestSlot call
      * fails.
      */
     @Test
-    public void testSlotRequestFailure() throws Exception {
+    void testSlotRequestFailure() throws Exception {
+        testSlotRequestFailureWithException(new SlotAllocationException("Test exception."));
+    }
+
+    void testSlotRequestFailureWithException(Exception exception) throws Exception {
         final JobID jobId = new JobID();
         final ResourceRequirements resourceRequirements =
                 createResourceRequirementsForSingleSlot(jobId);
@@ -457,7 +663,7 @@ public abstract class AbstractFineGrainedSlotManagerITCase extends FineGrainedSl
                         .setRequestSlotFunction(
                                 FunctionUtils.uncheckedFunction(
                                         requestSlotParameters -> {
-                                            allocationIds.put(requestSlotParameters.f2);
+                                            allocationIds.put(requestSlotParameters.f3);
                                             return slotRequestFutureIterator.next();
                                         }))
                         .createTestingTaskExecutorGateway();
@@ -484,29 +690,26 @@ public abstract class AbstractFineGrainedSlotManagerITCase extends FineGrainedSl
                                     });
 
                             final AllocationID firstAllocationId = allocationIds.take();
-                            assertThat(allocationIds, is(empty()));
+                            assertThat(allocationIds).isEmpty();
 
                             // let the first attempt fail --> this should trigger a second attempt
                             runInMainThread(
-                                    () ->
-                                            slotRequestFuture1.completeExceptionally(
-                                                    new SlotAllocationException(
-                                                            "Test exception.")));
+                                    () -> slotRequestFuture1.completeExceptionally(exception));
 
                             final AllocationID secondAllocationId = allocationIds.take();
-                            assertThat(allocationIds, is(empty()));
+                            assertThat(allocationIds).isEmpty();
 
                             final TaskManagerSlotInformation slot =
                                     getTaskManagerTracker()
                                             .getAllocatedOrPendingSlot(secondAllocationId)
                                             .get();
 
-                            assertEquals(jobId, slot.getJobId());
+                            assertThat(slot.getJobId()).isEqualTo(jobId);
 
-                            assertFalse(
-                                    getTaskManagerTracker()
-                                            .getAllocatedOrPendingSlot(firstAllocationId)
-                                            .isPresent());
+                            assertThat(
+                                            getTaskManagerTracker()
+                                                    .getAllocatedOrPendingSlot(firstAllocationId))
+                                    .isNotPresent();
                         });
             }
         };
@@ -520,8 +723,9 @@ public abstract class AbstractFineGrainedSlotManagerITCase extends FineGrainedSl
      * Verify that the ack of request slot form unregistered task manager will not cause system
      * breakdown.
      */
+    @Tag("org.apache.flink.testutils.junit.FailsOnJava25")
     @Test
-    public void testAllocationUpdatesIgnoredIfTaskExecutorUnregistered() throws Exception {
+    void testAllocationUpdatesIgnoredIfTaskExecutorUnregistered() throws Exception {
         final CompletableFuture<Acknowledge> slotRequestFuture = new CompletableFuture<>();
         final CompletableFuture<Void> slotRequestCallFuture = new CompletableFuture<>();
         final TestingTaskExecutorGateway taskExecutorGateway =
@@ -572,9 +776,7 @@ public abstract class AbstractFineGrainedSlotManagerITCase extends FineGrainedSl
                                         slotRequestFuture.complete(Acknowledge.get());
                                     });
 
-                            assertThat(
-                                    trackingSecurityManager.getSystemExitFuture().isDone(),
-                                    is(false));
+                            assertThat(trackingSecurityManager.getSystemExitFuture()).isNotDone();
                         });
             }
         };
@@ -582,17 +784,17 @@ public abstract class AbstractFineGrainedSlotManagerITCase extends FineGrainedSl
         System.setSecurityManager(null);
     }
 
+    @Tag("org.apache.flink.testutils.junit.FailsOnJava25")
     @Test
-    public void testAllocationUpdatesIgnoredIfSlotMarkedAsAllocatedAfterSlotReport()
-            throws Exception {
+    void testAllocationUpdatesIgnoredIfSlotMarkedAsAllocatedAfterSlotReport() throws Exception {
         final CompletableFuture<AllocationID> allocationIdFuture = new CompletableFuture<>();
         final TestingTaskExecutorGateway taskExecutorGateway =
                 new TestingTaskExecutorGatewayBuilder()
                         // it is important that the returned future is already completed
                         // otherwise it will be cancelled when the task executor is unregistered
                         .setRequestSlotFunction(
-                                tuple6 -> {
-                                    allocationIdFuture.complete(tuple6.f2);
+                                tuple7 -> {
+                                    allocationIdFuture.complete(tuple7.f3);
                                     return CompletableFuture.completedFuture(Acknowledge.get());
                                 })
                         .createTestingTaskExecutorGateway();
@@ -633,12 +835,11 @@ public abstract class AbstractFineGrainedSlotManagerITCase extends FineGrainedSl
                                                             taskExecutionConnection.getInstanceID(),
                                                             new SlotReport(
                                                                     createAllocatedSlotStatus(
+                                                                            new JobID(),
                                                                             allocationId,
                                                                             DEFAULT_SLOT_RESOURCE_PROFILE))));
 
-                            assertThat(
-                                    trackingSecurityManager.getSystemExitFuture().isDone(),
-                                    is(false));
+                            assertThat(trackingSecurityManager.getSystemExitFuture()).isNotDone();
                         });
             }
         };

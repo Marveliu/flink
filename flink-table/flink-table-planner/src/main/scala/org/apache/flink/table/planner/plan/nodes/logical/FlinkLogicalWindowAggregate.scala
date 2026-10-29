@@ -15,7 +15,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.planner.plan.nodes.logical
 
 import org.apache.flink.table.planner.plan.logical.LogicalWindow
@@ -26,8 +25,10 @@ import org.apache.flink.table.runtime.groupwindow.NamedWindowProperty
 import org.apache.calcite.plan._
 import org.apache.calcite.rel.RelNode
 import org.apache.calcite.rel.convert.ConverterRule
-import org.apache.calcite.rel.core.Aggregate.Group
+import org.apache.calcite.rel.convert.ConverterRule.Config
 import org.apache.calcite.rel.core.{Aggregate, AggregateCall}
+import org.apache.calcite.rel.core.Aggregate.Group
+import org.apache.calcite.rel.hint.RelHint
 import org.apache.calcite.rel.metadata.RelMetadataQuery
 import org.apache.calcite.sql.SqlKind
 import org.apache.calcite.util.ImmutableBitSet
@@ -39,12 +40,21 @@ import scala.collection.JavaConverters._
 class FlinkLogicalWindowAggregate(
     cluster: RelOptCluster,
     traitSet: RelTraitSet,
+    hints: util.List[RelHint],
     child: RelNode,
     groupSet: ImmutableBitSet,
     aggCalls: util.List[AggregateCall],
     window: LogicalWindow,
-    namedProperties: Seq[NamedWindowProperty])
-  extends WindowAggregate(cluster, traitSet, child, groupSet, aggCalls, window, namedProperties)
+    namedProperties: util.List[NamedWindowProperty])
+  extends WindowAggregate(
+    cluster,
+    traitSet,
+    hints,
+    child,
+    groupSet,
+    aggCalls,
+    window,
+    namedProperties)
   with FlinkLogicalRel {
 
   override def copy(
@@ -56,6 +66,7 @@ class FlinkLogicalWindowAggregate(
     new FlinkLogicalWindowAggregate(
       cluster,
       traitSet,
+      getHints,
       input,
       groupSet,
       aggCalls,
@@ -73,14 +84,20 @@ class FlinkLogicalWindowAggregate(
     planner.getCostFactory.makeCost(rowCnt, cpuCost, rowCnt * rowSize)
   }
 
+  override def withHints(hintList: util.List[RelHint]): RelNode = {
+    new FlinkLogicalWindowAggregate(
+      cluster,
+      traitSet,
+      hintList,
+      input,
+      getGroupSet,
+      aggCalls,
+      window,
+      namedProperties)
+  }
 }
 
-class FlinkLogicalWindowAggregateConverter
-  extends ConverterRule(
-    classOf[LogicalWindowAggregate],
-    Convention.NONE,
-    FlinkConventions.LOGICAL,
-    "FlinkLogicalWindowAggregateConverter") {
+class FlinkLogicalWindowAggregateConverter(config: Config) extends ConverterRule(config) {
 
   override def matches(call: RelOptRuleCall): Boolean = {
     val agg = call.rel(0).asInstanceOf[LogicalWindowAggregate]
@@ -105,6 +122,7 @@ class FlinkLogicalWindowAggregateConverter
     new FlinkLogicalWindowAggregate(
       rel.getCluster,
       traitSet,
+      agg.getHints,
       newInput,
       agg.getGroupSet,
       agg.getAggCallList,
@@ -115,5 +133,10 @@ class FlinkLogicalWindowAggregateConverter
 }
 
 object FlinkLogicalWindowAggregate {
-  val CONVERTER = new FlinkLogicalWindowAggregateConverter
+  val CONVERTER: ConverterRule = new FlinkLogicalWindowAggregateConverter(
+    Config.INSTANCE.withConversion(
+      classOf[LogicalWindowAggregate],
+      Convention.NONE,
+      FlinkConventions.LOGICAL,
+      "FlinkLogicalWindowAggregateConverter"))
 }

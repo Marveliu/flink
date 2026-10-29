@@ -15,17 +15,14 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.planner.plan.batch.table
 
-import org.apache.flink.api.common.typeinfo.TypeInformation
-import org.apache.flink.api.java.typeutils.GenericTypeInfo
-import org.apache.flink.api.scala._
 import org.apache.flink.table.api._
 import org.apache.flink.table.planner.plan.utils.NonPojo
 import org.apache.flink.table.planner.utils.TableTestBase
+import org.apache.flink.table.types.AbstractDataType
 
-import org.junit.Test
+import org.junit.jupiter.api.Test
 
 import java.sql.Timestamp
 
@@ -57,20 +54,22 @@ class SetOperatorsTest extends TableTestBase {
     val util = batchTestUtil()
     val t = util.addTableSource[((Int, String), (Int, String), Int)]("A", 'a, 'b, 'c)
 
-    val in = t.select('a)
-      .unionAll(
-        t.select(('c > 0) ? ('b, nullOf(createTypeInformation[(Int, String)]))))
+    val in = t
+      .select('a)
+      .unionAll(t.select(('c > 0) ? ('b, nullOf(createTypeInformation[(Int, String)]))))
     util.verifyExecPlan(in)
   }
 
   @Test
   def testUnionAnyType(): Unit = {
     val util = batchTestUtil()
-    val t = util.addTableSource("A",
-      Array[TypeInformation[_]](
-        new GenericTypeInfo(classOf[NonPojo]),
-        new GenericTypeInfo(classOf[NonPojo])),
-      Array("a", "b"))
+    val t = util.addTableSource(
+      "A",
+      Array[AbstractDataType[_]](
+        DataTypes.STRUCTURED(classOf[NonPojo]),
+        DataTypes.STRUCTURED(classOf[NonPojo])),
+      Array("a", "b")
+    )
     val in = t.select('a).unionAll(t.select('b))
     util.verifyExecPlan(in)
   }
@@ -81,10 +80,11 @@ class SetOperatorsTest extends TableTestBase {
     val left = util.addTableSource[(Int, Long, String)]("left", 'a, 'b, 'c)
     val right = util.addTableSource[(Int, Long, String)]("right", 'a, 'b, 'c)
 
-    val result = left.unionAll(right)
+    val result = left
+      .unionAll(right)
       .where('a > 0)
       .groupBy('b)
-      .select('a.sum as 'a, 'b as 'b, 'c.count as 'c)
+      .select('a.sum.as('a), 'b.as('b), 'c.count.as('c))
 
     util.verifyExecPlan(result)
   }
@@ -95,10 +95,11 @@ class SetOperatorsTest extends TableTestBase {
     val left = util.addTableSource[(Int, Long, String)]("left", 'a, 'b, 'c)
     val right = util.addTableSource[(Int, Long, String)]("right", 'a, 'b, 'c)
 
-    val result = left.minusAll(right)
+    val result = left
+      .minusAll(right)
       .where('a > 0)
       .groupBy('b)
-      .select('a.sum as 'a, 'b as 'b, 'c.count as 'c)
+      .select('a.sum.as('a), 'b.as('b), 'c.count.as('c))
 
     util.verifyExecPlan(result)
   }
@@ -109,9 +110,10 @@ class SetOperatorsTest extends TableTestBase {
     val left = util.addTableSource[(Int, Long, String)]("left", 'a, 'b, 'c)
     val right = util.addTableSource[(Int, Long, String)]("right", 'a, 'b, 'c)
 
-    val result = left.select('a, 'b, 'c)
-                 .unionAll(right.select('a, 'b, 'c))
-                 .select('b, 'c)
+    val result = left
+      .select('a, 'b, 'c)
+      .unionAll(right.select('a, 'b, 'c))
+      .select('b, 'c)
 
     util.verifyExecPlan(result)
 
@@ -123,11 +125,25 @@ class SetOperatorsTest extends TableTestBase {
     val left = util.addTableSource[(Int, Long, String)]("left", 'a, 'b, 'c)
     val right = util.addTableSource[(Int, Long, String)]("right", 'a, 'b, 'c)
 
-    val result = left.select('a, 'b, 'c)
-                 .minusAll(right.select('a, 'b, 'c))
-                 .select('b, 'c)
+    val result = left
+      .select('a, 'b, 'c)
+      .minusAll(right.select('a, 'b, 'c))
+      .select('b, 'c)
 
     util.verifyExecPlan(result)
 
+  }
+
+  @Test
+  def testInSubQueryKeepsOuterOrderBy(): Unit = {
+    val util = batchTestUtil()
+    val t = util.addTableSource[(Int, Long, String)]("A", 'a, 'b, 'c)
+
+    // The IN subquery re-enters QueryOperationConverter, so the outer ORDER BY (the actual
+    // root) must not be dropped as if it were a fetch-less subquery sort. See FLINK-39715.
+    val elements = t.where('b > 10L).select('a)
+    val result = t.where('a.in(elements)).orderBy('b)
+
+    util.verifyExecPlan(result)
   }
 }

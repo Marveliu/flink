@@ -19,45 +19,43 @@
 package org.apache.flink.test.scheduling;
 
 import org.apache.flink.api.common.JobID;
-import org.apache.flink.api.common.restartstrategy.RestartStrategies;
-import org.apache.flink.api.common.time.Deadline;
-import org.apache.flink.client.program.rest.RestClusterClient;
+import org.apache.flink.api.common.eventtime.WatermarkStrategy;
+import org.apache.flink.api.common.typeinfo.Types;
+import org.apache.flink.api.connector.source.util.ratelimit.RateLimiterStrategy;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.JobManagerOptions;
 import org.apache.flink.configuration.SchedulerExecutionMode;
+import org.apache.flink.connector.datagen.source.DataGeneratorSource;
+import org.apache.flink.connector.datagen.source.GeneratorFunction;
 import org.apache.flink.core.execution.JobClient;
+import org.apache.flink.runtime.executiongraph.ArchivedExecutionGraph;
+import org.apache.flink.runtime.minicluster.MiniCluster;
 import org.apache.flink.runtime.rest.messages.job.JobDetailsInfo;
 import org.apache.flink.runtime.testutils.CommonTestUtils;
 import org.apache.flink.runtime.testutils.MiniClusterResourceConfiguration;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
-import org.apache.flink.streaming.api.functions.sink.DiscardingSink;
-import org.apache.flink.streaming.api.functions.source.RichParallelSourceFunction;
-import org.apache.flink.streaming.api.functions.source.SourceFunction;
+import org.apache.flink.streaming.api.functions.sink.v2.DiscardingSink;
+import org.apache.flink.streaming.util.RestartStrategyUtils;
 import org.apache.flink.test.util.MiniClusterWithClientResource;
-import org.apache.flink.util.TestLogger;
+import org.apache.flink.util.TestLoggerExtension;
 
-import org.junit.Rule;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 
-import java.time.Duration;
 import java.util.concurrent.ExecutionException;
 
+import static org.assertj.core.api.Assertions.assertThat;
+
 /** Tests for Reactive Mode (FLIP-159). */
-public class ReactiveModeITCase extends TestLogger {
+@ExtendWith(TestLoggerExtension.class)
+class ReactiveModeITCase {
     private static final int NUMBER_SLOTS_PER_TASK_MANAGER = 2;
     private static final int INITIAL_NUMBER_TASK_MANAGERS = 1;
 
-    private static final Configuration configuration = getReactiveModeConfiguration();
-
-    @Rule
-    public final MiniClusterWithClientResource miniClusterResource =
-            new MiniClusterWithClientResource(
-                    new MiniClusterResourceConfiguration.Builder()
-                            .setConfiguration(configuration)
-                            .setNumberTaskManagers(INITIAL_NUMBER_TASK_MANAGERS)
-                            .setNumberSlotsPerTaskManager(NUMBER_SLOTS_PER_TASK_MANAGER)
-                            .build());
+    private MiniClusterWithClientResource miniClusterResource;
 
     private static Configuration getReactiveModeConfiguration() {
         final Configuration conf = new Configuration();
@@ -65,65 +63,142 @@ public class ReactiveModeITCase extends TestLogger {
         return conf;
     }
 
+    @BeforeEach
+    void startMiniCluster() throws Exception {
+        miniClusterResource =
+                new MiniClusterWithClientResource(
+                        new MiniClusterResourceConfiguration.Builder()
+                                .setConfiguration(getReactiveModeConfiguration())
+                                .setNumberTaskManagers(INITIAL_NUMBER_TASK_MANAGERS)
+                                .setNumberSlotsPerTaskManager(NUMBER_SLOTS_PER_TASK_MANAGER)
+                                .build());
+        miniClusterResource.before();
+    }
+
+    @AfterEach
+    void destroyMiniCluster() {
+        if (miniClusterResource != null) {
+            miniClusterResource.after();
+        }
+    }
+
     /**
      * Users can set maxParallelism and reactive mode must not run with a parallelism higher than
      * maxParallelism.
      */
     @Test
-    public void testScaleLimitByMaxParallelism() throws Exception {
+    void testScaleLimitByMaxParallelism() throws Exception {
         // test preparation: ensure we have 2 TaskManagers running
         startAdditionalTaskManager();
 
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
         // we set maxParallelism = 1 and assert it never exceeds it
         final DataStream<String> input =
-                env.addSource(new FailOnParallelExecutionSource()).setMaxParallelism(1);
-        input.addSink(new DiscardingSink<>());
+                env.fromSource(
+                                new DataGeneratorSource<>(
+                                        (GeneratorFunction<Long, String>) index -> "test",
+                                        Long.MAX_VALUE,
+                                        RateLimiterStrategy.perSecond(10),
+                                        Types.STRING),
+                                WatermarkStrategy.noWatermarks(),
+                                "fail-on-parallel-source")
+                        .setMaxParallelism(1);
+        input.sinkTo(new DiscardingSink<>());
 
         final JobClient jobClient = env.executeAsync();
 
-        waitUntilParallelismForVertexReached(
-                miniClusterResource.getRestClusterClient(), jobClient.getJobID(), 1);
+        waitUntilParallelismForVertexReached(jobClient.getJobID(), 1);
     }
 
     /** Test that a job scales up when a TaskManager gets added to the cluster. */
     @Test
-    public void testScaleUpOnAdditionalTaskManager() throws Exception {
+    void testScaleUpOnAdditionalTaskManager() throws Exception {
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
-        final DataStream<String> input = env.addSource(new DummySource());
-        input.addSink(new DiscardingSink<>());
+        final DataStream<String> input =
+                env.fromSource(
+                        new DataGeneratorSource<>(
+                                (GeneratorFunction<Long, String>) index -> "test",
+                                Long.MAX_VALUE,
+                                RateLimiterStrategy.perSecond(100),
+                                Types.STRING),
+                        WatermarkStrategy.noWatermarks(),
+                        "dummy-source");
+        input.sinkTo(new DiscardingSink<>());
 
         final JobClient jobClient = env.executeAsync();
 
         waitUntilParallelismForVertexReached(
-                miniClusterResource.getRestClusterClient(),
-                jobClient.getJobID(),
-                NUMBER_SLOTS_PER_TASK_MANAGER * INITIAL_NUMBER_TASK_MANAGERS);
+                jobClient.getJobID(), NUMBER_SLOTS_PER_TASK_MANAGER * INITIAL_NUMBER_TASK_MANAGERS);
 
         // scale up to 2 TaskManagers:
         miniClusterResource.getMiniCluster().startTaskManager();
 
         waitUntilParallelismForVertexReached(
-                miniClusterResource.getRestClusterClient(),
                 jobClient.getJobID(),
                 NUMBER_SLOTS_PER_TASK_MANAGER * (INITIAL_NUMBER_TASK_MANAGERS + 1));
     }
 
     @Test
-    public void testScaleDownOnTaskManagerLoss() throws Exception {
+    void testJsonPlanParallelismAfterRescale() throws Exception {
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        final DataStream<String> input =
+                env.fromSource(
+                        new DataGeneratorSource<>(
+                                (GeneratorFunction<Long, String>) index -> "test",
+                                Long.MAX_VALUE,
+                                RateLimiterStrategy.perSecond(100),
+                                Types.STRING),
+                        WatermarkStrategy.noWatermarks(),
+                        "dummy-source");
+        input.sinkTo(new DiscardingSink<>());
+
+        final JobClient jobClient = env.executeAsync();
+
+        int initialParallelism = NUMBER_SLOTS_PER_TASK_MANAGER * INITIAL_NUMBER_TASK_MANAGERS;
+        waitUntilParallelismForVertexReached(jobClient.getJobID(), initialParallelism);
+
+        MiniCluster miniCluster = miniClusterResource.getMiniCluster();
+        ArchivedExecutionGraph archivedExecutionGraph =
+                miniCluster.getArchivedExecutionGraph(jobClient.getJobID()).get();
+
+        assertThat(archivedExecutionGraph.getPlan().getNodes())
+                .allMatch(n -> n.getParallelism() == (long) initialParallelism);
+
+        // scale up to 2 TaskManagers:
+        miniCluster.startTaskManager();
+
+        int rescaledParallelism =
+                NUMBER_SLOTS_PER_TASK_MANAGER * (INITIAL_NUMBER_TASK_MANAGERS + 1);
+        waitUntilParallelismForVertexReached(jobClient.getJobID(), rescaledParallelism);
+
+        archivedExecutionGraph = miniCluster.getArchivedExecutionGraph(jobClient.getJobID()).get();
+
+        assertThat(archivedExecutionGraph.getPlan().getNodes())
+                .allMatch(n -> n.getParallelism() == (long) rescaledParallelism);
+    }
+
+    @Test
+    void testScaleDownOnTaskManagerLoss() throws Exception {
         // test preparation: ensure we have 2 TaskManagers running
         startAdditionalTaskManager();
 
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
         // configure exactly one restart to avoid restart loops in error cases
-        env.setRestartStrategy(RestartStrategies.fixedDelayRestart(1, 0L));
-        final DataStream<String> input = env.addSource(new DummySource());
-        input.addSink(new DiscardingSink<>());
+        RestartStrategyUtils.configureFixedDelayRestartStrategy(env, 1, 0L);
+        final DataStream<String> input =
+                env.fromSource(
+                        new DataGeneratorSource<>(
+                                (GeneratorFunction<Long, String>) index -> "test",
+                                Long.MAX_VALUE,
+                                RateLimiterStrategy.perSecond(100),
+                                Types.STRING),
+                        WatermarkStrategy.noWatermarks(),
+                        "dummy-source");
+        input.sinkTo(new DiscardingSink<>());
 
         final JobClient jobClient = env.executeAsync();
 
         waitUntilParallelismForVertexReached(
-                miniClusterResource.getRestClusterClient(),
                 jobClient.getJobID(),
                 NUMBER_SLOTS_PER_TASK_MANAGER * (INITIAL_NUMBER_TASK_MANAGERS + 1));
 
@@ -131,7 +206,6 @@ public class ReactiveModeITCase extends TestLogger {
         miniClusterResource.getMiniCluster().terminateTaskManager(0).get();
 
         waitUntilParallelismForVertexReached(
-                miniClusterResource.getRestClusterClient(),
                 jobClient.getJobID(),
                 NUMBER_SLOTS_PER_TASK_MANAGER * NUMBER_SLOTS_PER_TASK_MANAGER);
     }
@@ -146,64 +220,16 @@ public class ReactiveModeITCase extends TestLogger {
 
     private void startAdditionalTaskManager() throws Exception {
         miniClusterResource.getMiniCluster().startTaskManager();
-        CommonTestUtils.waitUntilCondition(
-                () -> getNumberOfConnectedTaskManagers() == 2,
-                Deadline.fromNow(Duration.ofMillis(10_000L)));
+        CommonTestUtils.waitUntilCondition(() -> getNumberOfConnectedTaskManagers() == 2);
     }
 
-    private static class DummySource implements SourceFunction<String> {
-        private volatile boolean running = true;
-
-        @Override
-        public void run(SourceContext<String> ctx) throws Exception {
-            while (running) {
-                synchronized (ctx.getCheckpointLock()) {
-                    ctx.collect("test");
-                }
-                Thread.sleep(10);
-            }
-        }
-
-        @Override
-        public void cancel() {
-            running = false;
-        }
-    }
-
-    private static class FailOnParallelExecutionSource extends RichParallelSourceFunction<String> {
-        private volatile boolean running = true;
-
-        @Override
-        public void open(Configuration parameters) throws Exception {
-            if (getRuntimeContext().getNumberOfParallelSubtasks() > 1) {
-                throw new IllegalStateException(
-                        "This is not supposed to be executed in parallel, despite extending the right base class.");
-            }
-        }
-
-        @Override
-        public void run(SourceContext<String> ctx) throws Exception {
-            while (running) {
-                synchronized (ctx.getCheckpointLock()) {
-                    ctx.collect("test");
-                }
-                Thread.sleep(100);
-            }
-        }
-
-        @Override
-        public void cancel() {
-            running = false;
-        }
-    }
-
-    public static void waitUntilParallelismForVertexReached(
-            RestClusterClient<?> restClusterClient, JobID jobId, int targetParallelism)
+    public void waitUntilParallelismForVertexReached(JobID jobId, int targetParallelism)
             throws Exception {
 
         CommonTestUtils.waitUntilCondition(
                 () -> {
-                    JobDetailsInfo detailsInfo = restClusterClient.getJobDetails(jobId).get();
+                    JobDetailsInfo detailsInfo =
+                            miniClusterResource.getRestClusterClient().getJobDetails(jobId).get();
 
                     for (JobDetailsInfo.JobVertexDetailsInfo jobVertexInfo :
                             detailsInfo.getJobVertexInfos()) {
@@ -213,7 +239,6 @@ public class ReactiveModeITCase extends TestLogger {
                         }
                     }
                     return false;
-                },
-                Deadline.fromNow(Duration.ofSeconds(10)));
+                });
     }
 }

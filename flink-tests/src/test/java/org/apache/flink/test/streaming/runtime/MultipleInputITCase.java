@@ -40,40 +40,37 @@ import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
 import org.apache.flink.test.streaming.runtime.util.TestListResultSink;
 import org.apache.flink.test.util.AbstractTestBase;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 
 import static org.apache.flink.util.Preconditions.checkState;
-import static org.hamcrest.MatcherAssert.assertThat;
-import static org.hamcrest.Matchers.contains;
-import static org.junit.Assert.assertEquals;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /** Integration tests for {@link MultipleInputStreamOperator}. */
-@SuppressWarnings("serial")
-public class MultipleInputITCase extends AbstractTestBase {
+class MultipleInputITCase extends AbstractTestBase {
 
     @Test
-    public void testBasicProcessing() throws Exception {
+    void testBasicProcessing() throws Exception {
         testNonKeyed(false);
     }
 
     @Test
-    public void testUnion() throws Exception {
+    void testUnion() throws Exception {
         testNonKeyed(true);
     }
 
-    public void testNonKeyed(boolean withUnion) throws Exception {
+    private void testNonKeyed(boolean withUnion) throws Exception {
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
         env.setParallelism(1);
 
         TestListResultSink<Long> resultSink = new TestListResultSink<>();
 
-        DataStream<Long> source1 = env.fromElements(1L, 10L);
-        DataStream<Long> source2 = env.fromElements(2L, 11L);
-        DataStream<String> source3 = env.fromElements("42", "44");
+        DataStream<Long> source1 = env.fromData(1L, 10L);
+        DataStream<Long> source2 = env.fromData(2L, 11L);
+        DataStream<String> source3 = env.fromData("42", "44");
 
         MultipleInputTransformation<Long> multipleInput =
                 new MultipleInputTransformation<>(
@@ -106,19 +103,19 @@ public class MultipleInputITCase extends AbstractTestBase {
         List<Long> result = resultSink.getResult();
         Collections.sort(result);
         long actualSum = result.get(result.size() - 1);
-        assertEquals(1 + 10 + 2 + 11 + 42 + 44, actualSum);
+        assertThat(actualSum).isEqualTo(1 + 10 + 2 + 11 + 42 + 44);
     }
 
     @Test
-    public void testKeyedState() throws Exception {
+    void testKeyedState() throws Exception {
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
         env.setParallelism(1);
 
         TestListResultSink<Long> resultSink = new TestListResultSink<>();
 
-        DataStream<Long> source1 = env.fromElements(0L, 3L);
-        DataStream<Long> source2 = env.fromElements(13L, 16L);
-        DataStream<Long> source3 = env.fromElements(101L, 104L);
+        DataStream<Long> source1 = env.fromData(0L, 3L);
+        DataStream<Long> source2 = env.fromData(13L, 16L);
+        DataStream<Long> source3 = env.fromData(101L, 104L);
 
         KeyedMultipleInputTransformation<Long> transform =
                 new KeyedMultipleInputTransformation<>(
@@ -141,7 +138,7 @@ public class MultipleInputITCase extends AbstractTestBase {
 
         List<Long> result = resultSink.getResult();
         Collections.sort(result);
-        assertThat(result, contains(0L, 3L, 13L, 13L + 16L, 101L, 101L + 104L));
+        assertThat(result).containsExactly(0L, 3L, 13L, 13L + 16L, 101L, 101L + 104L);
     }
 
     private static class KeyedSumMultipleInputOperator extends AbstractStreamOperatorV2<Long>

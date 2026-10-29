@@ -32,6 +32,9 @@ under the License.
 
 [Debezium](https://debezium.io/) 是一个 CDC（Changelog Data Capture，变更数据捕获）的工具，可以把来自 MySQL、PostgreSQL、Oracle、Microsoft SQL Server 和许多其他数据库的更改实时流式传输到 Kafka 中。 Debezium 为变更日志提供了统一的格式结构，并支持使用 JSON 和 Apache Avro 序列化消息。
 
+This format reads change events that Debezium has already written to a system such as Kafka. To
+read changes directly from a database instead, see [Flink CDC](https://nightlies.apache.org/flink/flink-cdc-docs-stable/docs/connectors/flink-sources/overview/).
+
 Flink 支持将 Debezium JSON 和 Avro 消息解析为 INSERT / UPDATE / DELETE 消息到 Flink SQL 系统中。在很多情况下，利用这个特性非常的有用，例如
  - 将增量数据从数据库同步到其他系统
  - 日志审计
@@ -44,7 +47,7 @@ Flink 还支持将 Flink SQL 中的 INSERT / UPDATE / DELETE 消息编码为 Deb
 依赖
 ------------
 
-#### Debezium Avro
+#### Debezium Confluent Avro
 
 {{< sql_download_table "debezium-avro-confluent" >}}
 
@@ -52,7 +55,7 @@ Flink 还支持将 Flink SQL 中的 INSERT / UPDATE / DELETE 消息编码为 Deb
 
 {{< sql_download_table "debezium-json" >}}
 
-*注意: 请参考 [Debezium 文档](https://debezium.io/documentation/reference/1.3/index.html)，了解如何设置 Debezium Kafka Connect 用来将变更日志同步到 Kafka 主题。*
+*注意: 请参考 [Debezium 文档](https://debezium.io/documentation/reference/stable/index.html)，了解如何设置 Debezium Kafka Connect 用来将变更日志同步到 Kafka 主题。*
 
 
 如何使用 Debezium Format
@@ -82,9 +85,11 @@ Debezium 为变更日志提供了统一的格式，这是一个 JSON 格式的�
 }
 ```
 
-*注意: 请参考 [Debezium 文档](https://debezium.io/documentation/reference/1.3/connectors/mysql.html#mysql-connector-events_debezium)，了解每个字段的含义。*
+*注意: 请参考 [Debezium 文档](https://debezium.io/documentation/reference/stable/connectors/mysql.html#mysql-events)，了解每个字段的含义。*
 
-MySQL 产品表有4列（`id`、`name`、`description`、`weight`）。上面的 JSON 消息是 `products` 表上的一条更新事件，其中 `id = 111` 的行的 `weight` 值从 `5.18` 更改为 `5.15`。假设此消息已同步到 Kafka 主题 `products_binlog`，则可以使用以下 DDL 来使用此主题并解析更改事件。
+MySQL 产品表有4列（`id`、`name`、`description`、`weight`）。上面的 JSON 消息是 `products` 表上的一条更新事件，其中 `id = 111` 的行的 `weight` 值从 `5.18` 更改为 `5.15`。假设此消息已同步到 Kafka 主题 `products_binlog`，则可以使用以下 DDL（用于 Debezium JSON 和 Debezium Confluent Avro）来消费此主题并解析更改事件。
+
+#### Debezium JSON DDL
 
 {{< tabs "0b6703c1-021e-4506-a579-b72b8408c0cf" >}}
 {{< tab "SQL" >}}
@@ -101,8 +106,7 @@ CREATE TABLE topic_products (
  'properties.bootstrap.servers' = 'localhost:9092',
  'properties.group.id' = 'testGroup',
   -- 使用 'debezium-json' format 来解析 Debezium 的 JSON 消息
-  -- 如果 Debezium 用 Avro 编码消息，请使用 'debezium-avro-confluent'
- 'format' = 'debezium-json'  -- 如果 Debezium 用 Avro 编码消息，请使用 'debezium-avro-confluent'
+ 'format' = 'debezium-json'
 )
 ```
 {{< /tab >}}
@@ -136,7 +140,34 @@ CREATE TABLE topic_products (
 
 为了解析这一类信息，你需要在上述 DDL WITH 子句中添加选项 `'debezium-json.schema-include' = 'true'`（默认为 false）。通常情况下，建议不要包含 schema 的描述，因为这样会使消息变得非常冗长，并降低解析性能。
 
-在将主题注册为 Flink 表之后，可以将 Debezium 消息用作变更日志源。
+#### Debezium Confluent Avro DDL
+
+{{< tabs "b3832d51-f57b-4c1f-87aa-5356fba23047" >}}
+{{< tab "SQL" >}}
+```sql
+CREATE TABLE topic_products (
+  -- schema 与 MySQL 的 products 表完全相同
+  id BIGINT,
+  name STRING,
+  description STRING,
+  weight DECIMAL(10, 2)
+) WITH (
+ 'connector' = 'kafka',
+ 'topic' = 'products_binlog',
+ 'properties.bootstrap.servers' = 'localhost:9092',
+ 'properties.group.id' = 'testGroup',
+  -- 使用 'debezium-avro-confluent' format 来解析 Debezium 的 Avro 消息
+ 'format' = 'debezium-avro-confluent',
+  -- Kafka Schema Registry 的 URL
+ 'debezium-avro-confluent.url' = 'http://localhost:8081'
+)
+```
+{{< /tab >}}
+{{< /tabs >}}
+
+#### 结果产出
+
+对于每种数据格式，在将主题注册为 Flink 表之后，可以将 Debezium 消息用作变更日志源。
 
 {{< tabs "6a84a0e8-2e56-49db-9089-e836290f8239" >}}
 {{< tab "SQL" >}}
@@ -328,6 +359,13 @@ Flink 提供了 `debezium-avro-confluent` 和 `debezium-json` 两种 format 来�
             <td>Password for SSL truststore</td>
         </tr>
         <tr>
+            <td><h5>debezium-avro-confluent.schema</h5></td>
+            <td>optional</td>
+            <td style="word-wrap: break-word;">(none)</td>
+            <td>String</td>
+            <td>The schema registered or to be registered in the Confluent Schema Registry. If no schema is provided Flink converts the table schema to avro schema. The schema provided must match the Debezium schema which is a nullable record type including fields 'before', 'after', 'op'.</td>
+        </tr>
+        <tr>
             <td><h5>debezium-avro-confluent.subject</h5></td>
             <td>optional</td>
             <td style="word-wrap: break-word;">(none)</td>
@@ -417,6 +455,13 @@ Flink 提供了 `debezium-avro-confluent` 和 `debezium-json` 两种 format 来�
       <td>Boolean</td>
       <td>将所有 DECIMAL 类型的数据保持原状，不使用科学计数法表示。例：<code>0.000000027</code> 默认会表示为 <code>2.7E-8</code>。当此选项设为 true 时，则会表示为 <code>0.000000027</code>。</td>
     </tr>
+    <tr>
+      <td><h5>debezium-json.encode.ignore-null-fields</h5></td>
+      <td>选填</td>
+      <td style="word-wrap: break-word;">false</td>
+      <td>Boolean</td>
+      <td>仅序列化非 Null 的列，默认情况下，会序列化所有列无论是否为 Null。</td>
+    </tr>
     </tbody>
 </table>
 
@@ -434,12 +479,12 @@ Flink 提供了 `debezium-avro-confluent` 和 `debezium-json` 两种 format 来�
 
 ### 消费 Debezium Postgres Connector 产生的数据
 
-如果你正在使用 [Debezium PostgreSQL Connector](https://debezium.io/documentation/reference/1.2/connectors/postgresql.html) 捕获变更到 Kafka，请确保被监控表的 [REPLICA IDENTITY](https://www.postgresql.org/docs/current/sql-altertable.html#SQL-CREATETABLE-REPLICA-IDENTITY) 已经被配置成 `FULL` 了，默认值是 `DEFAULT`。
+如果你正在使用 [Debezium PostgreSQL Connector](https://debezium.io/documentation/reference/stable/connectors/postgresql.html) 捕获变更到 Kafka，请确保被监控表的 [REPLICA IDENTITY](https://www.postgresql.org/docs/current/sql-altertable.html#SQL-CREATETABLE-REPLICA-IDENTITY) 已经被配置成 `FULL` 了，默认值是 `DEFAULT`。
 否则，Flink SQL 将无法正确解析 Debezium 数据。
 
 当配置为 `FULL` 时，更新和删除事件将完整包含所有列的之前的值。当为其他配置时，更新和删除事件的 "before" 字段将只包含 primary key 字段的值，或者为 null（没有 primary key）。
 你可以通过运行 `ALTER TABLE <your-table-name> REPLICA IDENTITY FULL` 来更改 `REPLICA IDENTITY` 的配置。
-请阅读 [Debezium 关于 PostgreSQL REPLICA IDENTITY 的文档](https://debezium.io/documentation/reference/1.2/connectors/postgresql.html#postgresql-replica-identity) 了解更多。
+请阅读 [Debezium 关于 PostgreSQL REPLICA IDENTITY 的文档](https://debezium.io/documentation/reference/stable/connectors/postgresql.html#postgresql-replica-identity) 了解更多。
 
 数据类型映射
 ----------------

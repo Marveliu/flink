@@ -18,44 +18,48 @@
 
 package org.apache.flink.test.checkpointing;
 
+import org.apache.flink.api.common.functions.OpenContext;
 import org.apache.flink.api.common.functions.RichMapFunction;
-import org.apache.flink.api.common.restartstrategy.RestartStrategies;
 import org.apache.flink.api.common.state.CheckpointListener;
 import org.apache.flink.api.common.state.ValueState;
 import org.apache.flink.api.common.state.ValueStateDescriptor;
 import org.apache.flink.api.java.functions.KeySelector;
 import org.apache.flink.api.java.tuple.Tuple2;
+import org.apache.flink.configuration.CheckpointingOptions;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.MemorySize;
+import org.apache.flink.configuration.StateBackendOptions;
 import org.apache.flink.configuration.TaskManagerOptions;
-import org.apache.flink.contrib.streaming.state.RocksDBStateBackend;
-import org.apache.flink.runtime.state.AbstractStateBackend;
-import org.apache.flink.runtime.state.filesystem.FsStateBackend;
-import org.apache.flink.runtime.state.memory.MemoryStateBackend;
 import org.apache.flink.runtime.testutils.MiniClusterResourceConfiguration;
+import org.apache.flink.state.forst.ForStOptions;
+import org.apache.flink.state.rocksdb.RocksDBOptions;
 import org.apache.flink.streaming.api.checkpoint.ListCheckpointed;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
-import org.apache.flink.streaming.api.functions.sink.RichSinkFunction;
-import org.apache.flink.streaming.api.functions.source.RichParallelSourceFunction;
-import org.apache.flink.test.util.MiniClusterWithClientResource;
-import org.apache.flink.util.TestLogger;
+import org.apache.flink.streaming.api.functions.sink.legacy.RichSinkFunction;
+import org.apache.flink.streaming.api.functions.source.legacy.RichParallelSourceFunction;
+import org.apache.flink.streaming.util.CheckpointStorageUtils;
+import org.apache.flink.streaming.util.RestartStrategyUtils;
+import org.apache.flink.streaming.util.StateBackendUtils;
+import org.apache.flink.test.junit5.MiniClusterExtension;
+import org.apache.flink.testutils.junit.utils.TempDirUtils;
+import org.apache.flink.util.TestLoggerExtension;
 
-import org.junit.ClassRule;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.TemporaryFolder;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.api.extension.RegisterExtension;
+import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
+import java.nio.file.Path;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
-import java.util.Map.Entry;
 import java.util.Random;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.fail;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * A simple test that runs a streaming topology with checkpointing enabled.
@@ -65,23 +69,21 @@ import static org.junit.Assert.fail;
  *
  * <p>It is designed to check partitioned states.
  */
-@SuppressWarnings("serial")
-public class KeyedStateCheckpointingITCase extends TestLogger {
+@ExtendWith(TestLoggerExtension.class)
+class KeyedStateCheckpointingITCase {
 
-    protected static final int MAX_MEM_STATE_SIZE = 10 * 1024 * 1024;
+    private static final int NUM_STRINGS = 10_000;
+    private static final int NUM_KEYS = 40;
 
-    protected static final int NUM_STRINGS = 10_000;
-    protected static final int NUM_KEYS = 40;
-
-    protected static final int NUM_TASK_MANAGERS = 2;
-    protected static final int NUM_TASK_SLOTS = 2;
-    protected static final int PARALLELISM = NUM_TASK_MANAGERS * NUM_TASK_SLOTS;
+    private static final int NUM_TASK_MANAGERS = 2;
+    private static final int NUM_TASK_SLOTS = 2;
+    private static final int PARALLELISM = NUM_TASK_MANAGERS * NUM_TASK_SLOTS;
 
     // ------------------------------------------------------------------------
 
-    @ClassRule
-    public static final MiniClusterWithClientResource MINI_CLUSTER_RESOURCE =
-            new MiniClusterWithClientResource(
+    @RegisterExtension
+    private static final MiniClusterExtension MINI_CLUSTER_EXTENSION =
+            new MiniClusterExtension(
                     new MiniClusterResourceConfiguration.Builder()
                             .setConfiguration(getConfiguration())
                             .setNumberTaskManagers(NUM_TASK_MANAGERS)
@@ -96,63 +98,76 @@ public class KeyedStateCheckpointingITCase extends TestLogger {
 
     // ------------------------------------------------------------------------
 
-    @Rule public final TemporaryFolder tmpFolder = new TemporaryFolder();
+    @TempDir private Path tmpFolder;
 
     @Test
-    public void testWithMemoryBackendSync() throws Exception {
-        MemoryStateBackend syncMemBackend = new MemoryStateBackend(MAX_MEM_STATE_SIZE, false);
-        testProgramWithBackend(syncMemBackend);
+    void testWithMemoryBackendAsync() throws Exception {
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        StateBackendUtils.configureHashMapStateBackend(env);
+        CheckpointStorageUtils.configureJobManagerCheckpointStorage(env);
+        testProgramWithBackend(env);
     }
 
     @Test
-    public void testWithMemoryBackendAsync() throws Exception {
-        MemoryStateBackend asyncMemBackend = new MemoryStateBackend(MAX_MEM_STATE_SIZE, true);
-        testProgramWithBackend(asyncMemBackend);
+    void testWithFsBackendAsync() throws Exception {
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        StateBackendUtils.configureHashMapStateBackend(env);
+        CheckpointStorageUtils.configureFileSystemCheckpointStorage(
+                env, tmpFolder.toUri().toString());
+        testProgramWithBackend(env);
     }
 
     @Test
-    public void testWithFsBackendSync() throws Exception {
-        FsStateBackend syncFsBackend =
-                new FsStateBackend(tmpFolder.newFolder().toURI().toString(), false);
-        testProgramWithBackend(syncFsBackend);
+    void testWithRocksDbBackendFull() throws Exception {
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        StateBackendUtils.configureRocksDBStateBackend(env, false);
+        env.configure(
+                new Configuration()
+                        .set(
+                                RocksDBOptions.LOCAL_DIRECTORIES,
+                                TempDirUtils.newFolder(tmpFolder).getAbsolutePath()));
+        CheckpointStorageUtils.configureFileSystemCheckpointStorage(
+                env, TempDirUtils.newFolder(tmpFolder).toURI().toString());
+        testProgramWithBackend(env);
     }
 
     @Test
-    public void testWithFsBackendAsync() throws Exception {
-        FsStateBackend asyncFsBackend =
-                new FsStateBackend(tmpFolder.newFolder().toURI().toString(), true);
-        testProgramWithBackend(asyncFsBackend);
+    void testWithRocksDbBackendIncremental() throws Exception {
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        StateBackendUtils.configureRocksDBStateBackend(env, true);
+        env.configure(
+                new Configuration()
+                        .set(
+                                RocksDBOptions.LOCAL_DIRECTORIES,
+                                TempDirUtils.newFolder(tmpFolder).getAbsolutePath()));
+        CheckpointStorageUtils.configureFileSystemCheckpointStorage(
+                env, TempDirUtils.newFolder(tmpFolder).toURI().toString());
+        testProgramWithBackend(env);
     }
 
     @Test
-    public void testWithRocksDbBackendFull() throws Exception {
-        RocksDBStateBackend fullRocksDbBackend =
-                new RocksDBStateBackend(new MemoryStateBackend(MAX_MEM_STATE_SIZE), false);
-        fullRocksDbBackend.setDbStoragePath(tmpFolder.newFolder().getAbsolutePath());
-
-        testProgramWithBackend(fullRocksDbBackend);
-    }
-
-    @Test
-    public void testWithRocksDbBackendIncremental() throws Exception {
-        RocksDBStateBackend incRocksDbBackend =
-                new RocksDBStateBackend(new MemoryStateBackend(MAX_MEM_STATE_SIZE), true);
-        incRocksDbBackend.setDbStoragePath(tmpFolder.newFolder().getAbsolutePath());
-
-        testProgramWithBackend(incRocksDbBackend);
+    void testWithForStBackendIncremental() throws Exception {
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        env.configure(
+                new Configuration()
+                        .set(StateBackendOptions.STATE_BACKEND, "forst")
+                        .set(CheckpointingOptions.INCREMENTAL_CHECKPOINTS, true)
+                        .set(
+                                ForStOptions.LOCAL_DIRECTORIES,
+                                TempDirUtils.newFolder(tmpFolder).getAbsolutePath()));
+        CheckpointStorageUtils.configureFileSystemCheckpointStorage(
+                env, TempDirUtils.newFolder(tmpFolder).toURI().toString());
+        testProgramWithBackend(env);
     }
 
     // ------------------------------------------------------------------------
 
-    protected void testProgramWithBackend(AbstractStateBackend stateBackend) throws Exception {
-        assertEquals("Broken test setup", 0, (NUM_STRINGS / 2) % NUM_KEYS);
+    private void testProgramWithBackend(StreamExecutionEnvironment env) throws Exception {
+        assertThat((NUM_STRINGS / 2) % NUM_KEYS).as("Broken test setup").isZero();
 
-        final StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
         env.setParallelism(PARALLELISM);
         env.enableCheckpointing(500);
-        env.setRestartStrategy(RestartStrategies.fixedDelayRestart(Integer.MAX_VALUE, 0L));
-
-        env.setStateBackend(stateBackend);
+        RestartStrategyUtils.configureFixedDelayRestartStrategy(env, Integer.MAX_VALUE, 0L);
 
         // compute when (randomly) the failure should happen
         final int failurePosMin = (int) (0.6 * NUM_STRINGS / PARALLELISM);
@@ -169,21 +184,31 @@ public class KeyedStateCheckpointingITCase extends TestLogger {
         stream1.union(stream2)
                 .keyBy(new IdentityKeySelector<Integer>())
                 .map(new OnceFailingPartitionedSum(failurePos))
-                .keyBy(0)
+                .keyBy(x -> x.f0)
                 .addSink(new CounterSink());
 
+        long recoveryCounterBeforeTest = OnceFailingPartitionedSum.RECOVERY_COUNTER.get();
         env.execute();
 
+        // OnceFailingPartitionedSum should have failed exactly once, so one recovery with state per
+        // parallel operator
+        assertThat(OnceFailingPartitionedSum.RECOVERY_COUNTER)
+                .hasValue(recoveryCounterBeforeTest + PARALLELISM);
         // verify that we counted exactly right
-        assertEquals(NUM_KEYS, CounterSink.ALL_COUNTS.size());
-        assertEquals(NUM_KEYS, OnceFailingPartitionedSum.ALL_SUMS.size());
+        assertThat(CounterSink.ALL_COUNTS).hasSize(NUM_KEYS);
+        assertThat(OnceFailingPartitionedSum.ALL_SUMS).hasSize(NUM_KEYS);
 
-        for (Entry<Integer, Long> sum : OnceFailingPartitionedSum.ALL_SUMS.entrySet()) {
-            assertEquals((long) sum.getKey() * NUM_STRINGS / NUM_KEYS, sum.getValue().longValue());
-        }
-        for (long count : CounterSink.ALL_COUNTS.values()) {
-            assertEquals(NUM_STRINGS / NUM_KEYS, count);
-        }
+        assertThat(OnceFailingPartitionedSum.ALL_SUMS.entrySet())
+                .allSatisfy(
+                        sum -> {
+                            assertThat(sum.getValue())
+                                    .isEqualTo(sum.getKey() * NUM_STRINGS / NUM_KEYS);
+                        });
+        assertThat(CounterSink.ALL_COUNTS.values())
+                .allSatisfy(
+                        count -> {
+                            assertThat(count).isEqualTo(NUM_STRINGS / NUM_KEYS);
+                        });
     }
 
     // --------------------------------------------------------------------------------------------
@@ -214,12 +239,12 @@ public class KeyedStateCheckpointingITCase extends TestLogger {
         @Override
         public void run(SourceContext<Integer> ctx) throws Exception {
             final Object lockingObject = ctx.getCheckpointLock();
-            final int step = getRuntimeContext().getNumberOfParallelSubtasks();
+            final int step = getRuntimeContext().getTaskInfo().getNumberOfParallelSubtasks();
 
             int nextElement =
                     lastEmitted >= 0
                             ? lastEmitted + step
-                            : getRuntimeContext().getIndexOfThisSubtask();
+                            : getRuntimeContext().getTaskInfo().getIndexOfThisSubtask();
 
             while (isRunning && nextElement < numElements) {
 
@@ -260,7 +285,7 @@ public class KeyedStateCheckpointingITCase extends TestLogger {
 
         @Override
         public void restoreState(List<Integer> state) throws Exception {
-            assertEquals("Test failed due to unexpected recovered state size", 1, state.size());
+            assertThat(state).as("Test failed due to unexpected recovered state size").hasSize(1);
             lastEmitted = state.get(0);
             checkpointHappened = true;
         }
@@ -282,6 +307,7 @@ public class KeyedStateCheckpointingITCase extends TestLogger {
             implements ListCheckpointed<Integer> {
 
         private static final Map<Integer, Long> ALL_SUMS = new ConcurrentHashMap<>();
+        private static final AtomicLong RECOVERY_COUNTER = new AtomicLong();
 
         private final int failurePos;
         private int count;
@@ -295,7 +321,7 @@ public class KeyedStateCheckpointingITCase extends TestLogger {
         }
 
         @Override
-        public void open(Configuration parameters) throws IOException {
+        public void open(OpenContext openContext) throws IOException {
             sum = getRuntimeContext().getState(new ValueStateDescriptor<>("my_state", Long.class));
         }
 
@@ -321,16 +347,10 @@ public class KeyedStateCheckpointingITCase extends TestLogger {
 
         @Override
         public void restoreState(List<Integer> state) throws Exception {
-            assertEquals("Test failed due to unexpected recovered state size", 1, state.size());
+            assertThat(state).as("Test failed due to unexpected recovered state size").hasSize(1);
+            RECOVERY_COUNTER.incrementAndGet();
             count = state.get(0);
             shouldFail = false;
-        }
-
-        @Override
-        public void close() throws Exception {
-            if (shouldFail) {
-                fail("Test ineffective: Function cleanly finished without ever failing.");
-            }
         }
     }
 
@@ -342,7 +362,7 @@ public class KeyedStateCheckpointingITCase extends TestLogger {
         private transient ValueState<Long> bCounts;
 
         @Override
-        public void open(Configuration parameters) throws IOException {
+        public void open(OpenContext openContext) throws IOException {
             aCounts =
                     getRuntimeContext()
                             .getState(new ValueStateDescriptor<>("a", NonSerializableLong.class));
@@ -357,7 +377,7 @@ public class KeyedStateCheckpointingITCase extends TestLogger {
             final long ac = acRaw == null ? 0L : acRaw.value;
             final long bc = bcRaw == null ? 0L : bcRaw;
 
-            assertEquals(ac, bc);
+            assertThat(ac).isEqualTo(bc);
 
             long currentCount = ac + 1;
             aCounts.update(NonSerializableLong.of(currentCount));
@@ -380,7 +400,7 @@ public class KeyedStateCheckpointingITCase extends TestLogger {
     // ------------------------------------------------------------------------
 
     /** Custom boxed long type that does not implement Serializable. */
-    public static class NonSerializableLong {
+    private static class NonSerializableLong {
 
         public long value;
 
@@ -402,7 +422,7 @@ public class KeyedStateCheckpointingITCase extends TestLogger {
 
         @Override
         public int hashCode() {
-            return (int) (value ^ (value >>> 32));
+            return Long.hashCode(value);
         }
     }
 }

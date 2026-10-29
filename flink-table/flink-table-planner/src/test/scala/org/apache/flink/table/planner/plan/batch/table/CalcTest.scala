@@ -15,16 +15,14 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.planner.plan.batch.table
 
-import org.apache.flink.api.scala.createTypeInformation
 import org.apache.flink.table.api._
 import org.apache.flink.table.functions.ScalarFunction
-import org.apache.flink.table.planner.plan.batch.table.CalcTest.{MyHashCode, TestCaseClass, WC, giveMeCaseClass}
+import org.apache.flink.table.planner.plan.batch.table.CalcTest.{giveMeCaseClass, MyHashCode, TestCaseClass, WC}
 import org.apache.flink.table.planner.utils.TableTestBase
 
-import org.junit.Test
+import org.junit.jupiter.api.Test
 
 class CalcTest extends TableTestBase {
 
@@ -101,7 +99,7 @@ class CalcTest extends TableTestBase {
     val util = batchTestUtil()
     val sourceTable = util.addTableSource[(Int, Long, String, Double)]("MyTable", 'a, 'b, 'c, 'd)
 
-    util.tableEnv.registerFunction("hashCode", MyHashCode)
+    util.addTemporarySystemFunction("hashCode", MyHashCode)
 
     val resultTable = sourceTable.select(call("hashCode", $"c"), $"b")
 
@@ -139,7 +137,7 @@ class CalcTest extends TableTestBase {
   def testSelectFromGroupedTableWithNonTrivialKey(): Unit = {
     val util = batchTestUtil()
     val sourceTable = util.addTableSource[(Int, Long, String, Double)]("MyTable", 'a, 'b, 'c, 'd)
-    val resultTable = sourceTable.groupBy('c.upperCase() as 'k).select('a.sum)
+    val resultTable = sourceTable.groupBy('c.upperCase().as('k)).select('a.sum)
 
     util.verifyExecPlan(resultTable)
   }
@@ -148,7 +146,7 @@ class CalcTest extends TableTestBase {
   def testSelectFromGroupedTableWithFunctionKey(): Unit = {
     val util = batchTestUtil()
     val sourceTable = util.addTableSource[(Int, Long, String, Double)]("MyTable", 'a, 'b, 'c, 'd)
-    val resultTable = sourceTable.groupBy(MyHashCode('c) as 'k).select('a.sum)
+    val resultTable = sourceTable.groupBy(MyHashCode('c).as('k)).select('a.sum)
 
     util.verifyExecPlan(resultTable)
   }
@@ -159,7 +157,7 @@ class CalcTest extends TableTestBase {
     val sourceTable = util.addTableSource[WC]("MyTable", 'word, 'frequency)
     val resultTable = sourceTable
       .groupBy('word)
-      .select('word, 'frequency.sum as 'frequency)
+      .select('word, 'frequency.sum.as('frequency))
       .filter('frequency === 2)
 
     util.verifyExecPlan(resultTable)
@@ -169,7 +167,8 @@ class CalcTest extends TableTestBase {
   def testMultiFilter(): Unit = {
     val util = batchTestUtil()
     val sourceTable = util.addTableSource[(Int, Long, String, Double)]("MyTable", 'a, 'b, 'c, 'd)
-    val resultTable = sourceTable.select('a, 'b)
+    val resultTable = sourceTable
+      .select('a, 'b)
       .filter('a > 0)
       .filter('b < 2)
       .filter(('a % 2) === 1)

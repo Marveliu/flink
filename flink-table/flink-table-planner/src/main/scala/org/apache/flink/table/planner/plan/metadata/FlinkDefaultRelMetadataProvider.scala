@@ -15,7 +15,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.planner.plan.metadata
 
 import com.google.common.collect.ImmutableList
@@ -49,7 +48,8 @@ object FlinkDefaultRelMetadataProvider {
       RelMdPredicates.SOURCE,
       FlinkRelMdCollation.SOURCE,
       RelMdExplainVisibility.SOURCE,
-      FlinkRelMdWindowProperties.SOURCE
+      FlinkRelMdWindowProperties.SOURCE,
+      FlinkRelMdImmutableColumns.SOURCE
     )
   )
 }

@@ -15,20 +15,17 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.planner.plan.rules.physical.batch
 
-import org.apache.flink.api.scala._
 import org.apache.flink.table.api._
 import org.apache.flink.table.planner.utils.TableTestBase
 
-import org.junit.{Before, Test}
-
+import org.junit.jupiter.api.{BeforeEach, Test}
 
 abstract class EnforceLocalAggRuleTestBase extends TableTestBase {
   protected val util = batchTestUtil()
 
-  @Before
+  @BeforeEach
   def setup(): Unit = {
     util.addTableSource[(Int, Long, String, Int)]("t", 'a, 'b, 'c, 'd)
   }

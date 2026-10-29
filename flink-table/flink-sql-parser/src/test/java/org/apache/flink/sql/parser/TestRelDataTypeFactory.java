@@ -26,9 +26,12 @@ import org.apache.calcite.rel.type.RelDataTypeImpl;
 import org.apache.calcite.rel.type.RelDataTypeSystem;
 import org.apache.calcite.sql.type.SqlTypeFactoryImpl;
 
+import java.util.List;
+import java.util.stream.Collectors;
+import java.util.stream.IntStream;
+
 /** {@link RelDataTypeFactory} for testing purposes. */
-public final class TestRelDataTypeFactory extends SqlTypeFactoryImpl
-        implements ExtendedRelTypeFactory {
+final class TestRelDataTypeFactory extends SqlTypeFactoryImpl implements ExtendedRelTypeFactory {
 
     TestRelDataTypeFactory(RelDataTypeSystem typeSystem) {
         super(typeSystem);
@@ -39,10 +42,20 @@ public final class TestRelDataTypeFactory extends SqlTypeFactoryImpl
         return canonize(new DummyRawType(className, serializerString));
     }
 
+    @Override
+    public RelDataType createStructuredType(
+            String className, List<RelDataType> typeList, List<String> fieldNameList) {
+        return canonize(new DummyStructuredType(className, typeList, fieldNameList));
+    }
+
+    @Override
+    public RelDataType createBitmapType() {
+        return canonize(new DummyBitmapType());
+    }
+
     private static class DummyRawType extends RelDataTypeImpl {
 
         private final String className;
-
         private final String serializerString;
 
         DummyRawType(String className, String serializerString) {
@@ -58,6 +71,51 @@ public final class TestRelDataTypeFactory extends SqlTypeFactoryImpl
             sb.append("', '");
             sb.append(serializerString);
             sb.append("')");
+        }
+    }
+
+    private static class DummyStructuredType extends RelDataTypeImpl {
+
+        private final String className;
+        private final List<RelDataType> typeList;
+        private final List<String> fieldNameList;
+
+        DummyStructuredType(
+                String className, List<RelDataType> typeList, List<String> fieldNameList) {
+            this.className = className;
+            this.typeList = typeList;
+            this.fieldNameList = fieldNameList;
+            computeDigest();
+        }
+
+        @Override
+        protected void generateTypeString(StringBuilder sb, boolean withDetail) {
+            sb.append("STRUCTURED<'");
+            sb.append(className);
+            if (!typeList.isEmpty()) {
+                sb.append("', ");
+                sb.append(
+                        IntStream.range(0, typeList.size())
+                                .mapToObj(
+                                        pos ->
+                                                String.format(
+                                                        "%s %s",
+                                                        fieldNameList.get(pos), typeList.get(pos)))
+                                .collect(Collectors.joining(", ")));
+            }
+            sb.append(">");
+        }
+    }
+
+    private static class DummyBitmapType extends RelDataTypeImpl {
+
+        DummyBitmapType() {
+            computeDigest();
+        }
+
+        @Override
+        protected void generateTypeString(StringBuilder sb, boolean withDetail) {
+            sb.append("BITMAP");
         }
     }
 }

@@ -18,21 +18,31 @@
 
 package org.apache.flink.runtime.scheduler.adaptive;
 
+import org.apache.flink.api.common.JobID;
 import org.apache.flink.api.common.JobStatus;
 import org.apache.flink.core.execution.SavepointFormatType;
 import org.apache.flink.runtime.JobException;
+import org.apache.flink.runtime.checkpoint.CheckpointCoordinator;
 import org.apache.flink.runtime.checkpoint.CheckpointScheduling;
+import org.apache.flink.runtime.checkpoint.CheckpointStatsListener;
 import org.apache.flink.runtime.checkpoint.CompletedCheckpoint;
 import org.apache.flink.runtime.execution.ExecutionState;
+import org.apache.flink.runtime.executiongraph.AccessExecutionGraph;
+import org.apache.flink.runtime.executiongraph.AccessExecutionJobVertex;
 import org.apache.flink.runtime.executiongraph.ArchivedExecutionGraph;
 import org.apache.flink.runtime.executiongraph.ExecutionGraph;
 import org.apache.flink.runtime.executiongraph.ExecutionJobVertex;
 import org.apache.flink.runtime.executiongraph.ExecutionVertex;
 import org.apache.flink.runtime.scheduler.ExecutionGraphHandler;
 import org.apache.flink.runtime.scheduler.OperatorCoordinatorHandler;
+import org.apache.flink.runtime.scheduler.adaptive.allocator.VertexParallelism;
+import org.apache.flink.runtime.scheduler.adaptive.timeline.RescaleTimeline;
+import org.apache.flink.runtime.scheduler.adaptive.timeline.TerminatedReason;
 import org.apache.flink.runtime.scheduler.exceptionhistory.ExceptionHistoryEntry;
 import org.apache.flink.runtime.scheduler.stopwithsavepoint.StopWithSavepointTerminationManager;
+import org.apache.flink.util.ExceptionUtils;
 import org.apache.flink.util.Preconditions;
+import org.apache.flink.util.concurrent.FutureUtils;
 
 import org.slf4j.Logger;
 
@@ -40,13 +50,28 @@ import javax.annotation.Nullable;
 
 import java.time.Duration;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 
 /** State which represents a running job with an {@link ExecutionGraph} and assigned slots. */
-class Executing extends StateWithExecutionGraph implements ResourceConsumer {
+class Executing extends StateWithExecutionGraph
+        implements ResourceListener, StateTransitionManager.Context, CheckpointStatsListener {
 
     private final Context context;
+
+    private final StateTransitionManager stateTransitionManager;
+    private final int rescaleOnFailedCheckpointCount;
+    private final boolean activeCheckpointTriggerEnabled;
+    // only modifiable from the main thread
+    private boolean activeCheckpointTriggerScheduled;
+    // null indicates that there was no change event observed, yet
+    @Nullable private AtomicInteger failedCheckpointCountdown;
 
     Executing(
             ExecutionGraph executionGraph,
@@ -55,7 +80,11 @@ class Executing extends StateWithExecutionGraph implements ResourceConsumer {
             Logger logger,
             Context context,
             ClassLoader userCodeClassLoader,
-            List<ExceptionHistoryEntry> failureCollection) {
+            List<ExceptionHistoryEntry> failureCollection,
+            Function<StateTransitionManager.Context, StateTransitionManager>
+                    stateTransitionManagerFactory,
+            int rescaleOnFailedCheckpointCount,
+            boolean activeCheckpointTriggerEnabled) {
         super(
                 context,
                 executionGraph,
@@ -68,10 +97,223 @@ class Executing extends StateWithExecutionGraph implements ResourceConsumer {
         Preconditions.checkState(
                 executionGraph.getState() == JobStatus.RUNNING, "Assuming running execution graph");
 
+        this.stateTransitionManager = stateTransitionManagerFactory.apply(this);
+
+        Preconditions.checkArgument(
+                rescaleOnFailedCheckpointCount > 0,
+                "The rescaleOnFailedCheckpointCount should be larger than 0.");
+        this.rescaleOnFailedCheckpointCount = rescaleOnFailedCheckpointCount;
+        this.activeCheckpointTriggerEnabled = activeCheckpointTriggerEnabled;
+        this.failedCheckpointCountdown = null;
+
+        recordRescaleForJobIntoExecuting(logger, context);
+
         deploy();
 
         // check if new resources have come available in the meantime
-        context.runIfState(this, this::notifyNewResourcesAvailable, Duration.ZERO);
+        context.runIfState(
+                this,
+                () -> {
+                    stateTransitionManager.onChange(true);
+                    stateTransitionManager.onTrigger();
+                },
+                Duration.ZERO);
+    }
+
+    private void recordRescaleForJobIntoExecuting(Logger logger, Context context) {
+        // When "AdaptiveScheduler -> stopWithSavepoint" fails, the job is not stopped, but
+        // instead transitions back to the "Executing" state. In this case, there is no
+        // parallelism change, hence we ignore it for rescale.
+        if (context.getState() instanceof StopWithSavepoint) {
+            logger.warn(
+                    "The state switching is caused by {}->{}, the parallelisms would be not changed, so the rescale record is ignored.",
+                    StopWithSavepoint.class.getSimpleName(),
+                    Executing.class.getSimpleName());
+        } else {
+            context.getRescaleTimeline()
+                    .updateRescale(
+                            rescale ->
+                                    rescale.addSchedulerState(this)
+                                            .setTerminatedReason(TerminatedReason.SUCCEEDED)
+                                            .setEndToNow()
+                                            .log());
+        }
+    }
+
+    @Override
+    public State schedulerState() {
+        return this;
+    }
+
+    @Override
+    public RescaleTimeline getRescaleTimeline() {
+        return context.getRescaleTimeline();
+    }
+
+    @Override
+    public boolean hasSufficientResources() {
+        return parallelismChanged() && context.hasSufficientResources();
+    }
+
+    @Override
+    public boolean hasDesiredResources() {
+        return parallelismChanged() && context.hasDesiredResources();
+    }
+
+    private boolean parallelismChanged() {
+        final VertexParallelism currentParallelism =
+                extractCurrentVertexParallelism(getExecutionGraph());
+        return context.getAvailableVertexParallelism()
+                .map(
+                        availableParallelism ->
+                                availableParallelism.getVertices().stream()
+                                        .anyMatch(
+                                                vertex ->
+                                                        currentParallelism.getParallelism(vertex)
+                                                                != availableParallelism
+                                                                        .getParallelism(vertex)))
+                .orElse(false);
+    }
+
+    private static VertexParallelism extractCurrentVertexParallelism(
+            AccessExecutionGraph executionGraph) {
+        return new VertexParallelism(
+                executionGraph.getAllVertices().values().stream()
+                        .collect(
+                                Collectors.toMap(
+                                        AccessExecutionJobVertex::getJobVertexId,
+                                        AccessExecutionJobVertex::getParallelism)));
+    }
+
+    @Override
+    public ScheduledFuture<?> scheduleOperation(Runnable callback, Duration delay) {
+        return context.runIfState(this, callback, delay);
+    }
+
+    @Override
+    public void requestActiveCheckpointTrigger() {
+        if (!activeCheckpointTriggerEnabled) {
+            return;
+        }
+        final CheckpointCoordinator checkpointCoordinator =
+                getExecutionGraph().getCheckpointCoordinator();
+        if (checkpointCoordinator == null
+                || !checkpointCoordinator.isPeriodicCheckpointingConfigured()) {
+            getLogger()
+                    .debug(
+                            "Skipping active checkpoint trigger for rescale: checkpointing not configured.");
+            return;
+        }
+
+        final Optional<Duration> triggerDelay =
+                checkpointCoordinator.getActiveCheckpointTriggerDelay();
+        if (triggerDelay.isEmpty()) {
+            getLogger()
+                    .debug(
+                            "Skipping active checkpoint trigger for rescale: checkpoint already in progress.");
+            return;
+        }
+        scheduleActiveCheckpointTriggerRetry(triggerDelay.get());
+    }
+
+    private void scheduleActiveCheckpointTriggerRetry(Duration delay) {
+        if (activeCheckpointTriggerScheduled) {
+            return;
+        }
+        activeCheckpointTriggerScheduled = true;
+        if (!delay.isZero()) {
+            getLogger()
+                    .debug(
+                            "Min pause not satisfied, scheduling active checkpoint trigger retry in {} ms.",
+                            delay.toMillis());
+        }
+        context.runIfState(this, this::tryFireActiveCheckpointAfterRetry, delay);
+    }
+
+    private void tryFireActiveCheckpointAfterRetry() {
+        activeCheckpointTriggerScheduled = false;
+
+        // Parallelism is the only guard re-evaluated here: it can change between the request
+        // and the scheduled fire (e.g. resources changed again, or the parallelism was reverted
+        // back to the current value while we waited for min-pause). The null check and
+        // periodic-checkpoint config are invariants validated at request time.
+        if (!parallelismChanged()) {
+            getLogger()
+                    .debug("Active checkpoint trigger for rescale dropped: parallelism unchanged.");
+            return;
+        }
+        final CheckpointCoordinator checkpointCoordinator =
+                Preconditions.checkNotNull(
+                        getExecutionGraph().getCheckpointCoordinator(),
+                        "Checkpoint coordinator was non-null when the trigger was scheduled; "
+                                + "an Executing state never drops its coordinator.");
+        final Optional<Duration> triggerDelay =
+                checkpointCoordinator.getActiveCheckpointTriggerDelay();
+        if (triggerDelay.isEmpty()) {
+            getLogger()
+                    .debug(
+                            "Active checkpoint trigger for rescale dropped: checkpoint already in progress after retry.");
+        } else if (triggerDelay.get().isZero()) {
+            fireActiveCheckpointTrigger(checkpointCoordinator);
+        } else {
+            getLogger()
+                    .debug(
+                            "Active checkpoint trigger for rescale silently dropped: a periodic checkpoint completed while the trigger was scheduled.");
+        }
+    }
+
+    private void fireActiveCheckpointTrigger(CheckpointCoordinator checkpointCoordinator) {
+        Preconditions.checkState(
+                activeCheckpointTriggerEnabled,
+                "Active checkpoint trigger fired while the feature is disabled.");
+        final JobID jobId = getExecutionGraph().getJobID();
+        getLogger().info("Actively triggering checkpoint to expedite rescaling, job {}.", jobId);
+        // isPeriodic=false: min-pause is enforced above via getActiveCheckpointTriggerDelay.
+        FutureUtils.assertNoException(
+                checkpointCoordinator
+                        .triggerCheckpoint(false)
+                        .handle(
+                                (completedCheckpoint, throwable) -> {
+                                    if (throwable != null) {
+                                        getLogger()
+                                                .warn(
+                                                        "Active checkpoint trigger for rescale failed.",
+                                                        throwable);
+                                    } else {
+                                        getLogger()
+                                                .info(
+                                                        "Active checkpoint for rescale completed successfully: {}.",
+                                                        completedCheckpoint.getCheckpointID());
+                                    }
+                                    return null;
+                                }));
+    }
+
+    @Override
+    public void transitionToSubsequentState() {
+        Optional<VertexParallelism> availableVertexParallelism =
+                context.getAvailableVertexParallelism();
+        if (availableVertexParallelism.isEmpty()) {
+            IllegalStateException exception =
+                    new IllegalStateException("Resources must be available when rescaling.");
+            recordRescaleForNoResourcesEnough(exception);
+            throw exception;
+        }
+        context.goToRestarting(
+                getExecutionGraph(),
+                getExecutionGraphHandler(),
+                getOperatorCoordinatorHandler(),
+                Duration.ofMillis(0L),
+                availableVertexParallelism.get(),
+                getFailures());
+    }
+
+    private void recordRescaleForNoResourcesEnough(IllegalStateException exception) {
+        context.getRescaleTimeline()
+                .updateRescale(
+                        rescale ->
+                                rescale.setStringifiedException(
+                                        ExceptionUtils.stringifyException(exception)));
     }
 
     @Override
@@ -89,13 +331,20 @@ class Executing extends StateWithExecutionGraph implements ResourceConsumer {
     }
 
     @Override
-    void onFailure(Throwable cause) {
-        FailureResultUtil.restartOrFail(context.howToHandleFailure(cause), context, this);
+    void onFailure(Throwable cause, CompletableFuture<Map<String, String>> failureLabels) {
+        FailureResultUtil.restartOrFail(
+                context.howToHandleFailure(cause, failureLabels), context, this);
     }
 
     @Override
     void onGloballyTerminalState(JobStatus globallyTerminalState) {
         context.goToFinished(ArchivedExecutionGraph.createFrom(getExecutionGraph()));
+    }
+
+    @Override
+    public void onLeave(Class<? extends State> newState) {
+        stateTransitionManager.close();
+        super.onLeave(newState);
     }
 
     private void deploy() {
@@ -123,15 +372,38 @@ class Executing extends StateWithExecutionGraph implements ResourceConsumer {
     }
 
     @Override
-    public void notifyNewResourcesAvailable() {
-        if (context.canScaleUp(getExecutionGraph())) {
-            getLogger().info("New resources are available. Restarting job to scale up.");
-            context.goToRestarting(
-                    getExecutionGraph(),
-                    getExecutionGraphHandler(),
-                    getOperatorCoordinatorHandler(),
-                    Duration.ofMillis(0L),
-                    getFailures());
+    public void onNewResourcesAvailable() {
+        stateTransitionManager.onChange(true);
+        initializeFailedCheckpointCountdownIfUnset();
+    }
+
+    @Override
+    public void onNewResourceRequirements() {
+        stateTransitionManager.onChange(false);
+        initializeFailedCheckpointCountdownIfUnset();
+    }
+
+    @Override
+    public void onCompletedCheckpoint() {
+        triggerPotentialRescale();
+    }
+
+    @Override
+    public void onFailedCheckpoint() {
+        if (this.failedCheckpointCountdown != null
+                && this.failedCheckpointCountdown.decrementAndGet() <= 0) {
+            triggerPotentialRescale();
+        }
+    }
+
+    private void triggerPotentialRescale() {
+        stateTransitionManager.onTrigger();
+        this.failedCheckpointCountdown = null;
+    }
+
+    private void initializeFailedCheckpointCountdownIfUnset() {
+        if (failedCheckpointCountdown == null) {
+            this.failedCheckpointCountdown = new AtomicInteger(this.rescaleOnFailedCheckpointCount);
         }
     }
 
@@ -154,8 +426,7 @@ class Executing extends StateWithExecutionGraph implements ResourceConsumer {
         schedulingProvider.stopCheckpointScheduler();
 
         final CompletableFuture<String> savepointFuture =
-                executionGraph
-                        .getCheckpointCoordinator()
+                Objects.requireNonNull(executionGraph.getCheckpointCoordinator())
                         .triggerSynchronousSavepoint(terminate, targetDirectory, formatType)
                         .thenApply(CompletedCheckpoint::getExternalPointer);
         return context.goToStopWithSavepoint(
@@ -179,17 +450,17 @@ class Executing extends StateWithExecutionGraph implements ResourceConsumer {
          * Asks how to handle the failure.
          *
          * @param failure failure describing the failure cause
+         * @param failureLabels future of labels from error classification.
          * @return {@link FailureResult} which describes how to handle the failure
          */
-        FailureResult howToHandleFailure(Throwable failure);
+        FailureResult howToHandleFailure(
+                Throwable failure, CompletableFuture<Map<String, String>> failureLabels);
 
         /**
-         * Asks if we can scale up the currently executing job.
-         *
-         * @param executionGraph executionGraph for making the scaling decision.
-         * @return true, if we can scale up
+         * Returns the {@link VertexParallelism} that can be provided by the currently available
+         * slots.
          */
-        boolean canScaleUp(ExecutionGraph executionGraph);
+        Optional<VertexParallelism> getAvailableVertexParallelism();
 
         /**
          * Runs the given action after a delay if the state at this time equals the expected state.
@@ -201,6 +472,26 @@ class Executing extends StateWithExecutionGraph implements ResourceConsumer {
          * @return a ScheduledFuture representing pending completion of the task
          */
         ScheduledFuture<?> runIfState(State expectedState, Runnable action, Duration delay);
+
+        /**
+         * Returns {@code true} if the available resources meet the desired resources for the job;
+         * otherwise {@code false}.
+         */
+        boolean hasDesiredResources();
+
+        /**
+         * Checks if we currently have sufficient resources for executing the job.
+         *
+         * @return {@code true} if we have sufficient resources; otherwise {@code false}
+         */
+        boolean hasSufficientResources();
+
+        /**
+         * Get the state of the current context.
+         *
+         * @return the state of transition of the current context.
+         */
+        State getState();
     }
 
     static class Factory implements StateFactory<Executing> {
@@ -212,6 +503,10 @@ class Executing extends StateWithExecutionGraph implements ResourceConsumer {
         private final OperatorCoordinatorHandler operatorCoordinatorHandler;
         private final ClassLoader userCodeClassLoader;
         private final List<ExceptionHistoryEntry> failureCollection;
+        private final Function<StateTransitionManager.Context, StateTransitionManager>
+                stateTransitionManagerFactory;
+        private final int rescaleOnFailedCheckpointCount;
+        private final boolean activeCheckpointTriggerEnabled;
 
         Factory(
                 ExecutionGraph executionGraph,
@@ -220,7 +515,11 @@ class Executing extends StateWithExecutionGraph implements ResourceConsumer {
                 Logger log,
                 Context context,
                 ClassLoader userCodeClassLoader,
-                List<ExceptionHistoryEntry> failureCollection) {
+                List<ExceptionHistoryEntry> failureCollection,
+                Function<StateTransitionManager.Context, StateTransitionManager>
+                        stateTransitionManagerFactory,
+                int rescaleOnFailedCheckpointCount,
+                boolean activeCheckpointTriggerEnabled) {
             this.context = context;
             this.log = log;
             this.executionGraph = executionGraph;
@@ -228,6 +527,9 @@ class Executing extends StateWithExecutionGraph implements ResourceConsumer {
             this.operatorCoordinatorHandler = operatorCoordinatorHandler;
             this.userCodeClassLoader = userCodeClassLoader;
             this.failureCollection = failureCollection;
+            this.stateTransitionManagerFactory = stateTransitionManagerFactory;
+            this.rescaleOnFailedCheckpointCount = rescaleOnFailedCheckpointCount;
+            this.activeCheckpointTriggerEnabled = activeCheckpointTriggerEnabled;
         }
 
         public Class<Executing> getStateClass() {
@@ -242,7 +544,10 @@ class Executing extends StateWithExecutionGraph implements ResourceConsumer {
                     log,
                     context,
                     userCodeClassLoader,
-                    failureCollection);
+                    failureCollection,
+                    stateTransitionManagerFactory,
+                    rescaleOnFailedCheckpointCount,
+                    activeCheckpointTriggerEnabled);
         }
     }
 }

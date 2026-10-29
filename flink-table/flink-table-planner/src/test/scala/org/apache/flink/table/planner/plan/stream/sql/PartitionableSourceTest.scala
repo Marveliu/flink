@@ -15,30 +15,29 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.planner.plan.stream.sql
-
-import java.util
 
 import org.apache.flink.table.catalog.{CatalogPartitionImpl, CatalogPartitionSpec, ObjectPath}
 import org.apache.flink.table.planner.expressions.utils.Func1
 import org.apache.flink.table.planner.factories.TestValuesCatalog
 import org.apache.flink.table.planner.utils.TableTestBase
-import org.junit.{Before, Test}
-import org.junit.runner.RunWith
-import org.junit.runners.Parameterized
+import org.apache.flink.testutils.junit.extensions.parameterized.{ParameterizedTestExtension, Parameters}
+
+import org.junit.jupiter.api.{BeforeEach, TestTemplate}
+import org.junit.jupiter.api.extension.ExtendWith
+
+import java.util
 
 import scala.collection.JavaConversions._
 
-@RunWith(classOf[Parameterized])
-class PartitionableSourceTest(
-  val sourceFetchPartitions: Boolean,
-  val useCatalogFilter: Boolean) extends TableTestBase{
+@ExtendWith(Array(classOf[ParameterizedTestExtension]))
+class PartitionableSourceTest(val sourceFetchPartitions: Boolean, val useCatalogFilter: Boolean)
+  extends TableTestBase {
 
   private val util = streamTestUtil()
 
-  @Before
-  def setup() : Unit = {
+  @BeforeEach
+  def setup(): Unit = {
     val partitionableTable =
       """
         |CREATE TABLE PartitionableTable (
@@ -91,61 +90,74 @@ class PartitionableSourceTest(
 
       // partition map
       val partitions = Seq(
-        Map("part1"->"A", "part2"->"1"),
-        Map("part1"->"A", "part2"->"2"),
-        Map("part1"->"B", "part2"->"3"),
-        Map("part1"->"C", "part2"->"1"))
-      partitions.foreach(partition => {
-        val catalogPartitionSpec = new CatalogPartitionSpec(partition)
-        val catalogPartition = new CatalogPartitionImpl(
-          new java.util.HashMap[String, String](), "")
-        catalog.createPartition(
-          partitionableTablePath, catalogPartitionSpec, catalogPartition, true)
-        catalog.createPartition(
-          partitionableAndFilterableTablePath, catalogPartitionSpec, catalogPartition, true)
-      })
+        Map("part1" -> "A", "part2" -> "1"),
+        Map("part1" -> "A", "part2" -> "2"),
+        Map("part1" -> "B", "part2" -> "3"),
+        Map("part1" -> "C", "part2" -> "1"))
+      partitions.foreach(
+        partition => {
+          val catalogPartitionSpec = new CatalogPartitionSpec(partition)
+          val catalogPartition =
+            new CatalogPartitionImpl(new java.util.HashMap[String, String](), "")
+          catalog.createPartition(
+            partitionableTablePath,
+            catalogPartitionSpec,
+            catalogPartition,
+            true)
+          catalog.createPartition(
+            partitionableAndFilterableTablePath,
+            catalogPartitionSpec,
+            catalogPartition,
+            true)
+        })
     }
   }
 
-  @Test
+  @TestTemplate
   def testSimplePartitionFieldPredicate1(): Unit = {
     util.verifyExecPlan("SELECT * FROM PartitionableTable WHERE part1 = 'A'")
   }
 
-  @Test
+  @TestTemplate
   def testPartialPartitionFieldPredicatePushDown(): Unit = {
     util.verifyExecPlan(
       "SELECT * FROM PartitionableTable WHERE (id > 2 OR part1 = 'A') AND part2 > 1")
   }
 
-  @Test
+  @TestTemplate
   def testWithUdfAndVirtualColumn(): Unit = {
-    util.addFunction("MyUdf", Func1)
+    util.addTemporarySystemFunction("MyUdf", Func1)
     util.verifyExecPlan("SELECT * FROM PartitionableTable WHERE id > 2 AND MyUdf(part2) < 3")
   }
 
-  @Test
+  @TestTemplate
   def testUnconvertedExpression(): Unit = {
     util.verifyExecPlan("select * from PartitionableTable where trim(part1) = 'A' and part2 > 1")
   }
 
-  @Test
+  @TestTemplate
   def testPushDownPartitionAndFiltersContainPartitionKeys(): Unit = {
     util.verifyExecPlan(
       "select * from PartitionableAndFilterableTable " +
         "where part1 = 'A' and part2 > 1 and id > 1")
   }
 
-  @Test
+  @TestTemplate
   def testPushDownPartitionAndFiltersContainPartitionKeysWithSingleProjection(): Unit = {
     util.verifyExecPlan(
       "select name from PartitionableAndFilterableTable " +
         "where part1 = 'A' and part2 > 1 and id > 1")
   }
+
+  @TestTemplate
+  def testPushDownNonExistentPartition(): Unit = {
+    util.verifyExecPlan("SELECT * FROM PartitionableTable WHERE part2 = 4")
+  }
+
 }
 
 object PartitionableSourceTest {
-  @Parameterized.Parameters(name = "sourceFetchPartitions={0}, useCatalogFilter={1}")
+  @Parameters(name = "sourceFetchPartitions={0}, useCatalogFilter={1}")
   def parameters(): util.Collection[Array[Any]] = {
     Seq[Array[Any]](
       Array(true, false),

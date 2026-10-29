@@ -21,6 +21,7 @@ package org.apache.flink.runtime.state.heap;
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.typeutils.TypeSerializer;
 import org.apache.flink.api.java.tuple.Tuple2;
+import org.apache.flink.runtime.state.InternalKeyContext;
 import org.apache.flink.runtime.state.IterableStateSnapshot;
 import org.apache.flink.runtime.state.KeyGroupRange;
 import org.apache.flink.runtime.state.KeyGroupRangeAssignment;
@@ -38,8 +39,11 @@ import javax.annotation.Nonnull;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Objects;
 import java.util.Spliterators;
+import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 import java.util.stream.Stream;
 import java.util.stream.StreamSupport;
 
@@ -211,6 +215,29 @@ public abstract class StateTable<K, N, S>
         getMapForKeyGroup(keyGroup).transform(key, namespace, value, transformation);
     }
 
+    /**
+     * Applies the given {@link StateTransformationFunction} to all state (1st input argument),
+     * using the given value as second input argument. The result of {@link
+     * StateTransformationFunction#apply(Object, Object)} is then stored as the new state. This
+     * function is basically an optimization for get-update-put pattern.
+     *
+     * @param value the value to use in transforming the state. Can be null.
+     * @throws Exception if some exception happens in the transformation function.
+     */
+    public <T> void transformAll(T value, StateTransformationFunction<S, T> transformation)
+            throws Exception {
+        for (StateMap<K, N, S> stateMap : keyGroupedStateMaps) {
+            List<StateEntry<K, N, S>> entries =
+                    StreamSupport.stream(
+                                    Spliterators.spliteratorUnknownSize(stateMap.iterator(), 0),
+                                    false)
+                            .collect(Collectors.toList());
+            for (StateEntry<K, N, S> entry : entries) {
+                stateMap.transform(entry.getKey(), entry.getNamespace(), value, transformation);
+            }
+        }
+    }
+
     // For queryable state ------------------------------------------------------------------------
 
     /**
@@ -247,6 +274,24 @@ public abstract class StateTable<K, N, S>
                                         Spliterators.spliteratorUnknownSize(stateMap.iterator(), 0),
                                         false))
                 .map(entry -> Tuple2.of(entry.getKey(), entry.getNamespace()));
+    }
+
+    /**
+     * Returns all entries paired with the key-group they are physically stored under, i.e. the
+     * {@link #keyGroupedStateMaps} slot holding them, rather than a key-group recomputed from the
+     * key's {@code hashCode()}.
+     */
+    public Stream<Tuple2<StateEntry<K, N, S>, Integer>> getEntriesWithKeyGroup() {
+        final int offset = getKeyGroupOffset();
+        return IntStream.range(0, keyGroupedStateMaps.length)
+                .boxed()
+                .flatMap(
+                        i ->
+                                StreamSupport.stream(
+                                                Spliterators.spliteratorUnknownSize(
+                                                        keyGroupedStateMaps[i].iterator(), 0),
+                                                false)
+                                        .map(entry -> Tuple2.of(entry, i + offset)));
     }
 
     public StateIncrementalVisitor<K, N, S> getStateIncrementalVisitor(
@@ -296,7 +341,6 @@ public abstract class StateTable<K, N, S>
         return keyGroupRange.getStartKeyGroup();
     }
 
-    @VisibleForTesting
     public StateMap<K, N, S> getMapForKeyGroup(int keyGroupIndex) {
         final int pos = indexToOffset(keyGroupIndex);
         if (pos >= 0 && pos < keyGroupedStateMaps.length) {

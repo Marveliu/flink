@@ -15,7 +15,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.planner.plan.nodes.calcite
 
 import org.apache.flink.table.planner.plan.logical.LogicalWindow
@@ -23,8 +22,9 @@ import org.apache.flink.table.runtime.groupwindow.NamedWindowProperty
 
 import org.apache.calcite.plan.{Convention, RelOptCluster, RelTraitSet}
 import org.apache.calcite.rel.RelNode
-import org.apache.calcite.rel.core.Aggregate.Group
 import org.apache.calcite.rel.core.{Aggregate, AggregateCall}
+import org.apache.calcite.rel.core.Aggregate.Group
+import org.apache.calcite.rel.hint.RelHint
 import org.apache.calcite.util.ImmutableBitSet
 
 import java.util
@@ -32,12 +32,33 @@ import java.util
 final class LogicalWindowAggregate(
     cluster: RelOptCluster,
     traitSet: RelTraitSet,
+    hints: util.List[RelHint],
     child: RelNode,
     groupSet: ImmutableBitSet,
     aggCalls: util.List[AggregateCall],
     window: LogicalWindow,
-    namedProperties: Seq[NamedWindowProperty])
-  extends WindowAggregate(cluster, traitSet, child, groupSet, aggCalls, window, namedProperties) {
+    namedProperties: util.List[NamedWindowProperty])
+  extends WindowAggregate(
+    cluster,
+    traitSet,
+    hints,
+    child,
+    groupSet,
+    aggCalls,
+    window,
+    namedProperties) {
+
+  override def withHints(hintList: util.List[RelHint]): RelNode = {
+    new LogicalWindowAggregate(
+      cluster,
+      traitSet,
+      hintList,
+      input,
+      getGroupSet,
+      aggCalls,
+      window,
+      namedProperties)
+  }
 
   override def copy(
       traitSet: RelTraitSet,
@@ -48,6 +69,7 @@ final class LogicalWindowAggregate(
     new LogicalWindowAggregate(
       cluster,
       traitSet,
+      getHints,
       input,
       groupSet,
       aggCalls,
@@ -55,12 +77,32 @@ final class LogicalWindowAggregate(
       namedProperties)
   }
 
-  def copy(namedProperties: Seq[NamedWindowProperty]): LogicalWindowAggregate = {
+  def copy(namedProperties: util.List[NamedWindowProperty]): LogicalWindowAggregate = {
     new LogicalWindowAggregate(
       cluster,
       traitSet,
+      getHints,
       input,
       getGroupSet,
+      aggCalls,
+      window,
+      namedProperties)
+  }
+
+  def copy(
+      traitSet: RelTraitSet,
+      input: RelNode,
+      groupSet: ImmutableBitSet,
+      // retain this to follow "Aggregate#copy"
+      groupSets: util.List[ImmutableBitSet],
+      aggCalls: util.List[AggregateCall],
+      window: LogicalWindow): Aggregate = {
+    new LogicalWindowAggregate(
+      cluster,
+      traitSet,
+      getHints,
+      input,
+      groupSet,
       aggCalls,
       window,
       namedProperties)
@@ -71,7 +113,7 @@ object LogicalWindowAggregate {
 
   def create(
       window: LogicalWindow,
-      namedProperties: Seq[NamedWindowProperty],
+      namedProperties: util.List[NamedWindowProperty],
       agg: Aggregate): LogicalWindowAggregate = {
     require(agg.getGroupType == Group.SIMPLE)
     val cluster: RelOptCluster = agg.getCluster
@@ -80,6 +122,7 @@ object LogicalWindowAggregate {
     new LogicalWindowAggregate(
       cluster,
       traitSet,
+      agg.getHints,
       agg.getInput,
       agg.getGroupSet,
       agg.getAggCallList,

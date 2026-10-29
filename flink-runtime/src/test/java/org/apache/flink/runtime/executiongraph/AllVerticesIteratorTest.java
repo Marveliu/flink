@@ -20,16 +20,26 @@ package org.apache.flink.runtime.executiongraph;
 
 import org.apache.flink.runtime.jobgraph.JobVertex;
 import org.apache.flink.runtime.jobgraph.tasks.AbstractInvokable;
+import org.apache.flink.testutils.TestingUtils;
+import org.apache.flink.testutils.executor.TestExecutorExtension;
 
-import org.junit.Assert;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.RegisterExtension;
 
 import java.util.Arrays;
+import java.util.concurrent.ScheduledExecutorService;
 
-public class AllVerticesIteratorTest {
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
+
+class AllVerticesIteratorTest {
+
+    @RegisterExtension
+    static final TestExecutorExtension<ScheduledExecutorService> EXECUTOR_RESOURCE =
+            TestingUtils.defaultExecutorExtension();
 
     @Test
-    public void testAllVertices() {
+    void testAllVertices() {
         try {
 
             JobVertex v1 = new JobVertex("v1");
@@ -47,7 +57,9 @@ public class AllVerticesIteratorTest {
             v3.setParallelism(3);
             v4.setParallelism(2);
 
-            ExecutionGraph eg = ExecutionGraphTestUtils.createSimpleTestGraph(v1, v2, v3, v4);
+            ExecutionGraph eg =
+                    ExecutionGraphTestUtils.createExecutionGraph(
+                            EXECUTOR_RESOURCE.getExecutor(), v1, v2, v3, v4);
             ExecutionJobVertex ejv1 = eg.getJobVertex(v1.getID());
             ExecutionJobVertex ejv2 = eg.getJobVertex(v2.getID());
             ExecutionJobVertex ejv3 = eg.getJobVertex(v3.getID());
@@ -59,14 +71,14 @@ public class AllVerticesIteratorTest {
             int numReturned = 0;
             while (iter.hasNext()) {
                 iter.hasNext();
-                Assert.assertNotNull(iter.next());
+                assertThat(iter.next()).isNotNull();
                 numReturned++;
             }
 
-            Assert.assertEquals(13, numReturned);
+            assertThat(numReturned).isEqualTo(13);
         } catch (Exception e) {
             e.printStackTrace();
-            Assert.fail(e.getMessage());
+            fail(e.getMessage());
         }
     }
 }

@@ -48,7 +48,7 @@ LogicalSort(offset=[10], fetch=[10])
       <![CDATA[
 Limit(offset=[10], fetch=[10])
 +- Exchange(distribution=[single])
-   +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, c], metadata=[], limit=[20]]], fields=[a, c])
+   +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, c], limit=[20]]], fields=[a, c])
 ]]>
     </Resource>
   </TestCase>
@@ -67,7 +67,7 @@ LogicalSort(fetch=[10])
       <![CDATA[
 Limit(offset=[0], fetch=[10])
 +- Exchange(distribution=[single])
-   +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, c], metadata=[], limit=[10]]], fields=[a, c])
+   +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, c], limit=[10]]], fields=[a, c])
 ]]>
     </Resource>
   </TestCase>
@@ -96,23 +96,6 @@ Values(tuples=[[]])
       <![CDATA[
 LogicalSort(offset=[0], fetch=[0])
 +- LogicalProject(a=[$0], c=[$2])
-   +- LogicalTableScan(table=[[default_catalog, default_database, MyTable]])
-]]>
-    </Resource>
-    <Resource name="optimized exec plan">
-      <![CDATA[
-Values(tuples=[[]])
-]]>
-    </Resource>
-  </TestCase>
-  <TestCase name="testLimit0WithoutOffset">
-    <Resource name="sql">
-      <![CDATA[SELECT * FROM MyTable LIMIT 0]]>
-    </Resource>
-    <Resource name="ast">
-      <![CDATA[
-LogicalSort(fetch=[0])
-+- LogicalProject(a=[$0], b=[$1], c=[$2], proctime=[$3], rowtime=[$4])
    +- LogicalTableScan(table=[[default_catalog, default_database, MyTable]])
 ]]>
     </Resource>
@@ -258,6 +241,23 @@ Values(tuples=[[]])
 ]]>
     </Resource>
   </TestCase>
+  <TestCase name="testLimit0WithoutOffset">
+    <Resource name="sql">
+      <![CDATA[SELECT * FROM MyTable LIMIT 0]]>
+    </Resource>
+    <Resource name="ast">
+      <![CDATA[
+LogicalSort(fetch=[0])
++- LogicalProject(a=[$0], b=[$1], c=[$2], proctime=[$3], rowtime=[$4])
+   +- LogicalTableScan(table=[[default_catalog, default_database, MyTable]])
+]]>
+    </Resource>
+    <Resource name="optimized exec plan">
+      <![CDATA[
+Values(tuples=[[]])
+]]>
+    </Resource>
+  </TestCase>
   <TestCase name="testLimitWithOffset">
     <Resource name="sql">
       <![CDATA[SELECT a, c FROM MyTable LIMIT 10 OFFSET 1]]>
@@ -273,7 +273,7 @@ LogicalSort(offset=[1], fetch=[10])
       <![CDATA[
 Limit(offset=[1], fetch=[10])
 +- Exchange(distribution=[single])
-   +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, c], metadata=[], limit=[11]]], fields=[a, c])
+   +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, c], limit=[11]]], fields=[a, c])
 ]]>
     </Resource>
   </TestCase>
@@ -292,7 +292,159 @@ LogicalSort(offset=[0], fetch=[10])
       <![CDATA[
 Limit(offset=[0], fetch=[10])
 +- Exchange(distribution=[single])
-   +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, c], metadata=[], limit=[10]]], fields=[a, c])
+   +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, c], limit=[10]]], fields=[a, c])
+]]>
+    </Resource>
+  </TestCase>
+  <TestCase name="testLimitWithProcessingTime">
+    <Resource name="sql">
+      <![CDATA[SELECT proctime, c FROM MyTable LIMIT 2]]>
+    </Resource>
+    <Resource name="ast">
+      <![CDATA[
+LogicalSort(fetch=[2])
++- LogicalProject(proctime=[$3], c=[$2])
+   +- LogicalTableScan(table=[[default_catalog, default_database, MyTable]])
+]]>
+    </Resource>
+    <Resource name="optimized exec plan">
+      <![CDATA[
+Limit(offset=[0], fetch=[2])
++- Exchange(distribution=[single])
+   +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[proctime, c], limit=[2]]], fields=[proctime, c])
+]]>
+    </Resource>
+  </TestCase>
+  <TestCase name="testLimitWithProcessingTimeDesc">
+    <Resource name="sql">
+      <![CDATA[SELECT proctime desc, c FROM MyTable LIMIT 2]]>
+    </Resource>
+    <Resource name="ast">
+      <![CDATA[
+LogicalSort(fetch=[2])
++- LogicalProject(desc=[$3], c=[$2])
+   +- LogicalTableScan(table=[[default_catalog, default_database, MyTable]])
+]]>
+    </Resource>
+    <Resource name="optimized exec plan">
+      <![CDATA[
+Limit(offset=[0], fetch=[2])
++- Exchange(distribution=[single])
+   +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[proctime, c], limit=[2]]], fields=[proctime, c])
+]]>
+    </Resource>
+  </TestCase>
+  <TestCase name="testLimitWithProcessingTimeDescSecond">
+    <Resource name="sql">
+      <![CDATA[SELECT c, proctime desc FROM MyTable LIMIT 2]]>
+    </Resource>
+    <Resource name="ast">
+      <![CDATA[
+LogicalSort(fetch=[2])
++- LogicalProject(c=[$2], desc=[$3])
+   +- LogicalTableScan(table=[[default_catalog, default_database, MyTable]])
+]]>
+    </Resource>
+    <Resource name="optimized exec plan">
+      <![CDATA[
+Limit(offset=[0], fetch=[2])
++- Exchange(distribution=[single])
+   +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[c, proctime], limit=[2]]], fields=[c, proctime])
+]]>
+    </Resource>
+  </TestCase>
+  <TestCase name="testLimitWithProcessingTimeSecond">
+    <Resource name="sql">
+      <![CDATA[SELECT c, proctime FROM MyTable LIMIT 2]]>
+    </Resource>
+    <Resource name="ast">
+      <![CDATA[
+LogicalSort(fetch=[2])
++- LogicalProject(c=[$2], proctime=[$3])
+   +- LogicalTableScan(table=[[default_catalog, default_database, MyTable]])
+]]>
+    </Resource>
+    <Resource name="optimized exec plan">
+      <![CDATA[
+Limit(offset=[0], fetch=[2])
++- Exchange(distribution=[single])
+   +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[c, proctime], limit=[2]]], fields=[c, proctime])
+]]>
+    </Resource>
+  </TestCase>
+  <TestCase name="testLimitWithRowTime">
+    <Resource name="sql">
+      <![CDATA[SELECT rowtime, c FROM MyTable LIMIT 2]]>
+    </Resource>
+    <Resource name="ast">
+      <![CDATA[
+LogicalSort(fetch=[2])
++- LogicalProject(rowtime=[$4], c=[$2])
+   +- LogicalTableScan(table=[[default_catalog, default_database, MyTable]])
+]]>
+    </Resource>
+    <Resource name="optimized exec plan">
+      <![CDATA[
+Limit(offset=[0], fetch=[2])
++- Exchange(distribution=[single])
+   +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[rowtime, c], limit=[2]]], fields=[rowtime, c])
+]]>
+    </Resource>
+  </TestCase>
+  <TestCase name="testLimitWithRowTimeDesc">
+    <Resource name="sql">
+      <![CDATA[SELECT rowtime desc, c FROM MyTable LIMIT 2]]>
+    </Resource>
+    <Resource name="ast">
+      <![CDATA[
+LogicalSort(fetch=[2])
++- LogicalProject(desc=[$4], c=[$2])
+   +- LogicalTableScan(table=[[default_catalog, default_database, MyTable]])
+]]>
+    </Resource>
+    <Resource name="optimized exec plan">
+      <![CDATA[
+Limit(offset=[0], fetch=[2])
++- Exchange(distribution=[single])
+   +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[rowtime, c], limit=[2]]], fields=[rowtime, c])
+]]>
+    </Resource>
+  </TestCase>
+  <TestCase name="testLimitWithRowTimeDescSecond">
+    <Resource name="sql">
+      <![CDATA[SELECT c, rowtime desc FROM MyTable LIMIT 2]]>
+    </Resource>
+    <Resource name="ast">
+      <![CDATA[
+LogicalSort(fetch=[2])
++- LogicalProject(c=[$2], desc=[$4])
+   +- LogicalTableScan(table=[[default_catalog, default_database, MyTable]])
+]]>
+    </Resource>
+    <Resource name="optimized exec plan">
+      <![CDATA[
+Limit(offset=[0], fetch=[2])
++- Exchange(distribution=[single])
+   +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[c, rowtime], limit=[2]]], fields=[c, rowtime])
+]]>
+    </Resource>
+  </TestCase>
+  <TestCase name="testLimitWithRowTimeSecond">
+    <Resource name="sql">
+      <![CDATA[SELECT c, rowtime FROM MyTable LIMIT 2]]>
+    </Resource>
+    <Resource name="ast">
+      <![CDATA[
+LogicalSort(fetch=[2])
++- LogicalProject(c=[$2], rowtime=[$4])
+   +- LogicalTableScan(table=[[default_catalog, default_database, MyTable]])
+]]>
+    </Resource>
+    <Resource name="optimized exec plan">
+      <![CDATA[
+Limit(offset=[0], fetch=[2])
++- Exchange(distribution=[single])
+   +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[c, rowtime], limit=[2]]], fields=[c, rowtime])
 ]]>
     </Resource>
   </TestCase>
@@ -315,158 +467,6 @@ Limit(offset=[0], fetch=[5])
 ]]>
     </Resource>
   </TestCase>
-  <TestCase name="testLimitWithProcessingTime">
-    <Resource name="sql">
-      <![CDATA[SELECT proctime, c FROM MyTable LIMIT 2]]>
-    </Resource>
-    <Resource name="ast">
-      <![CDATA[
-LogicalSort(fetch=[2])
-+- LogicalProject(proctime=[$3], c=[$2])
-   +- LogicalTableScan(table=[[default_catalog, default_database, MyTable]])
-]]>
-    </Resource>
-    <Resource name="optimized exec plan">
-      <![CDATA[
-Limit(offset=[0], fetch=[2])
-+- Exchange(distribution=[single])
-   +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[proctime, c], metadata=[], limit=[2]]], fields=[proctime, c])
-]]>
-    </Resource>
-  </TestCase>
-  <TestCase name="testLimitWithProcessingTimeDesc">
-    <Resource name="sql">
-      <![CDATA[SELECT proctime desc, c FROM MyTable LIMIT 2]]>
-    </Resource>
-    <Resource name="ast">
-      <![CDATA[
-LogicalSort(fetch=[2])
-+- LogicalProject(desc=[$3], c=[$2])
-   +- LogicalTableScan(table=[[default_catalog, default_database, MyTable]])
-]]>
-    </Resource>
-    <Resource name="optimized exec plan">
-      <![CDATA[
-Limit(offset=[0], fetch=[2])
-+- Exchange(distribution=[single])
-   +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[proctime, c], metadata=[], limit=[2]]], fields=[proctime, c])
-]]>
-    </Resource>
-  </TestCase>
-  <TestCase name="testLimitWithProcessingTimeDescSecond">
-    <Resource name="sql">
-      <![CDATA[SELECT c, proctime desc FROM MyTable LIMIT 2]]>
-    </Resource>
-    <Resource name="ast">
-      <![CDATA[
-LogicalSort(fetch=[2])
-+- LogicalProject(c=[$2], desc=[$3])
-   +- LogicalTableScan(table=[[default_catalog, default_database, MyTable]])
-]]>
-    </Resource>
-    <Resource name="optimized exec plan">
-      <![CDATA[
-Limit(offset=[0], fetch=[2])
-+- Exchange(distribution=[single])
-   +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[c, proctime], metadata=[], limit=[2]]], fields=[c, proctime])
-]]>
-    </Resource>
-  </TestCase>
-  <TestCase name="testLimitWithProcessingTimeSecond">
-    <Resource name="sql">
-      <![CDATA[SELECT c, proctime FROM MyTable LIMIT 2]]>
-    </Resource>
-    <Resource name="ast">
-      <![CDATA[
-LogicalSort(fetch=[2])
-+- LogicalProject(c=[$2], proctime=[$3])
-   +- LogicalTableScan(table=[[default_catalog, default_database, MyTable]])
-]]>
-    </Resource>
-    <Resource name="optimized exec plan">
-      <![CDATA[
-Limit(offset=[0], fetch=[2])
-+- Exchange(distribution=[single])
-   +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[c, proctime], metadata=[], limit=[2]]], fields=[c, proctime])
-]]>
-    </Resource>
-  </TestCase>
-  <TestCase name="testLimitWithRowTime">
-    <Resource name="sql">
-      <![CDATA[SELECT rowtime, c FROM MyTable LIMIT 2]]>
-    </Resource>
-    <Resource name="ast">
-      <![CDATA[
-LogicalSort(fetch=[2])
-+- LogicalProject(rowtime=[$4], c=[$2])
-   +- LogicalTableScan(table=[[default_catalog, default_database, MyTable]])
-]]>
-    </Resource>
-    <Resource name="optimized exec plan">
-      <![CDATA[
-Limit(offset=[0], fetch=[2])
-+- Exchange(distribution=[single])
-   +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[rowtime, c], metadata=[], limit=[2]]], fields=[rowtime, c])
-]]>
-    </Resource>
-  </TestCase>
-  <TestCase name="testLimitWithRowTimeDesc">
-    <Resource name="sql">
-      <![CDATA[SELECT rowtime desc, c FROM MyTable LIMIT 2]]>
-    </Resource>
-    <Resource name="ast">
-      <![CDATA[
-LogicalSort(fetch=[2])
-+- LogicalProject(desc=[$4], c=[$2])
-   +- LogicalTableScan(table=[[default_catalog, default_database, MyTable]])
-]]>
-    </Resource>
-    <Resource name="optimized exec plan">
-      <![CDATA[
-Limit(offset=[0], fetch=[2])
-+- Exchange(distribution=[single])
-   +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[rowtime, c], metadata=[], limit=[2]]], fields=[rowtime, c])
-]]>
-    </Resource>
-  </TestCase>
-  <TestCase name="testLimitWithRowTimeDescSecond">
-    <Resource name="sql">
-      <![CDATA[SELECT c, rowtime desc FROM MyTable LIMIT 2]]>
-    </Resource>
-    <Resource name="ast">
-      <![CDATA[
-LogicalSort(fetch=[2])
-+- LogicalProject(c=[$2], desc=[$4])
-   +- LogicalTableScan(table=[[default_catalog, default_database, MyTable]])
-]]>
-    </Resource>
-    <Resource name="optimized exec plan">
-      <![CDATA[
-Limit(offset=[0], fetch=[2])
-+- Exchange(distribution=[single])
-   +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[c, rowtime], metadata=[], limit=[2]]], fields=[c, rowtime])
-]]>
-    </Resource>
-  </TestCase>
-  <TestCase name="testLimitWithRowTimeSecond">
-    <Resource name="sql">
-      <![CDATA[SELECT c, rowtime FROM MyTable LIMIT 2]]>
-    </Resource>
-    <Resource name="ast">
-      <![CDATA[
-LogicalSort(fetch=[2])
-+- LogicalProject(c=[$2], rowtime=[$4])
-   +- LogicalTableScan(table=[[default_catalog, default_database, MyTable]])
-]]>
-    </Resource>
-    <Resource name="optimized exec plan">
-      <![CDATA[
-Limit(offset=[0], fetch=[2])
-+- Exchange(distribution=[single])
-   +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[c, rowtime], metadata=[], limit=[2]]], fields=[c, rowtime])
-]]>
-    </Resource>
-  </TestCase>
   <TestCase name="testOffsetWithProcessingTime">
     <Resource name="sql">
       <![CDATA[SELECT proctime, c FROM MyTable OFFSET 2]]>
@@ -482,26 +482,7 @@ LogicalSort(offset=[2])
       <![CDATA[
 Limit(offset=[2], fetch=[unlimited])
 +- Exchange(distribution=[single])
-   +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[proctime, c], metadata=[]]], fields=[proctime, c])
-]]>
-    </Resource>
-  </TestCase>
-  <TestCase name="testOffsetWithRowTimeDesc">
-    <Resource name="sql">
-      <![CDATA[SELECT rowtime desc, c FROM MyTable OFFSET 2]]>
-    </Resource>
-    <Resource name="ast">
-      <![CDATA[
-LogicalSort(offset=[2])
-+- LogicalProject(desc=[$4], c=[$2])
-   +- LogicalTableScan(table=[[default_catalog, default_database, MyTable]])
-]]>
-    </Resource>
-    <Resource name="optimized exec plan">
-      <![CDATA[
-Limit(offset=[2], fetch=[unlimited])
-+- Exchange(distribution=[single])
-   +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[rowtime, c], metadata=[]]], fields=[rowtime, c])
+   +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[proctime, c]]], fields=[proctime, c])
 ]]>
     </Resource>
   </TestCase>
@@ -520,7 +501,7 @@ LogicalSort(offset=[2])
       <![CDATA[
 Limit(offset=[2], fetch=[unlimited])
 +- Exchange(distribution=[single])
-   +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[proctime, c], metadata=[]]], fields=[proctime, c])
+   +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[proctime, c]]], fields=[proctime, c])
 ]]>
     </Resource>
   </TestCase>
@@ -539,7 +520,7 @@ LogicalSort(offset=[2])
       <![CDATA[
 Limit(offset=[2], fetch=[unlimited])
 +- Exchange(distribution=[single])
-   +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[c, proctime], metadata=[]]], fields=[c, proctime])
+   +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[c, proctime]]], fields=[c, proctime])
 ]]>
     </Resource>
   </TestCase>
@@ -558,7 +539,7 @@ LogicalSort(offset=[2])
       <![CDATA[
 Limit(offset=[2], fetch=[unlimited])
 +- Exchange(distribution=[single])
-   +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[c, proctime], metadata=[]]], fields=[c, proctime])
+   +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[c, proctime]]], fields=[c, proctime])
 ]]>
     </Resource>
   </TestCase>
@@ -577,7 +558,26 @@ LogicalSort(offset=[2])
       <![CDATA[
 Limit(offset=[2], fetch=[unlimited])
 +- Exchange(distribution=[single])
-   +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[rowtime, c], metadata=[]]], fields=[rowtime, c])
+   +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[rowtime, c]]], fields=[rowtime, c])
+]]>
+    </Resource>
+  </TestCase>
+  <TestCase name="testOffsetWithRowTimeDesc">
+    <Resource name="sql">
+      <![CDATA[SELECT rowtime desc, c FROM MyTable OFFSET 2]]>
+    </Resource>
+    <Resource name="ast">
+      <![CDATA[
+LogicalSort(offset=[2])
++- LogicalProject(desc=[$4], c=[$2])
+   +- LogicalTableScan(table=[[default_catalog, default_database, MyTable]])
+]]>
+    </Resource>
+    <Resource name="optimized exec plan">
+      <![CDATA[
+Limit(offset=[2], fetch=[unlimited])
++- Exchange(distribution=[single])
+   +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[rowtime, c]]], fields=[rowtime, c])
 ]]>
     </Resource>
   </TestCase>
@@ -596,26 +596,7 @@ LogicalSort(offset=[2])
       <![CDATA[
 Limit(offset=[2], fetch=[unlimited])
 +- Exchange(distribution=[single])
-   +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[c, rowtime], metadata=[]]], fields=[c, rowtime])
-]]>
-    </Resource>
-  </TestCase>
-  <TestCase name="testOnlyOffset">
-    <Resource name="sql">
-      <![CDATA[SELECT a, c FROM MyTable OFFSET 10 ROWS]]>
-    </Resource>
-    <Resource name="ast">
-      <![CDATA[
-LogicalSort(offset=[10])
-+- LogicalProject(a=[$0], c=[$2])
-   +- LogicalTableScan(table=[[default_catalog, default_database, MyTable]])
-]]>
-    </Resource>
-    <Resource name="optimized exec plan">
-      <![CDATA[
-Limit(offset=[10], fetch=[unlimited])
-+- Exchange(distribution=[single])
-   +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, c], metadata=[]]], fields=[a, c])
+   +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[c, rowtime]]], fields=[c, rowtime])
 ]]>
     </Resource>
   </TestCase>
@@ -634,7 +615,26 @@ LogicalSort(offset=[2])
       <![CDATA[
 Limit(offset=[2], fetch=[unlimited])
 +- Exchange(distribution=[single])
-   +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[c, rowtime], metadata=[]]], fields=[c, rowtime])
+   +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[c, rowtime]]], fields=[c, rowtime])
+]]>
+    </Resource>
+  </TestCase>
+  <TestCase name="testOnlyOffset">
+    <Resource name="sql">
+      <![CDATA[SELECT a, c FROM MyTable OFFSET 10 ROWS]]>
+    </Resource>
+    <Resource name="ast">
+      <![CDATA[
+LogicalSort(offset=[10])
++- LogicalProject(a=[$0], c=[$2])
+   +- LogicalTableScan(table=[[default_catalog, default_database, MyTable]])
+]]>
+    </Resource>
+    <Resource name="optimized exec plan">
+      <![CDATA[
+Limit(offset=[10], fetch=[unlimited])
++- Exchange(distribution=[single])
+   +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, c]]], fields=[a, c])
 ]]>
     </Resource>
   </TestCase>

@@ -16,23 +16,52 @@
  * limitations under the License.
  */
 
+import { DatePipe, NgForOf, NgIf } from '@angular/common';
 import { HttpEventType } from '@angular/common/http';
 import { ChangeDetectionStrategy, ChangeDetectorRef, Component, OnDestroy, OnInit, ViewChild } from '@angular/core';
-import { FormBuilder, FormGroup } from '@angular/forms';
+import { ReactiveFormsModule, UntypedFormBuilder, UntypedFormGroup } from '@angular/forms';
 import { Router } from '@angular/router';
 import { Subject } from 'rxjs';
 import { mergeMap, takeUntil } from 'rxjs/operators';
 
-import { DagreComponent } from 'share/common/dagre/dagre.component';
-
-import { JarFilesItem } from 'interfaces';
-import { JarService, StatusService } from 'services';
+import { DagreComponent } from '@flink-runtime-web/components/dagre/dagre.component';
+import { FileReadDirective } from '@flink-runtime-web/components/file-read.directive';
+import { JarFilesItem } from '@flink-runtime-web/interfaces';
+import { JarService, StatusService } from '@flink-runtime-web/services';
+import { NzButtonModule } from 'ng-zorro-antd/button';
+import { NzCardModule } from 'ng-zorro-antd/card';
+import { NzCheckboxModule } from 'ng-zorro-antd/checkbox';
+import { NzDrawerModule } from 'ng-zorro-antd/drawer';
+import { NzFormModule } from 'ng-zorro-antd/form';
+import { NzIconModule } from 'ng-zorro-antd/icon';
+import { NzInputModule } from 'ng-zorro-antd/input';
+import { NzPopconfirmModule } from 'ng-zorro-antd/popconfirm';
+import { NzProgressModule } from 'ng-zorro-antd/progress';
+import { NzTableModule } from 'ng-zorro-antd/table';
 
 @Component({
   selector: 'flink-submit',
   templateUrl: './submit.component.html',
   styleUrls: ['./submit.component.less'],
-  changeDetection: ChangeDetectionStrategy.OnPush
+  changeDetection: ChangeDetectionStrategy.OnPush,
+  imports: [
+    NzCardModule,
+    NzTableModule,
+    NgIf,
+    NgForOf,
+    DatePipe,
+    NzPopconfirmModule,
+    NzFormModule,
+    NzInputModule,
+    ReactiveFormsModule,
+    NzIconModule,
+    NzCheckboxModule,
+    NzButtonModule,
+    FileReadDirective,
+    NzProgressModule,
+    NzDrawerModule,
+    DagreComponent
+  ]
 })
 export class SubmitComponent implements OnInit, OnDestroy {
   public readonly trackById = (_: number, node: JarFilesItem): string => node.id;
@@ -45,17 +74,17 @@ export class SubmitComponent implements OnInit, OnDestroy {
   public noAccess = false;
   public isUploading = false;
   public progress = 0;
-  public validateForm: FormGroup;
+  public validateForm: UntypedFormGroup;
   public planVisible = false;
 
-  @ViewChild(DagreComponent, { static: true }) private readonly dagreComponent: DagreComponent;
+  @ViewChild(DagreComponent) private readonly dagreComponent: DagreComponent;
 
   private readonly destroy$ = new Subject<void>();
 
   constructor(
     private readonly jarService: JarService,
     private readonly statusService: StatusService,
-    private readonly fb: FormBuilder,
+    private readonly fb: UntypedFormBuilder,
     private readonly router: Router,
     private readonly cdr: ChangeDetectorRef
   ) {}
@@ -74,20 +103,20 @@ export class SubmitComponent implements OnInit, OnDestroy {
         takeUntil(this.destroy$),
         mergeMap(() => this.jarService.loadJarList())
       )
-      .subscribe(
-        data => {
+      .subscribe({
+        next: data => {
           this.isLoading = false;
           this.listOfJar = data.files;
           this.address = data.address;
           this.cdr.markForCheck();
           this.noAccess = Boolean(data.error);
         },
-        () => {
+        error: () => {
           this.isLoading = false;
           this.noAccess = true;
           this.cdr.markForCheck();
         }
-      );
+      });
   }
 
   public ngOnDestroy(): void {
@@ -96,8 +125,8 @@ export class SubmitComponent implements OnInit, OnDestroy {
   }
 
   public uploadJar(file: File): void {
-    this.jarService.uploadJar(file).subscribe(
-      event => {
+    this.jarService.uploadJar(file).subscribe({
+      next: event => {
         if (event.type === HttpEventType.UploadProgress && event.total) {
           this.isUploading = true;
           this.progress = Math.round((100 * event.loaded) / event.total);
@@ -106,11 +135,11 @@ export class SubmitComponent implements OnInit, OnDestroy {
           this.statusService.forceRefresh();
         }
       },
-      () => {
+      error: () => {
         this.isUploading = false;
         this.progress = 0;
       }
-    );
+    });
   }
 
   public deleteJar(jar: JarFilesItem): void {
@@ -147,6 +176,7 @@ export class SubmitComponent implements OnInit, OnDestroy {
       )
       .subscribe(data => {
         this.planVisible = true;
+        this.cdr.detectChanges();
         this.dagreComponent.flush(data.nodes, data.links, true);
       });
   }
@@ -166,7 +196,7 @@ export class SubmitComponent implements OnInit, OnDestroy {
         this.validateForm.get('allowNonRestoredState')!.value
       )
       .subscribe(data => {
-        this.router.navigate(['job', data.jobid]).then();
+        this.router.navigate(['job', 'running', data.jobid]).then();
       });
   }
 }

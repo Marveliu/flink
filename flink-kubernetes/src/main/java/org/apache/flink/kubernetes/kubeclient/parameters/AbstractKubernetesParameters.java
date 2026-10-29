@@ -57,7 +57,7 @@ public abstract class AbstractKubernetesParameters implements KubernetesParamete
         final String configDir =
                 flinkConfig
                         .getOptional(DeploymentOptionsInternal.CONF_DIR)
-                        .orElse(flinkConfig.getString(KubernetesConfigOptions.FLINK_CONF_DIR));
+                        .orElse(flinkConfig.get(KubernetesConfigOptions.FLINK_CONF_DIR));
 
         checkNotNull(configDir);
         return configDir;
@@ -65,7 +65,7 @@ public abstract class AbstractKubernetesParameters implements KubernetesParamete
 
     @Override
     public String getClusterId() {
-        final String clusterId = flinkConfig.getString(KubernetesConfigOptions.CLUSTER_ID);
+        final String clusterId = flinkConfig.get(KubernetesConfigOptions.CLUSTER_ID);
 
         if (StringUtils.isBlank(clusterId)) {
             throw new IllegalArgumentException(
@@ -83,7 +83,7 @@ public abstract class AbstractKubernetesParameters implements KubernetesParamete
 
     @Override
     public String getNamespace() {
-        final String namespace = flinkConfig.getString(KubernetesConfigOptions.NAMESPACE);
+        final String namespace = flinkConfig.get(KubernetesConfigOptions.NAMESPACE);
         checkArgument(
                 !namespace.trim().isEmpty(), "Invalid " + KubernetesConfigOptions.NAMESPACE + ".");
 
@@ -92,8 +92,7 @@ public abstract class AbstractKubernetesParameters implements KubernetesParamete
 
     @Override
     public String getImage() {
-        final String containerImage =
-                flinkConfig.getString(KubernetesConfigOptions.CONTAINER_IMAGE);
+        final String containerImage = flinkConfig.get(KubernetesConfigOptions.CONTAINER_IMAGE);
         checkArgument(
                 !containerImage.trim().isEmpty(),
                 "Invalid " + KubernetesConfigOptions.CONTAINER_IMAGE + ".");
@@ -127,17 +126,17 @@ public abstract class AbstractKubernetesParameters implements KubernetesParamete
 
     @Override
     public String getFlinkConfDirInPod() {
-        return flinkConfig.getString(KubernetesConfigOptions.FLINK_CONF_DIR);
+        return flinkConfig.get(KubernetesConfigOptions.FLINK_CONF_DIR);
     }
 
     @Override
     public Optional<String> getFlinkLogDirInPod() {
-        return Optional.ofNullable(flinkConfig.getString(KubernetesConfigOptions.FLINK_LOG_DIR));
+        return Optional.ofNullable(flinkConfig.get(KubernetesConfigOptions.FLINK_LOG_DIR));
     }
 
     @Override
     public String getContainerEntrypoint() {
-        return flinkConfig.getString(KubernetesConfigOptions.KUBERNETES_ENTRY_PATH);
+        return flinkConfig.get(KubernetesConfigOptions.KUBERNETES_ENTRY_PATH);
     }
 
     @Override
@@ -157,7 +156,7 @@ public abstract class AbstractKubernetesParameters implements KubernetesParamete
     @Override
     public Optional<String> getExistingHadoopConfigurationConfigMap() {
         final String existingHadoopConfigMap =
-                flinkConfig.getString(KubernetesConfigOptions.HADOOP_CONF_CONFIG_MAP);
+                flinkConfig.get(KubernetesConfigOptions.HADOOP_CONF_CONFIG_MAP);
         if (StringUtils.isBlank(existingHadoopConfigMap)) {
             return Optional.empty();
         } else {
@@ -204,6 +203,28 @@ public abstract class AbstractKubernetesParameters implements KubernetesParamete
     }
 
     public boolean isHostNetworkEnabled() {
-        return flinkConfig.getBoolean(KubernetesConfigOptions.KUBERNETES_HOSTNETWORK_ENABLED);
+        return flinkConfig.get(KubernetesConfigOptions.KUBERNETES_HOSTNETWORK_ENABLED);
+    }
+
+    /**
+     * Gets the map of PVC names to their mount paths.
+     *
+     * @return a map where keys are PVC names and values are mount paths; empty map if not
+     *     configured
+     */
+    public Map<String, String> getPersistentVolumeClaimsToMountPaths() {
+        return flinkConfig
+                .getOptional(KubernetesConfigOptions.KUBERNETES_PERSISTENT_VOLUME_CLAIMS)
+                .orElse(Collections.emptyMap());
+    }
+
+    /**
+     * Checks whether PVCs should be mounted as read-only.
+     *
+     * @return true if PVCs should be mounted as read-only, false otherwise
+     */
+    public boolean isPersistentVolumeClaimReadOnly() {
+        return flinkConfig.get(
+                KubernetesConfigOptions.KUBERNETES_PERSISTENT_VOLUME_CLAIM_READ_ONLY);
     }
 }

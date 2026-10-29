@@ -19,37 +19,46 @@
 package org.apache.flink.runtime.scheduler;
 
 import org.apache.flink.runtime.clusterframework.types.ResourceProfile;
+import org.apache.flink.runtime.jobmanager.scheduler.SlotSharingGroup;
 import org.apache.flink.runtime.scheduler.strategy.ExecutionVertexID;
+import org.apache.flink.runtime.scheduler.taskexecload.DefaultTaskExecutionLoad;
+import org.apache.flink.runtime.scheduler.taskexecload.HasTaskExecutionLoad;
+import org.apache.flink.runtime.scheduler.taskexecload.TaskExecutionLoad;
 import org.apache.flink.util.Preconditions;
+
+import javax.annotation.Nonnull;
 
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.Set;
 
 /** Represents execution vertices that will run the same shared slot. */
-class ExecutionSlotSharingGroup {
+public class ExecutionSlotSharingGroup implements HasTaskExecutionLoad {
 
     private final Set<ExecutionVertexID> executionVertexIds;
 
-    private ResourceProfile resourceProfile = ResourceProfile.UNKNOWN;
+    @Nonnull private final SlotSharingGroup slotSharingGroup;
 
-    ExecutionSlotSharingGroup() {
+    public ExecutionSlotSharingGroup(@Nonnull SlotSharingGroup slotSharingGroup) {
+        this.slotSharingGroup = Preconditions.checkNotNull(slotSharingGroup);
         this.executionVertexIds = new HashSet<>();
     }
 
-    void addVertex(final ExecutionVertexID executionVertexId) {
+    public void addVertex(final ExecutionVertexID executionVertexId) {
         executionVertexIds.add(executionVertexId);
     }
 
-    void setResourceProfile(ResourceProfile resourceProfile) {
-        this.resourceProfile = Preconditions.checkNotNull(resourceProfile);
+    @Nonnull
+    public SlotSharingGroup getSlotSharingGroup() {
+        return slotSharingGroup;
     }
 
+    @Nonnull
     ResourceProfile getResourceProfile() {
-        return resourceProfile;
+        return slotSharingGroup.getResourceProfile();
     }
 
-    Set<ExecutionVertexID> getExecutionVertexIds() {
+    public Set<ExecutionVertexID> getExecutionVertexIds() {
         return Collections.unmodifiableSet(executionVertexIds);
     }
 
@@ -58,8 +67,16 @@ class ExecutionSlotSharingGroup {
         return "ExecutionSlotSharingGroup{"
                 + "executionVertexIds="
                 + executionVertexIds
-                + ", resourceProfile="
-                + resourceProfile
+                + ", slotSharingGroup="
+                + slotSharingGroup
+                + ", taskExecutionLoad="
+                + getTaskExecutionLoad()
                 + '}';
+    }
+
+    @Nonnull
+    @Override
+    public TaskExecutionLoad getTaskExecutionLoad() {
+        return new DefaultTaskExecutionLoad(executionVertexIds.size());
     }
 }

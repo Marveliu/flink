@@ -15,25 +15,26 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.planner.factories.utils
 
-import org.apache.flink.api.common.ExecutionConfig
+import org.apache.flink.api.common.functions.OpenContext
+import org.apache.flink.api.common.serialization.SerializerConfigImpl
 import org.apache.flink.api.common.typeinfo.TypeInformation
 import org.apache.flink.api.common.typeutils.TypeSerializer
-import org.apache.flink.api.java.io.CollectionInputFormat
-import org.apache.flink.configuration.Configuration
+import org.apache.flink.legacy.table.sinks.{AppendStreamTableSink, StreamTableSink}
+import org.apache.flink.legacy.table.sources.StreamTableSource
 import org.apache.flink.streaming.api.datastream.{DataStream, DataStreamSink, DataStreamSource}
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment
-import org.apache.flink.streaming.api.functions.sink.RichSinkFunction
-import org.apache.flink.table.api.TableSchema
+import org.apache.flink.streaming.api.functions.sink.legacy.RichSinkFunction
+import org.apache.flink.streaming.api.legacy.io.CollectionInputFormat
 import org.apache.flink.table.descriptors.ConnectorDescriptorValidator.CONNECTOR
-import org.apache.flink.table.factories.{TableSinkFactory, TableSourceFactory}
 import org.apache.flink.table.functions.{AsyncTableFunction, TableFunction}
+import org.apache.flink.table.legacy.api.TableSchema
+import org.apache.flink.table.legacy.factories.{TableSinkFactory, TableSourceFactory}
+import org.apache.flink.table.legacy.sinks.TableSink
+import org.apache.flink.table.legacy.sources.LookupableTableSource
 import org.apache.flink.table.planner.factories.utils.TestCollectionTableFactory.{getCollectionSink, getCollectionSource}
 import org.apache.flink.table.runtime.types.TypeInfoDataTypeConverter.fromDataTypeToTypeInfo
-import org.apache.flink.table.sinks.{AppendStreamTableSink, StreamTableSink, TableSink}
-import org.apache.flink.table.sources.{LookupableTableSource, StreamTableSource}
 import org.apache.flink.table.types.DataType
 import org.apache.flink.table.utils.TableSchemaUtils.getPhysicalSchema
 import org.apache.flink.types.Row
@@ -46,13 +47,11 @@ import scala.collection.JavaConversions._
 
 class TestCollectionTableFactory extends TableSourceFactory[Row] with TableSinkFactory[Row] {
 
-  override def createTableSource(
-      context: TableSourceFactory.Context): StreamTableSource[Row] = {
+  override def createTableSource(context: TableSourceFactory.Context): StreamTableSource[Row] = {
     getCollectionSource(context)
   }
 
-  override def createTableSink(
-      context: TableSinkFactory.Context): StreamTableSink[Row] = {
+  override def createTableSink(context: TableSinkFactory.Context): StreamTableSink[Row] = {
     getCollectionSink(context)
   }
 
@@ -77,19 +76,20 @@ object TestCollectionTableFactory {
   val RESULT = new JLinkedList[Row]()
   private var emitIntervalMS = -1L
 
-  def initData(sourceData: JList[Row]): Unit ={
+  def initData(sourceData: JList[Row]): Unit = {
     initData(sourceData, List(), -1L)
   }
 
-  def initData(sourceData: JList[Row],
-    dimData: JList[Row] = List(),
-    emitInterval: Long = -1L): Unit ={
+  def initData(
+      sourceData: JList[Row],
+      dimData: JList[Row] = List(),
+      emitInterval: Long = -1L): Unit = {
     SOURCE_DATA.addAll(sourceData)
     DIM_DATA.addAll(dimData)
     emitIntervalMS = emitInterval
   }
 
-  def reset(): Unit ={
+  def reset(): Unit = {
     RESULT.clear()
     SOURCE_DATA.clear()
     DIM_DATA.clear()
@@ -109,15 +109,13 @@ object TestCollectionTableFactory {
     new CollectionTableSink(getPhysicalSchema(schema))
   }
 
-  /**
-    * Table source of collection.
-    */
+  /** Table source of collection. */
   class CollectionTableSource(
-    val emitIntervalMs: Long,
-    val schema: TableSchema,
-    val bounded: Boolean)
+      val emitIntervalMs: Long,
+      val schema: TableSchema,
+      val bounded: Boolean)
     extends StreamTableSource[Row]
-      with LookupableTableSource[Row] {
+    with LookupableTableSource[Row] {
 
     private val dataType = schema.toRowDataType
     private val typeInfo = fromDataTypeToTypeInfo(dataType).asInstanceOf[TypeInformation[Row]]
@@ -125,9 +123,11 @@ object TestCollectionTableFactory {
     override def isBounded: Boolean = bounded
 
     override def getDataStream(streamEnv: StreamExecutionEnvironment): DataStreamSource[Row] = {
-      streamEnv.createInput(new TestCollectionInputFormat[Row](emitIntervalMs,
-        SOURCE_DATA,
-        typeInfo.createSerializer(new ExecutionConfig)),
+      streamEnv.createInput(
+        new TestCollectionInputFormat[Row](
+          emitIntervalMs,
+          SOURCE_DATA,
+          typeInfo.createSerializer(new SerializerConfigImpl)),
         typeInfo)
     }
 
@@ -146,11 +146,8 @@ object TestCollectionTableFactory {
     override def isAsyncEnabled: Boolean = false
   }
 
-  /**
-    * Table sink of collection.
-    */
-  class CollectionTableSink(val schema: TableSchema)
-      extends AppendStreamTableSink[Row] {
+  /** Table sink of collection. */
+  class CollectionTableSink(val schema: TableSchema) extends AppendStreamTableSink[Row] {
 
     override def getConsumedDataType: DataType = schema.toRowDataType
 
@@ -162,18 +159,17 @@ object TestCollectionTableFactory {
       dataStream.addSink(new UnsafeMemorySinkFunction(typeInfo)).setParallelism(1)
     }
 
-    override def configure(fieldNames: Array[String],
-      fieldTypes: Array[TypeInformation[_]]): TableSink[Row] = this
+    override def configure(
+        fieldNames: Array[String],
+        fieldTypes: Array[TypeInformation[_]]): TableSink[Row] = this
   }
 
-  /**
-    * Sink function of unsafe memory.
-    */
+  /** Sink function of unsafe memory. */
   class UnsafeMemorySinkFunction(outputType: TypeInformation[Row]) extends RichSinkFunction[Row] {
     private var serializer: TypeSerializer[Row] = _
 
-    override def open(param: Configuration): Unit = {
-      serializer = outputType.createSerializer(new ExecutionConfig)
+    override def open(openContext: OpenContext): Unit = {
+      serializer = outputType.createSerializer(new SerializerConfigImpl)
     }
 
     @throws[Exception]
@@ -182,13 +178,11 @@ object TestCollectionTableFactory {
     }
   }
 
-  /**
-    * Collection inputFormat for testing.
-    */
+  /** Collection inputFormat for testing. */
   class TestCollectionInputFormat[T](
-    val emitIntervalMs: Long,
-    val dataSet: java.util.Collection[T],
-    val serializer: TypeSerializer[T])
+      val emitIntervalMs: Long,
+      val dataSet: java.util.Collection[T],
+      val serializer: TypeSerializer[T])
     extends CollectionInputFormat[T](dataSet, serializer) {
     @throws[IOException]
     override def reachedEnd: Boolean = {
@@ -203,12 +197,9 @@ object TestCollectionTableFactory {
     }
   }
 
-  /**
-    * Dimension table source fetcher.
-    */
-  class TemporalTableFetcher(
-    val dimData: JLinkedList[Row],
-    val keys: Array[Int]) extends TableFunction[Row] {
+  /** Dimension table source fetcher. */
+  class TemporalTableFetcher(val dimData: JLinkedList[Row], val keys: Array[Int])
+    extends TableFunction[Row] {
 
     @throws[Exception]
     def eval(values: Any*): Unit = {
@@ -224,9 +215,7 @@ object TestCollectionTableFactory {
         if (matched) {
           // copy the row data
           val ret = new Row(data.getArity)
-          0 until data.getArity foreach { idx =>
-            ret.setField(idx, data.getField(idx))
-          }
+          (0 until data.getArity).foreach(idx => ret.setField(idx, data.getField(idx)))
           collect(ret)
         }
       }

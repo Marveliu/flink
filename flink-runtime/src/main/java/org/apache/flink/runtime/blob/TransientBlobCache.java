@@ -97,7 +97,7 @@ public class TransientBlobCache extends AbstractBlobCache implements TransientBl
         // Initializing the clean up task
         this.cleanupTimer = new Timer(true);
 
-        this.cleanupInterval = blobClientConfig.getLong(BlobServerOptions.CLEANUP_INTERVAL) * 1000;
+        this.cleanupInterval = blobClientConfig.get(BlobServerOptions.CLEANUP_INTERVAL) * 1000;
         this.cleanupTimer.schedule(
                 new TransientBlobCleanupTask(blobExpiryTimes, this::deleteInternal, log),
                 cleanupInterval,
@@ -123,7 +123,7 @@ public class TransientBlobCache extends AbstractBlobCache implements TransientBl
 
     @Override
     public File getFile(TransientBlobKey key) throws IOException {
-        return getFileInternal(null, key);
+        return getFileInternal((JobID) null, key);
     }
 
     @Override
@@ -169,7 +169,7 @@ public class TransientBlobCache extends AbstractBlobCache implements TransientBl
     @Override
     public TransientBlobKey putTransient(InputStream inputStream) throws IOException {
         try (BlobClient bc = createClient()) {
-            return (TransientBlobKey) bc.putInputStream(null, inputStream, TRANSIENT_BLOB);
+            return (TransientBlobKey) bc.putInputStream((JobID) null, inputStream, TRANSIENT_BLOB);
         }
     }
 

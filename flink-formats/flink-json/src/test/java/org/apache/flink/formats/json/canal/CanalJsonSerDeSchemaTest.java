@@ -18,6 +18,7 @@
 
 package org.apache.flink.formats.json.canal;
 
+import org.apache.flink.connector.testutils.formats.DummyInitializationContext;
 import org.apache.flink.formats.common.TimestampFormat;
 import org.apache.flink.formats.json.JsonFormatOptions;
 import org.apache.flink.formats.json.canal.CanalJsonDecodingFormat.ReadableMetadata;
@@ -27,11 +28,11 @@ import org.apache.flink.table.runtime.typeutils.InternalTypeInfo;
 import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.types.logical.RowType;
 import org.apache.flink.table.types.utils.DataTypeUtils;
+import org.apache.flink.testutils.logging.LoggerAuditingExtension;
 import org.apache.flink.util.Collector;
 
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.ExpectedException;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.RegisterExtension;
 
 import java.io.File;
 import java.io.IOException;
@@ -46,19 +47,23 @@ import java.util.List;
 import java.util.function.Consumer;
 import java.util.stream.Collectors;
 
+import static org.apache.flink.connector.testutils.formats.SchemaTestUtils.open;
+import static org.apache.flink.core.testutils.FlinkAssertions.anyCauseMatches;
 import static org.apache.flink.table.api.DataTypes.FIELD;
 import static org.apache.flink.table.api.DataTypes.FLOAT;
 import static org.apache.flink.table.api.DataTypes.INT;
 import static org.apache.flink.table.api.DataTypes.ROW;
 import static org.apache.flink.table.api.DataTypes.STRING;
-import static org.hamcrest.CoreMatchers.equalTo;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertThat;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.slf4j.event.Level.DEBUG;
 
 /** Tests for {@link CanalJsonSerializationSchema} and {@link CanalJsonDeserializationSchema}. */
-public class CanalJsonSerDeSchemaTest {
+class CanalJsonSerDeSchemaTest {
 
-    @Rule public ExpectedException thrown = ExpectedException.none();
+    @RegisterExtension
+    public final LoggerAuditingExtension loggerExtension =
+            new LoggerAuditingExtension(CanalJsonDeserializationSchema.class, DEBUG);
 
     private static final DataType PHYSICAL_DATA_TYPE =
             ROW(
@@ -68,7 +73,7 @@ public class CanalJsonSerDeSchemaTest {
                     FIELD("weight", FLOAT()));
 
     @Test
-    public void testFilteringTables() throws Exception {
+    void testFilteringTables() throws Exception {
         List<String> lines = readLines("canal-data-filter-table.txt");
         CanalJsonDeserializationSchema deserializationSchema =
                 CanalJsonDeserializationSchema.builder(
@@ -82,55 +87,135 @@ public class CanalJsonSerDeSchemaTest {
     }
 
     @Test
-    public void testDeserializeNullRow() throws Exception {
+    void testIgnoreParseErrors() throws Exception {
+        List<String> lines = readLines("canal-data.txt");
+        CanalJsonDeserializationSchema deserializationSchema =
+                CanalJsonDeserializationSchema.builder(
+                                PHYSICAL_DATA_TYPE,
+                                Collections.emptyList(),
+                                InternalTypeInfo.of(PHYSICAL_DATA_TYPE.getLogicalType()))
+                        .setIgnoreParseErrors(true)
+                        .build();
+        open(deserializationSchema);
+        ThrowingExceptionCollector collector = new ThrowingExceptionCollector();
+        assertThatThrownBy(
+                        () -> {
+                            for (String line : lines) {
+                                deserializationSchema.deserialize(
+                                        line.getBytes(StandardCharsets.UTF_8), collector);
+                            }
+                        })
+                .isInstanceOf(RuntimeException.class)
+                .satisfies(
+                        anyCauseMatches(
+                                RuntimeException.class,
+                                "An error occurred while collecting data."));
+    }
+
+    @Test
+    void testIgnoreParseErrorsLogsDebugMessage() throws Exception {
+        String corruptMessage =
+                "{\"data\":null,\"old\":null,\"type\":\"UNKNOWN_TYPE\",\"database\":\"test\",\"table\":\"test\"}";
+        CanalJsonDeserializationSchema deserializationSchema =
+                CanalJsonDeserializationSchema.builder(
+                                PHYSICAL_DATA_TYPE,
+                                Collections.emptyList(),
+                                InternalTypeInfo.of(PHYSICAL_DATA_TYPE.getLogicalType()))
+                        .setIgnoreParseErrors(true)
+                        .build();
+        open(deserializationSchema);
+
+        SimpleCollector collector = new SimpleCollector();
+        deserializationSchema.deserialize(
+                corruptMessage.getBytes(StandardCharsets.UTF_8), collector);
+
+        // Verify no records were collected
+        assertThat(collector.list).isEmpty();
+
+        // Verify the error was logged at DEBUG level
+        assertThat(loggerExtension.getMessages())
+                .anyMatch(
+                        msg ->
+                                msg.contains("Unknown \"type\" value")
+                                        || msg.contains("Corrupt Canal JSON"));
+    }
+
+    @Test
+    void testDeserializationThrowsExceptionWhenIgnoreParseErrorsIsFalse() {
+        String corruptMessage = "{\"type\":\"INVALID\"}";
+
+        CanalJsonDeserializationSchema deserializationSchema =
+                CanalJsonDeserializationSchema.builder(
+                                PHYSICAL_DATA_TYPE,
+                                Collections.emptyList(),
+                                InternalTypeInfo.of(PHYSICAL_DATA_TYPE.getLogicalType()))
+                        .setIgnoreParseErrors(false)
+                        .build();
+        open(deserializationSchema);
+
+        SimpleCollector collector = new SimpleCollector();
+
+        assertThatThrownBy(
+                        () ->
+                                deserializationSchema.deserialize(
+                                        corruptMessage.getBytes(StandardCharsets.UTF_8), collector))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("Corrupt Canal JSON message")
+                .cause()
+                .hasMessageContaining("Unknown \"type\" value");
+    }
+
+    @Test
+    void testDeserializeNullRow() throws Exception {
         final List<ReadableMetadata> requestedMetadata = Arrays.asList(ReadableMetadata.values());
         final CanalJsonDeserializationSchema deserializationSchema =
                 createCanalJsonDeserializationSchema(null, null, requestedMetadata);
+        open(deserializationSchema);
         final SimpleCollector collector = new SimpleCollector();
 
         deserializationSchema.deserialize(null, collector);
         deserializationSchema.deserialize(new byte[0], collector);
-        assertEquals(0, collector.list.size());
+        assertThat(collector.list).hasSize(0);
     }
 
     @Test
-    public void testDeserializationWithMetadata() throws Exception {
+    void testDeserializationWithMetadata() throws Exception {
         testDeserializationWithMetadata(
                 "canal-data.txt",
                 null,
                 null,
                 row -> {
-                    assertThat(row.getInt(0), equalTo(101));
-                    assertThat(row.getString(1).toString(), equalTo("scooter"));
-                    assertThat(row.getString(2).toString(), equalTo("Small 2-wheel scooter"));
-                    assertThat(row.getFloat(3), equalTo(3.14f));
-                    assertThat(row.getString(4).toString(), equalTo("inventory"));
-                    assertThat(row.getString(5).toString(), equalTo("products2"));
-                    assertThat(row.getMap(6).size(), equalTo(4));
-                    assertThat(row.getArray(7).getString(0).toString(), equalTo("id"));
-                    assertThat(row.getTimestamp(8, 3).getMillisecond(), equalTo(1589373515477L));
-                    assertThat(row.getTimestamp(9, 3).getMillisecond(), equalTo(1589373515000L));
+                    assertThat(row.getInt(0)).isEqualTo(101);
+                    assertThat(row.getString(1).toString()).isEqualTo("scooter");
+                    assertThat(row.getString(2).toString()).isEqualTo("Small 2-wheel scooter");
+                    assertThat(row.getFloat(3)).isEqualTo(3.14f);
+                    assertThat(row.getString(4).toString()).isEqualTo("inventory");
+                    assertThat(row.getString(5).toString()).isEqualTo("products2");
+                    assertThat(row.getMap(6).size()).isEqualTo(4);
+                    assertThat(row.getArray(7).getString(0).toString()).isEqualTo("id");
+                    assertThat(row.getTimestamp(8, 3).getMillisecond()).isEqualTo(1589373515477L);
+                    assertThat(row.getTimestamp(9, 3).getMillisecond()).isEqualTo(1589373515000L);
                 });
         testDeserializationWithMetadata(
                 "canal-data-filter-table.txt",
                 "mydb",
                 "product",
                 row -> {
-                    assertThat(row.getInt(0), equalTo(101));
-                    assertThat(row.getString(1).toString(), equalTo("scooter"));
-                    assertThat(row.getString(2).toString(), equalTo("Small 2-wheel scooter"));
-                    assertThat(row.getFloat(3), equalTo(3.14f));
-                    assertThat(row.getString(4).toString(), equalTo("mydb"));
-                    assertThat(row.getString(5).toString(), equalTo("product"));
-                    assertThat(row.getMap(6).size(), equalTo(4));
-                    assertThat(row.getArray(7).getString(0).toString(), equalTo("id"));
-                    assertThat(row.getTimestamp(8, 3).getMillisecond(), equalTo(1598944146308L));
-                    assertThat(row.getTimestamp(9, 3).getMillisecond(), equalTo(1598944132000L));
+                    assertThat(row.getInt(0)).isEqualTo(101);
+                    assertThat(row.getString(1).toString()).isEqualTo("scooter");
+                    assertThat(row.getString(2).toString()).isEqualTo("Small 2-wheel scooter");
+                    assertThat(row.getFloat(3)).isEqualTo(3.14f);
+                    assertThat(row.getString(4).toString()).isEqualTo("mydb");
+                    assertThat(row.getString(5).toString()).isEqualTo("product");
+                    assertThat(row.getMap(6).size()).isEqualTo(4);
+                    assertThat(row.getArray(7).getString(0).toString()).isEqualTo("id");
+                    assertThat(row.getTimestamp(8, 3).getMillisecond()).isEqualTo(1598944146308L);
+                    assertThat(row.getTimestamp(9, 3).getMillisecond()).isEqualTo(1598944132000L);
                 });
     }
 
     @Test
-    public void testSerializationDeserialization() throws Exception {
+    void testSerializationDeserialization() throws Exception {
         List<String> lines = readLines("canal-data.txt");
         CanalJsonDeserializationSchema deserializationSchema =
                 CanalJsonDeserializationSchema.builder(
@@ -145,6 +230,7 @@ public class CanalJsonSerDeSchemaTest {
 
     public void runTest(List<String> lines, CanalJsonDeserializationSchema deserializationSchema)
             throws Exception {
+        open(deserializationSchema);
         SimpleCollector collector = new SimpleCollector();
         for (String line : lines) {
             deserializationSchema.deserialize(line.getBytes(StandardCharsets.UTF_8), collector);
@@ -211,7 +297,7 @@ public class CanalJsonSerDeSchemaTest {
                         "-D(103,12-pack drill bits,12-pack of drill bits with sizes ranging from #40 to #3,0.8)");
         List<String> actual =
                 collector.list.stream().map(Object::toString).collect(Collectors.toList());
-        assertEquals(expected, actual);
+        assertThat(actual).isEqualTo(expected);
 
         // test Serialization
         CanalJsonSerializationSchema serializationSchema =
@@ -220,8 +306,9 @@ public class CanalJsonSerDeSchemaTest {
                         TimestampFormat.ISO_8601,
                         JsonFormatOptions.MapNullKeyMode.LITERAL,
                         "null",
-                        true);
-        serializationSchema.open(null);
+                        true,
+                        false);
+        serializationSchema.open(new DummyInitializationContext());
 
         List<String> result = new ArrayList<>();
         for (RowData rowData : collector.list) {
@@ -257,7 +344,7 @@ public class CanalJsonSerDeSchemaTest {
                         "{\"data\":[{\"id\":102,\"name\":\"car battery\",\"description\":\"12V car battery\",\"weight\":5.17}],\"type\":\"DELETE\"}",
                         "{\"data\":[{\"id\":103,\"name\":\"12-pack drill bits\",\"description\":\"12-pack of drill bits with sizes ranging from #40 to #3\",\"weight\":0.8}],\"type\":\"DELETE\"}");
 
-        assertEquals(expectedResult, result);
+        assertThat(result).isEqualTo(expectedResult);
     }
 
     private void testDeserializationWithMetadata(
@@ -268,11 +355,12 @@ public class CanalJsonSerDeSchemaTest {
         final List<ReadableMetadata> requestedMetadata = Arrays.asList(ReadableMetadata.values());
         final CanalJsonDeserializationSchema deserializationSchema =
                 createCanalJsonDeserializationSchema(database, table, requestedMetadata);
+        open(deserializationSchema);
         final SimpleCollector collector = new SimpleCollector();
 
         deserializationSchema.deserialize(firstLine.getBytes(StandardCharsets.UTF_8), collector);
-        assertEquals(9, collector.list.size());
-        testConsumer.accept(collector.list.get(0));
+        assertThat(collector.list).hasSize(9);
+        assertThat(collector.list.get(0)).satisfies(testConsumer);
     }
 
     private CanalJsonDeserializationSchema createCanalJsonDeserializationSchema(
@@ -307,11 +395,24 @@ public class CanalJsonSerDeSchemaTest {
 
     private static class SimpleCollector implements Collector<RowData> {
 
-        private List<RowData> list = new ArrayList<>();
+        private final List<RowData> list = new ArrayList<>();
 
         @Override
         public void collect(RowData record) {
             list.add(record);
+        }
+
+        @Override
+        public void close() {
+            // do nothing
+        }
+    }
+
+    private static class ThrowingExceptionCollector implements Collector<RowData> {
+
+        @Override
+        public void collect(RowData record) {
+            throw new RuntimeException("An error occurred while collecting data.");
         }
 
         @Override

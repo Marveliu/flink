@@ -19,7 +19,6 @@
 package org.apache.flink.runtime.rest;
 
 import org.apache.flink.annotation.VisibleForTesting;
-import org.apache.flink.api.common.time.Time;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.IllegalConfigurationException;
@@ -28,8 +27,10 @@ import org.apache.flink.runtime.io.network.netty.SSLHandlerFactory;
 import org.apache.flink.runtime.net.RedirectingSslHandler;
 import org.apache.flink.runtime.rest.handler.PipelineErrorHandler;
 import org.apache.flink.runtime.rest.handler.RestHandlerSpecification;
+import org.apache.flink.runtime.rest.handler.router.MultipartRoutes;
 import org.apache.flink.runtime.rest.handler.router.Router;
 import org.apache.flink.runtime.rest.handler.router.RouterHandler;
+import org.apache.flink.runtime.rest.messages.UntypedResponseMessageHeaders;
 import org.apache.flink.runtime.rest.versioning.RestAPIVersion;
 import org.apache.flink.util.AutoCloseableAsync;
 import org.apache.flink.util.ConfigurationException;
@@ -47,7 +48,9 @@ import org.apache.flink.shaded.netty4.io.netty.channel.ChannelHandler;
 import org.apache.flink.shaded.netty4.io.netty.channel.ChannelInboundHandler;
 import org.apache.flink.shaded.netty4.io.netty.channel.ChannelInitializer;
 import org.apache.flink.shaded.netty4.io.netty.channel.EventLoopGroup;
-import org.apache.flink.shaded.netty4.io.netty.channel.nio.NioEventLoopGroup;
+import org.apache.flink.shaded.netty4.io.netty.channel.IoHandlerFactory;
+import org.apache.flink.shaded.netty4.io.netty.channel.MultiThreadIoEventLoopGroup;
+import org.apache.flink.shaded.netty4.io.netty.channel.nio.NioIoHandler;
 import org.apache.flink.shaded.netty4.io.netty.channel.socket.SocketChannel;
 import org.apache.flink.shaded.netty4.io.netty.channel.socket.nio.NioServerSocketChannel;
 import org.apache.flink.shaded.netty4.io.netty.handler.codec.http.HttpServerCodec;
@@ -65,8 +68,10 @@ import java.net.InetSocketAddress;
 import java.net.URL;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashSet;
@@ -108,7 +113,7 @@ public abstract class RestServerEndpoint implements RestService {
 
     private State state = State.CREATED;
 
-    @VisibleForTesting List<InboundChannelHandlerFactory> inboundChannelHandlerFactories;
+    private final List<InboundChannelHandlerFactory> inboundChannelHandlerFactories;
 
     public RestServerEndpoint(Configuration configuration)
             throws IOException, ConfigurationException {
@@ -151,6 +156,11 @@ public abstract class RestServerEndpoint implements RestService {
                 Comparator.comparingInt(InboundChannelHandlerFactory::priority).reversed());
     }
 
+    @VisibleForTesting
+    List<InboundChannelHandlerFactory> getInboundChannelHandlerFactories() {
+        return inboundChannelHandlerFactories;
+    }
+
     /**
      * This method is called at the beginning of {@link #start()} to setup all handlers that the
      * REST server endpoint implementation requires.
@@ -190,6 +200,9 @@ public abstract class RestServerEndpoint implements RestService {
             checkAllEndpointsAndHandlersAreUnique(handlers);
             handlers.forEach(handler -> registerHandler(router, handler, log));
 
+            MultipartRoutes multipartRoutes = createMultipartRoutes(handlers);
+            log.debug("Using {} for FileUploadHandler", multipartRoutes);
+
             ChannelInitializer<SocketChannel> initializer =
                     new ChannelInitializer<SocketChannel>() {
 
@@ -210,7 +223,7 @@ public abstract class RestServerEndpoint implements RestService {
 
                             ch.pipeline()
                                     .addLast(new HttpServerCodec())
-                                    .addLast(new FileUploadHandler(uploadDir))
+                                    .addLast(new FileUploadHandler(uploadDir, multipartRoutes))
                                     .addLast(
                                             new FlinkHttpObjectAggregator(
                                                     maxContentLength, responseHeaders));
@@ -231,12 +244,17 @@ public abstract class RestServerEndpoint implements RestService {
                         }
                     };
 
-            NioEventLoopGroup bossGroup =
-                    new NioEventLoopGroup(
-                            1, new ExecutorThreadFactory("flink-rest-server-netty-boss"));
-            NioEventLoopGroup workerGroup =
-                    new NioEventLoopGroup(
-                            0, new ExecutorThreadFactory("flink-rest-server-netty-worker"));
+            IoHandlerFactory nioIoHandlerFactory = NioIoHandler.newFactory();
+            MultiThreadIoEventLoopGroup bossGroup =
+                    new MultiThreadIoEventLoopGroup(
+                            1,
+                            new ExecutorThreadFactory("flink-rest-server-netty-boss"),
+                            nioIoHandlerFactory);
+            MultiThreadIoEventLoopGroup workerGroup =
+                    new MultiThreadIoEventLoopGroup(
+                            0,
+                            new ExecutorThreadFactory("flink-rest-server-netty-worker"),
+                            nioIoHandlerFactory);
 
             bootstrap = new ServerBootstrap();
             bootstrap
@@ -427,16 +445,14 @@ public abstract class RestServerEndpoint implements RestService {
                     () -> {
                         CompletableFuture<?> groupFuture = new CompletableFuture<>();
                         CompletableFuture<?> childGroupFuture = new CompletableFuture<>();
-                        final Time gracePeriod = Time.seconds(10L);
+                        final Duration gracePeriod = Duration.ofSeconds(10L);
 
                         if (bootstrap != null) {
                             final ServerBootstrapConfig config = bootstrap.config();
                             final EventLoopGroup group = config.group();
                             if (group != null) {
                                 group.shutdownGracefully(
-                                                0L,
-                                                gracePeriod.toMilliseconds(),
-                                                TimeUnit.MILLISECONDS)
+                                                0L, gracePeriod.toMillis(), TimeUnit.MILLISECONDS)
                                         .addListener(
                                                 finished -> {
                                                     if (finished.isSuccess()) {
@@ -454,9 +470,7 @@ public abstract class RestServerEndpoint implements RestService {
                             if (childGroup != null) {
                                 childGroup
                                         .shutdownGracefully(
-                                                0L,
-                                                gracePeriod.toMilliseconds(),
-                                                TimeUnit.MILLISECONDS)
+                                                0L, gracePeriod.toMillis(), TimeUnit.MILLISECONDS)
                                         .addListener(
                                                 finished -> {
                                                     if (finished.isSuccess()) {
@@ -507,35 +521,17 @@ public abstract class RestServerEndpoint implements RestService {
             Router router,
             Tuple2<RestHandlerSpecification, ChannelInboundHandler> specificationHandler,
             Logger log) {
-        final String handlerURL = specificationHandler.f0.getTargetRestEndpointURL();
-        // setup versioned urls
-        for (final RestAPIVersion supportedVersion :
-                specificationHandler.f0.getSupportedAPIVersions()) {
-            final String versionedHandlerURL =
-                    '/' + supportedVersion.getURLVersionPrefix() + handlerURL;
+        for (String route : getHandlerRoutes(specificationHandler.f0)) {
             log.debug(
                     "Register handler {} under {}@{}.",
                     specificationHandler.f1,
                     specificationHandler.f0.getHttpMethod(),
-                    versionedHandlerURL);
+                    route);
             registerHandler(
                     router,
-                    versionedHandlerURL,
+                    route,
                     specificationHandler.f0.getHttpMethod(),
                     specificationHandler.f1);
-            if (supportedVersion.isDefaultVersion()) {
-                // setup unversioned url for convenience and backwards compatibility
-                log.debug(
-                        "Register handler {} under {}@{}.",
-                        specificationHandler.f1,
-                        specificationHandler.f0.getHttpMethod(),
-                        handlerURL);
-                registerHandler(
-                        router,
-                        handlerURL,
-                        specificationHandler.f0.getHttpMethod(),
-                        specificationHandler.f1);
-            }
         }
     }
 
@@ -556,6 +552,9 @@ public abstract class RestServerEndpoint implements RestService {
                 break;
             case PATCH:
                 router.addPatch(handlerURL, handler);
+                break;
+            case PUT:
+                router.addPut(handlerURL, handler);
                 break;
             default:
                 throw new RuntimeException("Unsupported http method: " + httpMethod + '.');
@@ -623,9 +622,9 @@ public abstract class RestServerEndpoint implements RestService {
             }
 
             final RestHandlerSpecification headers = handler.f0;
-            for (RestAPIVersion supportedAPIVersion : headers.getSupportedAPIVersions()) {
+            for (RestAPIVersion supportedRestAPIVersion : headers.getSupportedAPIVersions()) {
                 final String parameterizedEndpoint =
-                        supportedAPIVersion.toString()
+                        supportedRestAPIVersion.toString()
                                 + headers.getHttpMethod()
                                 + headers.getTargetRestEndpointURL();
                 // normalize path parameters; distinct path parameters still clash at runtime
@@ -636,12 +635,53 @@ public abstract class RestServerEndpoint implements RestService {
                     throw new FlinkRuntimeException(
                             String.format(
                                     "REST handler registration overlaps with another registration for: version=%s, method=%s, url=%s.",
-                                    supportedAPIVersion,
+                                    supportedRestAPIVersion,
                                     headers.getHttpMethod(),
                                     headers.getTargetRestEndpointURL()));
                 }
             }
         }
+    }
+
+    private MultipartRoutes createMultipartRoutes(
+            List<Tuple2<RestHandlerSpecification, ChannelInboundHandler>> handlers) {
+        MultipartRoutes.Builder builder = new MultipartRoutes.Builder();
+
+        for (Tuple2<RestHandlerSpecification, ChannelInboundHandler> handler : handlers) {
+            if (handler.f0.getHttpMethod() == HttpMethodWrapper.POST) {
+                for (String url : getHandlerRoutes(handler.f0)) {
+                    builder.addPostRoute(url);
+                }
+            }
+
+            // The cast is necessary, because currently only UntypedResponseMessageHeaders exposes
+            // whether the handler accepts file uploads.
+            if (handler.f0 instanceof UntypedResponseMessageHeaders) {
+                UntypedResponseMessageHeaders<?, ?> header =
+                        (UntypedResponseMessageHeaders<?, ?>) handler.f0;
+                if (header.acceptsFileUploads()) {
+                    for (String url : getHandlerRoutes(header)) {
+                        builder.addFileUploadRoute(url);
+                    }
+                }
+            }
+        }
+        return builder.build();
+    }
+
+    private static Iterable<String> getHandlerRoutes(RestHandlerSpecification handlerSpec) {
+        final List<String> registeredRoutes = new ArrayList<>();
+        final String handlerUrl = handlerSpec.getTargetRestEndpointURL();
+        for (RestAPIVersion<?> supportedVersion : handlerSpec.getSupportedAPIVersions()) {
+            String versionedUrl = '/' + supportedVersion.getURLVersionPrefix() + handlerUrl;
+            registeredRoutes.add(versionedUrl);
+
+            if (supportedVersion.isDefaultVersion()) {
+                // Unversioned URL for convenience and backwards compatibility
+                registeredRoutes.add(handlerUrl);
+            }
+        }
+        return registeredRoutes;
     }
 
     /**
@@ -662,9 +702,6 @@ public abstract class RestServerEndpoint implements RestService {
         private static final Comparator<String> CASE_INSENSITIVE_ORDER =
                 new CaseInsensitiveOrderComparator();
 
-        private static final Comparator<RestAPIVersion> API_VERSION_ORDER =
-                new RestAPIVersion.RestAPIVersionComparator();
-
         static final RestHandlerUrlComparator INSTANCE = new RestHandlerUrlComparator();
 
         @Override
@@ -677,9 +714,13 @@ public abstract class RestServerEndpoint implements RestService {
             if (urlComparisonResult != 0) {
                 return urlComparisonResult;
             } else {
-                return API_VERSION_ORDER.compare(
-                        Collections.min(o1.f0.getSupportedAPIVersions()),
-                        Collections.min(o2.f0.getSupportedAPIVersions()));
+                Collection<? extends RestAPIVersion> o1APIVersions =
+                        o1.f0.getSupportedAPIVersions();
+                RestAPIVersion o1Version = Collections.min(o1APIVersions);
+                Collection<? extends RestAPIVersion> o2APIVersions =
+                        o2.f0.getSupportedAPIVersions();
+                RestAPIVersion o2Version = Collections.min(o2APIVersions);
+                return o1Version.compareTo(o2Version);
             }
         }
 

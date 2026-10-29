@@ -15,12 +15,12 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.planner.plan.cost
 
 import org.apache.calcite.plan.RelOptCostImpl
-import org.junit.Assert._
-import org.junit.Test
+import org.assertj.core.api.Assertions.assertThatThrownBy
+import org.junit.jupiter.api.Assertions._
+import org.junit.jupiter.api.Test
 
 class FlinkCostTest {
 
@@ -46,11 +46,15 @@ class FlinkCostTest {
     val cost4 = FlinkCost.FACTORY.makeCost(100.0, 1000.0, Double.PositiveInfinity, 0.0, 0.0)
     assertTrue(cost3.equals(cost4))
 
-    val cost5 = new FlinkCost(Double.PositiveInfinity, Double.PositiveInfinity,
-      Double.PositiveInfinity, Double.PositiveInfinity, Double.PositiveInfinity)
+    val cost5 = new FlinkCost(
+      Double.PositiveInfinity,
+      Double.PositiveInfinity,
+      Double.PositiveInfinity,
+      Double.PositiveInfinity,
+      Double.PositiveInfinity)
     assertTrue(FlinkCost.Infinity.equals(cost5))
 
-    val cost6 = FlinkCost.FACTORY.makeCost(100.0, 1000.0, 0.0, 500.0, 1.0E-6)
+    val cost6 = FlinkCost.FACTORY.makeCost(100.0, 1000.0, 0.0, 500.0, 1.0e-6)
     assertFalse(cost1.equals(cost6))
   }
 
@@ -59,11 +63,11 @@ class FlinkCostTest {
     assertTrue(FlinkCost.Tiny.isEqWithEpsilon(FlinkCost.Tiny))
     assertFalse(FlinkCost.Tiny.isEqWithEpsilon(RelOptCostImpl.FACTORY.makeTinyCost()))
 
-    val cost1 = FlinkCost.FACTORY.makeCost(100.123456, 1000.12345, 1.0E-6, 500.123, 1.0E-7)
-    val cost2 = FlinkCost.FACTORY.makeCost(100.123457, 1000.12346, 1.0E-7, 500.123, 1.0E-6)
+    val cost1 = FlinkCost.FACTORY.makeCost(100.123456, 1000.12345, 1.0e-6, 500.123, 1.0e-7)
+    val cost2 = FlinkCost.FACTORY.makeCost(100.123457, 1000.12346, 1.0e-7, 500.123, 1.0e-6)
     assertTrue(cost1.isEqWithEpsilon(cost2))
 
-    val cost3 = FlinkCost.FACTORY.makeCost(100.123456, 1000.12347, 1.0E-6, 500.123, 1.0E-7)
+    val cost3 = FlinkCost.FACTORY.makeCost(100.123456, 1000.12347, 1.0e-6, 500.123, 1.0e-7)
     assertFalse(cost1.isEqWithEpsilon(cost3))
   }
 
@@ -85,9 +89,10 @@ class FlinkCostTest {
     assertTrue(cost4.isLe(cost1))
   }
 
-  @Test(expected = classOf[ClassCastException])
+  @Test
   def testIsLe_WithDiffCost(): Unit = {
-    FlinkCost.Tiny.isLe(RelOptCostImpl.FACTORY.makeTinyCost())
+    assertThatThrownBy(() => FlinkCost.Tiny.isLe(RelOptCostImpl.FACTORY.makeTinyCost()))
+      .isInstanceOf(classOf[ClassCastException])
   }
 
   @Test
@@ -108,9 +113,10 @@ class FlinkCostTest {
     assertTrue(cost4.isLt(cost1))
   }
 
-  @Test(expected = classOf[ClassCastException])
+  @Test
   def testIsLt_WithDiffCost(): Unit = {
-    FlinkCost.Tiny.isLt(RelOptCostImpl.FACTORY.makeTinyCost())
+    assertThatThrownBy(() => FlinkCost.Tiny.isLt(RelOptCostImpl.FACTORY.makeTinyCost()))
+      .isInstanceOf(classOf[ClassCastException])
   }
 
   @Test
@@ -123,16 +129,17 @@ class FlinkCostTest {
     val expectedCost1 = FlinkCost.FACTORY.makeCost(600.0, 4000.0, 27.0, 600.1234567, 0.0)
     assertTrue(expectedCost1.equals(cost1.plus(cost2)))
 
-    val cost3 = FlinkCost.FACTORY.makeCost(
-      500.0, 3000.0, 27.0, 100.1234567, Double.PositiveInfinity)
-    val expectedCost2 = FlinkCost.FACTORY.makeCost(
-      600.0, 4000.0, 27.0, 600.1234567, Double.PositiveInfinity)
+    val cost3 =
+      FlinkCost.FACTORY.makeCost(500.0, 3000.0, 27.0, 100.1234567, Double.PositiveInfinity)
+    val expectedCost2 =
+      FlinkCost.FACTORY.makeCost(600.0, 4000.0, 27.0, 600.1234567, Double.PositiveInfinity)
     assertTrue(expectedCost2.equals(cost1.plus(cost3)))
   }
 
-  @Test(expected = classOf[ClassCastException])
+  @Test
   def testPlus_WithDiffCost(): Unit = {
-    FlinkCost.Tiny.plus(RelOptCostImpl.FACTORY.makeTinyCost())
+    assertThatThrownBy(() => FlinkCost.Tiny.plus(RelOptCostImpl.FACTORY.makeTinyCost()))
+      .isInstanceOf(classOf[ClassCastException])
   }
 
   @Test
@@ -141,8 +148,11 @@ class FlinkCostTest {
     assertTrue(FlinkCost.Infinity.equals(FlinkCost.Infinity.minus(cost1)))
 
     val expectedCost1 = FlinkCost.FACTORY.makeCost(
-      Double.NegativeInfinity, Double.NegativeInfinity, Double.NegativeInfinity,
-      Double.NegativeInfinity, Double.NegativeInfinity)
+      Double.NegativeInfinity,
+      Double.NegativeInfinity,
+      Double.NegativeInfinity,
+      Double.NegativeInfinity,
+      Double.NegativeInfinity)
     assertTrue(expectedCost1.equals(cost1.minus(FlinkCost.Infinity)))
 
     val cost2 = FlinkCost.FACTORY.makeCost(500.0, 3000.0, 27.0, 100.1234567, 0.0)
@@ -153,9 +163,10 @@ class FlinkCostTest {
     assertTrue(expectedCost3.equals(cost2.minus(cost1)))
   }
 
-  @Test(expected = classOf[ClassCastException])
+  @Test
   def testMinus_WithDiffCost(): Unit = {
-    FlinkCost.Tiny.minus(RelOptCostImpl.FACTORY.makeTinyCost())
+    assertThatThrownBy(() => FlinkCost.Tiny.minus(RelOptCostImpl.FACTORY.makeTinyCost()))
+      .isInstanceOf(classOf[ClassCastException])
   }
 
   @Test
@@ -167,8 +178,8 @@ class FlinkCostTest {
     assertTrue(expectedCost1.equals(cost1.multiplyBy(10.0)))
 
     val cost2 = FlinkCost.FACTORY.makeCost(100.0, 1000.0, 0.0, 500.0, Double.PositiveInfinity)
-    val expectedCost2 = FlinkCost.FACTORY.makeCost(
-      1000.0, 10000.0, 0.0, 5000.0, Double.PositiveInfinity)
+    val expectedCost2 =
+      FlinkCost.FACTORY.makeCost(1000.0, 10000.0, 0.0, 5000.0, Double.PositiveInfinity)
     assertTrue(expectedCost2.equals(cost2.multiplyBy(10.0)))
   }
 

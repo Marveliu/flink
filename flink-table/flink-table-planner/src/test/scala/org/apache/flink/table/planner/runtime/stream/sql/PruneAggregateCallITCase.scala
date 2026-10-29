@@ -17,36 +17,37 @@
  */
 package org.apache.flink.table.planner.runtime.stream.sql
 
-import org.apache.flink.api.scala._
+import org.apache.flink.core.testutils.EachCallbackWrapper
+import org.apache.flink.table.api._
 import org.apache.flink.table.api.bridge.scala._
 import org.apache.flink.table.planner.plan.stats.FlinkStatistic
+import org.apache.flink.table.planner.runtime.utils.{StreamingWithAggTestBase, TestData, TestingRetractSink}
 import org.apache.flink.table.planner.runtime.utils.BatchTestBase.row
 import org.apache.flink.table.planner.runtime.utils.StreamingWithAggTestBase.AggMode
 import org.apache.flink.table.planner.runtime.utils.StreamingWithMiniBatchTestBase.MiniBatchMode
 import org.apache.flink.table.planner.runtime.utils.StreamingWithStateTestBase.StateBackendMode
-import org.apache.flink.table.planner.runtime.utils.{StreamTableEnvUtil, StreamingWithAggTestBase, TestData, TestingRetractSink}
-import org.apache.flink.table.utils.LegacyRowResource
+import org.apache.flink.table.planner.utils.TableTestUtil
+import org.apache.flink.table.utils.LegacyRowExtension
+import org.apache.flink.testutils.junit.extensions.parameterized.ParameterizedTestExtension
 import org.apache.flink.types.Row
 
-import org.junit.Assert.assertEquals
-import org.junit.{Rule, Test}
-import org.junit.runner.RunWith
-import org.junit.runners.Parameterized
+import org.assertj.core.api.Assertions.assertThat
+import org.junit.jupiter.api.TestTemplate
+import org.junit.jupiter.api.extension.{ExtendWith, RegisterExtension}
 
 import scala.collection.JavaConverters._
-import scala.collection.Seq
 
-@RunWith(classOf[Parameterized])
+@ExtendWith(Array(classOf[ParameterizedTestExtension]))
 class PruneAggregateCallITCase(
     aggMode: AggMode,
     minibatch: MiniBatchMode,
     backend: StateBackendMode)
   extends StreamingWithAggTestBase(aggMode, minibatch, backend) {
 
-  @Rule
-  def usesLegacyRows: LegacyRowResource = LegacyRowResource.INSTANCE
+  @RegisterExtension private val _: EachCallbackWrapper[LegacyRowExtension] =
+    new EachCallbackWrapper[LegacyRowExtension](new LegacyRowExtension)
 
-  @Test
+  @TestTemplate
   def testNoneEmptyGroupKey(): Unit = {
     checkResult(
       "SELECT a FROM (SELECT b, MAX(a) AS a, COUNT(*), MAX(c) FROM MyTable GROUP BY b) t",
@@ -62,7 +63,7 @@ class PruneAggregateCallITCase(
     )
   }
 
-  @Test
+  @TestTemplate
   def testEmptyGroupKey(): Unit = {
     checkResult(
       "SELECT 1 FROM (SELECT SUM(a) FROM MyTable) t",
@@ -103,20 +104,20 @@ class PruneAggregateCallITCase(
 
   private def checkResult(str: String, rows: Seq[Row]): Unit = {
     super.before()
-    StreamTableEnvUtil.createTemporaryViewInternal[(Int, Long, String)](
+    TableTestUtil.createTemporaryView[(Int, Long, String)](
       tEnv,
       "MyTable",
-      failingDataSource(TestData.smallTupleData3).javaStream,
-      Some(Array("a", "b", "c")),
+      failingDataSource(TestData.smallTupleData3),
+      Some(Array($"a", $"b", $"c")),
       Some(Array(true, true, true)),
       Some(FlinkStatistic.UNKNOWN)
     )
 
-    StreamTableEnvUtil.createTemporaryViewInternal[(Int, Long, Int, String, Long)](
+    TableTestUtil.createTemporaryView[(Int, Long, Int, String, Long)](
       tEnv,
       "MyTable2",
-      failingDataSource(TestData.smallTupleData5).javaStream,
-      Some(Array("a", "b", "c", "d", "e")),
+      failingDataSource(TestData.smallTupleData5),
+      Some(Array($"a", $"b", $"c", $"d", $"e")),
       Some(Array(true, true, true, true, true)),
       Some(FlinkStatistic.builder().uniqueKeys(Set(Set("b").asJava).asJava).build())
     )
@@ -128,7 +129,7 @@ class PruneAggregateCallITCase(
     t.toRetractStream[Row].addSink(sink).setParallelism(1)
     env.execute()
     val expected = rows.map(_.toString)
-    assertEquals(expected.sorted, sink.getRetractResults.sorted)
+    assertThat(sink.getRetractResults.sorted).isEqualTo(expected.sorted)
   }
 
 }

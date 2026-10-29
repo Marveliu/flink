@@ -21,23 +21,24 @@ package org.apache.flink.test.io;
 import org.apache.flink.api.common.JobExecutionResult;
 import org.apache.flink.api.common.accumulators.LongCounter;
 import org.apache.flink.api.common.io.RichOutputFormat;
-import org.apache.flink.api.java.ExecutionEnvironment;
-import org.apache.flink.api.java.io.TextInputFormat;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.core.fs.FileInputSplit;
 import org.apache.flink.core.fs.Path;
+import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
+import org.apache.flink.streaming.api.functions.sink.legacy.OutputFormatSinkFunction;
+import org.apache.flink.streaming.api.legacy.io.TextInputFormat;
 import org.apache.flink.test.util.JavaProgramTestBase;
 
 import java.io.IOException;
 import java.util.concurrent.ConcurrentLinkedQueue;
 
-import static org.junit.Assert.assertEquals;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Tests for rich DataSource and DataSink input output formats accessing RuntimeContext by checking
  * accumulator values.
  */
-public class RichInputOutputITCase extends JavaProgramTestBase {
+class RichInputOutputITCase extends JavaProgramTestBase {
 
     private String inputPath;
     private static ConcurrentLinkedQueue<Integer> readCalls;
@@ -49,21 +50,24 @@ public class RichInputOutputITCase extends JavaProgramTestBase {
     }
 
     @Override
-    protected void testProgram() throws Exception {
+    protected JobExecutionResult testProgram() throws Exception {
         // test verifying the number of records read and written vs the accumulator counts
 
         readCalls = new ConcurrentLinkedQueue<Integer>();
         writeCalls = new ConcurrentLinkedQueue<Integer>();
-        final ExecutionEnvironment env = ExecutionEnvironment.getExecutionEnvironment();
-        env.createInput(new TestInputFormat(new Path(inputPath))).output(new TestOutputFormat());
+        final StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        env.createInput(new TestInputFormat(new Path(inputPath)))
+                .addSink(new OutputFormatSinkFunction<>(new TestOutputFormat()));
 
         JobExecutionResult result = env.execute();
         Object a = result.getAllAccumulatorResults().get("DATA_SOURCE_ACCUMULATOR");
         Object b = result.getAllAccumulatorResults().get("DATA_SINK_ACCUMULATOR");
-        long recordsRead = (Long) a;
-        long recordsWritten = (Long) b;
-        assertEquals(recordsRead, readCalls.size());
-        assertEquals(recordsWritten, writeCalls.size());
+        int recordsRead = Math.toIntExact((Long) a);
+        int recordsWritten = Math.toIntExact((Long) b);
+        assertThat(readCalls).hasSize(recordsRead);
+        assertThat(writeCalls).hasSize(recordsWritten);
+
+        return result;
     }
 
     private static final class TestInputFormat extends TextInputFormat {
@@ -101,7 +105,7 @@ public class RichInputOutputITCase extends JavaProgramTestBase {
         public void configure(Configuration parameters) {}
 
         @Override
-        public void open(int a, int b) {
+        public void open(InitializationContext context) {
             try {
                 getRuntimeContext().addAccumulator("DATA_SINK_ACCUMULATOR", counter);
             } catch (UnsupportedOperationException e) {

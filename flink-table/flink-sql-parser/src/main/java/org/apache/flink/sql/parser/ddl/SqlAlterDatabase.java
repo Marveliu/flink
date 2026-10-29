@@ -18,9 +18,13 @@
 
 package org.apache.flink.sql.parser.ddl;
 
+import org.apache.flink.sql.parser.SqlParseUtils;
+import org.apache.flink.sql.parser.SqlUnparseUtils;
+
 import org.apache.calcite.sql.SqlCall;
 import org.apache.calcite.sql.SqlIdentifier;
 import org.apache.calcite.sql.SqlKind;
+import org.apache.calcite.sql.SqlLiteral;
 import org.apache.calcite.sql.SqlNode;
 import org.apache.calcite.sql.SqlNodeList;
 import org.apache.calcite.sql.SqlOperator;
@@ -30,23 +34,28 @@ import org.apache.calcite.sql.parser.SqlParserPos;
 import org.apache.calcite.util.ImmutableNullableList;
 
 import java.util.List;
+import java.util.Map;
 
 import static java.util.Objects.requireNonNull;
 
 /** ALTER Database DDL sql call. */
-public class SqlAlterDatabase extends SqlCall {
+public class SqlAlterDatabase extends SqlAlterObject {
 
     public static final SqlSpecialOperator OPERATOR =
-            new SqlSpecialOperator("ALTER DATABASE", SqlKind.OTHER_DDL);
-
-    private final SqlIdentifier databaseName;
+            new SqlSpecialOperator("ALTER DATABASE", SqlKind.OTHER_DDL) {
+                @Override
+                public SqlCall createCall(
+                        SqlLiteral functionQualifier, SqlParserPos pos, SqlNode... operands) {
+                    return new SqlAlterDatabase(
+                            pos, (SqlIdentifier) operands[0], (SqlNodeList) operands[1]);
+                }
+            };
 
     private final SqlNodeList propertyList;
 
     public SqlAlterDatabase(
             SqlParserPos pos, SqlIdentifier databaseName, SqlNodeList propertyList) {
-        super(pos);
-        this.databaseName = requireNonNull(databaseName, "tableName should not be null");
+        super(OPERATOR, pos, "DATABASE", databaseName);
         this.propertyList = requireNonNull(propertyList, "propertyList should not be null");
     }
 
@@ -57,38 +66,16 @@ public class SqlAlterDatabase extends SqlCall {
 
     @Override
     public List<SqlNode> getOperandList() {
-        return ImmutableNullableList.of(databaseName, propertyList);
+        return ImmutableNullableList.of(name, propertyList);
     }
 
-    public SqlIdentifier getDatabaseName() {
-        return databaseName;
-    }
-
-    public SqlNodeList getPropertyList() {
-        return propertyList;
+    public Map<String, String> getProperties() {
+        return SqlParseUtils.extractMap(propertyList);
     }
 
     @Override
-    public void unparse(SqlWriter writer, int leftPrec, int rightPrec) {
-        writer.keyword("ALTER DATABASE");
-        databaseName.unparse(writer, leftPrec, rightPrec);
-        writer.keyword("SET");
-        SqlWriter.Frame withFrame = writer.startList("(", ")");
-        for (SqlNode property : propertyList) {
-            printIndent(writer);
-            property.unparse(writer, leftPrec, rightPrec);
-        }
-        writer.newlineAndIndent();
-        writer.endList(withFrame);
-    }
-
-    protected void printIndent(SqlWriter writer) {
-        writer.sep(",", false);
-        writer.newlineAndIndent();
-        writer.print("  ");
-    }
-
-    public String[] fullDatabaseName() {
-        return databaseName.names.toArray(new String[0]);
+    public void unparseAlterOperation(SqlWriter writer, int leftPrec, int rightPrec) {
+        name.unparse(writer, leftPrec, rightPrec);
+        SqlUnparseUtils.unparseSetOptions(propertyList, writer, leftPrec, rightPrec);
     }
 }

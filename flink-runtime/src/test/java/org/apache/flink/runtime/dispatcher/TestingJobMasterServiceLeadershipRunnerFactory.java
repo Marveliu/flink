@@ -19,14 +19,18 @@
 package org.apache.flink.runtime.dispatcher;
 
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.core.failure.FailureEnricher;
+import org.apache.flink.runtime.executiongraph.JobStatusListener;
 import org.apache.flink.runtime.heartbeat.HeartbeatServices;
 import org.apache.flink.runtime.highavailability.HighAvailabilityServices;
-import org.apache.flink.runtime.jobgraph.JobGraph;
 import org.apache.flink.runtime.jobmaster.JobManagerSharedServices;
 import org.apache.flink.runtime.jobmaster.TestingJobManagerRunner;
 import org.apache.flink.runtime.jobmaster.factories.JobManagerJobMetricGroupFactory;
 import org.apache.flink.runtime.rpc.FatalErrorHandler;
 import org.apache.flink.runtime.rpc.RpcService;
+import org.apache.flink.streaming.api.graph.ExecutionPlan;
+
+import java.util.Collection;
 
 /**
  * {@code TestingJobMasterServiceLeadershipRunnerFactory} implements {@code JobManagerRunnerFactory}
@@ -46,7 +50,7 @@ public class TestingJobMasterServiceLeadershipRunnerFactory extends TestingJobMa
 
     @Override
     public TestingJobManagerRunner createJobManagerRunner(
-            JobGraph jobGraph,
+            ExecutionPlan executionPlan,
             Configuration configuration,
             RpcService rpcService,
             HighAvailabilityServices highAvailabilityServices,
@@ -54,8 +58,10 @@ public class TestingJobMasterServiceLeadershipRunnerFactory extends TestingJobMa
             JobManagerSharedServices jobManagerServices,
             JobManagerJobMetricGroupFactory jobManagerJobMetricGroupFactory,
             FatalErrorHandler fatalErrorHandler,
+            Collection<FailureEnricher> failureEnrichers,
+            JobStatusListener jobStatusListener,
             long initializationTimestamp)
             throws Exception {
-        return offerTestingJobManagerRunner(jobGraph.getJobID());
+        return offerTestingJobManagerRunner(executionPlan.getJobID());
     }
 }

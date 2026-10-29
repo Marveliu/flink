@@ -32,6 +32,9 @@ under the License.
 
 [Debezium](https://debezium.io/) is a CDC (Changelog Data Capture) tool that can stream changes in real-time from MySQL, PostgreSQL, Oracle, Microsoft SQL Server and many other databases into Kafka. Debezium provides a unified format schema for changelog and supports to serialize messages using JSON and [Apache Avro](https://avro.apache.org/).
 
+This format reads change events that Debezium has already written to a system such as Kafka. To
+read changes directly from a database instead, see [Flink CDC](https://nightlies.apache.org/flink/flink-cdc-docs-stable/docs/connectors/flink-sources/overview/).
+
 Flink supports to interpret Debezium JSON and Avro messages as INSERT/UPDATE/DELETE messages into Flink SQL system. This is useful in many cases to leverage this feature, such as
  - synchronizing incremental data from databases to other systems
  - auditing logs
@@ -44,7 +47,7 @@ However, currently Flink can't combine UPDATE_BEFORE and UPDATE_AFTER into a sin
 Dependencies
 ------------
 
-#### Debezium Avro
+#### Debezium Confluent Avro
 
 {{< sql_download_table "debezium-avro-confluent" >}}
 
@@ -53,7 +56,7 @@ Dependencies
 {{< sql_download_table "debezium-json" >}}
 
 
-*Note: please refer to [Debezium documentation](https://debezium.io/documentation/reference/1.3/index.html) about how to setup a Debezium Kafka Connect to synchronize changelog to Kafka topics.*
+*Note: please refer to [Debezium documentation](https://debezium.io/documentation/reference/stable/index.html) about how to setup a Debezium Kafka Connect to synchronize changelog to Kafka topics.*
 
 
 How to use Debezium format
@@ -82,10 +85,12 @@ Debezium provides a unified format for changelog, here is a simple example for a
 }
 ```
 
-*Note: please refer to [Debezium documentation](https://debezium.io/documentation/reference/1.3/connectors/mysql.html#mysql-connector-events_debezium) about the meaning of each fields.*
+*Note: please refer to [Debezium documentation](https://debezium.io/documentation/reference/stable/connectors/mysql.html#mysql-events) about the meaning of each fields.*
 
 The MySQL `products` table has 4 columns (`id`, `name`, `description` and `weight`). The above JSON message is an update change event on the `products` table where the `weight` value of the row with `id = 111` is changed from `5.18` to `5.15`.
-Assuming this messages is synchronized to Kafka topic `products_binlog`, then we can use the following DDL to consume this topic and interpret the change events.
+Assuming this messages is synchronized to Kafka topic `products_binlog`, then we can use the following DDLs (for Debezium JSON and Debezium Confluent Avro) to consume this topic and interpret the change events.
+
+#### Debezium JSON DDL
 
 ```sql
 CREATE TABLE topic_products (
@@ -100,7 +105,6 @@ CREATE TABLE topic_products (
  'properties.bootstrap.servers' = 'localhost:9092',
  'properties.group.id' = 'testGroup',
  -- using 'debezium-json' as the format to interpret Debezium JSON messages
- -- please use 'debezium-avro-confluent' if Debezium encodes messages in Avro format
  'format' = 'debezium-json'
 )
 ```
@@ -133,7 +137,30 @@ In some cases, users may setup the Debezium Kafka Connect with the Kafka configu
 
 In order to interpret such messages, you need to add the option `'debezium-json.schema-include' = 'true'` into above DDL WITH clause (`false` by default). Usually, this is not recommended to include schema because this makes the messages very verbose and reduces parsing performance.
 
-After registering the topic as a Flink table, then you can consume the Debezium messages as a changelog source.
+#### Debezium Confluent Avro DDL
+
+```sql
+CREATE TABLE topic_products (
+  -- schema is totally the same to the MySQL "products" table
+  id BIGINT,
+  name STRING,
+  description STRING,
+  weight DECIMAL(10, 2)
+) WITH (
+ 'connector' = 'kafka',
+ 'topic' = 'products_binlog',
+ 'properties.bootstrap.servers' = 'localhost:9092',
+ 'properties.group.id' = 'testGroup',
+ -- using 'debezium-avro-confluent' as the format to interpret Debezium Avro messages
+ 'format' = 'debezium-avro-confluent',
+ -- the URL to the schema registry for Kafka
+ 'debezium-avro-confluent.url' = 'http://localhost:8081'
+)
+```
+
+#### Producing Results
+
+For every data format, after registering the topic as a Flink table, you can consume the Debezium messages as a changelog source.
 
 ```sql
 -- a real-time materialized view on the MySQL "products"
@@ -234,8 +261,8 @@ CREATE TABLE KafkaTable (
 Format Options
 ----------------
 
-Flink provides `debezium-avro-confluent` and `debezium-json` formats to interpret Avro or Json messages produced by Debezium.
-Use format `debezium-avro-confluent` to interpret Debezium Avro messages and format `debezium-json` to interpret Debezium Json messages.
+Flink provides `debezium-avro-confluent` and `debezium-json` formats to interpret Avro or JSON messages produced by Debezium.
+Use format `debezium-avro-confluent` to interpret Debezium Avro messages and format `debezium-json` to interpret Debezium JSON messages.
 
 {{< tabs "a8edce02-58d5-4e0b-bc4b-75d05a98a0f9" >}}
 {{< tab "Debezium Avro" >}}
@@ -320,6 +347,13 @@ Use format `debezium-avro-confluent` to interpret Debezium Avro messages and for
             <td style="word-wrap: break-word;">(none)</td>
             <td>String</td>
             <td>Password for SSL truststore</td>
+        </tr>
+        <tr>
+            <td><h5>debezium-avro-confluent.schema</h5></td>
+            <td>optional</td>
+            <td style="word-wrap: break-word;">(none)</td>
+            <td>String</td>
+            <td>The schema registered or to be registered in the Confluent Schema Registry. If no schema is provided Flink converts the table schema to avro schema. The schema provided must match the Debezium schema which is a nullable record type including fields 'before', 'after', 'op'.</td>
         </tr>
         <tr>
             <td><h5>debezium-avro-confluent.subject</h5></td>
@@ -414,10 +448,18 @@ Use format `debezium-avro-confluent` to interpret Debezium Avro messages and for
       <td>Boolean</td>
       <td>Encode all decimals as plain numbers instead of possible scientific notations. By default, decimals may be written using scientific notation. For example, <code>0.000000027</code> is encoded as <code>2.7E-8</code> by default, and will be written as <code>0.000000027</code> if set this option to true.</td>
     </tr>   
+    <tr>
+      <td><h5>debezium-json.encode.ignore-null-fields</h5></td>
+      <td>optional</td>
+      <td style="word-wrap: break-word;">false</td>
+      <td>Boolean</td>
+      <td>Encode only non-null fields. By default, all fields will be included.</td>
+    </tr>
     </tbody>
 </table>
 
 {{< /tab >}}
+{{< /tabs >}}
 
 Caveats
 ----------------
@@ -432,15 +474,15 @@ Framework will generate an additional stateful operator, and use the primary key
 
 ### Consuming data produced by Debezium Postgres Connector
 
-If you are using [Debezium Connector for PostgreSQL](https://debezium.io/documentation/reference/1.2/connectors/postgresql.html) to capture the changes to Kafka, please make sure the [REPLICA IDENTITY](https://www.postgresql.org/docs/current/sql-altertable.html#SQL-CREATETABLE-REPLICA-IDENTITY) configuration of the monitored PostgreSQL table has been set to `FULL` which is by default `DEFAULT`.
+If you are using [Debezium Connector for PostgreSQL](https://debezium.io/documentation/reference/stable/connectors/postgresql.html) to capture the changes to Kafka, please make sure the [REPLICA IDENTITY](https://www.postgresql.org/docs/current/sql-altertable.html#SQL-CREATETABLE-REPLICA-IDENTITY) configuration of the monitored PostgreSQL table has been set to `FULL` which is by default `DEFAULT`.
 Otherwise, Flink SQL currently will fail to interpret the Debezium data.
 
 In `FULL` strategy, the UPDATE and DELETE events will contain the previous values of all the table’s columns. In other strategies, the "before" field of UPDATE and DELETE events will only contain primary key columns or null if no primary key.
 You can change the `REPLICA IDENTITY` by running `ALTER TABLE <your-table-name> REPLICA IDENTITY FULL`.
-See more details in [Debezium Documentation for PostgreSQL REPLICA IDENTITY](https://debezium.io/documentation/reference/1.2/connectors/postgresql.html#postgresql-replica-identity).
+See more details in [Debezium Documentation for PostgreSQL REPLICA IDENTITY](https://debezium.io/documentation/reference/stable/connectors/postgresql.html#postgresql-replica-identity).
 
 Data Type Mapping
 ----------------
 
-Currently, the Debezium format uses JSON and Avro format for serialization and deserialization. Please refer to [JSON Format documentation]({{< ref "docs/connectors/table/formats/json" >}}#data-type-mapping) and [Confluent Avro Format documentation]({< ref "docs/connectors/table/formats/avro-confluent" >}}#data-type-mapping) for more details about the data type mapping.
+Currently, the Debezium format uses JSON and Avro format for serialization and deserialization. Please refer to [JSON Format documentation]({{< ref "docs/connectors/table/formats/json" >}}#data-type-mapping) and [Confluent Avro Format documentation]({{< ref "docs/connectors/table/formats/avro-confluent" >}}#data-type-mapping) for more details about the data type mapping.
 

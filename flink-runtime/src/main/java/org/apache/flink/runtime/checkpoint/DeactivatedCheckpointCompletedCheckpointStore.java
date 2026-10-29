@@ -21,6 +21,7 @@ package org.apache.flink.runtime.checkpoint;
 import org.apache.flink.api.common.JobStatus;
 import org.apache.flink.runtime.state.SharedStateRegistry;
 
+import java.util.Collections;
 import java.util.List;
 
 /**
@@ -45,8 +46,8 @@ public enum DeactivatedCheckpointCompletedCheckpointStore implements CompletedCh
             throws Exception {}
 
     @Override
-    public List<CompletedCheckpoint> getAllCheckpoints() throws Exception {
-        throw unsupportedOperationException();
+    public List<CompletedCheckpoint> getAllCheckpoints() {
+        return Collections.emptyList();
     }
 
     @Override

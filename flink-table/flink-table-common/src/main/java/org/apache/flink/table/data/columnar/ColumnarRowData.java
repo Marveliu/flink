@@ -30,6 +30,8 @@ import org.apache.flink.table.data.binary.TypedSetters;
 import org.apache.flink.table.data.columnar.vector.BytesColumnVector.Bytes;
 import org.apache.flink.table.data.columnar.vector.VectorizedColumnBatch;
 import org.apache.flink.types.RowKind;
+import org.apache.flink.types.bitmap.Bitmap;
+import org.apache.flink.types.variant.Variant;
 
 /**
  * Columnar row to support access to vector column data. It is a row view in {@link
@@ -153,6 +155,16 @@ public final class ColumnarRowData implements RowData, TypedSetters {
     @Override
     public RowData getRow(int pos, int numFields) {
         return vectorizedColumnBatch.getRow(rowId, pos);
+    }
+
+    @Override
+    public Variant getVariant(int pos) {
+        return vectorizedColumnBatch.getVariant(rowId, pos);
+    }
+
+    @Override
+    public Bitmap getBitmap(int pos) {
+        throw new UnsupportedOperationException("Bitmap is not supported yet.");
     }
 
     @Override

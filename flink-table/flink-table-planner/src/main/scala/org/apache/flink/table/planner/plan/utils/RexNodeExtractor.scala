@@ -15,95 +15,106 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.planner.plan.utils
 
 import org.apache.flink.annotation.VisibleForTesting
 import org.apache.flink.table.api.TableException
-import org.apache.flink.table.catalog.{CatalogManager, ContextResolvedFunction, FunctionCatalog, FunctionLookup, UnresolvedIdentifier}
+import org.apache.flink.table.catalog.{CatalogManager, ContextResolvedFunction, FunctionCatalog, UnresolvedIdentifier}
 import org.apache.flink.table.data.conversion.{DayTimeIntervalDurationConverter, YearMonthIntervalPeriodConverter}
 import org.apache.flink.table.data.util.DataFormatConverters.{LocalDateConverter, LocalTimeConverter}
-import org.apache.flink.table.expressions.ApiExpressionUtils._
 import org.apache.flink.table.expressions._
-import org.apache.flink.table.functions.BuiltInFunctionDefinitions.{AND, CAST, OR, TRY_CAST}
+import org.apache.flink.table.expressions.ApiExpressionUtils._
+import org.apache.flink.table.functions.{BuiltInFunctionDefinition, FunctionIdentifier}
+import org.apache.flink.table.functions.BuiltInFunctionDefinitions.{AND, AT, CAST, OR, TRY_CAST}
 import org.apache.flink.table.planner.calcite.FlinkTypeFactory
+import org.apache.flink.table.planner.codegen.CodeGenException
+import org.apache.flink.table.planner.functions.sql.FlinkSqlOperatorTable
 import org.apache.flink.table.planner.utils.Logging
+import org.apache.flink.table.planner.utils.TimestampStringUtils.toLocalDateTime
 import org.apache.flink.table.runtime.types.LogicalTypeDataTypeConverter.fromLogicalTypeToDataType
 import org.apache.flink.table.types.DataType
 import org.apache.flink.table.types.logical.LogicalTypeRoot._
 import org.apache.flink.table.types.logical.YearMonthIntervalType
-import org.apache.flink.table.planner.utils.TimestampStringUtils.toLocalDateTime
+import org.apache.flink.table.types.utils.TypeConversions
 import org.apache.flink.util.Preconditions
 
 import org.apache.calcite.plan.RelOptUtil
+import org.apache.calcite.rel.`type`.RelDataType
 import org.apache.calcite.rex._
-import org.apache.calcite.sql.fun.{SqlStdOperatorTable, SqlTrimFunction}
 import org.apache.calcite.sql.{SqlFunction, SqlKind, SqlPostfixOperator}
+import org.apache.calcite.sql.fun.{SqlStdOperatorTable, SqlTrimFunction}
 import org.apache.calcite.util.{TimestampString, Util}
-import org.apache.flink.table.functions.{BuiltInFunctionDefinition, FunctionIdentifier}
-import org.apache.flink.table.planner.functions.sql.FlinkSqlOperatorTable
 
+import java.time.{ZoneId, ZoneOffset}
 import java.util
-import java.util.{TimeZone, List => JList}
+import java.util.{Collections, List => JList}
 
-import scala.collection.JavaConversions._
 import scala.collection.JavaConverters._
 import scala.collection.mutable
+import scala.collection.mutable.ArrayBuffer
 import scala.util.{Failure, Success, Try}
 
 object RexNodeExtractor extends Logging {
 
   /**
-    * Extracts the indices of input fields which accessed by the expressions.
-    *
-    * @param exprs The RexNode list to analyze
-    * @return The indices of accessed input fields
-    */
+   * Extracts the indices of input fields which accessed by the expressions.
+   *
+   * @param exprs
+   *   The RexNode list to analyze
+   * @return
+   *   The indices of accessed input fields
+   */
   def extractRefInputFields(exprs: JList[RexNode]): Array[Int] = {
     val visitor = new InputRefVisitor
     // extract referenced input fields from expressions
-    exprs.foreach(_.accept(visitor))
+    exprs.asScala.foreach(_.accept(visitor))
     visitor.getFields
   }
 
   /**
-    * Extracts the name of nested input fields accessed by the expressions and returns the
-    * prefix of the accesses.
-    *
-    * @param exprs The expressions to analyze
-    * @param usedFields indices of used input fields
-    * @return The full names of accessed input fields. e.g. field.subfield
-    */
+   * Extracts the name of nested input fields accessed by the expressions and returns the prefix of
+   * the accesses.
+   *
+   * @param exprs
+   *   The expressions to analyze
+   * @param usedFields
+   *   indices of used input fields
+   * @return
+   *   The full names of accessed input fields. e.g. field.subfield
+   */
   def extractRefNestedInputFields(
       exprs: JList[RexNode],
       usedFields: Array[Int]): Array[Array[JList[String]]] = {
     val visitor = new RefFieldAccessorVisitor(usedFields)
-    exprs.foreach(_.accept(visitor))
+    exprs.asScala.foreach(_.accept(visitor))
     visitor.getProjectedFields
   }
 
   /**
-    * Convert rexNode into independent CNF expressions.
-    *
-    * @param expr            The RexNode to analyze
-    * @param inputFieldNames The input names of the RexNode
-    * @param rexBuilder      The factory to build CNF expressions
-    * @param functionCatalog The function catalog
-    * @return converted expressions and unconverted rex nodes
-    */
+   * Convert rexNode into independent CNF expressions.
+   *
+   * @param expr
+   *   The RexNode to analyze
+   * @param inputFieldNames
+   *   The input names of the RexNode
+   * @param rexBuilder
+   *   The factory to build CNF expressions
+   * @param functionCatalog
+   *   The function catalog
+   * @return
+   *   converted expressions and unconverted rex nodes
+   */
   def extractConjunctiveConditions(
       expr: RexNode,
-      maxCnfNodeCount: Int,
       inputFieldNames: JList[String],
       rexBuilder: RexBuilder,
       functionCatalog: FunctionCatalog,
-      catalogManager: CatalogManager,
-      timeZone: TimeZone): (Array[Expression], Array[RexNode]) = {
+      catalogManager: CatalogManager): (Array[Expression], Array[RexNode]) = {
     val inputNames = inputFieldNames.asScala.toArray
-    val converter = new RexNodeToExpressionConverter(
-      rexBuilder, inputNames, functionCatalog, catalogManager, timeZone)
-    val (convertibleRexNodes, unconvertedRexNodes) = extractConjunctiveConditions(
-      expr, maxCnfNodeCount, rexBuilder, converter)
+    val converter =
+      new RexNodeToExpressionConverter(rexBuilder, inputNames, functionCatalog, catalogManager)
+    val (convertibleRexNodes, unconvertedRexNodes) =
+      extractConjunctiveConditions(expr, rexBuilder, converter)
     val convertedExpressions = convertibleRexNodes.map(_.accept(converter).get)
     (convertedExpressions.toArray, unconvertedRexNodes)
   }
@@ -111,14 +122,17 @@ object RexNodeExtractor extends Logging {
   /**
    * Convert rexNode into independent CNF expressions.
    *
-   * @param expr            The RexNode to analyze
-   * @param rexBuilder      The factory to build CNF expressions
-   * @param converter The function catalog
-   * @return convertible rex nodes and unconverted rex nodes
+   * @param expr
+   *   The RexNode to analyze
+   * @param rexBuilder
+   *   The factory to build CNF expressions
+   * @param converter
+   *   The function catalog
+   * @return
+   *   convertible rex nodes and unconverted rex nodes
    */
   def extractConjunctiveConditions(
       expr: RexNode,
-      maxCnfNodeCount: Int,
       rexBuilder: RexBuilder,
       converter: RexNodeToExpressionConverter): (Array[RexNode], Array[RexNode]) = {
     // converts the expanded expression to conjunctive normal form,
@@ -130,69 +144,71 @@ object RexNodeExtractor extends Logging {
     } else {
       expr
     }
-    val cnf = FlinkRexUtil.toCnf(rexBuilder, maxCnfNodeCount, rewrite)
+    val cnf = FlinkRexUtil.toCnf(rexBuilder, rewrite)
     // converts the cnf condition to a list of AND conditions
     val conjunctions = RelOptUtil.conjunctions(cnf)
 
     val convertibleRexNodes = new mutable.ArrayBuffer[RexNode]
     val unconvertedRexNodes = new mutable.ArrayBuffer[RexNode]
-    conjunctions.asScala.foreach(rex => {
-      rex.accept(converter) match {
-        case Some(_) => convertibleRexNodes += rex
-        case None => unconvertedRexNodes += rex
-      }
-    })
+    conjunctions.asScala.foreach(
+      rex => {
+        rex.accept(converter) match {
+          case Some(_) => convertibleRexNodes += rex
+          case None => unconvertedRexNodes += rex
+        }
+      })
     (convertibleRexNodes.toArray, unconvertedRexNodes.toArray)
   }
 
   @VisibleForTesting
   def extractPartitionPredicates(
       expr: RexNode,
-      maxCnfNodeCount: Int,
       inputFieldNames: Array[String],
       rexBuilder: RexBuilder,
       partitionFieldNames: Array[String]): (RexNode, RexNode) = {
-    val (partitionPredicates, nonPartitionPredicates) = extractPartitionPredicateList(
-      expr,
-      maxCnfNodeCount,
-      inputFieldNames,
-      rexBuilder,
-      partitionFieldNames)
-    val partitionPredicate = RexUtil.composeConjunction(rexBuilder, partitionPredicates)
-    val nonPartitionPredicate = RexUtil.composeConjunction(rexBuilder, nonPartitionPredicates)
+    val (partitionPredicates, nonPartitionPredicates) =
+      extractPartitionPredicateList(expr, inputFieldNames, rexBuilder, partitionFieldNames)
+    val partitionPredicate = RexUtil.composeConjunction(rexBuilder, partitionPredicates.asJava)
+    val nonPartitionPredicate =
+      RexUtil.composeConjunction(rexBuilder, nonPartitionPredicates.asJava)
     (partitionPredicate, nonPartitionPredicate)
   }
 
   /**
-    * Extract partition predicate from filter condition.
-    *
-    * @param expr            The RexNode to analyze
-    * @param inputFieldNames The input names of the RexNode
-    * @param rexBuilder      The factory to build CNF expressions
-    * @param partitionFieldNames Partition field names.
-    * @return Partition predicates and non-partition predicates.
-    */
+   * Extract partition predicate from filter condition.
+   *
+   * @param expr
+   *   The RexNode to analyze
+   * @param inputFieldNames
+   *   The input names of the RexNode
+   * @param rexBuilder
+   *   The factory to build CNF expressions
+   * @param partitionFieldNames
+   *   Partition field names.
+   * @return
+   *   Partition predicates and non-partition predicates.
+   */
   def extractPartitionPredicateList(
       expr: RexNode,
-      maxCnfNodeCount: Int,
       inputFieldNames: Array[String],
       rexBuilder: RexBuilder,
       partitionFieldNames: Array[String]): (Seq[RexNode], Seq[RexNode]) = {
     // converts the expanded expression to conjunctive normal form,
     // like "(a AND b) OR c" will be converted to "(a OR c) AND (b OR c)"
-    val cnf = FlinkRexUtil.toCnf(rexBuilder, maxCnfNodeCount, expr)
+    val cnf = FlinkRexUtil.toCnf(rexBuilder, expr)
     // converts the cnf condition to a list of AND conditions
     val conjunctions = RelOptUtil.conjunctions(cnf)
 
     val (partitionPredicates, nonPartitionPredicates) =
-      conjunctions.partition(isSupportedPartitionPredicate(_, partitionFieldNames, inputFieldNames))
+      conjunctions.asScala.toSeq.partition(
+        isSupportedPartitionPredicate(_, partitionFieldNames, inputFieldNames))
     (partitionPredicates, nonPartitionPredicates)
   }
 
   /**
-    * returns true if the given predicate only contains [[RexInputRef]], [[RexLiteral]] and
-    * [[RexCall]], and all [[RexInputRef]]s reference partition fields. otherwise false.
-    */
+   * returns true if the given predicate only contains [[RexInputRef]], [[RexLiteral]] and
+   * [[RexCall]], and all [[RexInputRef]]s reference partition fields. otherwise false.
+   */
   private def isSupportedPartitionPredicate(
       predicate: RexNode,
       partitionFieldNames: Array[String],
@@ -201,8 +217,10 @@ object RexNodeExtractor extends Logging {
       override def visitInputRef(inputRef: RexInputRef): Boolean = {
         val fieldName = inputFieldNames.apply(inputRef.getIndex)
         val typeRoot = FlinkTypeFactory.toLogicalType(inputRef.getType).getTypeRoot
-        if (!partitionFieldNames.contains(fieldName) ||
-          !PartitionPruner.supportedPartitionFieldTypes.contains(typeRoot)) {
+        if (
+          !partitionFieldNames.contains(fieldName) ||
+          !PartitionPruner.supportedPartitionFieldTypes.contains(typeRoot)
+        ) {
           throw new Util.FoundOne(false)
         } else {
           super.visitInputRef(inputRef)
@@ -255,9 +273,7 @@ object RexNodeExtractor extends Logging {
   }
 }
 
-/**
-  * An RexVisitor to extract all referenced input fields
-  */
+/** An RexVisitor to extract all referenced input fields */
 class InputRefVisitor extends RexVisitorImpl[Unit](true) {
 
   private val fields = mutable.LinkedHashSet[Int]()
@@ -268,12 +284,10 @@ class InputRefVisitor extends RexVisitorImpl[Unit](true) {
     fields += inputRef.getIndex
 
   override def visitCall(call: RexCall): Unit =
-    call.operands.foreach(operand => operand.accept(this))
+    call.operands.asScala.foreach(operand => operand.accept(this))
 }
 
-/**
-  * A RexVisitor to extract used nested input fields
-  */
+/** A RexVisitor to extract used nested input fields */
 class RefFieldAccessorVisitor(usedFields: Array[Int]) extends RexVisitorImpl[Unit](true) {
 
   private val projectedFields: Array[List[List[String]]] =
@@ -282,10 +296,10 @@ class RefFieldAccessorVisitor(usedFields: Array[Int]) extends RexVisitorImpl[Uni
   private val order: Map[Int, Int] = usedFields.zipWithIndex.toMap
 
   private def isPrefix(left: JList[String], right: JList[String]): Boolean = {
-    if (right.length < left.length) {
+    if (right.size < left.size) {
       false
     } else {
-      right.take(left.length).zip(left).foldLeft(true) {
+      right.asScala.take(left.size).zip(left.asScala).foldLeft(true) {
         case (ans, (lName, rName)) => {
           if (ans) {
             lName.equals(rName)
@@ -300,30 +314,32 @@ class RefFieldAccessorVisitor(usedFields: Array[Int]) extends RexVisitorImpl[Uni
   /** Returns the prefix of the nested field accesses */
   def getProjectedFields: Array[Array[JList[String]]] = {
 
-    projectedFields.map { nestedFields =>
-      // sort nested field accesses
-      val sorted = nestedFields.sortBy(_.toString())
-      // get prefix field accesses
-      val prefixAccesses = sorted.foldLeft(Nil: List[JList[String]]) {
-        (prefixAccesses, nestedAccess) =>
-          prefixAccesses match {
-            // first access => add access
-            case Nil => List[JList[String]](nestedAccess)
-            // top-level access already found => return top-level access
-            case head :: Nil if head.get(0).equals("*") => prefixAccesses
-            // access is top-level access => return top-level access
-            case _ :: _ if nestedAccess.get(0).equals("*") => List(util.Arrays.asList("*"))
-            case _  =>
-              if (isPrefix(prefixAccesses.head, nestedAccess)) {
-                // previous access is a prefix of this access => do not add access
-                prefixAccesses
-              }else {
-                // previous access is not prefix of this access => add access
-                nestedAccess :: prefixAccesses
-              }
-          }
-      }
-      prefixAccesses.toArray
+    projectedFields.map {
+      nestedFields =>
+        // sort nested field accesses
+        val sorted = nestedFields.sortBy(_.toString())
+        // get prefix field accesses
+        val prefixAccesses = sorted.foldLeft(Nil: List[JList[String]]) {
+          (prefixAccesses, nestedAccess) =>
+            val nestedAccessJava: JList[String] = nestedAccess.asJava
+            prefixAccesses match {
+              // first access => add access
+              case Nil => List[JList[String]](nestedAccessJava)
+              // top-level access already found => return top-level access
+              case head :: Nil if head.get(0).equals("*") => prefixAccesses
+              // access is top-level access => return top-level access
+              case _ :: _ if nestedAccessJava.get(0).equals("*") => List(util.Arrays.asList("*"))
+              case _ =>
+                if (isPrefix(prefixAccesses.head, nestedAccessJava)) {
+                  // previous access is a prefix of this access => do not add access
+                  prefixAccesses
+                } else {
+                  // previous access is not prefix of this access => add access
+                  nestedAccessJava :: prefixAccesses
+                }
+            }
+        }
+        prefixAccesses.toArray
     }
   }
 
@@ -357,31 +373,42 @@ class RefFieldAccessorVisitor(usedFields: Array[Int]) extends RexVisitorImpl[Uni
   }
 
   override def visitCall(call: RexCall): Unit =
-    call.operands.foreach(operand => operand.accept(this))
+    call.operands.asScala.foreach(operand => operand.accept(this))
 }
 
 /**
-  * An RexVisitor to convert RexNode to Expression.
-  *
-  * @param inputNames      The input names of the relation node
-  * @param functionCatalog The function catalog
-  */
+ * An RexVisitor to convert RexNode to Expression.
+ *
+ * @param inputNames
+ *   The input names of the relation node
+ * @param functionCatalog
+ *   The function catalog
+ */
 class RexNodeToExpressionConverter(
     rexBuilder: RexBuilder,
     inputNames: Array[String],
     functionCatalog: FunctionCatalog,
     catalogManager: CatalogManager,
-    timeZone: TimeZone)
+    relDataType: Option[RelDataType] = None)
   extends RexVisitor[Option[ResolvedExpression]] {
+
+  def this(
+      rexBuilder: RexBuilder,
+      inputNames: Array[String],
+      functionCatalog: FunctionCatalog,
+      catalogManager: CatalogManager) = {
+    this(rexBuilder, inputNames, functionCatalog, catalogManager, None)
+  }
 
   override def visitInputRef(inputRef: RexInputRef): Option[ResolvedExpression] = {
     Preconditions.checkArgument(inputRef.getIndex < inputNames.length)
-    Some(new FieldReferenceExpression(
-      inputNames(inputRef.getIndex),
-      fromLogicalTypeToDataType(FlinkTypeFactory.toLogicalType(inputRef.getType)),
-      0,
-      inputRef.getIndex
-    ))
+    Some(
+      new FieldReferenceExpression(
+        inputNames(inputRef.getIndex),
+        fromLogicalTypeToDataType(FlinkTypeFactory.toLogicalType(inputRef.getType)),
+        0,
+        inputRef.getIndex
+      ))
   }
 
   override def visitTableInputRef(rexTableInputRef: RexTableInputRef): Option[ResolvedExpression] =
@@ -416,7 +443,7 @@ class RexNodeToExpressionConverter(
 
       case TIMESTAMP_WITH_LOCAL_TIME_ZONE =>
         val v = literal.getValueAs(classOf[TimestampString])
-        toLocalDateTime(v).atZone(timeZone.toZoneId).toInstant
+        toLocalDateTime(v).atZone(ZoneId.of(ZoneOffset.UTC.getId)).toInstant
 
       case INTERVAL_DAY_TIME =>
         val v = literal.getValueAs(classOf[java.lang.Long])
@@ -464,6 +491,9 @@ class RexNodeToExpressionConverter(
         // convert to BigDecimal
         literal.getValueAs(classOf[java.math.BigDecimal])
 
+      case BINARY | VARBINARY =>
+        literal.getValueAs(classOf[Array[Byte]])
+
       case _ =>
         literal.getValue
     }
@@ -477,12 +507,8 @@ class RexNodeToExpressionConverter(
   }
 
   override def visitCall(oriRexCall: RexCall): Option[ResolvedExpression] = {
-    val rexCall = FlinkRexUtil.expandSearch(
-      rexBuilder,
-      oriRexCall).asInstanceOf[RexCall]
-    val operands = rexCall.getOperands.map(
-      operand => operand.accept(this).orNull
-    )
+    val rexCall = FlinkRexUtil.expandSearch(rexBuilder, oriRexCall).asInstanceOf[RexCall]
+    val operands = rexCall.getOperands.asScala.toSeq.map(operand => operand.accept(this).orNull)
 
     val outputType = fromLogicalTypeToDataType(FlinkTypeFactory.toLogicalType(rexCall.getType))
 
@@ -492,35 +518,33 @@ class RexNodeToExpressionConverter(
     } else {
       rexCall.getOperator match {
         case SqlStdOperatorTable.OR =>
-          Option(operands.reduceLeft((l, r) =>
-            CallExpression.permanent(
-              OR,
-              Seq(l, r),
-              outputType)))
+          Option(
+            operands.reduceLeft(
+              (l, r) => CallExpression.permanent(OR, Seq(l, r).asJava, outputType)))
         case SqlStdOperatorTable.AND =>
-          Option(operands.reduceLeft((l, r) =>
-            CallExpression.permanent(
-              AND,
-              Seq(l, r),
-              outputType)))
+          Option(
+            operands.reduceLeft(
+              (l, r) => CallExpression.permanent(AND, Seq(l, r).asJava, outputType)))
         case SqlStdOperatorTable.CAST =>
           Option(
-            CallExpression.permanent(
-              CAST,
-              Seq(operands.head, typeLiteral(outputType)),
-              outputType))
+            CallExpression
+              .permanent(CAST, Seq(operands.head, typeLiteral(outputType)).asJava, outputType))
         case FlinkSqlOperatorTable.TRY_CAST =>
           Option(
-            CallExpression.permanent(
-              TRY_CAST,
-              Seq(operands.head, typeLiteral(outputType)),
-              outputType))
+            CallExpression
+              .permanent(TRY_CAST, Seq(operands.head, typeLiteral(outputType)).asJava, outputType))
+        case FlinkSqlOperatorTable.ITEM =>
+          operands.head.getOutputDataType.getLogicalType.getTypeRoot match {
+            case ARRAY | MAP | VARIANT =>
+              Option(CallExpression.permanent(AT, operands.asJava, outputType))
+            case _ => None
+          }
         case _: SqlFunction | _: SqlPostfixOperator =>
           val names = new util.ArrayList[String](rexCall.getOperator.getNameAsId.names)
           names.set(names.size() - 1, replace(names.get(names.size() - 1)))
           val id = UnresolvedIdentifier.of(names.asScala.toArray: _*)
           lookupFunction(id, operands, outputType)
-        case operator@_ =>
+        case operator @ _ =>
           lookupFunction(
             UnresolvedIdentifier.of(replace(s"${operator.getKind}")),
             operands,
@@ -529,10 +553,37 @@ class RexNodeToExpressionConverter(
     }
   }
 
-  override def visitFieldAccess(fieldAccess: RexFieldAccess): Option[ResolvedExpression] = None
+  override def visitFieldAccess(fieldAccess: RexFieldAccess): Option[ResolvedExpression] = {
+    fieldAccess.getReferenceExpr match {
+      // push down on nested field inside a composite type like map or array is not supported
+      case _: RexCall => return None
+      case _ => // do nothing
+    }
 
-  override def visitCorrelVariable(
-      correlVariable: RexCorrelVariable): Option[ResolvedExpression] = None
+    relDataType match {
+      case Some(dataType) =>
+        val schema = NestedProjectionUtil.build(Collections.singletonList(fieldAccess), dataType)
+        val fieldIndices = NestedProjectionUtil.convertToIndexArray(schema)
+        var (topLevelColumnName, nestedColumn) = schema.columns.asScala.head
+        val fieldNames = new ArrayBuffer[String]()
+
+        while (!nestedColumn.isLeaf) {
+          fieldNames += topLevelColumnName
+          topLevelColumnName = nestedColumn.children.asScala.head._1
+          nestedColumn = nestedColumn.children.asScala.head._2
+        }
+        fieldNames += topLevelColumnName
+
+        Some(
+          new NestedFieldReferenceExpression(
+            fieldNames.toArray,
+            fieldIndices(0),
+            TypeConversions.fromLogicalToDataType(
+              FlinkTypeFactory.toLogicalType(fieldAccess.getType))))
+    }
+  }
+  override def visitCorrelVariable(correlVariable: RexCorrelVariable): Option[ResolvedExpression] =
+    None
 
   override def visitRangeRef(rangeRef: RexRangeRef): Option[ResolvedExpression] = None
 
@@ -542,8 +593,11 @@ class RexNodeToExpressionConverter(
 
   override def visitOver(over: RexOver): Option[ResolvedExpression] = None
 
-  override def visitPatternFieldRef(
-      fieldRef: RexPatternFieldRef): Option[ResolvedExpression] = None
+  override def visitPatternFieldRef(fieldRef: RexPatternFieldRef): Option[ResolvedExpression] = None
+
+  override def visitLambda(rexLambda: RexLambda): Option[ResolvedExpression] = None
+
+  override def visitLambdaRef(rexLambdaRef: RexLambdaRef): Option[ResolvedExpression] = None
 
   private def lookupFunction(
       identifier: UnresolvedIdentifier,
@@ -566,7 +620,7 @@ class RexNodeToExpressionConverter(
               resolvedFunction.isTemporary,
               identifier,
               resolvedFunction.getDefinition,
-              operands,
+              operands.asJava,
               outputType)
           )
         } else {
@@ -580,4 +634,8 @@ class RexNodeToExpressionConverter(
     str.replaceAll("\\s|_", "")
   }
 
+  override def visitNodeAndFieldIndex(
+      nodeAndFieldIndex: RexNodeAndFieldIndex): Option[ResolvedExpression] = {
+    throw new CodeGenException("RexNodeAndFieldIndex are not supported yet.")
+  }
 }

@@ -20,6 +20,7 @@ package org.apache.flink.table.runtime.operators.python.aggregate.arrow.batch;
 
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.api.java.tuple.Tuple2;
+import org.apache.flink.api.java.tuple.Tuple3;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.table.data.GenericRowData;
 import org.apache.flink.table.data.RowData;
@@ -128,7 +129,9 @@ public class BatchArrowPythonGroupWindowAggregateFunctionOperator
     @Override
     public void close() throws Exception {
         super.close();
-        windowsGrouping.close();
+        if (windowsGrouping != null) {
+            windowsGrouping.close();
+        }
     }
 
     @Override
@@ -158,9 +161,9 @@ public class BatchArrowPythonGroupWindowAggregateFunctionOperator
 
     @Override
     @SuppressWarnings("ConstantConditions")
-    public void emitResult(Tuple2<byte[], Integer> resultTuple) throws Exception {
-        byte[] udafResult = resultTuple.f0;
-        int length = resultTuple.f1;
+    public void emitResult(Tuple3<String, byte[], Integer> resultTuple) throws Exception {
+        byte[] udafResult = resultTuple.f1;
+        int length = resultTuple.f2;
         bais.setBuffer(udafResult, 0, length);
         int rowCount = arrowSerializer.load();
         for (int i = 0; i < rowCount; i++) {

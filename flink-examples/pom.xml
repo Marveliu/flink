@@ -24,16 +24,18 @@ under the License.
 	<parent>
 		<groupId>org.apache.flink</groupId>
 		<artifactId>flink-parent</artifactId>
-		<version>1.16-SNAPSHOT</version>
-		<relativePath>..</relativePath>
+		<version>2.5-SNAPSHOT</version>
 	</parent>
 
 	<artifactId>flink-examples</artifactId>
 	<name>Flink : Examples : </name>
 	<packaging>pom</packaging>
 
+	<properties>
+		<japicmp.skip>true</japicmp.skip>
+	</properties>
+
 	<modules>
-		<module>flink-examples-batch</module>
 		<module>flink-examples-streaming</module>
 		<module>flink-examples-table</module>
 		<module>flink-examples-build-helper</module>
@@ -54,7 +56,7 @@ under the License.
 
 		<dependency>
 			<groupId>org.apache.logging.log4j</groupId>
-			<artifactId>log4j-slf4j-impl</artifactId>
+			<artifactId>log4j-slf4j2-impl</artifactId>
 			<scope>compile</scope>
 		</dependency>
 

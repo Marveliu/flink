@@ -20,6 +20,7 @@ package org.apache.flink.state.api.output;
 
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.core.execution.CheckpointingMode;
 import org.apache.flink.core.execution.SavepointFormatType;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.runtime.checkpoint.CheckpointOptions;
@@ -41,15 +42,14 @@ import static org.apache.flink.configuration.CheckpointingOptions.FS_WRITE_BUFFE
 /** Takes a final snapshot of the state of an operator subtask. */
 @Internal
 public final class SnapshotUtils {
-    static final long CHECKPOINT_ID = 0L;
-
     private SnapshotUtils() {}
 
     public static <OUT, OP extends StreamOperator<OUT>> TaggedOperatorSubtaskState snapshot(
+            long checkpointId,
             OP operator,
             int index,
             long timestamp,
-            boolean isExactlyOnceMode,
+            CheckpointingMode checkpointingMode,
             boolean isUnalignedCheckpoint,
             Configuration configuration,
             Path savepointPath,
@@ -60,39 +60,41 @@ public final class SnapshotUtils {
                 CheckpointOptions.forConfig(
                         SavepointType.savepoint(savepointFormatType),
                         AbstractFsCheckpointStorageAccess.encodePathAsReference(savepointPath),
-                        isExactlyOnceMode,
+                        checkpointingMode == CheckpointingMode.EXACTLY_ONCE,
                         isUnalignedCheckpoint,
                         CheckpointOptions.NO_ALIGNED_CHECKPOINT_TIME_OUT);
 
-        operator.prepareSnapshotPreBarrier(CHECKPOINT_ID);
+        operator.prepareSnapshotPreBarrier(checkpointId);
 
         CheckpointStreamFactory storage = createStreamFactory(configuration, options);
 
         OperatorSnapshotFutures snapshotInProgress =
-                operator.snapshotState(CHECKPOINT_ID, timestamp, options, storage);
+                operator.snapshotState(checkpointId, timestamp, options, storage);
 
         OperatorSubtaskState state =
-                new OperatorSnapshotFinalizer(snapshotInProgress).getJobManagerOwnedState();
+                OperatorSnapshotFinalizer.create(snapshotInProgress).getJobManagerOwnedState();
 
-        operator.notifyCheckpointComplete(CHECKPOINT_ID);
+        operator.notifyCheckpointComplete(checkpointId);
         return new TaggedOperatorSubtaskState(index, state);
     }
 
     public static <OUT, OP extends StreamOperator<OUT>> TaggedOperatorSubtaskState snapshot(
+            long checkpointId,
             OP operator,
             int index,
             long timestamp,
-            boolean isExactlyOnceMode,
+            CheckpointingMode checkpointingMode,
             boolean isUnalignedCheckpoint,
             Configuration configuration,
             Path savepointPath)
             throws Exception {
 
         return snapshot(
+                checkpointId,
                 operator,
                 index,
                 timestamp,
-                isExactlyOnceMode,
+                checkpointingMode,
                 isUnalignedCheckpoint,
                 configuration,
                 savepointPath,

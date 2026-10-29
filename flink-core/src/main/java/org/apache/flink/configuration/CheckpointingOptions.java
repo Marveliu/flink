@@ -18,53 +18,27 @@
 
 package org.apache.flink.configuration;
 
+import org.apache.flink.annotation.Experimental;
+import org.apache.flink.annotation.Internal;
+import org.apache.flink.annotation.PublicEvolving;
 import org.apache.flink.annotation.docs.Documentation;
+import org.apache.flink.api.common.RuntimeExecutionMode;
 import org.apache.flink.configuration.description.Description;
 import org.apache.flink.configuration.description.TextElement;
+import org.apache.flink.core.execution.CheckpointingMode;
+
+import java.time.Duration;
+
+import static org.apache.flink.configuration.ConfigOptions.key;
+import static org.apache.flink.configuration.description.LinkElement.link;
 
 /** A collection of all configuration options that relate to checkpoints and savepoints. */
+@PublicEvolving
 public class CheckpointingOptions {
 
     // ------------------------------------------------------------------------
     //  general checkpoint options
     // ------------------------------------------------------------------------
-
-    /**
-     * The checkpoint storage used to store operator state locally within the cluster during
-     * execution.
-     *
-     * <p>The implementation can be specified either via their shortcut name, or via the class name
-     * of a {@code StateBackendFactory}. If a StateBackendFactory class name is specified, the
-     * factory is instantiated (via its zero-argument constructor) and its {@code
-     * StateBackendFactory#createFromConfig(ReadableConfig, ClassLoader)} method is called.
-     *
-     * <p>Recognized shortcut names are 'hashmap' and 'rocksdb'.
-     *
-     * @deprecated Use {@link StateBackendOptions#STATE_BACKEND}.
-     */
-    @Documentation.Section(value = Documentation.Sections.COMMON_STATE_BACKENDS)
-    @Documentation.ExcludeFromDocumentation("Hidden for deprecated")
-    @Deprecated
-    public static final ConfigOption<String> STATE_BACKEND =
-            ConfigOptions.key("state.backend")
-                    .stringType()
-                    .noDefaultValue()
-                    .withDescription(
-                            Description.builder()
-                                    .text("The state backend to be used to store state.")
-                                    .linebreak()
-                                    .text(
-                                            "The implementation can be specified either via their shortcut "
-                                                    + " name, or via the class name of a %s. "
-                                                    + "If a factory is specified it is instantiated via its "
-                                                    + "zero argument constructor and its %s "
-                                                    + "method is called.",
-                                            TextElement.code("StateBackendFactory"),
-                                            TextElement.code(
-                                                    "StateBackendFactory#createFromConfig(ReadableConfig, ClassLoader)"))
-                                    .linebreak()
-                                    .text("Recognized shortcut names are 'hashmap' and 'rocksdb'.")
-                                    .build());
 
     /**
      * The checkpoint storage used to checkpoint state for recovery.
@@ -75,12 +49,24 @@ public class CheckpointingOptions {
      * CheckpointStorageFactory#createFromConfig(ReadableConfig, ClassLoader)} method is called.
      *
      * <p>Recognized shortcut names are 'jobmanager' and 'filesystem'.
+     *
+     * <p>{@link #CHECKPOINT_STORAGE} and {@link #CHECKPOINTS_DIRECTORY} are usually combined to
+     * configure the checkpoint location. By default, the checkpoint meta data and actual program
+     * state will be stored in the JobManager's memory directly.
+     * <li>When {@link #CHECKPOINT_STORAGE} is set to 'jobmanager', if {@link
+     *     #CHECKPOINTS_DIRECTORY} is configured, the meta data of checkpoints will be persisted to
+     *     the path specified by {@link #CHECKPOINTS_DIRECTORY}. Otherwise, the meta data will be
+     *     stored in the JobManager's memory.
+     * <li>When {@link #CHECKPOINT_STORAGE} is set to 'filesystem', a valid path must be configured
+     *     to {@link #CHECKPOINTS_DIRECTORY}, and the checkpoint meta data and actual program state
+     *     will both be persisted to the path.
      */
-    @Documentation.Section(value = Documentation.Sections.COMMON_STATE_BACKENDS, position = 2)
+    @Documentation.Section(value = Documentation.Sections.COMMON_CHECKPOINTING, position = 2)
     public static final ConfigOption<String> CHECKPOINT_STORAGE =
-            ConfigOptions.key("state.checkpoint-storage")
+            ConfigOptions.key("execution.checkpointing.storage")
                     .stringType()
                     .noDefaultValue()
+                    .withDeprecatedKeys("state.checkpoint-storage")
                     .withDescription(
                             Description.builder()
                                     .text(
@@ -98,62 +84,62 @@ public class CheckpointingOptions {
                                     .linebreak()
                                     .text(
                                             "Recognized shortcut names are 'jobmanager' and 'filesystem'.")
+                                    .linebreak()
+                                    .text(
+                                            "'execution.checkpointing.storage' and 'execution.checkpointing.dir' are usually combined to configure the checkpoint location."
+                                                    + " By default,  the checkpoint meta data and actual program state will be stored in the JobManager's memory directly."
+                                                    + " When 'execution.checkpointing.storage' is set to 'jobmanager', if 'execution.checkpointing.dir' is configured,"
+                                                    + " the meta data of checkpoints will be persisted to the path specified by 'execution.checkpointing.dir'."
+                                                    + " Otherwise, the meta data will be stored in the JobManager's memory."
+                                                    + " When 'execution.checkpointing.storage' is set to 'filesystem', a valid path must be configured to 'execution.checkpointing.dir',"
+                                                    + " and the checkpoint meta data and actual program state will both be persisted to the path.")
                                     .build());
 
     /** The maximum number of completed checkpoints to retain. */
-    @Documentation.Section(Documentation.Sections.COMMON_STATE_BACKENDS)
+    @Documentation.Section(Documentation.Sections.COMMON_CHECKPOINTING)
     public static final ConfigOption<Integer> MAX_RETAINED_CHECKPOINTS =
-            ConfigOptions.key("state.checkpoints.num-retained")
+            ConfigOptions.key("execution.checkpointing.num-retained")
                     .intType()
                     .defaultValue(1)
+                    .withDeprecatedKeys("state.checkpoints.num-retained")
                     .withDescription("The maximum number of completed checkpoints to retain.");
 
-    /** @deprecated Checkpoints are always asynchronous. */
-    @Deprecated
-    public static final ConfigOption<Boolean> ASYNC_SNAPSHOTS =
-            ConfigOptions.key("state.backend.async")
+    /* Option whether to clean individual checkpoint's operatorstates in parallel. If enabled,
+     * operator states are discarded in parallel using the ExecutorService passed to the cleaner.
+     * This speeds up checkpoints cleaning, but adds load to the IO.
+     */
+    @Documentation.Section(Documentation.Sections.COMMON_CHECKPOINTING)
+    public static final ConfigOption<Boolean> CLEANER_PARALLEL_MODE =
+            ConfigOptions.key("execution.checkpointing.cleaner.parallel-mode")
                     .booleanType()
                     .defaultValue(true)
-                    .withDescription("Deprecated option. All state snapshots are asynchronous.");
+                    .withDeprecatedKeys("state.checkpoint.cleaner.parallel-mode")
+                    .withDescription(
+                            "Option whether to discard a checkpoint's states in parallel using"
+                                    + " the ExecutorService passed into the cleaner");
 
     /**
-     * Option whether the state backend should create incremental checkpoints, if possible. For an
-     * incremental checkpoint, only a diff from the previous checkpoint is stored, rather than the
-     * complete checkpoint state.
+     * Option whether to create incremental checkpoints, if possible. For an incremental checkpoint,
+     * only a diff from the previous checkpoint is stored, rather than the complete checkpoint
+     * state.
      *
      * <p>Once enabled, the state size shown in web UI or fetched from rest API only represents the
      * delta checkpoint size instead of full checkpoint size.
      *
      * <p>Some state backends may not support incremental checkpoints and ignore this option.
      */
-    @Documentation.Section(Documentation.Sections.COMMON_STATE_BACKENDS)
+    @Documentation.Section(Documentation.Sections.COMMON_CHECKPOINTING)
     public static final ConfigOption<Boolean> INCREMENTAL_CHECKPOINTS =
-            ConfigOptions.key("state.backend.incremental")
+            ConfigOptions.key("execution.checkpointing.incremental")
                     .booleanType()
                     .defaultValue(false)
+                    .withDeprecatedKeys("state.backend.incremental")
                     .withDescription(
-                            "Option whether the state backend should create incremental checkpoints, if possible. For"
+                            "Option whether to create incremental checkpoints, if possible. For"
                                     + " an incremental checkpoint, only a diff from the previous checkpoint is stored, rather than the"
                                     + " complete checkpoint state. Once enabled, the state size shown in web UI or fetched from rest API"
                                     + " only represents the delta checkpoint size instead of full checkpoint size."
                                     + " Some state backends may not support incremental checkpoints and ignore this option.");
-
-    /**
-     * This option configures local recovery for this state backend. By default, local recovery is
-     * deactivated.
-     *
-     * <p>Local recovery currently only covers keyed state backends. Currently, MemoryStateBackend
-     * and HashMapStateBackend do not support local recovery and ignore this option.
-     */
-    @Documentation.Section(Documentation.Sections.COMMON_STATE_BACKENDS)
-    public static final ConfigOption<Boolean> LOCAL_RECOVERY =
-            ConfigOptions.key("state.backend.local-recovery")
-                    .booleanType()
-                    .defaultValue(false)
-                    .withDescription(
-                            "This option configures local recovery for this state backend. By default, local recovery is "
-                                    + "deactivated. Local recovery currently only covers keyed state backends. Currently, the MemoryStateBackend "
-                                    + "does not support local recovery and ignores this option.");
 
     /**
      * The config parameter defining the root directories for storing file-based state for local
@@ -162,19 +148,19 @@ public class CheckpointingOptions {
      * <p>Local recovery currently only covers keyed state backends. Currently, MemoryStateBackend
      * does not support local recovery and ignore this option.
      */
-    @Documentation.Section(Documentation.Sections.COMMON_STATE_BACKENDS)
+    @Documentation.Section(Documentation.Sections.COMMON_CHECKPOINTING)
     public static final ConfigOption<String> LOCAL_RECOVERY_TASK_MANAGER_STATE_ROOT_DIRS =
-            ConfigOptions.key("taskmanager.state.local.root-dirs")
+            ConfigOptions.key("execution.checkpointing.local-backup.dirs")
                     .stringType()
                     .noDefaultValue()
+                    .withDeprecatedKeys("taskmanager.state.local.root-dirs")
                     .withDescription(
                             Description.builder()
                                     .text(
                                             "The config parameter defining the root directories for storing file-based "
                                                     + "state for local recovery. Local recovery currently only covers keyed "
-                                                    + "state backends. Currently, MemoryStateBackend does not support local "
-                                                    + "recovery and ignores this option. If not configured it will default "
-                                                    + "to <WORKING_DIR>/localState. The <WORKING_DIR> can be configured via %s",
+                                                    + "state backends. If not configured it will default to <WORKING_DIR>/localState. "
+                                                    + "The <WORKING_DIR> can be configured via %s",
                                             TextElement.code(
                                                     ClusterOptions
                                                             .TASK_MANAGER_PROCESS_WORKING_DIR_BASE
@@ -189,12 +175,12 @@ public class CheckpointingOptions {
      * The default directory for savepoints. Used by the state backends that write savepoints to
      * file systems (HashMapStateBackend, EmbeddedRocksDBStateBackend).
      */
-    @Documentation.Section(value = Documentation.Sections.COMMON_STATE_BACKENDS, position = 3)
+    @Documentation.Section(value = Documentation.Sections.COMMON_CHECKPOINTING, position = 4)
     public static final ConfigOption<String> SAVEPOINT_DIRECTORY =
-            ConfigOptions.key("state.savepoints.dir")
+            ConfigOptions.key("execution.checkpointing.savepoint-dir")
                     .stringType()
                     .noDefaultValue()
-                    .withDeprecatedKeys("savepoints.state.backend.fs.dir")
+                    .withDeprecatedKeys("state.savepoints.dir", "savepoints.state.backend.fs.dir")
                     .withDescription(
                             "The default directory for savepoints. Used by the state backends that write savepoints to"
                                     + " file systems (HashMapStateBackend, EmbeddedRocksDBStateBackend).");
@@ -202,39 +188,95 @@ public class CheckpointingOptions {
     /**
      * The default directory used for storing the data files and meta data of checkpoints in a Flink
      * supported filesystem. The storage path must be accessible from all participating
-     * processes/nodes(i.e. all TaskManagers and JobManagers).
+     * processes/nodes(i.e. all TaskManagers and JobManagers). If {@link #CHECKPOINT_STORAGE} is set
+     * to 'jobmanager', only the meta data of checkpoints will be stored in this directory.
      */
-    @Documentation.Section(value = Documentation.Sections.COMMON_STATE_BACKENDS, position = 2)
+    @Documentation.Section(value = Documentation.Sections.COMMON_CHECKPOINTING, position = 3)
     public static final ConfigOption<String> CHECKPOINTS_DIRECTORY =
-            ConfigOptions.key("state.checkpoints.dir")
+            ConfigOptions.key("execution.checkpointing.dir")
                     .stringType()
                     .noDefaultValue()
-                    .withDeprecatedKeys("state.backend.fs.checkpointdir")
+                    .withDeprecatedKeys("state.checkpoints.dir", "state.backend.fs.checkpointdir")
                     .withDescription(
                             "The default directory used for storing the data files and meta data of checkpoints "
                                     + "in a Flink supported filesystem. The storage path must be accessible from all participating processes/nodes"
-                                    + "(i.e. all TaskManagers and JobManagers).");
+                                    + "(i.e. all TaskManagers and JobManagers). If the '"
+                                    + CHECKPOINT_STORAGE.key()
+                                    + "' is set to 'jobmanager', only the meta data of checkpoints will be stored in this directory.");
+
+    /**
+     * Whether to create sub-directories named by job id to store the data files and meta data of
+     * checkpoints. The default value is true to enable user could run several jobs with the same
+     * checkpoint directory at the same time. If this value is set to false, pay attention not to
+     * run several jobs with the same directory simultaneously.
+     */
+    @Documentation.Section(Documentation.Sections.EXPERT_CHECKPOINTING)
+    public static final ConfigOption<Boolean> CREATE_CHECKPOINT_SUB_DIR =
+            ConfigOptions.key("execution.checkpointing.create-subdir")
+                    .booleanType()
+                    .defaultValue(true)
+                    .withDeprecatedKeys("state.checkpoints.create-subdir")
+                    .withDescription(
+                            Description.builder()
+                                    .text(
+                                            "Whether to create sub-directories named by job id under the '%s' to store the data files and meta data "
+                                                    + "of checkpoints. The default value is true to enable user could run several jobs with the same "
+                                                    + "checkpoint directory at the same time. If this value is set to false, pay attention not to "
+                                                    + "run several jobs with the same directory simultaneously. ",
+                                            TextElement.code(CHECKPOINTS_DIRECTORY.key()))
+                                    .linebreak()
+                                    .text(
+                                            "WARNING: This is an advanced configuration. If set to false, users must ensure that no multiple jobs are run "
+                                                    + "with the same checkpoint directory, and that no files exist other than those necessary for the "
+                                                    + "restoration of the current job when starting a new job.")
+                                    .build());
+
+    /**
+     * Whether the checkpoint directories are created when the job starts, instead of when the first
+     * checkpoint is triggered.
+     */
+    @Documentation.Section(Documentation.Sections.EXPERT_CHECKPOINTING)
+    public static final ConfigOption<Boolean> CREATE_DIRECTORIES_ON_JOB_START =
+            ConfigOptions.key("execution.checkpointing.create-directories-on-job-start")
+                    .booleanType()
+                    .defaultValue(true)
+                    .withDescription(
+                            Description.builder()
+                                    .text(
+                                            "Whether to create the directories of the checkpoint storage (for example the "
+                                                    + "'shared' and 'taskowned' directories) when the job starts. If set to false, "
+                                                    + "they are created when the first checkpoint is triggered instead, which avoids "
+                                                    + "blocking job startup on file systems where creating directories is a slow "
+                                                    + "remote call, such as object stores.")
+                                    .linebreak()
+                                    .text(
+                                            "WARNING: If set to false, an unusable checkpoint location is no longer detected "
+                                                    + "when the job starts. It surfaces as checkpoint failures, and fails the job "
+                                                    + "once the tolerable number of checkpoint failures is exceeded.")
+                                    .build());
 
     /**
      * The minimum size of state data files. All state chunks smaller than that are stored inline in
      * the root checkpoint metadata file.
      */
-    @Documentation.Section(Documentation.Sections.EXPERT_STATE_BACKENDS)
+    @Documentation.Section(Documentation.Sections.EXPERT_CHECKPOINTING)
     public static final ConfigOption<MemorySize> FS_SMALL_FILE_THRESHOLD =
-            ConfigOptions.key("state.storage.fs.memory-threshold")
+            ConfigOptions.key("execution.checkpointing.data-inline-threshold")
                     .memoryType()
                     .defaultValue(MemorySize.parse("20kb"))
                     .withDescription(
                             "The minimum size of state data files. All state chunks smaller than that are stored"
                                     + " inline in the root checkpoint metadata file. The max memory threshold for this configuration is 1MB.")
-                    .withDeprecatedKeys("state.backend.fs.memory-threshold");
+                    .withDeprecatedKeys(
+                            "state.storage.fs.memory-threshold",
+                            "state.backend.fs.memory-threshold");
 
     /**
      * The default size of the write buffer for the checkpoint streams that write to file systems.
      */
-    @Documentation.Section(Documentation.Sections.EXPERT_STATE_BACKENDS)
+    @Documentation.Section(Documentation.Sections.EXPERT_CHECKPOINTING)
     public static final ConfigOption<Integer> FS_WRITE_BUFFER_SIZE =
-            ConfigOptions.key("state.storage.fs.write-buffer-size")
+            ConfigOptions.key("execution.checkpointing.write-buffer-size")
                     .intType()
                     .defaultValue(4 * 1024)
                     .withDescription(
@@ -242,5 +284,601 @@ public class CheckpointingOptions {
                                     "The default size of the write buffer for the checkpoint streams that write to file systems. "
                                             + "The actual write buffer size is determined to be the maximum of the value of this option and option '%s'.",
                                     FS_SMALL_FILE_THRESHOLD.key()))
-                    .withDeprecatedKeys("state.backend.fs.write-buffer-size");
+                    .withDeprecatedKeys(
+                            "state.storage.fs.write-buffer-size",
+                            "state.backend.fs.write-buffer-size");
+
+    /**
+     * This option configures local backup for the state backend, which indicates whether to make
+     * backup checkpoint on local disk. If not configured, fallback to {@link
+     * StateRecoveryOptions#LOCAL_RECOVERY}. By default, local backup is deactivated. Local backup
+     * currently only covers keyed state backends (including both the EmbeddedRocksDBStateBackend
+     * and the HashMapStateBackend).
+     */
+    @Documentation.Section(value = Documentation.Sections.COMMON_CHECKPOINTING)
+    public static final ConfigOption<Boolean> LOCAL_BACKUP_ENABLED =
+            ConfigOptions.key("execution.checkpointing.local-backup.enabled")
+                    .booleanType()
+                    .defaultValue(StateRecoveryOptions.LOCAL_RECOVERY.defaultValue())
+                    .withFallbackKeys(StateRecoveryOptions.LOCAL_RECOVERY.key())
+                    .withDeprecatedKeys("state.backend.local-recovery")
+                    .withDescription(
+                            "This option configures local backup for the state backend, "
+                                    + "which indicates whether to make backup checkpoint on local disk.  "
+                                    + "If not configured, fallback to "
+                                    + StateRecoveryOptions.LOCAL_RECOVERY.key()
+                                    + ". By default, local backup is deactivated. Local backup currently only "
+                                    + "covers keyed state backends (including both the EmbeddedRocksDBStateBackend and the HashMapStateBackend).");
+
+    // ------------------------------------------------------------------------
+    //  Options related to file merging
+    // ------------------------------------------------------------------------
+
+    /**
+     * Whether to enable merging multiple checkpoint files into one, which will greatly reduce the
+     * number of small checkpoint files. See FLIP-306 for details.
+     *
+     * <p>Note: This is an experimental feature under evaluation, make sure you're aware of the
+     * possible effects of enabling it.
+     */
+    @Experimental
+    @Documentation.Section(value = Documentation.Sections.CHECKPOINT_FILE_MERGING, position = 1)
+    public static final ConfigOption<Boolean> FILE_MERGING_ENABLED =
+            ConfigOptions.key("execution.checkpointing.file-merging.enabled")
+                    .booleanType()
+                    .defaultValue(false)
+                    .withDescription(
+                            "Whether to enable merging multiple checkpoint files into one, which will greatly reduce"
+                                    + " the number of small checkpoint files. This is an experimental feature under evaluation, "
+                                    + "make sure you're aware of the possible effects of enabling it.");
+
+    /**
+     * Whether to allow merging data of multiple checkpoints into one physical file. If this option
+     * is set to false, only merge files within checkpoint boundaries. Otherwise, it is possible for
+     * the logical files of different checkpoints to share the same physical file.
+     */
+    @Experimental
+    @Documentation.Section(value = Documentation.Sections.CHECKPOINT_FILE_MERGING, position = 2)
+    public static final ConfigOption<Boolean> FILE_MERGING_ACROSS_BOUNDARY =
+            ConfigOptions.key("execution.checkpointing.file-merging.across-checkpoint-boundary")
+                    .booleanType()
+                    .defaultValue(false)
+                    .withDescription(
+                            Description.builder()
+                                    .text(
+                                            "Only relevant if %s is enabled.",
+                                            TextElement.code(FILE_MERGING_ENABLED.key()))
+                                    .linebreak()
+                                    .text(
+                                            "Whether to allow merging data of multiple checkpoints into one physical file. "
+                                                    + "If this option is set to false, "
+                                                    + "only merge files within checkpoint boundaries. "
+                                                    + "Otherwise, it is possible for the logical files of different "
+                                                    + "checkpoints to share the same physical file.")
+                                    .build());
+
+    /** The max size of a physical file for merged checkpoints. */
+    @Experimental
+    @Documentation.Section(value = Documentation.Sections.CHECKPOINT_FILE_MERGING, position = 3)
+    public static final ConfigOption<MemorySize> FILE_MERGING_MAX_FILE_SIZE =
+            ConfigOptions.key("execution.checkpointing.file-merging.max-file-size")
+                    .memoryType()
+                    .defaultValue(MemorySize.parse("32MB"))
+                    .withDescription("Max size of a physical file for merged checkpoints.");
+
+    /**
+     * Whether to use Blocking or Non-Blocking pool for merging physical files. A Non-Blocking pool
+     * will always provide usable physical file without blocking. It may create many physical files
+     * if poll file frequently. When poll a small file from a Blocking pool, it may be blocked until
+     * the file is returned.
+     */
+    @Experimental
+    @Documentation.Section(value = Documentation.Sections.CHECKPOINT_FILE_MERGING, position = 4)
+    public static final ConfigOption<Boolean> FILE_MERGING_POOL_BLOCKING =
+            ConfigOptions.key("execution.checkpointing.file-merging.pool-blocking")
+                    .booleanType()
+                    .defaultValue(false)
+                    .withDescription(
+                            "Whether to use Blocking or Non-Blocking pool for merging physical files. "
+                                    + "A Non-Blocking pool will always provide usable physical file without blocking. It may create many physical files if poll file frequently. "
+                                    + "When poll a small file from a Blocking pool, it may be blocked until the file is returned.");
+
+    /**
+     * The upper limit of the file pool size based on the number of subtasks within each TM (only
+     * for merging private state at Task Manager level).
+     *
+     * <p>TODO: remove '@Documentation.ExcludeFromDocumentation' after the feature is implemented.
+     */
+    @Experimental @Documentation.ExcludeFromDocumentation
+    public static final ConfigOption<Integer> FILE_MERGING_MAX_SUBTASKS_PER_FILE =
+            ConfigOptions.key("execution.checkpointing.file-merging.max-subtasks-per-file")
+                    .intType()
+                    .defaultValue(4)
+                    .withDescription(
+                            "The upper limit of the file pool size based on the number of subtasks within each TM"
+                                    + "(only for merging private state at Task Manager level).");
+
+    /**
+     * Space amplification stands for the magnification of the occupied space compared to the amount
+     * of valid data. The more space amplification is, the more waste of space will be. This configs
+     * a space amplification above which a re-uploading for physical files will be triggered to
+     * reclaim space.
+     */
+    @Experimental
+    @Documentation.Section(value = Documentation.Sections.CHECKPOINT_FILE_MERGING, position = 6)
+    public static final ConfigOption<Float> FILE_MERGING_MAX_SPACE_AMPLIFICATION =
+            ConfigOptions.key("execution.checkpointing.file-merging.max-space-amplification")
+                    .floatType()
+                    .defaultValue(2f)
+                    .withDescription(
+                            "Space amplification stands for the magnification of the occupied space compared to the amount of valid data. "
+                                    + "The more space amplification is, the more waste of space will be. This configs a space amplification "
+                                    + "above which a re-uploading for physical files will be triggered to reclaim space. Any value below 1f "
+                                    + "means disabling the space control.");
+
+    /**
+     * The checkpointing mode (exactly-once vs. at-least-once).
+     *
+     * <p><strong>Note:</strong> Instead of accessing this configuration option directly with {@code
+     * config.get(CHECKPOINTING_CONSISTENCY_MODE)}, use {@link #getCheckpointingMode(Configuration)}
+     * which handles the case when checkpointing is disabled and provides the appropriate default
+     * behavior.
+     */
+    public static final ConfigOption<CheckpointingMode> CHECKPOINTING_CONSISTENCY_MODE =
+            ConfigOptions.key("execution.checkpointing.mode")
+                    .enumType(CheckpointingMode.class)
+                    .defaultValue(CheckpointingMode.EXACTLY_ONCE)
+                    .withDescription("The checkpointing mode (exactly-once vs. at-least-once).");
+
+    public static final ConfigOption<Duration> CHECKPOINTING_TIMEOUT =
+            ConfigOptions.key("execution.checkpointing.timeout")
+                    .durationType()
+                    .defaultValue(Duration.ofMinutes(10))
+                    .withDescription(
+                            "The maximum time that a checkpoint may take before being discarded.");
+
+    public static final ConfigOption<Integer> MAX_CONCURRENT_CHECKPOINTS =
+            ConfigOptions.key("execution.checkpointing.max-concurrent-checkpoints")
+                    .intType()
+                    .defaultValue(1)
+                    .withDescription(
+                            "The maximum number of checkpoint attempts that may be in progress at the same time. If "
+                                    + "this value is n, then no checkpoints will be triggered while n checkpoint attempts are currently in "
+                                    + "flight. For the next checkpoint to be triggered, one checkpoint attempt would need to finish or "
+                                    + "expire.");
+
+    public static final ConfigOption<Duration> MIN_PAUSE_BETWEEN_CHECKPOINTS =
+            ConfigOptions.key("execution.checkpointing.min-pause")
+                    .durationType()
+                    .defaultValue(Duration.ZERO)
+                    .withDescription(
+                            Description.builder()
+                                    .text(
+                                            "The minimal pause between checkpointing attempts. This setting defines how soon the"
+                                                    + "checkpoint coordinator may trigger another checkpoint after it becomes possible to trigger"
+                                                    + "another checkpoint with respect to the maximum number of concurrent checkpoints"
+                                                    + "(see %s).",
+                                            TextElement.code(MAX_CONCURRENT_CHECKPOINTS.key()))
+                                    .linebreak()
+                                    .linebreak()
+                                    .text(
+                                            "If the maximum number of concurrent checkpoints is set to one, this setting makes effectively "
+                                                    + "sure that a minimum amount of time passes where no checkpoint is in progress at all.")
+                                    .build());
+
+    public static final ConfigOption<Integer> TOLERABLE_FAILURE_NUMBER =
+            ConfigOptions.key("execution.checkpointing.tolerable-failed-checkpoints")
+                    .intType()
+                    .defaultValue(0)
+                    .withDescription(
+                            "The tolerable checkpoint consecutive failure number. If set to 0, that means "
+                                    + "we do not tolerance any checkpoint failure. This only applies to the following failure reasons: IOException on the "
+                                    + "Job Manager, failures in the async phase on the Task Managers and checkpoint expiration due to a timeout. Failures "
+                                    + "originating from the sync phase on the Task Managers are always forcing failover of an affected task. Other types of "
+                                    + "checkpoint failures (such as checkpoint being subsumed) are being ignored.");
+
+    public static final ConfigOption<ExternalizedCheckpointRetention>
+            EXTERNALIZED_CHECKPOINT_RETENTION =
+                    ConfigOptions.key("execution.checkpointing.externalized-checkpoint-retention")
+                            .enumType(ExternalizedCheckpointRetention.class)
+                            .defaultValue(
+                                    ExternalizedCheckpointRetention.NO_EXTERNALIZED_CHECKPOINTS)
+                            .withDescription(
+                                    Description.builder()
+                                            .text(
+                                                    "Externalized checkpoints write their meta data out to persistent storage and are not "
+                                                            + "automatically cleaned up when the owning job fails or is suspended (terminating with job "
+                                                            + "status %s or %s). In this case, you have to manually clean up the checkpoint state, both the "
+                                                            + "meta data and actual program state.",
+                                                    TextElement.code("JobStatus#FAILED"),
+                                                    TextElement.code("JobStatus#SUSPENDED"))
+                                            .linebreak()
+                                            .linebreak()
+                                            .text(
+                                                    "The mode defines how an externalized checkpoint should be cleaned up on job cancellation. If "
+                                                            + "you choose to retain externalized checkpoints on cancellation you have to handle checkpoint "
+                                                            + "clean up manually when you cancel the job as well (terminating with job status %s).",
+                                                    TextElement.code("JobStatus#CANCELED"))
+                                            .linebreak()
+                                            .linebreak()
+                                            .text(
+                                                    "The target directory for externalized checkpoints is configured via %s.",
+                                                    TextElement.code(
+                                                            CheckpointingOptions
+                                                                    .CHECKPOINTS_DIRECTORY
+                                                                    .key()))
+                                            .build());
+
+    public static final ConfigOption<Duration> CHECKPOINTING_INTERVAL_DURING_BACKLOG =
+            ConfigOptions.key("execution.checkpointing.interval-during-backlog")
+                    .durationType()
+                    .noDefaultValue()
+                    .withDescription(
+                            Description.builder()
+                                    .text(
+                                            "If it is not null and any source reports isProcessingBacklog=true, "
+                                                    + "it is the interval in which checkpoints are periodically scheduled.")
+                                    .linebreak()
+                                    .linebreak()
+                                    .text(
+                                            "Checkpoint triggering may be delayed by the settings %s and %s.",
+                                            TextElement.code(MAX_CONCURRENT_CHECKPOINTS.key()),
+                                            TextElement.code(MIN_PAUSE_BETWEEN_CHECKPOINTS.key()))
+                                    .linebreak()
+                                    .linebreak()
+                                    .text(
+                                            "Note: if it is not null, the value must either be 0, "
+                                                    + "which means the checkpoint is disabled during backlog, "
+                                                    + "or be larger than or equal to execution.checkpointing.interval.")
+                                    .build());
+
+    public static final ConfigOption<Duration> CHECKPOINTING_INTERVAL =
+            ConfigOptions.key("execution.checkpointing.interval")
+                    .durationType()
+                    .noDefaultValue()
+                    .withDescription(
+                            Description.builder()
+                                    .text(
+                                            "Gets the interval in which checkpoints are periodically scheduled.")
+                                    .linebreak()
+                                    .linebreak()
+                                    .text(
+                                            "This setting defines the base interval. Checkpoint triggering may be delayed by the settings "
+                                                    + "%s, %s and %s",
+                                            TextElement.code(MAX_CONCURRENT_CHECKPOINTS.key()),
+                                            TextElement.code(MIN_PAUSE_BETWEEN_CHECKPOINTS.key()),
+                                            TextElement.code(
+                                                    CHECKPOINTING_INTERVAL_DURING_BACKLOG.key()))
+                                    .build());
+
+    /**
+     * Enables unaligned checkpoints, which greatly reduce checkpointing times under backpressure.
+     *
+     * <p><strong>Note:</strong> Instead of accessing this configuration option directly with {@code
+     * config.get(ENABLE_UNALIGNED)}, use {@link #isUnalignedCheckpointEnabled(Configuration)} which
+     * validates that the checkpointing mode is EXACTLY_ONCE before checking this setting. Unaligned
+     * checkpoints are only supported with exactly-once semantics.
+     */
+    public static final ConfigOption<Boolean> ENABLE_UNALIGNED =
+            ConfigOptions.key("execution.checkpointing.unaligned.enabled")
+                    .booleanType()
+                    .defaultValue(false)
+                    .withDeprecatedKeys("execution.checkpointing.unaligned")
+                    .withDescription(
+                            Description.builder()
+                                    .text(
+                                            "Enables unaligned checkpoints, which greatly reduce checkpointing times under backpressure.")
+                                    .linebreak()
+                                    .linebreak()
+                                    .text(
+                                            "Unaligned checkpoints contain data stored in buffers as part of the checkpoint state, which "
+                                                    + "allows checkpoint barriers to overtake these buffers. Thus, the checkpoint duration becomes "
+                                                    + "independent of the current throughput as checkpoint barriers are effectively not embedded into "
+                                                    + "the stream of data anymore.")
+                                    .linebreak()
+                                    .linebreak()
+                                    .text(
+                                            "Unaligned checkpoints can only be enabled if %s is %s and if %s is 1",
+                                            TextElement.code(CHECKPOINTING_CONSISTENCY_MODE.key()),
+                                            TextElement.code(
+                                                    CheckpointingMode.EXACTLY_ONCE.toString()),
+                                            TextElement.code(MAX_CONCURRENT_CHECKPOINTS.key()))
+                                    .build());
+
+    public static final ConfigOption<Duration> ALIGNED_CHECKPOINT_TIMEOUT =
+            ConfigOptions.key("execution.checkpointing.aligned-checkpoint-timeout")
+                    .durationType()
+                    .defaultValue(Duration.ofSeconds(0L))
+                    .withDeprecatedKeys("execution.checkpointing.alignment-timeout")
+                    .withDescription(
+                            Description.builder()
+                                    .text(
+                                            "Only relevant if %s is enabled.",
+                                            TextElement.code(ENABLE_UNALIGNED.key()))
+                                    .linebreak()
+                                    .linebreak()
+                                    .text(
+                                            "If timeout is 0, checkpoints will always start unaligned.")
+                                    .linebreak()
+                                    .linebreak()
+                                    .text(
+                                            "If timeout has a positive value, checkpoints will start aligned. "
+                                                    + "If during checkpointing, checkpoint start delay exceeds this timeout, alignment "
+                                                    + "will timeout and checkpoint barrier will start working as unaligned checkpoint.")
+                                    .build());
+
+    public static final ConfigOption<Duration> CHECKPOINTING_SYNC_PHASE_TIMEOUT =
+            ConfigOptions.key("execution.checkpointing.sync-phase-timeout")
+                    .durationType()
+                    .defaultValue(Duration.ofSeconds(0L))
+                    .withDescription(
+                            "A timeout for the synchronous phase of a checkpoint, after which a task cancellation is triggered."
+                                    + " If the task thread is merely slow, the task will restart and continue."
+                                    + " If a true thread blockage is encountered, (e.g. by a blocking native call), "
+                                    + " a fatal error will be thrown after the "
+                                    + TaskManagerOptions.TASK_CANCELLATION_TIMEOUT.key()
+                                    + "and trigger a TM restart to address the blockage."
+                                    + " Defaults to 0 (disabled).");
+
+    public static final ConfigOption<Boolean> FORCE_UNALIGNED =
+            ConfigOptions.key("execution.checkpointing.unaligned.forced")
+                    .booleanType()
+                    .defaultValue(false)
+                    .withDescription(
+                            Description.builder()
+                                    .text(
+                                            "Forces unaligned checkpoints, particularly allowing them for iterative jobs.")
+                                    .build());
+
+    /**
+     * Allows unaligned checkpoints to skip timers that are currently being fired.
+     *
+     * <p><strong>Note:</strong> Instead of accessing this configuration option directly with {@code
+     * config.get(ENABLE_UNALIGNED_INTERRUPTIBLE_TIMERS)}, use {@link
+     * #isUnalignedCheckpointInterruptibleTimersEnabled(Configuration)} which validates that
+     * unaligned checkpoints are enabled before checking this setting.
+     */
+    @Experimental
+    public static final ConfigOption<Boolean> ENABLE_UNALIGNED_INTERRUPTIBLE_TIMERS =
+            ConfigOptions.key("execution.checkpointing.unaligned.interruptible-timers.enabled")
+                    .booleanType()
+                    .defaultValue(false)
+                    .withDescription(
+                            "Allows unaligned checkpoints to skip timers that are currently being fired."
+                                    + " For this feature to be enabled, it must be also supported by the operator."
+                                    + " Currently this is supported by all TableStreamOperators and CepOperator.");
+
+    /**
+     * Controls whether an intermediate watermark is emitted while a watermark advance is
+     * interrupted before completing, for unaligned checkpoints with interruptible timers enabled
+     * (see {@link #ENABLE_UNALIGNED_INTERRUPTIBLE_TIMERS}). Has no effect unless interruptible
+     * timers are enabled. The emission interval is governed by {@link
+     * PipelineOptions#AUTO_WATERMARK_INTERVAL}, the same as regular periodic watermark generation,
+     * since both have comparable performance implications.
+     */
+    @Experimental
+    public static final ConfigOption<Boolean>
+            UNALIGNED_INTERRUPTIBLE_TIMERS_EMIT_INTERMEDIATE_WATERMARKS =
+                    ConfigOptions.key(
+                                    "execution.checkpointing.unaligned.interruptible-timers.emit-intermediate-watermarks")
+                            .booleanType()
+                            .defaultValue(true)
+                            .withDescription(
+                                    "When unaligned checkpoints with interruptible timers are enabled (see"
+                                            + " 'execution.checkpointing.unaligned.interruptible-timers.enabled') and"
+                                            + " firing the timers due for a watermark advance is interrupted before"
+                                            + " completing, an intermediate watermark reflecting the progress made so"
+                                            + " far is emitted downstream, at most as often as configured by"
+                                            + " 'pipeline.auto-watermark-interval'. This keeps downstream operators"
+                                            + " from stalling on watermark progress during a long-running catch-up."
+                                            + " Set to false to disable intermediate watermark emission.");
+
+    public static final ConfigOption<Boolean> ENABLE_CHECKPOINTS_AFTER_TASKS_FINISH =
+            ConfigOptions.key("execution.checkpointing.checkpoints-after-tasks-finish")
+                    .booleanType()
+                    .defaultValue(true)
+                    .withDeprecatedKeys(
+                            "execution.checkpointing.checkpoints-after-tasks-finish.enabled")
+                    .withDescription(
+                            Description.builder()
+                                    .text(
+                                            "Feature toggle for enabling checkpointing even if some of tasks"
+                                                    + " have finished. Before you enable it, please take a look at %s ",
+                                            link(
+                                                    "{{.Site.BaseURL}}{{.Site.LanguagePrefix}}/docs/dev/datastream/fault-tolerance/checkpointing/#checkpointing-with-parts-of-the-graph-finished",
+                                                    "the important considerations"))
+                                    .build());
+
+    public static final ConfigOption<Boolean> PAUSE_SOURCES_UNTIL_FIRST_CHECKPOINT =
+            key("pipeline.sources.pause-until-first-checkpoint")
+                    .booleanType()
+                    .defaultValue(false)
+                    .withDescription(
+                            "Don't pull any data from sources until the first checkpoint is triggered. "
+                                    + "This might be helpful in reducing recovery times in cases where "
+                                    + "recovered records from unaligned checkpoint compete with new incoming records for processing. "
+                                    + "Incompatible with value 0 (disabled) for "
+                                    + CheckpointingOptions.CHECKPOINTING_INTERVAL_DURING_BACKLOG
+                                            .key());
+
+    // TODO: deprecated
+    // Currently, both two file merging mechanism can work simultaneously:
+    //  1. If UNALIGNED_MAX_SUBTASKS_PER_CHANNEL_STATE_FILE=1 and
+    // execution.checkpointing.file-merging.enabled: true, only the unified file merging mechanism
+    // takes
+    // effect.
+    //  2. if UNALIGNED_MAX_SUBTASKS_PER_CHANNEL_STATE_FILE>1 and
+    // execution.checkpointing.file-merging.enabled: false, only the current mechanism takes effect.
+    //  3. if UNALIGNED_MAX_SUBTASKS_PER_CHANNEL_STATE_FILE>1 and
+    // execution.checkpointing.file-merging.enabled: true, both two mechanism take effect.
+    public static final ConfigOption<Integer> UNALIGNED_MAX_SUBTASKS_PER_CHANNEL_STATE_FILE =
+            key("execution.checkpointing.unaligned.max-subtasks-per-channel-state-file")
+                    .intType()
+                    .defaultValue(5)
+                    .withDescription(
+                            "Defines the maximum number of subtasks that share the same channel state file. "
+                                    + "It can reduce the number of small files when enable unaligned checkpoint. "
+                                    + "Each subtask will create a new channel state file when this is configured to 1.");
+
+    @Experimental
+    @Documentation.Section(Documentation.Sections.COMMON_CHECKPOINTING)
+    public static final ConfigOption<Boolean> UNALIGNED_RECOVER_OUTPUT_ON_DOWNSTREAM =
+            ConfigOptions.key(
+                            "execution.checkpointing.unaligned.recover-output-on-downstream.enabled")
+                    .booleanType()
+                    .defaultValue(false)
+                    .withDescription(
+                            "Whether recovering output buffers of upstream task on downstream task directly "
+                                    + "when job restores from the unaligned checkpoint.");
+
+    @Experimental
+    @Documentation.Section(Documentation.Sections.COMMON_CHECKPOINTING)
+    public static final ConfigOption<Boolean> CHECKPOINTING_DURING_RECOVERY_ENABLED =
+            ConfigOptions.key("execution.checkpointing.during-recovery.enabled")
+                    .booleanType()
+                    .defaultValue(false)
+                    .withDescription(
+                            Description.builder()
+                                    .text(
+                                            "Whether to enable checkpointing during recovery from an unaligned checkpoint. "
+                                                    + "When enabled, the job can take checkpoints while still recovering channel state "
+                                                    + "(inflight data) from a previous unaligned checkpoint. This avoids the need to "
+                                                    + "wait for full recovery before the first checkpoint can be triggered, which "
+                                                    + "reduces the window of vulnerability to failures during recovery.")
+                                    .linebreak()
+                                    .linebreak()
+                                    .text(
+                                            "This option requires %s to be enabled. "
+                                                    + "It does not require unaligned checkpoints to be currently enabled, because "
+                                                    + "a job may restore from an unaligned checkpoint while having unaligned "
+                                                    + "checkpoints disabled for the new execution.",
+                                            TextElement.code(
+                                                    UNALIGNED_RECOVER_OUTPUT_ON_DOWNSTREAM.key()))
+                                    .linebreak()
+                                    .linebreak()
+                                    .text(
+                                            "Checkpointing during recovery is currently not supported when %s is greater than 0, and will be disabled in this case.",
+                                            TextElement.code(ALIGNED_CHECKPOINT_TIMEOUT.key()))
+                                    .build());
+
+    /**
+     * Determines whether checkpointing is enabled based on the configuration.
+     *
+     * <p>Checkpointing is considered enabled if a valid checkpointing interval is configured (i.e.,
+     * the interval value is greater than 0 milliseconds). If no checkpointing interval is specified
+     * or if the interval is 0 or negative, checkpointing is considered disabled.
+     *
+     * @param config the configuration to check
+     * @return {@code true} if checkpointing is enabled, {@code false} otherwise
+     */
+    @Internal
+    public static boolean isCheckpointingEnabled(Configuration config) {
+        if (config.get(ExecutionOptions.RUNTIME_MODE) == RuntimeExecutionMode.BATCH) {
+            return false;
+        }
+        return config.getOptional(CheckpointingOptions.CHECKPOINTING_INTERVAL)
+                .map(Duration::toMillis)
+                .map(interval -> interval > 0)
+                .orElse(false);
+    }
+
+    /**
+     * Gets the checkpointing mode from the configuration.
+     *
+     * <p>If checkpointing is enabled, this method returns the configured consistency mode ({@link
+     * CheckpointingMode#EXACTLY_ONCE} or {@link CheckpointingMode#AT_LEAST_ONCE}). If checkpointing
+     * is disabled, it returns {@link CheckpointingMode#AT_LEAST_ONCE} as the default mode since the
+     * "at-least-once" input handler is slightly more efficient when checkpoints are not being
+     * performed.
+     *
+     * @param config the configuration to check
+     * @return the checkpointing mode based on the configuration
+     * @see #isCheckpointingEnabled(Configuration)
+     */
+    @Internal
+    public static CheckpointingMode getCheckpointingMode(Configuration config) {
+        if (isCheckpointingEnabled(config)) {
+            return config.get(CHECKPOINTING_CONSISTENCY_MODE);
+        } else {
+            // the "at-least-once" input handler is slightly cheaper (in the absence of
+            // checkpoints), so we use that one if checkpointing is not enabled
+            return CheckpointingMode.AT_LEAST_ONCE;
+        }
+    }
+
+    /**
+     * Determines whether unaligned checkpoints are enabled based on the configuration.
+     *
+     * <p>Unaligned checkpoints can only be enabled when the checkpointing mode is set to {@link
+     * CheckpointingMode#EXACTLY_ONCE}. If the mode is {@link CheckpointingMode#AT_LEAST_ONCE},
+     * unaligned checkpoints are not supported and this method will return {@code false}.
+     *
+     * <p>When the checkpointing mode is exactly-once, this method returns the value of the {@link
+     * #ENABLE_UNALIGNED} configuration option.
+     *
+     * @param config the configuration to check
+     * @return {@code true} if unaligned checkpoints are enabled and supported, {@code false}
+     *     otherwise
+     * @see #getCheckpointingMode(Configuration)
+     */
+    @Internal
+    public static boolean isUnalignedCheckpointEnabled(Configuration config) {
+        if (getCheckpointingMode(config) != CheckpointingMode.EXACTLY_ONCE) {
+            return false;
+        }
+        return config.get(ENABLE_UNALIGNED);
+    }
+
+    /**
+     * Determines whether unaligned checkpoints with interruptible timers are enabled based on the
+     * configuration.
+     *
+     * <p>Unaligned checkpoints with interruptible timers can only be enabled when:
+     *
+     * <ol>
+     *   <li>Unaligned checkpoints are enabled (see {@link
+     *       #isUnalignedCheckpointEnabled(Configuration)})
+     *   <li>The {@link #ENABLE_UNALIGNED_INTERRUPTIBLE_TIMERS} option is set to {@code true}
+     * </ol>
+     *
+     * <p>If unaligned checkpoints are not enabled, this method will return {@code false} regardless
+     * of the interruptible timers setting.
+     *
+     * @param config the configuration to check
+     * @return {@code true} if unaligned checkpoints with interruptible timers are enabled, {@code
+     *     false} otherwise
+     * @see #isUnalignedCheckpointEnabled(Configuration)
+     */
+    @Internal
+    public static boolean isUnalignedCheckpointInterruptibleTimersEnabled(Configuration config) {
+        if (!isUnalignedCheckpointEnabled(config)) {
+            return false;
+        }
+        return config.get(ENABLE_UNALIGNED_INTERRUPTIBLE_TIMERS);
+    }
+
+    /**
+     * Determines whether unaligned checkpoint support during recovery is enabled.
+     *
+     * <p>Requires both {@link #UNALIGNED_RECOVER_OUTPUT_ON_DOWNSTREAM} and unaligned checkpoints to
+     * be enabled, because checkpointing during recovery is only supported on the unaligned
+     * barrier-handler path. It is also disabled when {@link #ALIGNED_CHECKPOINT_TIMEOUT} is
+     * positive.
+     *
+     * @param config the configuration to check
+     * @return {@code true} if unaligned checkpointing during recovery is enabled, {@code false}
+     *     otherwise
+     */
+    @Internal
+    public static boolean isCheckpointingDuringRecoveryEnabled(Configuration config) {
+        if (!config.get(UNALIGNED_RECOVER_OUTPUT_ON_DOWNSTREAM)) {
+            return false;
+        }
+        // TODO FLINK-40526: Support checkpointing during recovery with aligned checkpoint timeout.
+        if (!config.get(ALIGNED_CHECKPOINT_TIMEOUT).isZero()) {
+            return false;
+        }
+        return config.get(CHECKPOINTING_DURING_RECOVERY_ENABLED)
+                && isUnalignedCheckpointEnabled(config);
+    }
 }

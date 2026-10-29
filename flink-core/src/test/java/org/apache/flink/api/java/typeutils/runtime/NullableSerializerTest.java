@@ -23,70 +23,83 @@ import org.apache.flink.api.common.typeutils.TypeSerializer;
 import org.apache.flink.api.common.typeutils.base.IntSerializer;
 import org.apache.flink.api.common.typeutils.base.StringSerializer;
 
-import org.junit.Before;
-import org.junit.Test;
-import org.junit.runner.RunWith;
-import org.junit.runners.Parameterized;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Test;
 
-import java.util.Arrays;
-import java.util.List;
-
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /** Unit tests for {@link NullableSerializer}. */
-@RunWith(Parameterized.class)
-public class NullableSerializerTest extends SerializerTestBase<Integer> {
-    private static final TypeSerializer<Integer> originalSerializer = IntSerializer.INSTANCE;
+class NullableSerializerTest {
 
-    @Parameterized.Parameters(name = "{0}")
-    public static List<Boolean> whetherToPadNullValue() {
-        return Arrays.asList(true, false);
+    @Nested
+    final class NullableSerializerWithPaddingTest extends NullableSerializerTestBase {
+
+        @Override
+        boolean isPaddingNullValue() {
+            return true;
+        }
     }
 
-    @Parameterized.Parameter public boolean padNullValue;
+    @Nested
+    final class NullableSerializerWithoutPaddingTest extends NullableSerializerTestBase {
 
-    private TypeSerializer<Integer> nullableSerializer;
-
-    @Before
-    public void init() {
-        nullableSerializer =
-                NullableSerializer.wrapIfNullIsNotSupported(originalSerializer, padNullValue);
+        @Override
+        boolean isPaddingNullValue() {
+            return false;
+        }
     }
 
-    @Override
-    protected TypeSerializer<Integer> createSerializer() {
-        return NullableSerializer.wrapIfNullIsNotSupported(originalSerializer, padNullValue);
-    }
+    abstract static class NullableSerializerTestBase extends SerializerTestBase<Integer> {
+        private static final TypeSerializer<Integer> originalSerializer = IntSerializer.INSTANCE;
 
-    @Override
-    protected int getLength() {
-        return padNullValue ? 5 : -1;
-    }
+        private TypeSerializer<Integer> nullableSerializer;
 
-    @Override
-    protected Class<Integer> getTypeClass() {
-        return Integer.class;
-    }
+        @BeforeEach
+        void init() {
+            nullableSerializer =
+                    NullableSerializer.wrapIfNullIsNotSupported(
+                            originalSerializer, isPaddingNullValue());
+        }
 
-    @Override
-    protected Integer[] getTestData() {
-        return new Integer[] {5, -1, null, 5};
-    }
+        @Override
+        protected TypeSerializer<Integer> createSerializer() {
+            return NullableSerializer.wrapIfNullIsNotSupported(
+                    originalSerializer, isPaddingNullValue());
+        }
 
-    @Test
-    public void testWrappingNotNeeded() {
-        assertEquals(
-                NullableSerializer.wrapIfNullIsNotSupported(
-                        StringSerializer.INSTANCE, padNullValue),
-                StringSerializer.INSTANCE);
-    }
+        @Override
+        protected int getLength() {
+            return isPaddingNullValue() ? 5 : -1;
+        }
 
-    @Test
-    public void testWrappingNeeded() {
-        assertTrue(nullableSerializer instanceof NullableSerializer);
-        assertEquals(
-                NullableSerializer.wrapIfNullIsNotSupported(nullableSerializer, padNullValue),
-                nullableSerializer);
+        @Override
+        protected Class<Integer> getTypeClass() {
+            return Integer.class;
+        }
+
+        @Override
+        protected Integer[] getTestData() {
+            return new Integer[] {5, -1, null, 5};
+        }
+
+        @Test
+        void testWrappingNotNeeded() {
+            assertThat(
+                            NullableSerializer.wrapIfNullIsNotSupported(
+                                    StringSerializer.INSTANCE, isPaddingNullValue()))
+                    .isEqualTo(StringSerializer.INSTANCE);
+        }
+
+        @Test
+        void testWrappingNeeded() {
+            assertThat(nullableSerializer)
+                    .isInstanceOf(NullableSerializer.class)
+                    .isEqualTo(
+                            NullableSerializer.wrapIfNullIsNotSupported(
+                                    nullableSerializer, isPaddingNullValue()));
+        }
+
+        abstract boolean isPaddingNullValue();
     }
 }

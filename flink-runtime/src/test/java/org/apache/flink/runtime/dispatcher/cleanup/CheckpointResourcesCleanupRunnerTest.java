@@ -20,8 +20,8 @@ package org.apache.flink.runtime.dispatcher.cleanup;
 
 import org.apache.flink.api.common.JobID;
 import org.apache.flink.api.common.JobStatus;
-import org.apache.flink.api.common.time.Time;
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.core.execution.RecoveryClaimMode;
 import org.apache.flink.core.testutils.OneShotLatch;
 import org.apache.flink.runtime.checkpoint.CheckpointIDCounter;
 import org.apache.flink.runtime.checkpoint.CheckpointRecoveryFactory;
@@ -29,7 +29,6 @@ import org.apache.flink.runtime.checkpoint.CompletedCheckpointStore;
 import org.apache.flink.runtime.checkpoint.TestingCheckpointIDCounter;
 import org.apache.flink.runtime.checkpoint.TestingCheckpointRecoveryFactory;
 import org.apache.flink.runtime.checkpoint.TestingCompletedCheckpointStore;
-import org.apache.flink.runtime.clusterframework.ApplicationStatus;
 import org.apache.flink.runtime.dispatcher.UnavailableDispatcherOperationException;
 import org.apache.flink.runtime.executiongraph.AccessExecutionGraph;
 import org.apache.flink.runtime.jobmaster.JobManagerRunnerResult;
@@ -37,6 +36,7 @@ import org.apache.flink.runtime.jobmaster.JobResult;
 import org.apache.flink.runtime.scheduler.ExecutionGraphInfo;
 import org.apache.flink.runtime.state.SharedStateRegistry;
 import org.apache.flink.runtime.state.SharedStateRegistryFactory;
+import org.apache.flink.testutils.executor.TestExecutorExtension;
 import org.apache.flink.util.FlinkException;
 import org.apache.flink.util.Preconditions;
 import org.apache.flink.util.SerializedThrowable;
@@ -44,15 +44,17 @@ import org.apache.flink.util.concurrent.Executors;
 import org.apache.flink.util.function.ThrowingConsumer;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.RegisterExtension;
 
 import java.time.Duration;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executor;
-import java.util.concurrent.ForkJoinPool;
+import java.util.concurrent.ExecutorService;
 import java.util.function.Function;
 
+import static org.apache.flink.core.testutils.FlinkAssertions.assertThatFuture;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -60,10 +62,13 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * {@code CheckpointResourcesCleanupRunnerTest} tests the {@link CheckpointResourcesCleanupRunner}
  * implementation.
  */
-public class CheckpointResourcesCleanupRunnerTest {
+class CheckpointResourcesCleanupRunnerTest {
 
-    private static final Time TIMEOUT_FOR_REQUESTS = Time.milliseconds(0);
-    private static final Duration TIMEOUT_FOR_RESULTS_WITH_CONCURRENCY = Duration.ofMinutes(60);
+    @RegisterExtension
+    private static final TestExecutorExtension<ExecutorService> EXECUTOR_EXTENSION =
+            new TestExecutorExtension<>(java.util.concurrent.Executors::newCachedThreadPool);
+
+    private static final Duration TIMEOUT_FOR_REQUESTS = Duration.ofMillis(0);
 
     private static final ThrowingConsumer<CheckpointResourcesCleanupRunner, ? extends Exception>
             BEFORE_START = ignored -> {};
@@ -77,17 +82,17 @@ public class CheckpointResourcesCleanupRunnerTest {
                     };
 
     @Test
-    public void testIsInitializedBeforeStart() throws Exception {
+    void testIsInitializedBeforeStart() throws Exception {
         testIsInitialized(BEFORE_START);
     }
 
     @Test
-    public void testIsInitializedAfterStart() throws Exception {
+    void testIsInitializedAfterStart() throws Exception {
         testIsInitialized(AFTER_START);
     }
 
     @Test
-    public void testIsInitializedAfterClose() throws Exception {
+    void testIsInitializedAfterClose() throws Exception {
         testIsInitialized(AFTER_CLOSE);
     }
 
@@ -102,13 +107,13 @@ public class CheckpointResourcesCleanupRunnerTest {
     }
 
     @Test
-    public void testCloseAsyncBeforeStart() {
+    void testCloseAsyncBeforeStart() {
         final CheckpointResourcesCleanupRunner testInstance = new TestInstanceBuilder().build();
         assertThat(testInstance.closeAsync()).isNotCompleted();
     }
 
     @Test
-    public void testSuccessfulCloseAsyncAfterStart() throws Exception {
+    void testSuccessfulCloseAsyncAfterStart() throws Exception {
         final CompletableFuture<JobStatus> completedCheckpointStoreShutdownFuture =
                 new CompletableFuture<>();
         final CompletableFuture<JobStatus> checkpointIdCounterShutdownFuture =
@@ -120,7 +125,7 @@ public class CheckpointResourcesCleanupRunnerTest {
         final CheckpointResourcesCleanupRunner testInstance =
                 new TestInstanceBuilder()
                         .withCheckpointRecoveryFactory(checkpointRecoveryFactory)
-                        .withExecutor(ForkJoinPool.commonPool())
+                        .withExecutor(EXECUTOR_EXTENSION.getExecutor())
                         .build();
         testInstance.start();
 
@@ -138,21 +143,20 @@ public class CheckpointResourcesCleanupRunnerTest {
 
         checkpointRecoveryFactory.triggerCreation();
 
-        assertThat(completedCheckpointStoreShutdownFuture)
+        assertThatFuture(completedCheckpointStoreShutdownFuture)
                 .as("The CompletedCheckpointStore should have been shut down properly.")
-                .succeedsWithin(TIMEOUT_FOR_RESULTS_WITH_CONCURRENCY)
+                .eventuallySucceeds()
                 .isEqualTo(JobStatus.FINISHED);
-        assertThat(checkpointIdCounterShutdownFuture)
+        assertThatFuture(checkpointIdCounterShutdownFuture)
                 .as("The CheckpointIDCounter should have been shut down properly.")
-                .succeedsWithin(TIMEOUT_FOR_RESULTS_WITH_CONCURRENCY)
+                .eventuallySucceeds()
                 .isEqualTo(JobStatus.FINISHED);
 
-        assertThat(testInstance.closeAsync()).succeedsWithin(TIMEOUT_FOR_RESULTS_WITH_CONCURRENCY);
+        assertThatFuture(testInstance.closeAsync()).eventuallySucceeds();
     }
 
     @Test
-    public void testCloseAsyncAfterStartAndErrorInCompletedCheckpointStoreShutdown()
-            throws Exception {
+    void testCloseAsyncAfterStartAndErrorInCompletedCheckpointStoreShutdown() throws Exception {
         final CompletableFuture<JobStatus> checkpointIdCounterShutdownFuture =
                 new CompletableFuture<>();
 
@@ -170,7 +174,7 @@ public class CheckpointResourcesCleanupRunnerTest {
         final CheckpointResourcesCleanupRunner testInstance =
                 new TestInstanceBuilder()
                         .withCheckpointRecoveryFactory(checkpointRecoveryFactory)
-                        .withExecutor(ForkJoinPool.commonPool())
+                        .withExecutor(EXECUTOR_EXTENSION.getExecutor())
                         .build();
         testInstance.start();
 
@@ -185,19 +189,18 @@ public class CheckpointResourcesCleanupRunnerTest {
 
         checkpointRecoveryFactory.triggerCreation();
 
-        assertThat(checkpointIdCounterShutdownFuture)
+        assertThatFuture(checkpointIdCounterShutdownFuture)
                 .as("The CheckpointIDCounter should have been shut down properly.")
-                .succeedsWithin(TIMEOUT_FOR_RESULTS_WITH_CONCURRENCY)
+                .eventuallySucceeds()
                 .isEqualTo(JobStatus.FINISHED);
 
-        assertThat(testInstance.closeAsync())
-                .failsWithin(TIMEOUT_FOR_RESULTS_WITH_CONCURRENCY)
-                .withThrowableOfType(ExecutionException.class)
+        assertThatFuture(testInstance.closeAsync())
+                .eventuallyFailsWith(ExecutionException.class)
                 .withCauseInstanceOf(RuntimeException.class);
     }
 
     @Test
-    public void testCloseAsyncAfterStartAndErrorInCheckpointIDCounterShutdown() throws Exception {
+    void testCloseAsyncAfterStartAndErrorInCheckpointIDCounterShutdown() throws Exception {
         final CompletableFuture<JobStatus> completedCheckpointStoreShutdownFuture =
                 new CompletableFuture<>();
 
@@ -216,7 +219,7 @@ public class CheckpointResourcesCleanupRunnerTest {
         final CheckpointResourcesCleanupRunner testInstance =
                 new TestInstanceBuilder()
                         .withCheckpointRecoveryFactory(checkpointRecoveryFactory)
-                        .withExecutor(ForkJoinPool.commonPool())
+                        .withExecutor(EXECUTOR_EXTENSION.getExecutor())
                         .build();
         testInstance.start();
 
@@ -231,25 +234,23 @@ public class CheckpointResourcesCleanupRunnerTest {
 
         checkpointRecoveryFactory.triggerCreation();
 
-        assertThat(completedCheckpointStoreShutdownFuture)
+        assertThatFuture(completedCheckpointStoreShutdownFuture)
                 .as("The CompletedCheckpointStore should have been shut down properly.")
-                .succeedsWithin(TIMEOUT_FOR_RESULTS_WITH_CONCURRENCY)
+                .eventuallySucceeds()
                 .isEqualTo(JobStatus.FINISHED);
 
-        assertThat(testInstance.closeAsync())
-                .failsWithin(TIMEOUT_FOR_RESULTS_WITH_CONCURRENCY)
-                .withThrowableOfType(ExecutionException.class)
+        assertThatFuture(testInstance.closeAsync())
+                .eventuallyFailsWith(ExecutionException.class)
                 .withCauseInstanceOf(RuntimeException.class);
     }
 
     @Test
-    public void testCancellationBeforeStart() throws Exception {
+    void testCancellationBeforeStart() throws Exception {
         final CheckpointResourcesCleanupRunner testInstance =
-                new TestInstanceBuilder().withExecutor(ForkJoinPool.commonPool()).build();
+                new TestInstanceBuilder().withExecutor(EXECUTOR_EXTENSION.getExecutor()).build();
 
-        assertThat(testInstance.cancel(TIMEOUT_FOR_REQUESTS))
-                .failsWithin(TIMEOUT_FOR_RESULTS_WITH_CONCURRENCY)
-                .withThrowableOfType(ExecutionException.class)
+        assertThatFuture(testInstance.cancel(TIMEOUT_FOR_REQUESTS))
+                .eventuallyFailsWith(ExecutionException.class)
                 .withCauseInstanceOf(FlinkException.class);
         assertThat(testInstance.closeAsync())
                 .as("The closeAsync result shouldn't be completed, yet.")
@@ -259,19 +260,18 @@ public class CheckpointResourcesCleanupRunnerTest {
     }
 
     @Test
-    public void testCancellationAfterStart() throws Exception {
+    void testCancellationAfterStart() throws Exception {
         final HaltingCheckpointRecoveryFactory checkpointRecoveryFactory =
                 new HaltingCheckpointRecoveryFactory(
                         new CompletableFuture<>(), new CompletableFuture<>());
         final CheckpointResourcesCleanupRunner testInstance =
                 new TestInstanceBuilder()
                         .withCheckpointRecoveryFactory(checkpointRecoveryFactory)
-                        .withExecutor(ForkJoinPool.commonPool())
+                        .withExecutor(EXECUTOR_EXTENSION.getExecutor())
                         .build();
         AFTER_START.accept(testInstance);
-        assertThat(testInstance.cancel(TIMEOUT_FOR_REQUESTS))
-                .failsWithin(TIMEOUT_FOR_RESULTS_WITH_CONCURRENCY)
-                .withThrowableOfType(ExecutionException.class)
+        assertThatFuture(testInstance.cancel(TIMEOUT_FOR_REQUESTS))
+                .eventuallyFailsWith(ExecutionException.class)
                 .withCauseInstanceOf(FlinkException.class);
         assertThat(testInstance.closeAsync())
                 .as("The closeAsync result shouldn't be completed, yet.")
@@ -281,13 +281,12 @@ public class CheckpointResourcesCleanupRunnerTest {
     }
 
     @Test
-    public void testCancellationAfterClose() throws Exception {
+    void testCancellationAfterClose() throws Exception {
         final CheckpointResourcesCleanupRunner testInstance =
-                new TestInstanceBuilder().withExecutor(ForkJoinPool.commonPool()).build();
+                new TestInstanceBuilder().withExecutor(EXECUTOR_EXTENSION.getExecutor()).build();
         AFTER_CLOSE.accept(testInstance);
-        assertThat(testInstance.cancel(TIMEOUT_FOR_REQUESTS))
-                .failsWithin(TIMEOUT_FOR_RESULTS_WITH_CONCURRENCY)
-                .withThrowableOfType(ExecutionException.class)
+        assertThatFuture(testInstance.cancel(TIMEOUT_FOR_REQUESTS))
+                .eventuallyFailsWith(ExecutionException.class)
                 .withCauseInstanceOf(FlinkException.class);
         assertThat(testInstance.closeAsync())
                 .as("The closeAsync result should be completed by now.")
@@ -297,18 +296,18 @@ public class CheckpointResourcesCleanupRunnerTest {
     }
 
     @Test
-    public void testResultFutureWithSuccessBeforeStart() throws Exception {
+    void testResultFutureWithSuccessBeforeStart() throws Exception {
         assertThat(getResultFutureFromTestInstance(createDummySuccessJobResult(), BEFORE_START))
                 .isNotCompleted();
     }
 
     @Test
-    public void testResultFutureWithSuccessAfterStart() throws Exception {
+    void testResultFutureWithSuccessAfterStart() throws Exception {
         testResultFutureWithSuccessfulResultAfterStart(AFTER_START);
     }
 
     @Test
-    public void testResultFutureWithSuccessAfterClose() throws Exception {
+    void testResultFutureWithSuccessAfterClose() throws Exception {
         testResultFutureWithSuccessfulResultAfterStart(AFTER_CLOSE);
     }
 
@@ -327,7 +326,7 @@ public class CheckpointResourcesCleanupRunnerTest {
     }
 
     @Test
-    public void testResultFutureWithErrorBeforeStart() throws Exception {
+    void testResultFutureWithErrorBeforeStart() throws Exception {
         final CompletableFuture<JobManagerRunnerResult> resultFuture =
                 getResultFutureFromTestInstance(
                         createJobResultWithFailure(
@@ -337,12 +336,12 @@ public class CheckpointResourcesCleanupRunnerTest {
     }
 
     @Test
-    public void testResultFutureWithErrorAfterStart() throws Exception {
+    void testResultFutureWithErrorAfterStart() throws Exception {
         testResultFutureWithErrorAfterStart(AFTER_START);
     }
 
     @Test
-    public void testResultFutureWithErrorAfterClose() throws Exception {
+    void testResultFutureWithErrorAfterClose() throws Exception {
         testResultFutureWithErrorAfterStart(AFTER_CLOSE);
     }
 
@@ -382,27 +381,27 @@ public class CheckpointResourcesCleanupRunnerTest {
     }
 
     @Test
-    public void testGetJobID() {
+    void testGetJobID() {
         final JobID jobId = new JobID();
         final CheckpointResourcesCleanupRunner testInstance =
                 new TestInstanceBuilder()
-                        .withJobResult(createJobResult(jobId, ApplicationStatus.CANCELED))
+                        .withJobResult(createJobResult(jobId, JobStatus.CANCELED))
                         .build();
         assertThat(testInstance.getJobID()).isEqualTo(jobId);
     }
 
     @Test
-    public void testGetJobMasterGatewayBeforeStart() throws Exception {
+    void testGetJobMasterGatewayBeforeStart() throws Exception {
         testGetJobMasterGateway(BEFORE_START);
     }
 
     @Test
-    public void testGetJobMasterGatewayAfterStart() throws Exception {
+    void testGetJobMasterGatewayAfterStart() throws Exception {
         testGetJobMasterGateway(AFTER_START);
     }
 
     @Test
-    public void testGetJobMasterGatewayAfterClose() throws Exception {
+    void testGetJobMasterGatewayAfterClose() throws Exception {
         testGetJobMasterGateway(AFTER_CLOSE);
     }
 
@@ -419,7 +418,7 @@ public class CheckpointResourcesCleanupRunnerTest {
     }
 
     @Test
-    public void testRequestJob_ExceptionHistory() {
+    void testRequestJob_ExceptionHistory() {
         testRequestJob(
                 createDummySuccessJobResult(),
                 System.currentTimeMillis(),
@@ -428,7 +427,7 @@ public class CheckpointResourcesCleanupRunnerTest {
     }
 
     @Test
-    public void testRequestJob_JobName() {
+    void testRequestJob_JobName() {
         testRequestJobExecutionGraph(
                 createDummySuccessJobResult(),
                 System.currentTimeMillis(),
@@ -436,7 +435,7 @@ public class CheckpointResourcesCleanupRunnerTest {
     }
 
     @Test
-    public void testRequestJob_JobId() {
+    void testRequestJob_JobId() {
         final JobResult jobResult = createDummySuccessJobResult();
         testRequestJobExecutionGraph(
                 jobResult,
@@ -446,7 +445,7 @@ public class CheckpointResourcesCleanupRunnerTest {
     }
 
     @Test
-    public void testRequestJob_JobState() {
+    void testRequestJob_JobState() {
         final JobResult jobResult = createDummySuccessJobResult();
         testRequestJobExecutionGraph(
                 jobResult,
@@ -454,11 +453,11 @@ public class CheckpointResourcesCleanupRunnerTest {
                 actualExecutionGraph ->
                         actualExecutionGraph
                                 .getState()
-                                .equals(jobResult.getApplicationStatus().deriveJobStatus()));
+                                .equals(jobResult.getJobStatus().orElseThrow()));
     }
 
     @Test
-    public void testRequestJob_InitiatizationTimestamp() {
+    void testRequestJob_InitiatizationTimestamp() {
         final long initializationTimestamp = System.currentTimeMillis();
         testRequestJobExecutionGraph(
                 createDummySuccessJobResult(),
@@ -469,7 +468,7 @@ public class CheckpointResourcesCleanupRunnerTest {
     }
 
     @Test
-    public void testRequestJobWithFailure() {
+    void testRequestJobWithFailure() {
         final SerializedThrowable expectedError =
                 new SerializedThrowable(new Exception("Expected exception"));
         final JobResult jobResult = createJobResultWithFailure(expectedError);
@@ -509,24 +508,20 @@ public class CheckpointResourcesCleanupRunnerTest {
     }
 
     private static JobResult createDummySuccessJobResult() {
-        return createJobResult(new JobID(), ApplicationStatus.SUCCEEDED);
+        return createJobResult(new JobID(), JobStatus.FINISHED);
     }
 
     private static JobResult createJobResultWithFailure(SerializedThrowable throwable) {
         return new JobResult.Builder()
                 .jobId(new JobID())
-                .applicationStatus(ApplicationStatus.FAILED)
+                .jobStatus(JobStatus.FAILED)
                 .serializedThrowable(throwable)
                 .netRuntime(1)
                 .build();
     }
 
-    private static JobResult createJobResult(JobID jobId, ApplicationStatus applicationStatus) {
-        return new JobResult.Builder()
-                .jobId(jobId)
-                .applicationStatus(applicationStatus)
-                .netRuntime(1)
-                .build();
+    private static JobResult createJobResult(JobID jobId, JobStatus jobStatus) {
+        return new JobResult.Builder().jobId(jobId).jobStatus(jobStatus).netRuntime(1).build();
     }
 
     private static CheckpointRecoveryFactory createCheckpointRecoveryFactory() {
@@ -622,7 +617,8 @@ public class CheckpointResourcesCleanupRunnerTest {
                 JobID jobId,
                 int maxNumberOfCheckpointsToRetain,
                 SharedStateRegistryFactory sharedStateRegistryFactory,
-                Executor ioExecutor)
+                Executor ioExecutor,
+                RecoveryClaimMode recoveryClaimMode)
                 throws Exception {
             creationLatch.await();
             return completedCheckpointStore;

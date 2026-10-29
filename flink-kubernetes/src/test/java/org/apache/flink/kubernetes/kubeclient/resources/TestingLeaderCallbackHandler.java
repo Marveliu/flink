@@ -18,14 +18,12 @@
 
 package org.apache.flink.kubernetes.kubeclient.resources;
 
-import org.apache.flink.api.common.time.Deadline;
-import org.apache.flink.runtime.testutils.CommonTestUtils;
+import org.apache.flink.util.Preconditions;
 
-import java.time.Duration;
 import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.LinkedBlockingQueue;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicReference;
 
 /** Testing implementation for {@link KubernetesLeaderElector.LeaderCallbackHandler}. */
 public class TestingLeaderCallbackHandler extends KubernetesLeaderElector.LeaderCallbackHandler {
@@ -63,38 +61,43 @@ public class TestingLeaderCallbackHandler extends KubernetesLeaderElector.Leader
         return isLeader;
     }
 
-    public static String waitUntilNewLeaderAppears(long timeout) throws Exception {
-        final AtomicReference<String> leaderRef = new AtomicReference<>();
-        CommonTestUtils.waitUntilCondition(
+    public static String waitUntilNewLeaderAppears() throws Exception {
+        return retrieveNextEventAsync(sharedQueue).get();
+    }
+
+    public static CompletableFuture<String> retrieveNextEventAsync(
+            BlockingQueue<String> eventQueue) {
+        return CompletableFuture.supplyAsync(
                 () -> {
-                    final String lockIdentity = sharedQueue.poll(timeout, TimeUnit.MILLISECONDS);
-                    leaderRef.set(lockIdentity);
-                    return lockIdentity != null;
-                },
-                Deadline.fromNow(Duration.ofMillis(timeout)),
-                "No leader is elected with " + timeout + "ms");
-        return leaderRef.get();
+                    try {
+                        return eventQueue.take();
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        throw new CompletionException(e);
+                    }
+                });
     }
 
-    public void waitForNewLeader(long timeout) throws Exception {
-        final String errorMsg =
-                "No leader with " + lockIdentity + " is elected within " + timeout + "ms";
-        poll(leaderQueue, timeout, errorMsg);
+    public void waitForNewLeader() throws Exception {
+        waitForNewLeaderAsync().get();
     }
 
-    public void waitForRevokeLeader(long timeout) throws Exception {
-        final String errorMsg =
-                "No leader with " + lockIdentity + " is revoke within " + timeout + "ms";
-        poll(revokeQueue, timeout, errorMsg);
+    public CompletableFuture<Void> waitForNewLeaderAsync() {
+        return waitForNextEvent(leaderQueue);
     }
 
-    private void poll(BlockingQueue<String> queue, long timeout, String errorMsg) throws Exception {
-        CommonTestUtils.waitUntilCondition(
-                () -> {
-                    final String lockIdentity = queue.poll(timeout, TimeUnit.MILLISECONDS);
-                    return this.lockIdentity.equals(lockIdentity);
-                },
-                Deadline.fromNow(Duration.ofMillis(timeout)),
-                errorMsg);
+    public void waitForRevokeLeader() throws Exception {
+        waitForRevokeLeaderAsync().get();
+    }
+
+    public CompletableFuture<Void> waitForRevokeLeaderAsync() {
+        return waitForNextEvent(revokeQueue);
+    }
+
+    private CompletableFuture<Void> waitForNextEvent(BlockingQueue<String> eventQueue) {
+        return retrieveNextEventAsync(eventQueue)
+                .thenAccept(
+                        eventLockIdentity ->
+                                Preconditions.checkState(eventLockIdentity.equals(lockIdentity)));
     }
 }

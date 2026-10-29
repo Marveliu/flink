@@ -63,11 +63,7 @@ org.apache.flink.api.common.functions.InvalidTypesException: The generic type pa
 在这种情况下，需要 *显式* 指定类型信息，否则输出将被视为 `Object` 类型，这会导致低效的序列化。
 
 ```java
-import org.apache.flink.api.common.typeinfo.Types;
-import org.apache.flink.api.java.DataSet;
-import org.apache.flink.util.Collector;
-
-DataSet<Integer> input = env.fromElements(1, 2, 3);
+DataStream<Integer> input = env.fromElements(1, 2, 3);
 
 // 必须声明 collector 类型
 input.flatMap((Integer number, Collector<String> out) -> {
@@ -111,7 +107,7 @@ env.fromElements(1, 2, 3)
     .map(new MyTuple2Mapper())
     .print();
 
-public static class MyTuple2Mapper extends MapFunction<Integer, Tuple2<Integer, Integer>> {
+public static class MyTuple2Mapper implements MapFunction<Integer, Tuple2<Integer, Integer>> {
     @Override
     public Tuple2<Integer, Integer> map(Integer i) {
         return Tuple2.of(i, i);
@@ -120,7 +116,7 @@ public static class MyTuple2Mapper extends MapFunction<Integer, Tuple2<Integer, 
 
 // 使用匿名类来替代
 env.fromElements(1, 2, 3)
-    .map(new MapFunction<Integer, Tuple2<Integer, Integer>> {
+    .map(new MapFunction<Integer, Tuple2<Integer, Integer>>() {
         @Override
         public Tuple2<Integer, Integer> map(Integer i) {
             return Tuple2.of(i, i);

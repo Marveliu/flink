@@ -19,11 +19,13 @@
 package org.apache.flink.yarn.entrypoint;
 
 import org.apache.flink.annotation.Internal;
+import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.client.deployment.application.ApplicationClusterEntryPoint;
 import org.apache.flink.client.deployment.application.ApplicationConfiguration;
 import org.apache.flink.client.program.DefaultPackagedProgramRetriever;
 import org.apache.flink.client.program.PackagedProgram;
 import org.apache.flink.client.program.PackagedProgramRetriever;
+import org.apache.flink.client.program.PackagedProgramUtils;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.PipelineOptions;
 import org.apache.flink.runtime.entrypoint.ClusterEntrypoint;
@@ -43,6 +45,7 @@ import javax.annotation.Nullable;
 
 import java.io.File;
 import java.io.IOException;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
@@ -58,7 +61,7 @@ public final class YarnApplicationClusterEntryPoint extends ApplicationClusterEn
 
     @Override
     protected String getRPCPortRange(Configuration configuration) {
-        return configuration.getString(YarnConfigOptions.APPLICATION_MASTER_PORT);
+        return configuration.get(YarnConfigOptions.APPLICATION_MASTER_PORT);
     }
 
     public static void main(final String[] args) {
@@ -111,7 +114,8 @@ public final class YarnApplicationClusterEntryPoint extends ApplicationClusterEn
         ClusterEntrypoint.runClusterEntrypoint(yarnApplicationClusterEntrypoint);
     }
 
-    private static PackagedProgram getPackagedProgram(final Configuration configuration)
+    @VisibleForTesting
+    static PackagedProgram getPackagedProgram(final Configuration configuration)
             throws FlinkException {
 
         final ApplicationConfiguration applicationConfiguration =
@@ -132,19 +136,30 @@ public final class YarnApplicationClusterEntryPoint extends ApplicationClusterEn
             throws FlinkException {
 
         final File userLibDir = YarnEntrypointUtils.getUsrLibDir(configuration).orElse(null);
-        final File userApplicationJar = getUserApplicationJar(userLibDir, configuration);
+
+        // No need to do pipelineJars validation if it is a PyFlink job.
+        if (!(PackagedProgramUtils.isPython(jobClassName)
+                || PackagedProgramUtils.isPython(programArguments))) {
+            final File userApplicationJar = getUserApplicationJar(userLibDir, configuration);
+            return DefaultPackagedProgramRetriever.create(
+                    userLibDir, userApplicationJar, jobClassName, programArguments, configuration);
+        }
+
         return DefaultPackagedProgramRetriever.create(
-                userLibDir, userApplicationJar, jobClassName, programArguments, configuration);
+                userLibDir, jobClassName, programArguments, configuration);
     }
 
-    private static File getUserApplicationJar(
+    private static @Nullable File getUserApplicationJar(
             final File userLibDir, final Configuration configuration) {
         final List<File> pipelineJars =
-                configuration.get(PipelineOptions.JARS).stream()
+                configuration
+                        .getOptional(PipelineOptions.JARS)
+                        .orElse(Collections.emptyList())
+                        .stream()
                         .map(uri -> new File(userLibDir, new Path(uri).getName()))
                         .collect(Collectors.toList());
 
-        Preconditions.checkArgument(pipelineJars.size() == 1, "Should only have one jar");
-        return pipelineJars.get(0);
+        Preconditions.checkArgument(pipelineJars.size() <= 1, "Should only have at most one jar.");
+        return pipelineJars.isEmpty() ? null : pipelineJars.get(0);
     }
 }

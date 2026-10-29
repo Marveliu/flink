@@ -22,11 +22,10 @@ import org.apache.flink.cep.Event;
 import org.apache.flink.cep.pattern.Pattern;
 import org.apache.flink.cep.pattern.conditions.SimpleCondition;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
-import org.apache.flink.util.TestLogger;
 
-import org.apache.flink.shaded.guava30.com.google.common.collect.Lists;
+import org.apache.flink.shaded.guava33.com.google.common.collect.Lists;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -36,10 +35,10 @@ import static org.apache.flink.cep.utils.NFATestUtilities.feedNFA;
 import static org.apache.flink.cep.utils.NFAUtils.compile;
 
 /** IT tests covering {@link Pattern#greedy()}. */
-public class GreedyITCase extends TestLogger {
+class GreedyITCase {
 
     @Test
-    public void testGreedyZeroOrMore() throws Exception {
+    void testGreedyZeroOrMore() throws Exception {
         List<StreamRecord<Event>> inputEvents = new ArrayList<>();
 
         Event c = new Event(40, "c", 1.0);
@@ -57,41 +56,14 @@ public class GreedyITCase extends TestLogger {
         // c a* d
         Pattern<Event, ?> pattern =
                 Pattern.<Event>begin("start")
-                        .where(
-                                new SimpleCondition<Event>() {
-                                    private static final long serialVersionUID =
-                                            5726188262756267490L;
-
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getName().equals("c");
-                                    }
-                                })
+                        .where(SimpleCondition.of(value -> value.getName().equals("c")))
                         .followedBy("middle")
-                        .where(
-                                new SimpleCondition<Event>() {
-                                    private static final long serialVersionUID =
-                                            5726188262756267490L;
-
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getName().equals("a");
-                                    }
-                                })
+                        .where(SimpleCondition.of(value -> value.getName().equals("a")))
                         .oneOrMore()
                         .optional()
                         .greedy()
                         .followedBy("end")
-                        .where(
-                                new SimpleCondition<Event>() {
-                                    private static final long serialVersionUID =
-                                            5726188262756267490L;
-
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getName().equals("d");
-                                    }
-                                });
+                        .where(SimpleCondition.of(value -> value.getName().equals("d")));
 
         NFA<Event> nfa = compile(pattern, false);
 
@@ -103,7 +75,7 @@ public class GreedyITCase extends TestLogger {
     }
 
     @Test
-    public void testGreedyZeroOrMoreInBetween() throws Exception {
+    void testGreedyZeroOrMoreInBetween() throws Exception {
         List<StreamRecord<Event>> inputEvents = new ArrayList<>();
 
         Event c = new Event(40, "c", 1.0);
@@ -124,41 +96,14 @@ public class GreedyITCase extends TestLogger {
         // c a* d
         Pattern<Event, ?> pattern =
                 Pattern.<Event>begin("start")
-                        .where(
-                                new SimpleCondition<Event>() {
-                                    private static final long serialVersionUID =
-                                            5726188262756267490L;
-
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getName().equals("c");
-                                    }
-                                })
+                        .where(SimpleCondition.of(value -> value.getName().equals("c")))
                         .followedBy("middle")
-                        .where(
-                                new SimpleCondition<Event>() {
-                                    private static final long serialVersionUID =
-                                            5726188262756267490L;
-
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getName().equals("a");
-                                    }
-                                })
+                        .where(SimpleCondition.of(value -> value.getName().equals("a")))
                         .oneOrMore()
                         .optional()
                         .greedy()
                         .followedBy("end")
-                        .where(
-                                new SimpleCondition<Event>() {
-                                    private static final long serialVersionUID =
-                                            5726188262756267490L;
-
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getName().equals("d");
-                                    }
-                                });
+                        .where(SimpleCondition.of(value -> value.getName().equals("d")));
 
         NFA<Event> nfa = compile(pattern, false);
 
@@ -170,7 +115,7 @@ public class GreedyITCase extends TestLogger {
     }
 
     @Test
-    public void testGreedyZeroOrMoreWithDummyEventsAfterQuantifier() throws Exception {
+    void testGreedyZeroOrMoreWithDummyEventsAfterQuantifier() throws Exception {
         List<StreamRecord<Event>> inputEvents = new ArrayList<>();
 
         Event c = new Event(40, "c", 1.0);
@@ -187,41 +132,14 @@ public class GreedyITCase extends TestLogger {
         // c a* d
         Pattern<Event, ?> pattern =
                 Pattern.<Event>begin("start")
-                        .where(
-                                new SimpleCondition<Event>() {
-                                    private static final long serialVersionUID =
-                                            5726188262756267490L;
-
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getName().equals("c");
-                                    }
-                                })
+                        .where(SimpleCondition.of(value -> value.getName().equals("c")))
                         .followedBy("middle")
-                        .where(
-                                new SimpleCondition<Event>() {
-                                    private static final long serialVersionUID =
-                                            5726188262756267490L;
-
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getName().equals("a");
-                                    }
-                                })
+                        .where(SimpleCondition.of(value -> value.getName().equals("a")))
                         .oneOrMore()
                         .optional()
                         .greedy()
                         .followedBy("end")
-                        .where(
-                                new SimpleCondition<Event>() {
-                                    private static final long serialVersionUID =
-                                            5726188262756267490L;
-
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getName().equals("d");
-                                    }
-                                });
+                        .where(SimpleCondition.of(value -> value.getName().equals("d")));
 
         NFA<Event> nfa = compile(pattern, false);
 
@@ -233,7 +151,7 @@ public class GreedyITCase extends TestLogger {
     }
 
     @Test
-    public void testGreedyZeroOrMoreWithDummyEventsBeforeQuantifier() throws Exception {
+    void testGreedyZeroOrMoreWithDummyEventsBeforeQuantifier() throws Exception {
         List<StreamRecord<Event>> inputEvents = new ArrayList<>();
 
         Event c = new Event(40, "c", 1.0);
@@ -246,41 +164,14 @@ public class GreedyITCase extends TestLogger {
         // c a* d
         Pattern<Event, ?> pattern =
                 Pattern.<Event>begin("start")
-                        .where(
-                                new SimpleCondition<Event>() {
-                                    private static final long serialVersionUID =
-                                            5726188262756267490L;
-
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getName().equals("c");
-                                    }
-                                })
+                        .where(SimpleCondition.of(value -> value.getName().equals("c")))
                         .followedBy("middle")
-                        .where(
-                                new SimpleCondition<Event>() {
-                                    private static final long serialVersionUID =
-                                            5726188262756267490L;
-
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getName().equals("a");
-                                    }
-                                })
+                        .where(SimpleCondition.of(value -> value.getName().equals("a")))
                         .oneOrMore()
                         .optional()
                         .greedy()
                         .followedBy("end")
-                        .where(
-                                new SimpleCondition<Event>() {
-                                    private static final long serialVersionUID =
-                                            5726188262756267490L;
-
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getName().equals("d");
-                                    }
-                                });
+                        .where(SimpleCondition.of(value -> value.getName().equals("d")));
 
         NFA<Event> nfa = compile(pattern, false);
 
@@ -291,7 +182,7 @@ public class GreedyITCase extends TestLogger {
     }
 
     @Test
-    public void testGreedyUntilZeroOrMoreWithDummyEventsAfterQuantifier() throws Exception {
+    void testGreedyUntilZeroOrMoreWithDummyEventsAfterQuantifier() throws Exception {
         List<StreamRecord<Event>> inputEvents = new ArrayList<>();
 
         Event c = new Event(40, "c", 1.0);
@@ -310,51 +201,15 @@ public class GreedyITCase extends TestLogger {
         // c a* d
         Pattern<Event, ?> pattern =
                 Pattern.<Event>begin("start")
-                        .where(
-                                new SimpleCondition<Event>() {
-                                    private static final long serialVersionUID =
-                                            5726188262756267490L;
-
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getName().equals("c");
-                                    }
-                                })
+                        .where(SimpleCondition.of(value -> value.getName().equals("c")))
                         .followedBy("middle")
-                        .where(
-                                new SimpleCondition<Event>() {
-                                    private static final long serialVersionUID =
-                                            5726188262756267490L;
-
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getName().equals("a");
-                                    }
-                                })
+                        .where(SimpleCondition.of(value -> value.getName().equals("a")))
                         .oneOrMore()
                         .optional()
                         .greedy()
-                        .until(
-                                new SimpleCondition<Event>() {
-                                    private static final long serialVersionUID =
-                                            5726188262756267490L;
-
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getPrice() > 3.0;
-                                    }
-                                })
+                        .until(SimpleCondition.of(value -> value.getPrice() > 3.0))
                         .followedBy("end")
-                        .where(
-                                new SimpleCondition<Event>() {
-                                    private static final long serialVersionUID =
-                                            5726188262756267490L;
-
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getName().equals("d");
-                                    }
-                                });
+                        .where(SimpleCondition.of(value -> value.getName().equals("d")));
 
         NFA<Event> nfa = compile(pattern, false);
 
@@ -366,7 +221,7 @@ public class GreedyITCase extends TestLogger {
     }
 
     @Test
-    public void testGreedyUntilWithDummyEventsBeforeQuantifier() throws Exception {
+    void testGreedyUntilWithDummyEventsBeforeQuantifier() throws Exception {
         List<StreamRecord<Event>> inputEvents = new ArrayList<>();
 
         Event c = new Event(40, "c", 1.0);
@@ -385,51 +240,15 @@ public class GreedyITCase extends TestLogger {
         // c a* d
         Pattern<Event, ?> pattern =
                 Pattern.<Event>begin("start")
-                        .where(
-                                new SimpleCondition<Event>() {
-                                    private static final long serialVersionUID =
-                                            5726188262756267490L;
-
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getName().equals("c");
-                                    }
-                                })
+                        .where(SimpleCondition.of(value -> value.getName().equals("c")))
                         .followedBy("middle")
-                        .where(
-                                new SimpleCondition<Event>() {
-                                    private static final long serialVersionUID =
-                                            5726188262756267490L;
-
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getName().equals("a");
-                                    }
-                                })
+                        .where(SimpleCondition.of(value -> value.getName().equals("a")))
                         .oneOrMore()
                         .optional()
                         .greedy()
-                        .until(
-                                new SimpleCondition<Event>() {
-                                    private static final long serialVersionUID =
-                                            5726188262756267490L;
-
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getPrice() > 3.0;
-                                    }
-                                })
+                        .until(SimpleCondition.of(value -> value.getPrice() > 3.0))
                         .followedBy("end")
-                        .where(
-                                new SimpleCondition<Event>() {
-                                    private static final long serialVersionUID =
-                                            5726188262756267490L;
-
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getName().equals("d");
-                                    }
-                                });
+                        .where(SimpleCondition.of(value -> value.getName().equals("d")));
 
         NFA<Event> nfa = compile(pattern, false);
 
@@ -440,7 +259,7 @@ public class GreedyITCase extends TestLogger {
     }
 
     @Test
-    public void testGreedyOneOrMore() throws Exception {
+    void testGreedyOneOrMore() throws Exception {
         List<StreamRecord<Event>> inputEvents = new ArrayList<>();
 
         Event c = new Event(40, "c", 1.0);
@@ -458,40 +277,13 @@ public class GreedyITCase extends TestLogger {
         // c a+ d
         Pattern<Event, ?> pattern =
                 Pattern.<Event>begin("start")
-                        .where(
-                                new SimpleCondition<Event>() {
-                                    private static final long serialVersionUID =
-                                            5726188262756267490L;
-
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getName().equals("c");
-                                    }
-                                })
+                        .where(SimpleCondition.of(value -> value.getName().equals("c")))
                         .followedBy("middle")
-                        .where(
-                                new SimpleCondition<Event>() {
-                                    private static final long serialVersionUID =
-                                            5726188262756267490L;
-
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getName().equals("a");
-                                    }
-                                })
+                        .where(SimpleCondition.of(value -> value.getName().equals("a")))
                         .oneOrMore()
                         .greedy()
                         .followedBy("end")
-                        .where(
-                                new SimpleCondition<Event>() {
-                                    private static final long serialVersionUID =
-                                            5726188262756267490L;
-
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getName().equals("d");
-                                    }
-                                });
+                        .where(SimpleCondition.of(value -> value.getName().equals("d")));
 
         NFA<Event> nfa = compile(pattern, false);
 
@@ -503,7 +295,7 @@ public class GreedyITCase extends TestLogger {
     }
 
     @Test
-    public void testGreedyOneOrMoreInBetween() throws Exception {
+    void testGreedyOneOrMoreInBetween() throws Exception {
         List<StreamRecord<Event>> inputEvents = new ArrayList<>();
 
         Event c = new Event(40, "c", 1.0);
@@ -524,40 +316,13 @@ public class GreedyITCase extends TestLogger {
         // c a+ d
         Pattern<Event, ?> pattern =
                 Pattern.<Event>begin("start")
-                        .where(
-                                new SimpleCondition<Event>() {
-                                    private static final long serialVersionUID =
-                                            5726188262756267490L;
-
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getName().equals("c");
-                                    }
-                                })
+                        .where(SimpleCondition.of(value -> value.getName().equals("c")))
                         .followedBy("middle")
-                        .where(
-                                new SimpleCondition<Event>() {
-                                    private static final long serialVersionUID =
-                                            5726188262756267490L;
-
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getName().equals("a");
-                                    }
-                                })
+                        .where(SimpleCondition.of(value -> value.getName().equals("a")))
                         .oneOrMore()
                         .greedy()
                         .followedBy("end")
-                        .where(
-                                new SimpleCondition<Event>() {
-                                    private static final long serialVersionUID =
-                                            5726188262756267490L;
-
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getName().equals("d");
-                                    }
-                                });
+                        .where(SimpleCondition.of(value -> value.getName().equals("d")));
 
         NFA<Event> nfa = compile(pattern, false);
 
@@ -569,7 +334,7 @@ public class GreedyITCase extends TestLogger {
     }
 
     @Test
-    public void testGreedyOneOrMoreWithDummyEventsAfterQuantifier() throws Exception {
+    void testGreedyOneOrMoreWithDummyEventsAfterQuantifier() throws Exception {
         List<StreamRecord<Event>> inputEvents = new ArrayList<>();
 
         Event c = new Event(40, "c", 1.0);
@@ -586,40 +351,13 @@ public class GreedyITCase extends TestLogger {
         // c a+ d
         Pattern<Event, ?> pattern =
                 Pattern.<Event>begin("start")
-                        .where(
-                                new SimpleCondition<Event>() {
-                                    private static final long serialVersionUID =
-                                            5726188262756267490L;
-
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getName().equals("c");
-                                    }
-                                })
+                        .where(SimpleCondition.of(value -> value.getName().equals("c")))
                         .followedBy("middle")
-                        .where(
-                                new SimpleCondition<Event>() {
-                                    private static final long serialVersionUID =
-                                            5726188262756267490L;
-
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getName().equals("a");
-                                    }
-                                })
+                        .where(SimpleCondition.of(value -> value.getName().equals("a")))
                         .oneOrMore()
                         .greedy()
                         .followedBy("end")
-                        .where(
-                                new SimpleCondition<Event>() {
-                                    private static final long serialVersionUID =
-                                            5726188262756267490L;
-
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getName().equals("d");
-                                    }
-                                });
+                        .where(SimpleCondition.of(value -> value.getName().equals("d")));
 
         NFA<Event> nfa = compile(pattern, false);
 
@@ -631,7 +369,7 @@ public class GreedyITCase extends TestLogger {
     }
 
     @Test
-    public void testGreedyOneOrMoreWithDummyEventsBeforeQuantifier() throws Exception {
+    void testGreedyOneOrMoreWithDummyEventsBeforeQuantifier() throws Exception {
         List<StreamRecord<Event>> inputEvents = new ArrayList<>();
 
         Event c = new Event(40, "c", 1.0);
@@ -644,40 +382,13 @@ public class GreedyITCase extends TestLogger {
         // c a+ d
         Pattern<Event, ?> pattern =
                 Pattern.<Event>begin("start")
-                        .where(
-                                new SimpleCondition<Event>() {
-                                    private static final long serialVersionUID =
-                                            5726188262756267490L;
-
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getName().equals("c");
-                                    }
-                                })
+                        .where(SimpleCondition.of(value -> value.getName().equals("c")))
                         .followedBy("middle")
-                        .where(
-                                new SimpleCondition<Event>() {
-                                    private static final long serialVersionUID =
-                                            5726188262756267490L;
-
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getName().equals("a");
-                                    }
-                                })
+                        .where(SimpleCondition.of(value -> value.getName().equals("a")))
                         .oneOrMore()
                         .greedy()
                         .followedBy("end")
-                        .where(
-                                new SimpleCondition<Event>() {
-                                    private static final long serialVersionUID =
-                                            5726188262756267490L;
-
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getName().equals("d");
-                                    }
-                                });
+                        .where(SimpleCondition.of(value -> value.getName().equals("d")));
 
         NFA<Event> nfa = compile(pattern, false);
 
@@ -687,7 +398,7 @@ public class GreedyITCase extends TestLogger {
     }
 
     @Test
-    public void testGreedyUntilOneOrMoreWithDummyEventsAfterQuantifier() throws Exception {
+    void testGreedyUntilOneOrMoreWithDummyEventsAfterQuantifier() throws Exception {
         List<StreamRecord<Event>> inputEvents = new ArrayList<>();
 
         Event c = new Event(40, "c", 1.0);
@@ -706,50 +417,14 @@ public class GreedyITCase extends TestLogger {
         // c a+ d
         Pattern<Event, ?> pattern =
                 Pattern.<Event>begin("start")
-                        .where(
-                                new SimpleCondition<Event>() {
-                                    private static final long serialVersionUID =
-                                            5726188262756267490L;
-
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getName().equals("c");
-                                    }
-                                })
+                        .where(SimpleCondition.of(value -> value.getName().equals("c")))
                         .followedBy("middle")
-                        .where(
-                                new SimpleCondition<Event>() {
-                                    private static final long serialVersionUID =
-                                            5726188262756267490L;
-
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getName().equals("a");
-                                    }
-                                })
+                        .where(SimpleCondition.of(value -> value.getName().equals("a")))
                         .oneOrMore()
                         .greedy()
-                        .until(
-                                new SimpleCondition<Event>() {
-                                    private static final long serialVersionUID =
-                                            5726188262756267490L;
-
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getPrice() > 3.0;
-                                    }
-                                })
+                        .until(SimpleCondition.of(value -> value.getPrice() > 3.0))
                         .followedBy("end")
-                        .where(
-                                new SimpleCondition<Event>() {
-                                    private static final long serialVersionUID =
-                                            5726188262756267490L;
-
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getName().equals("d");
-                                    }
-                                });
+                        .where(SimpleCondition.of(value -> value.getName().equals("d")));
 
         NFA<Event> nfa = compile(pattern, false);
 
@@ -761,7 +436,7 @@ public class GreedyITCase extends TestLogger {
     }
 
     @Test
-    public void testGreedyUntilOneOrMoreWithDummyEventsBeforeQuantifier() throws Exception {
+    void testGreedyUntilOneOrMoreWithDummyEventsBeforeQuantifier() throws Exception {
         List<StreamRecord<Event>> inputEvents = new ArrayList<>();
 
         Event c = new Event(40, "c", 1.0);
@@ -780,50 +455,14 @@ public class GreedyITCase extends TestLogger {
         // c a+ d
         Pattern<Event, ?> pattern =
                 Pattern.<Event>begin("start")
-                        .where(
-                                new SimpleCondition<Event>() {
-                                    private static final long serialVersionUID =
-                                            5726188262756267490L;
-
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getName().equals("c");
-                                    }
-                                })
+                        .where(SimpleCondition.of(value -> value.getName().equals("c")))
                         .followedBy("middle")
-                        .where(
-                                new SimpleCondition<Event>() {
-                                    private static final long serialVersionUID =
-                                            5726188262756267490L;
-
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getName().equals("a");
-                                    }
-                                })
+                        .where(SimpleCondition.of(value -> value.getName().equals("a")))
                         .oneOrMore()
                         .greedy()
-                        .until(
-                                new SimpleCondition<Event>() {
-                                    private static final long serialVersionUID =
-                                            5726188262756267490L;
-
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getPrice() > 3.0;
-                                    }
-                                })
+                        .until(SimpleCondition.of(value -> value.getPrice() > 3.0))
                         .followedBy("end")
-                        .where(
-                                new SimpleCondition<Event>() {
-                                    private static final long serialVersionUID =
-                                            5726188262756267490L;
-
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getName().equals("d");
-                                    }
-                                });
+                        .where(SimpleCondition.of(value -> value.getName().equals("d")));
 
         NFA<Event> nfa = compile(pattern, false);
 
@@ -833,7 +472,7 @@ public class GreedyITCase extends TestLogger {
     }
 
     @Test
-    public void testGreedyZeroOrMoreBeforeGroupPattern() throws Exception {
+    void testGreedyZeroOrMoreBeforeGroupPattern() throws Exception {
         List<StreamRecord<Event>> inputEvents = new ArrayList<>();
 
         Event c = new Event(40, "c", 1.0);
@@ -860,67 +499,24 @@ public class GreedyITCase extends TestLogger {
         // c a* (d e){2} f
         Pattern<Event, ?> pattern =
                 Pattern.<Event>begin("start")
-                        .where(
-                                new SimpleCondition<Event>() {
-                                    private static final long serialVersionUID =
-                                            5726188262756267490L;
-
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getName().equals("c");
-                                    }
-                                })
+                        .where(SimpleCondition.of(value -> value.getName().equals("c")))
                         .followedBy("middle")
-                        .where(
-                                new SimpleCondition<Event>() {
-                                    private static final long serialVersionUID =
-                                            5726188262756267490L;
-
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getName().equals("a");
-                                    }
-                                })
+                        .where(SimpleCondition.of(value -> value.getName().equals("a")))
                         .oneOrMore()
                         .optional()
                         .greedy()
                         .followedBy(
                                 Pattern.<Event>begin("middle1")
                                         .where(
-                                                new SimpleCondition<Event>() {
-                                                    private static final long serialVersionUID =
-                                                            5726188262756267490L;
-
-                                                    @Override
-                                                    public boolean filter(Event value)
-                                                            throws Exception {
-                                                        return value.getName().equals("d");
-                                                    }
-                                                })
+                                                SimpleCondition.of(
+                                                        value -> value.getName().equals("d")))
                                         .followedBy("middle2")
                                         .where(
-                                                new SimpleCondition<Event>() {
-                                                    private static final long serialVersionUID =
-                                                            5726188262756267490L;
-
-                                                    @Override
-                                                    public boolean filter(Event value)
-                                                            throws Exception {
-                                                        return value.getName().equals("e");
-                                                    }
-                                                }))
+                                                SimpleCondition.of(
+                                                        value -> value.getName().equals("e"))))
                         .times(2)
                         .followedBy("end")
-                        .where(
-                                new SimpleCondition<Event>() {
-                                    private static final long serialVersionUID =
-                                            5726188262756267490L;
-
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getName().equals("f");
-                                    }
-                                });
+                        .where(SimpleCondition.of(value -> value.getName().equals("f")));
 
         NFA<Event> nfa = compile(pattern, false);
 
@@ -933,7 +529,7 @@ public class GreedyITCase extends TestLogger {
     }
 
     @Test
-    public void testEndWithZeroOrMoreGreedy() throws Exception {
+    void testEndWithZeroOrMoreGreedy() throws Exception {
         List<StreamRecord<Event>> inputEvents = new ArrayList<>();
 
         Event c = new Event(40, "c", 1.0);
@@ -950,27 +546,9 @@ public class GreedyITCase extends TestLogger {
         // c a*
         Pattern<Event, ?> pattern =
                 Pattern.<Event>begin("start")
-                        .where(
-                                new SimpleCondition<Event>() {
-                                    private static final long serialVersionUID =
-                                            5726188262756267490L;
-
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getName().equals("c");
-                                    }
-                                })
+                        .where(SimpleCondition.of(value -> value.getName().equals("c")))
                         .followedBy("end")
-                        .where(
-                                new SimpleCondition<Event>() {
-                                    private static final long serialVersionUID =
-                                            5726188262756267490L;
-
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getName().equals("a");
-                                    }
-                                })
+                        .where(SimpleCondition.of(value -> value.getName().equals("a")))
                         .oneOrMore()
                         .optional()
                         .greedy();
@@ -989,7 +567,7 @@ public class GreedyITCase extends TestLogger {
     }
 
     @Test
-    public void testEndWithZeroOrMoreConsecutiveGreedy() throws Exception {
+    void testEndWithZeroOrMoreConsecutiveGreedy() throws Exception {
         List<StreamRecord<Event>> inputEvents = new ArrayList<>();
 
         Event c = new Event(40, "c", 1.0);
@@ -1006,27 +584,9 @@ public class GreedyITCase extends TestLogger {
         // c a*
         Pattern<Event, ?> pattern =
                 Pattern.<Event>begin("start")
-                        .where(
-                                new SimpleCondition<Event>() {
-                                    private static final long serialVersionUID =
-                                            5726188262756267490L;
-
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getName().equals("c");
-                                    }
-                                })
+                        .where(SimpleCondition.of(value -> value.getName().equals("c")))
                         .followedBy("end")
-                        .where(
-                                new SimpleCondition<Event>() {
-                                    private static final long serialVersionUID =
-                                            5726188262756267490L;
-
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getName().equals("a");
-                                    }
-                                })
+                        .where(SimpleCondition.of(value -> value.getName().equals("a")))
                         .oneOrMore()
                         .optional()
                         .consecutive()
@@ -1045,7 +605,7 @@ public class GreedyITCase extends TestLogger {
     }
 
     @Test
-    public void testEndWithGreedyTimesRange() throws Exception {
+    void testEndWithGreedyTimesRange() throws Exception {
         List<StreamRecord<Event>> inputEvents = new ArrayList<>();
 
         Event c = new Event(40, "c", 1.0);
@@ -1064,27 +624,9 @@ public class GreedyITCase extends TestLogger {
         // c a{2, 5}
         Pattern<Event, ?> pattern =
                 Pattern.<Event>begin("start")
-                        .where(
-                                new SimpleCondition<Event>() {
-                                    private static final long serialVersionUID =
-                                            5726188262756267490L;
-
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getName().equals("c");
-                                    }
-                                })
+                        .where(SimpleCondition.of(value -> value.getName().equals("c")))
                         .followedBy("end")
-                        .where(
-                                new SimpleCondition<Event>() {
-                                    private static final long serialVersionUID =
-                                            5726188262756267490L;
-
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getName().equals("a");
-                                    }
-                                })
+                        .where(SimpleCondition.of(value -> value.getName().equals("a")))
                         .times(2, 5)
                         .greedy();
 
@@ -1101,7 +643,7 @@ public class GreedyITCase extends TestLogger {
     }
 
     @Test
-    public void testGreedyTimesRange() throws Exception {
+    void testGreedyTimesRange() throws Exception {
         List<StreamRecord<Event>> inputEvents = new ArrayList<>();
 
         Event c = new Event(40, "c", 1.0);
@@ -1121,40 +663,13 @@ public class GreedyITCase extends TestLogger {
         // c a{2, 5} d
         Pattern<Event, ?> pattern =
                 Pattern.<Event>begin("start")
-                        .where(
-                                new SimpleCondition<Event>() {
-                                    private static final long serialVersionUID =
-                                            5726188262756267490L;
-
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getName().equals("c");
-                                    }
-                                })
+                        .where(SimpleCondition.of(value -> value.getName().equals("c")))
                         .followedBy("middle")
-                        .where(
-                                new SimpleCondition<Event>() {
-                                    private static final long serialVersionUID =
-                                            5726188262756267490L;
-
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getName().equals("a");
-                                    }
-                                })
+                        .where(SimpleCondition.of(value -> value.getName().equals("a")))
                         .times(2, 5)
                         .greedy()
                         .followedBy("end")
-                        .where(
-                                new SimpleCondition<Event>() {
-                                    private static final long serialVersionUID =
-                                            5726188262756267490L;
-
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getName().equals("d");
-                                    }
-                                });
+                        .where(SimpleCondition.of(value -> value.getName().equals("d")));
 
         NFA<Event> nfa = compile(pattern, false);
 

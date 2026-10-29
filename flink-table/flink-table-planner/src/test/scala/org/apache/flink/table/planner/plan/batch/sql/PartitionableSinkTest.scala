@@ -15,14 +15,13 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.planner.plan.batch.sql
 
-import org.apache.flink.api.scala._
 import org.apache.flink.table.api._
 import org.apache.flink.table.planner.utils.TableTestBase
 
-import org.junit.Test
+import org.assertj.core.api.Assertions.assertThatExceptionOfType
+import org.junit.jupiter.api.Test
 
 class PartitionableSinkTest extends TableTestBase {
 
@@ -67,14 +66,20 @@ class PartitionableSinkTest extends TableTestBase {
     util.verifyExecPlanInsert("INSERT INTO sink PARTITION (b=1) SELECT a, c FROM MyTable")
   }
 
-  @Test(expected = classOf[ValidationException])
+  @Test
   def testWrongStatic(): Unit = {
-    util.verifyExecPlanInsert("INSERT INTO sink PARTITION (a=1) SELECT b, c FROM MyTable")
+    assertThatExceptionOfType(classOf[ValidationException])
+      .isThrownBy(
+        () =>
+          util.verifyExecPlanInsert("INSERT INTO sink PARTITION (a=1) SELECT b, c FROM MyTable"))
   }
 
-  @Test(expected = classOf[ValidationException])
+  @Test
   def testWrongFields(): Unit = {
-    util.verifyExecPlanInsert("INSERT INTO sink PARTITION (b=1) SELECT a, b, c FROM MyTable")
+    assertThatExceptionOfType(classOf[ValidationException])
+      .isThrownBy(
+        () =>
+          util.verifyExecPlanInsert("INSERT INTO sink PARTITION (b=1) SELECT a, b, c FROM MyTable"))
   }
 
   @Test

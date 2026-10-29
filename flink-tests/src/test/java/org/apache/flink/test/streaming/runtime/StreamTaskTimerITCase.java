@@ -18,15 +18,15 @@
 
 package org.apache.flink.test.streaming.runtime;
 
+import org.apache.flink.api.common.eventtime.WatermarkStrategy;
 import org.apache.flink.api.common.operators.ProcessingTimeService.ProcessingTimeCallback;
 import org.apache.flink.api.common.typeinfo.BasicTypeInfo;
+import org.apache.flink.connector.datagen.source.DataGeneratorSource;
+import org.apache.flink.connector.datagen.source.GeneratorFunction;
 import org.apache.flink.runtime.client.JobExecutionException;
-import org.apache.flink.streaming.api.TimeCharacteristic;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
-import org.apache.flink.streaming.api.functions.source.SourceFunction;
 import org.apache.flink.streaming.api.operators.AbstractStreamOperator;
-import org.apache.flink.streaming.api.operators.ChainingStrategy;
 import org.apache.flink.streaming.api.operators.OneInputStreamOperator;
 import org.apache.flink.streaming.api.operators.TwoInputStreamOperator;
 import org.apache.flink.streaming.api.watermark.Watermark;
@@ -35,17 +35,14 @@ import org.apache.flink.streaming.runtime.tasks.TimerException;
 import org.apache.flink.test.util.AbstractTestBase;
 import org.apache.flink.util.ExceptionUtils;
 
-import org.junit.Assert;
-import org.junit.Test;
-import org.junit.runner.RunWith;
-import org.junit.runners.Parameterized;
+import org.assertj.core.api.InstanceOfAssertFactories;
+import org.junit.jupiter.api.Test;
 
-import java.util.Arrays;
-import java.util.Collection;
 import java.util.Optional;
 import java.util.concurrent.Semaphore;
 
-import static org.junit.Assert.assertTrue;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.fail;
 
 /**
  * Tests for the timer service of {@code StreamTask}.
@@ -53,32 +50,21 @@ import static org.junit.Assert.assertTrue;
  * <p>These tests ensure that exceptions are properly forwarded from the timer thread to the task
  * thread and that operator methods are not invoked concurrently.
  */
-@RunWith(Parameterized.class)
-public class StreamTaskTimerITCase extends AbstractTestBase {
-
-    private final TimeCharacteristic timeCharacteristic;
-
-    public StreamTaskTimerITCase(TimeCharacteristic characteristic) {
-        timeCharacteristic = characteristic;
-    }
+class StreamTaskTimerITCase extends AbstractTestBase {
 
     /**
      * Note: this test fails if we don't check for exceptions in the source contexts and do not
      * synchronize in the source contexts.
      */
     @Test
-    public void testOperatorChainedToSource() throws Exception {
+    void testOperatorChainedToSource() throws Exception {
 
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
-        env.setStreamTimeCharacteristic(timeCharacteristic);
         env.setParallelism(1);
 
-        DataStream<String> source = env.addSource(new InfiniteTestSource());
+        DataStream<String> source = infiniteHelloSource(env);
 
-        source.transform(
-                "Custom Operator",
-                BasicTypeInfo.STRING_TYPE_INFO,
-                new TimerOperator(ChainingStrategy.ALWAYS));
+        source.transform("Custom Operator", BasicTypeInfo.STRING_TYPE_INFO, new TimerOperator());
 
         try {
             env.execute("Timer test");
@@ -90,17 +76,12 @@ public class StreamTaskTimerITCase extends AbstractTestBase {
     private void verifyJobExecutionException(JobExecutionException e) throws JobExecutionException {
         final Optional<TimerException> optionalTimerException =
                 ExceptionUtils.findThrowable(e, TimerException.class);
-        assertTrue(optionalTimerException.isPresent());
-
-        TimerException te = optionalTimerException.get();
-        if (te.getCause() instanceof RuntimeException) {
-            RuntimeException re = (RuntimeException) te.getCause();
-            if (!re.getMessage().equals("TEST SUCCESS")) {
-                throw e;
-            }
-        } else {
-            throw e;
-        }
+        assertThat(optionalTimerException)
+                .isPresent()
+                .get(InstanceOfAssertFactories.THROWABLE)
+                .cause()
+                .isInstanceOf(RuntimeException.class)
+                .hasMessage("TEST SUCCESS");
     }
 
     /**
@@ -108,17 +89,13 @@ public class StreamTaskTimerITCase extends AbstractTestBase {
      * synchronize in the source contexts.
      */
     @Test
-    public void testOneInputOperatorWithoutChaining() throws Exception {
+    void testOneInputOperatorWithoutChaining() throws Exception {
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
-        env.setStreamTimeCharacteristic(timeCharacteristic);
         env.setParallelism(1);
 
-        DataStream<String> source = env.addSource(new InfiniteTestSource());
+        DataStream<String> source = infiniteHelloSource(env);
 
-        source.transform(
-                "Custom Operator",
-                BasicTypeInfo.STRING_TYPE_INFO,
-                new TimerOperator(ChainingStrategy.NEVER));
+        source.transform("Custom Operator", BasicTypeInfo.STRING_TYPE_INFO, new TimerOperator());
 
         try {
             env.execute("Timer test");
@@ -128,18 +105,17 @@ public class StreamTaskTimerITCase extends AbstractTestBase {
     }
 
     @Test
-    public void testTwoInputOperatorWithoutChaining() throws Exception {
+    void testTwoInputOperatorWithoutChaining() throws Exception {
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
-        env.setStreamTimeCharacteristic(timeCharacteristic);
         env.setParallelism(1);
 
-        DataStream<String> source = env.addSource(new InfiniteTestSource());
+        DataStream<String> source = infiniteHelloSource(env);
 
         source.connect(source)
                 .transform(
                         "Custom Operator",
                         BasicTypeInfo.STRING_TYPE_INFO,
-                        new TwoInputTimerOperator(ChainingStrategy.NEVER));
+                        new TwoInputTimerOperator());
 
         try {
             env.execute("Timer test");
@@ -159,14 +135,12 @@ public class StreamTaskTimerITCase extends AbstractTestBase {
 
         private Semaphore semaphore = new Semaphore(1);
 
-        public TimerOperator(ChainingStrategy chainingStrategy) {
-            setChainingStrategy(chainingStrategy);
-        }
+        public TimerOperator() {}
 
         @Override
         public void processElement(StreamRecord<String> element) throws Exception {
             if (!semaphore.tryAcquire()) {
-                Assert.fail("Concurrent invocation of operator functions.");
+                fail("Concurrent invocation of operator functions.");
             }
 
             if (first) {
@@ -181,7 +155,7 @@ public class StreamTaskTimerITCase extends AbstractTestBase {
         @Override
         public void onProcessingTime(long time) throws Exception {
             if (!semaphore.tryAcquire()) {
-                Assert.fail("Concurrent invocation of operator functions.");
+                fail("Concurrent invocation of operator functions.");
             }
 
             try {
@@ -202,7 +176,7 @@ public class StreamTaskTimerITCase extends AbstractTestBase {
         @Override
         public void processWatermark(Watermark mark) throws Exception {
             if (!semaphore.tryAcquire()) {
-                Assert.fail("Concurrent invocation of operator functions.");
+                fail("Concurrent invocation of operator functions.");
             }
             semaphore.release();
         }
@@ -219,14 +193,12 @@ public class StreamTaskTimerITCase extends AbstractTestBase {
 
         private Semaphore semaphore = new Semaphore(1);
 
-        public TwoInputTimerOperator(ChainingStrategy chainingStrategy) {
-            setChainingStrategy(chainingStrategy);
-        }
+        public TwoInputTimerOperator() {}
 
         @Override
         public void processElement1(StreamRecord<String> element) throws Exception {
             if (!semaphore.tryAcquire()) {
-                Assert.fail("Concurrent invocation of operator functions.");
+                fail("Concurrent invocation of operator functions.");
             }
 
             if (first) {
@@ -241,7 +213,7 @@ public class StreamTaskTimerITCase extends AbstractTestBase {
         @Override
         public void processElement2(StreamRecord<String> element) throws Exception {
             if (!semaphore.tryAcquire()) {
-                Assert.fail("Concurrent invocation of operator functions.");
+                fail("Concurrent invocation of operator functions.");
             }
 
             if (first) {
@@ -256,7 +228,7 @@ public class StreamTaskTimerITCase extends AbstractTestBase {
         @Override
         public void onProcessingTime(long time) throws Exception {
             if (!semaphore.tryAcquire()) {
-                Assert.fail("Concurrent invocation of operator functions.");
+                fail("Concurrent invocation of operator functions.");
             }
 
             try {
@@ -285,32 +257,13 @@ public class StreamTaskTimerITCase extends AbstractTestBase {
         }
     }
 
-    private static class InfiniteTestSource implements SourceFunction<String> {
-        private static final long serialVersionUID = 1L;
-        private volatile boolean running = true;
-
-        @Override
-        public void run(SourceContext<String> ctx) throws Exception {
-            while (running) {
-                ctx.collect("hello");
-            }
-        }
-
-        @Override
-        public void cancel() {
-            running = false;
-        }
-    }
-
-    // ------------------------------------------------------------------------
-    //  parametrization
-    // ------------------------------------------------------------------------
-
-    @Parameterized.Parameters(name = "Time Characteristic = {0}")
-    public static Collection<Object[]> executionModes() {
-        return Arrays.asList(
-                new Object[] {TimeCharacteristic.ProcessingTime},
-                new Object[] {TimeCharacteristic.IngestionTime},
-                new Object[] {TimeCharacteristic.EventTime});
+    private static DataStream<String> infiniteHelloSource(StreamExecutionEnvironment env) {
+        return env.fromSource(
+                new DataGeneratorSource<>(
+                        (GeneratorFunction<Long, String>) idx -> "hello",
+                        Long.MAX_VALUE,
+                        BasicTypeInfo.STRING_TYPE_INFO),
+                WatermarkStrategy.noWatermarks(),
+                "InfiniteHelloSource");
     }
 }

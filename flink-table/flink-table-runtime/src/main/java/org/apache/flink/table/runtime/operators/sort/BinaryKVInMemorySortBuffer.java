@@ -18,9 +18,9 @@
 package org.apache.flink.table.runtime.operators.sort;
 
 import org.apache.flink.api.java.tuple.Tuple2;
+import org.apache.flink.core.memory.AbstractPagedOutputView;
 import org.apache.flink.core.memory.MemorySegment;
-import org.apache.flink.runtime.io.disk.RandomAccessInputView;
-import org.apache.flink.runtime.memory.AbstractPagedOutputView;
+import org.apache.flink.core.memory.RandomAccessInputView;
 import org.apache.flink.table.data.binary.BinaryRowData;
 import org.apache.flink.table.runtime.generated.NormalizedKeyComputer;
 import org.apache.flink.table.runtime.generated.RecordComparator;
@@ -65,8 +65,7 @@ public class BinaryKVInMemorySortBuffer extends BinaryIndexedSortable {
             BinaryRowDataSerializer valueSerializer,
             RecordComparator comparator,
             ArrayList<MemorySegment> recordBufferSegments,
-            MemorySegmentPool memorySegmentPool)
-            throws IOException {
+            MemorySegmentPool memorySegmentPool) {
         super(
                 normalizedKeyComputer,
                 keySerializer,

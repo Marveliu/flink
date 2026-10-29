@@ -104,6 +104,26 @@ public class StreamRecordUtils {
         return new StreamRecord<>(row);
     }
 
+    /** Creates a new {@link RowData} with INSERT kind. Alias for {@link #row(Object...)}. */
+    public static RowData insert(Object... fields) {
+        return rowOfKind(RowKind.INSERT, fields);
+    }
+
+    /** Creates a new {@link RowData} with UPDATE_BEFORE kind. */
+    public static RowData updateBefore(Object... fields) {
+        return rowOfKind(RowKind.UPDATE_BEFORE, fields);
+    }
+
+    /** Creates a new {@link RowData} with UPDATE_AFTER kind. */
+    public static RowData updateAfter(Object... fields) {
+        return rowOfKind(RowKind.UPDATE_AFTER, fields);
+    }
+
+    /** Creates a new {@link RowData} with DELETE kind. */
+    public static RowData delete(Object... fields) {
+        return rowOfKind(RowKind.DELETE, fields);
+    }
+
     /** Receives a object array, generates a RowData based on the array. */
     public static RowData rowOfKind(RowKind rowKind, Object... fields) {
         Object[] objects = new Object[fields.length];
@@ -144,6 +164,8 @@ public class StreamRecordUtils {
                 writer.writeInt(j, (Integer) value);
             } else if (value instanceof String) {
                 writer.writeString(j, StringData.fromString((String) value));
+            } else if (value instanceof StringData) {
+                writer.writeString(j, (StringData) value);
             } else if (value instanceof Double) {
                 writer.writeDouble(j, (Double) value);
             } else if (value instanceof Float) {

@@ -19,13 +19,23 @@
 package org.apache.flink.table.functions;
 
 import org.apache.flink.annotation.PublicEvolving;
-import org.apache.flink.api.common.ExecutionConfig.GlobalJobParameters;
+import org.apache.flink.api.common.TaskInfo;
 import org.apache.flink.api.common.externalresource.ExternalResourceInfo;
-import org.apache.flink.api.common.functions.Function;
+import org.apache.flink.api.common.functions.OpenContext;
 import org.apache.flink.api.common.functions.RuntimeContext;
+import org.apache.flink.api.common.functions.WithConfigurationOpenContext;
+import org.apache.flink.configuration.Configuration;
 import org.apache.flink.metrics.MetricGroup;
+import org.apache.flink.metrics.groups.UnregisteredMetricsGroup;
+import org.apache.flink.table.api.TableException;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import javax.annotation.Nullable;
 
 import java.io.File;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -33,19 +43,56 @@ import java.util.Set;
  * the user-defined function is executed.
  *
  * <p>The information includes the metric group, distributed cache files, and global job parameters.
+ *
+ * <p>Note: Depending on the call location of a function, not all information might be available.
+ * For example, during constant expression reduction the function is executed locally with minimal
+ * information.
  */
 @PublicEvolving
 public class FunctionContext {
 
-    private RuntimeContext context;
+    private static final Logger LOG = LoggerFactory.getLogger(FunctionContext.class);
+
+    private static final UnregisteredMetricsGroup defaultMetricsGroup =
+            new UnregisteredMetricsGroup();
+
+    private final @Nullable RuntimeContext context;
+
+    private final @Nullable ClassLoader userClassLoader;
+
+    private final @Nullable Map<String, String> jobParameters;
+
+    public FunctionContext(
+            @Nullable RuntimeContext context,
+            @Nullable ClassLoader userClassLoader,
+            @Nullable OpenContext openContext) {
+        this.context = context;
+        this.userClassLoader = userClassLoader;
+        if (openContext instanceof WithConfigurationOpenContext) {
+            Configuration configuration =
+                    ((WithConfigurationOpenContext) openContext).getConfiguration();
+            this.jobParameters = configuration.toMap();
+        } else {
+            this.jobParameters = null;
+        }
+    }
+
+    public FunctionContext(RuntimeContext context) {
+        this(context, null, null);
+    }
 
     /**
-     * Wraps the underlying {@link RuntimeContext}.
+     * Get the {@link TaskInfo} for this parallel subtask.
      *
-     * @param context the runtime context in which Flink's {@link Function} is executed.
+     * @return task info for this parallel subtask.
      */
-    public FunctionContext(RuntimeContext context) {
-        this.context = context;
+    public TaskInfo getTaskInfo() {
+        if (context == null) {
+            throw new TableException(
+                    "Calls to FunctionContext.getTaskInfo are not available "
+                            + "at the current location.");
+        }
+        return context.getTaskInfo();
     }
 
     /**
@@ -54,6 +101,12 @@ public class FunctionContext {
      * @return metric group for this parallel subtask.
      */
     public MetricGroup getMetricGroup() {
+        if (context == null) {
+            LOG.warn(
+                    "Calls to FunctionContext.getMetricGroup will have no effect "
+                            + "at the current location.");
+            return defaultMetricsGroup;
+        }
         return context.getMetricGroup();
     }
 
@@ -64,6 +117,11 @@ public class FunctionContext {
      * @return local temporary file copy of a distributed cache file.
      */
     public File getCachedFile(String name) {
+        if (context == null) {
+            throw new TableException(
+                    "Calls to FunctionContext.getCachedFile are not available "
+                            + "at the current location.");
+        }
         return context.getDistributedCache().getFile(name);
     }
 
@@ -76,15 +134,39 @@ public class FunctionContext {
      * @return (default) value associated with the given key
      */
     public String getJobParameter(String key, String defaultValue) {
-        final GlobalJobParameters conf = context.getExecutionConfig().getGlobalJobParameters();
-        if (conf != null) {
-            return conf.toMap().getOrDefault(key, defaultValue);
+        if (context == null && jobParameters == null) {
+            throw new TableException(
+                    "Calls to FunctionContext.getJobParameter are not available "
+                            + "at the current location.");
+        } else if (context == null) {
+            return jobParameters.getOrDefault(key, defaultValue);
         }
-        return defaultValue;
+
+        return context.getGlobalJobParameters().getOrDefault(key, defaultValue);
     }
 
     /** Get the external resource information. */
     public Set<ExternalResourceInfo> getExternalResourceInfos(String resourceName) {
+        if (context == null) {
+            throw new TableException(
+                    "Calls to FunctionContext.getExternalResourceInfos are not available "
+                            + "at the current location.");
+        }
         return context.getExternalResourceInfos(resourceName);
+    }
+
+    /**
+     * Gets the {@link ClassLoader} to load classes that are not in system's classpath, but are part
+     * of the JAR file of a user job.
+     */
+    public ClassLoader getUserCodeClassLoader() {
+        if (context == null && userClassLoader == null) {
+            throw new TableException(
+                    "Calls to FunctionContext.getUserCodeClassLoader are not available "
+                            + "at the current location.");
+        } else if (context == null) {
+            return userClassLoader;
+        }
+        return context.getUserCodeClassLoader();
     }
 }

@@ -27,6 +27,7 @@ import org.apache.flink.api.common.state.ValueStateDescriptor;
 import org.apache.flink.api.common.typeinfo.Types;
 import org.apache.flink.api.java.functions.KeySelector;
 import org.apache.flink.table.data.RowData;
+import org.apache.flink.table.runtime.operators.join.stream.utils.JoinInputSideSpec;
 import org.apache.flink.table.runtime.typeutils.InternalTypeInfo;
 import org.apache.flink.util.IterableIterator;
 
@@ -99,6 +100,11 @@ public final class JoinRecordStateViews {
         }
 
         @Override
+        public RowData getRecord(RowData record) throws Exception {
+            return recordState.value();
+        }
+
+        @Override
         public Iterable<RowData> getRecords() throws Exception {
             reusedList.clear();
             RowData record = recordState.value();
@@ -146,6 +152,11 @@ public final class JoinRecordStateViews {
         }
 
         @Override
+        public RowData getRecord(RowData record) throws Exception {
+            return recordState.get(uniqueKeySelector.getKey(record));
+        }
+
+        @Override
         public Iterable<RowData> getRecords() throws Exception {
             return recordState.values();
         }
@@ -190,6 +201,12 @@ public final class JoinRecordStateViews {
                 }
             }
             // ignore cnt == null, which means state may be expired
+        }
+
+        @Override
+        public RowData getRecord(RowData record) {
+            // without a unique key, an equal record is a second record and not an update
+            return null;
         }
 
         @Override

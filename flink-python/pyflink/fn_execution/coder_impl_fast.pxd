@@ -90,13 +90,15 @@ cdef class RowCoderImpl(FieldCoderImpl):
     cdef MaskUtils _mask_utils
 
 cdef class ArrowCoderImpl(FieldCoderImpl):
+    cdef object _batch_format
+    cdef bint _returns_table_row
     cdef object _schema
     cdef list _field_types
     cdef object _timezone
     cdef object _resettable_io
     cdef object _batch_reader
 
-    cdef list decode_one_batch_from_stream(self, InputStream in_stream, size_t size)
+    cdef decode_one_batch_from_stream(self, InputStream in_stream, size_t size)
 
 cdef class OverWindowArrowCoderImpl(FieldCoderImpl):
     cdef ArrowCoderImpl _arrow_coder
@@ -184,3 +186,20 @@ cdef class CountWindowCoderImpl(FieldCoderImpl):
 cdef class DataViewFilterCoderImpl(FieldCoderImpl):
     cdef object _udf_data_view_specs
     cdef PickleCoderImpl _pickle_coder
+
+cdef class AvroCoderImpl(FieldCoderImpl):
+    cdef object _buffer_wrapper
+    cdef object _schema
+    cdef object _decoder
+    cdef object _encoder
+    cdef object _reader
+    cdef object _writer
+
+cdef class LocalDateCoderImpl(FieldCoderImpl):
+    pass
+
+cdef class LocalTimeCoderImpl(FieldCoderImpl):
+    pass
+
+cdef class LocalDateTimeCoderImpl(FieldCoderImpl):
+    pass

@@ -23,6 +23,7 @@ import org.apache.flink.table.api.TableException;
 import org.apache.flink.table.catalog.DataTypeFactory;
 import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.types.inference.InputTypeStrategy;
+import org.apache.flink.table.types.inference.StaticArgument;
 import org.apache.flink.table.types.inference.TypeInference;
 import org.apache.flink.table.types.inference.TypeStrategy;
 
@@ -69,16 +70,26 @@ public final class BuiltInFunctionDefinition implements SpecializedFunction {
 
     private final boolean isInternal;
 
+    private final SqlCallSyntax sqlCallSyntax;
+
+    private final @Nullable ChangelogModeStrategy changelogModeStrategy;
+
+    private final String sqlName;
+
     private BuiltInFunctionDefinition(
             String name,
+            String sqlName,
             int version,
             FunctionKind kind,
             TypeInference typeInference,
+            SqlCallSyntax sqlCallSyntax,
             boolean isDeterministic,
             boolean isRuntimeProvided,
             String runtimeClass,
-            boolean isInternal) {
+            boolean isInternal,
+            @Nullable ChangelogModeStrategy changelogModeStrategy) {
         this.name = checkNotNull(name, "Name must not be null.");
+        this.sqlName = sqlName;
         this.version = isInternal ? null : version;
         this.kind = checkNotNull(kind, "Kind must not be null.");
         this.typeInference = checkNotNull(typeInference, "Type inference must not be null.");
@@ -86,6 +97,8 @@ public final class BuiltInFunctionDefinition implements SpecializedFunction {
         this.isRuntimeProvided = isRuntimeProvided;
         this.runtimeClass = runtimeClass;
         this.isInternal = isInternal;
+        this.sqlCallSyntax = sqlCallSyntax;
+        this.changelogModeStrategy = changelogModeStrategy;
         validateFunction(this.name, this.version, this.isInternal);
     }
 
@@ -96,6 +109,14 @@ public final class BuiltInFunctionDefinition implements SpecializedFunction {
 
     public String getName() {
         return name;
+    }
+
+    public String getSqlName() {
+        if (sqlName != null) {
+            return sqlName;
+        }
+
+        return getName().toUpperCase(Locale.ROOT);
     }
 
     public Optional<Integer> getVersion() {
@@ -112,6 +133,14 @@ public final class BuiltInFunctionDefinition implements SpecializedFunction {
 
     public boolean isInternal() {
         return isInternal;
+    }
+
+    /**
+     * Returns the optional {@link ChangelogModeStrategy} for built-in PTFs that emit updates (e.g.,
+     * FROM_CHANGELOG). The planner uses this to determine the output changelog mode.
+     */
+    public Optional<ChangelogModeStrategy> getChangelogModeStrategy() {
+        return Optional.ofNullable(changelogModeStrategy);
     }
 
     public String getQualifiedName() {
@@ -163,6 +192,10 @@ public final class BuiltInFunctionDefinition implements SpecializedFunction {
         return typeInference;
     }
 
+    public SqlCallSyntax getCallSyntax() {
+        return sqlCallSyntax;
+    }
+
     @Override
     public boolean isDeterministic() {
         return isDeterministic;
@@ -209,9 +242,12 @@ public final class BuiltInFunctionDefinition implements SpecializedFunction {
     // --------------------------------------------------------------------------------------------
 
     /** Builder for fluent definition of built-in functions. */
+    @Internal
     public static final class Builder {
 
         private String name;
+
+        private String sqlName;
 
         private int version = DEFAULT_VERSION;
 
@@ -226,6 +262,10 @@ public final class BuiltInFunctionDefinition implements SpecializedFunction {
         private String runtimeClass;
 
         private boolean isInternal = false;
+
+        private SqlCallSyntax sqlCallSyntax = SqlCallSyntax.FUNCTION;
+
+        private @Nullable ChangelogModeStrategy changelogModeStrategy;
 
         public Builder() {
             // default constructor to allow a fluent definition
@@ -267,11 +307,29 @@ public final class BuiltInFunctionDefinition implements SpecializedFunction {
             return this;
         }
 
+        public Builder staticArguments(StaticArgument... staticArguments) {
+            this.typeInferenceBuilder.staticArguments(staticArguments);
+            return this;
+        }
+
+        public Builder disableSystemArguments(boolean disableSystemArguments) {
+            this.typeInferenceBuilder.disableSystemArguments(disableSystemArguments);
+            return this;
+        }
+
+        /**
+         * @deprecated Use {@link #staticArguments(StaticArgument...)} instead.
+         */
+        @Deprecated
         public Builder namedArguments(String... argumentNames) {
             this.typeInferenceBuilder.namedArguments(Arrays.asList(argumentNames));
             return this;
         }
 
+        /**
+         * @deprecated Use {@link #staticArguments(StaticArgument...)} instead.
+         */
+        @Deprecated
         public Builder typedArguments(DataType... argumentTypes) {
             this.typeInferenceBuilder.typedArguments(Arrays.asList(argumentTypes));
             return this;
@@ -326,16 +384,57 @@ public final class BuiltInFunctionDefinition implements SpecializedFunction {
             return this;
         }
 
+        /**
+         * Overwrites the syntax used for unparsing a function into a SQL string. If not specified,
+         * {@link SqlCallSyntax#FUNCTION} is used.
+         */
+        public Builder callSyntax(SqlCallSyntax syntax) {
+            this.sqlCallSyntax = syntax;
+            return this;
+        }
+
+        /**
+         * Overwrites the syntax used for unparsing a function into a SQL string. If not specified,
+         * {@link SqlCallSyntax#FUNCTION} is used. This method overwrites the name as well. If the
+         * name is not provided {@link #name(String)} is passed to the {@link SqlCallSyntax}.
+         */
+        public Builder callSyntax(String name, SqlCallSyntax syntax) {
+            this.sqlName = name;
+            this.sqlCallSyntax = syntax;
+            return this;
+        }
+
+        /**
+         * Overwrites the name that is used for unparsing a function into a SQL string. If not
+         * specified, {@link #name(String)} is used.
+         */
+        public Builder sqlName(String name) {
+            this.sqlName = name;
+            return this;
+        }
+
+        /**
+         * Sets the {@link ChangelogModeStrategy} that determines the output changelog mode for this
+         * built-in PTF. Only needed for PTFs that emit updates (e.g., FROM_CHANGELOG).
+         */
+        public Builder changelogModeStrategy(ChangelogModeStrategy changelogModeStrategy) {
+            this.changelogModeStrategy = changelogModeStrategy;
+            return this;
+        }
+
         public BuiltInFunctionDefinition build() {
             return new BuiltInFunctionDefinition(
                     name,
+                    sqlName,
                     version,
                     kind,
                     typeInferenceBuilder.build(),
+                    sqlCallSyntax,
                     isDeterministic,
                     isRuntimeProvided,
                     runtimeClass,
-                    isInternal);
+                    isInternal,
+                    changelogModeStrategy);
         }
     }
 }

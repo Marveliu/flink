@@ -22,105 +22,101 @@ import org.apache.calcite.sql.SqlCall;
 import org.apache.calcite.sql.SqlCharStringLiteral;
 import org.apache.calcite.sql.SqlIdentifier;
 import org.apache.calcite.sql.SqlKind;
+import org.apache.calcite.sql.SqlLiteral;
 import org.apache.calcite.sql.SqlNode;
 import org.apache.calcite.sql.SqlOperator;
 import org.apache.calcite.sql.SqlSpecialOperator;
-import org.apache.calcite.sql.SqlWriter;
 import org.apache.calcite.sql.parser.SqlParserPos;
 
-import java.util.Collections;
-import java.util.List;
-import java.util.Objects;
+/**
+ * SHOW TABLES sql call. The full syntax for show functions is as followings:
+ *
+ * <pre>{@code
+ * SHOW ( VIEWS | [ MATERIALIZED ]TABLES ) [ ( FROM | IN ) [catalog_name.]database_name ] [ [NOT] LIKE
+ * <sql_like_pattern> ] statement
+ * }</pre>
+ */
+public class SqlShowTables extends SqlShowCall {
 
-import static java.util.Objects.requireNonNull;
-
-/** SHOW Tables sql call. */
-public class SqlShowTables extends SqlCall {
-
-    public static final SqlSpecialOperator OPERATOR =
-            new SqlSpecialOperator("SHOW TABLES", SqlKind.OTHER);
-
-    protected final SqlIdentifier databaseName;
-    protected final String preposition;
-    protected final boolean notLike;
-    protected final SqlCharStringLiteral likeLiteral;
-
-    public SqlShowTables(SqlParserPos pos) {
-        super(pos);
-        this.preposition = null;
-        this.databaseName = null;
-        this.notLike = false;
-        this.likeLiteral = null;
-    }
+    private final SqlTableKind kind;
 
     public SqlShowTables(
             SqlParserPos pos,
+            SqlTableKind kind,
             String preposition,
             SqlIdentifier databaseName,
             boolean notLike,
             SqlCharStringLiteral likeLiteral) {
-        super(pos);
-        this.preposition = preposition;
-        this.databaseName =
-                preposition != null
-                        ? requireNonNull(databaseName, "Database name must not be null.")
-                        : null;
-        this.notLike = notLike;
-        this.likeLiteral = likeLiteral;
-    }
-
-    public String getLikeSqlPattern() {
-        return Objects.isNull(this.likeLiteral) ? null : likeLiteral.getValueAs(String.class);
-    }
-
-    public boolean isNotLike() {
-        return notLike;
-    }
-
-    public SqlCharStringLiteral getLikeLiteral() {
-        return likeLiteral;
-    }
-
-    public boolean isWithLike() {
-        return Objects.nonNull(likeLiteral);
-    }
-
-    public String getPreposition() {
-        return preposition;
+        // only LIKE currently supported for SHOW TABLES
+        super(
+                pos,
+                preposition,
+                databaseName,
+                likeLiteral == null ? null : "LIKE",
+                likeLiteral,
+                notLike);
+        this.kind = kind;
     }
 
     @Override
     public SqlOperator getOperator() {
-        return OPERATOR;
+        return kind.getOperator();
     }
 
     @Override
-    public List<SqlNode> getOperandList() {
-        return Objects.isNull(this.databaseName)
-                ? Collections.emptyList()
-                : Collections.singletonList(databaseName);
+    String getOperationName() {
+        return getOperator().getName();
     }
 
-    public String[] fullDatabaseName() {
-        return Objects.isNull(this.databaseName)
-                ? new String[] {}
-                : databaseName.names.toArray(new String[0]);
+    public SqlTableKind getTableKind() {
+        return kind;
     }
 
-    @Override
-    public void unparse(SqlWriter writer, int leftPrec, int rightPrec) {
-        if (this.preposition == null) {
-            writer.keyword("SHOW TABLES");
-        } else if (databaseName != null) {
-            writer.keyword("SHOW TABLES " + this.preposition);
-            databaseName.unparse(writer, leftPrec, rightPrec);
-        }
-        if (isWithLike()) {
-            if (isNotLike()) {
-                writer.keyword(String.format("NOT LIKE '%s'", getLikeSqlPattern()));
-            } else {
-                writer.keyword(String.format("LIKE '%s'", getLikeSqlPattern()));
+    private static SqlCall createCallForKind(
+            SqlOperator operator, SqlParserPos pos, SqlNode... operands) {
+        SqlTableKind tableKind = SqlTableKind.TABLE;
+        for (SqlTableKind candidate : SqlTableKind.values()) {
+            if (candidate.getOperator() == operator) {
+                tableKind = candidate;
+                break;
             }
+        }
+        return new SqlShowTables(
+                pos,
+                tableKind,
+                operandToString(operands[1]),
+                (SqlIdentifier) operands[0],
+                operandToBoolean(operands[4]),
+                (SqlCharStringLiteral) operands[3]);
+    }
+
+    /**
+     * The kind of table. Keep in sync with {@link
+     * org.apache.flink.table.catalog.CatalogBaseTable.TableKind}.
+     */
+    public enum SqlTableKind {
+        MATERIALIZED_TABLE(getSpecialOperator("SHOW MATERIALIZED TABLES")),
+        TABLE(getSpecialOperator("SHOW TABLES")),
+        VIEW(getSpecialOperator("SHOW VIEWS"));
+
+        private final SqlSpecialOperator operator;
+
+        SqlTableKind(final SqlSpecialOperator operator) {
+            this.operator = operator;
+        }
+
+        public SqlSpecialOperator getOperator() {
+            return operator;
+        }
+
+        private static SqlSpecialOperator getSpecialOperator(final String name) {
+            return new SqlSpecialOperator(name, SqlKind.OTHER) {
+                @Override
+                public SqlCall createCall(
+                        SqlLiteral functionQualifier, SqlParserPos pos, SqlNode... operands) {
+                    return createCallForKind(this, pos, operands);
+                }
+            };
         }
     }
 }

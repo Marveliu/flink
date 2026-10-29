@@ -1,0 +1,884 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.apache.flink.table.functions;
+
+import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.table.annotation.ArgumentHint;
+import org.apache.flink.table.annotation.ArgumentTrait;
+import org.apache.flink.table.annotation.DataTypeHint;
+import org.apache.flink.table.annotation.FunctionHint;
+import org.apache.flink.table.annotation.StateHint;
+import org.apache.flink.table.annotation.StateKind;
+import org.apache.flink.table.api.dataview.DataView;
+import org.apache.flink.table.api.dataview.ListView;
+import org.apache.flink.table.api.dataview.MapView;
+import org.apache.flink.table.api.dataview.ValueView;
+import org.apache.flink.table.catalog.DataTypeFactory;
+import org.apache.flink.table.connector.ChangelogMode;
+import org.apache.flink.table.types.extraction.TypeInferenceExtractor;
+import org.apache.flink.table.types.inference.TypeInference;
+import org.apache.flink.types.variant.Variant;
+import org.apache.flink.util.Collector;
+
+import java.time.Instant;
+import java.time.LocalDateTime;
+
+/**
+ * Base class for a user-defined process table function (PTF).
+ *
+ * <p>PTFs are the most powerful function kind for Flink SQL and Table API. They enable implementing
+ * user-defined operators that can be as feature-rich as built-in operations. PTFs can take
+ * (partitioned) tables to produce a new table. They have access to Flink's managed state,
+ * event-time and timer services, and underlying table changelogs.
+ *
+ * <p>A process table function (PTF) maps zero, one, or multiple tables to zero, one, or multiple
+ * rows (or structured types). Scalar arguments are also supported. If the output record consists of
+ * only one field, the wrapper can be omitted, and a scalar value can be emitted that will be
+ * implicitly wrapped into a row by the runtime.
+ *
+ * <h1>Table Semantics and Virtual Processors</h1>
+ *
+ * <p>PTFs can produce a new table by consuming tables as arguments. For scalability, input tables
+ * are distributed across so-called "virtual processors". A virtual processor, as defined by the SQL
+ * standard, executes a PTF instance and has access only to a portion of the entire table. The
+ * argument declaration decides about the size of the portion and co-location of data. Conceptually,
+ * tables can be processed either "per row" (i.e. with row semantics) or "per set" (i.e. with set
+ * semantics).
+ *
+ * <h2>Table Argument with Row Semantics</h2>
+ *
+ * <p>A PTF that takes a table with row semantics assumes that there is no correlation between rows
+ * and each row can be processed independently. The framework is free in how to distribute rows
+ * across virtual processors and each virtual processor has access only to the currently processed
+ * row.
+ *
+ * <h2>Table Argument with Set Semantics</h2>
+ *
+ * <p>A PTF that takes a table with set semantics assumes that there is a correlation between rows.
+ * When calling the function, the PARTITION BY clause defines the columns for correlation. The
+ * framework ensures that all rows belonging to same set are co-located. A PTF instance is able to
+ * access all rows belonging to the same set. In other words: The virtual processor is scoped by a
+ * key context.
+ *
+ * <p>It is also possible not to provide a key ({@link ArgumentTrait#OPTIONAL_PARTITION_BY}), in
+ * which case only one virtual processor handles the entire table, thereby losing scalability
+ * benefits.
+ *
+ * <h2>Table Argument with Broadcast Semantics</h2>
+ *
+ * <p>A PTF that takes at least one table with row or set semantics can additionally take a table
+ * with broadcast semantics ({@link ArgumentTrait#BROADCAST_SEMANTIC_TABLE}). Every row of a
+ * broadcast table is sent to all virtual processors, independently of any key partitioning.
+ * Broadcast tables are intended for low-throughput data such as rules, configuration, or control
+ * events. They enable parameterizing a PTF instance during runtime, avoiding downtime due to
+ * restarts. See the section about broadcast state below.
+ *
+ * <h1>Implementation</h1>
+ *
+ * <p>The behavior of a {@link ProcessTableFunction} can be defined by implementing a custom
+ * evaluation method. The evaluation method must be declared publicly, not static, and named <code>
+ * eval</code>. Overloading is not supported.
+ *
+ * <p>For storing a user-defined function in a catalog, the class must have a default constructor
+ * and must be instantiable during runtime. Anonymous functions in Table API can only be persisted
+ * if the function object is not stateful (i.e. containing only transient and static fields).
+ *
+ * <h2>Data Types</h2>
+ *
+ * <p>By default, input and output data types are automatically extracted using reflection. This
+ * includes the generic argument {@code T} of the class for determining an output data type. Input
+ * arguments are derived from the {@code eval()} method. If the reflective information is not
+ * sufficient, it can be supported and enriched with {@link FunctionHint}, {@link ArgumentHint}, and
+ * {@link DataTypeHint} annotations.
+ *
+ * <p>The following examples show how to specify data types:
+ *
+ * <pre>{@code
+ * // Function that accepts two scalar INT arguments and emits them as an implicit ROW < INT >
+ * class AdditionFunction extends ProcessTableFunction<Integer> {
+ *   public void eval(Integer a, Integer b) {
+ *     collect(a + b);
+ *   }
+ * }
+ *
+ * // Function that produces an explicit ROW < i INT, s STRING > from scalar arguments, the function hint helps in
+ * // declaring the row's fields
+ * @DataTypeHint("ROW< i INT, s STRING >")
+ * class DuplicatorFunction extends ProcessTableFunction<Row> {
+ *   public void eval(Integer i, String s) {
+ *     collect(Row.of(i, s));
+ *     collect(Row.of(i, s));
+ *   }
+ * }
+ *
+ * // Function that accepts a scalar DECIMAL(10, 4) and emits it as an explicit ROW < d DECIMAL(10, 4) >
+ * @FunctionHint(output = @DataTypeHint("ROW< d DECIMAL(10, 4) >"))
+ * class DuplicatorFunction extends ProcessTableFunction<Row> {
+ *   public void eval(@DataTypeHint("DECIMAL(10, 4)") BigDecimal d) {
+ *     collect(Row.of(d));
+ *     collect(Row.of(d));
+ *   }
+ * }
+ * }</pre>
+ *
+ * <h2>Arguments</h2>
+ *
+ * <p>The {@link ArgumentHint} annotation enables declaring the name, data type, and kind of each
+ * argument (i.e. ArgumentTrait.SCALAR, ArgumentTrait.ROW_SEMANTIC_TABLE,
+ * ArgumentTrait.SET_SEMANTIC_TABLE, or ArgumentTrait.BROADCAST_SEMANTIC_TABLE). It allows
+ * specifying other traits for table arguments as well:
+ *
+ * <pre>{@code
+ * // Function that has two arguments:
+ * // "input_table" (a table with set semantics) and "threshold" (a scalar value)
+ * class ThresholdFunction extends ProcessTableFunction<Integer> {
+ *   public void eval(
+ *       // For table arguments, a data type for Row is optional (leading to polymorphic behavior)
+ *       @ArgumentHint(value = ArgumentTrait.SET_SEMANTIC_TABLE, name = "input_table") Row t,
+ *       // Scalar arguments require a data type either explicit or via reflection
+ *       @ArgumentHint(value = ArgumentTrait.SCALAR, name = "threshold") Integer threshold) {
+ *     int amount = t.getFieldAs("amount");
+ *     if (amount >= threshold) {
+ *       collect(amount);
+ *     }
+ *   }
+ * }
+ * }</pre>
+ *
+ * <p>Table arguments can declare a concrete data type (of either row or structured type) or accept
+ * any type of row in a polymorphic fashion:
+ *
+ * <pre>{@code
+ * // Function with explicit table argument type of row
+ * class MyPTF extends ProcessTableFunction<String> {
+ *   public void eval(Context ctx, @ArgumentHint(value = ArgumentTrait.SET_SEMANTIC_TABLE, type = @DataTypeHint("ROW < s STRING >")) Row t) {
+ *     TableSemantics semantics = ctx.tableSemanticsFor("t");
+ *     // Always returns "ROW < s STRING >"
+ *     semantics.dataType();
+ *     ...
+ *   }
+ * }
+ *
+ * // Function with explicit table argument type of structured type "Customer"
+ * class MyPTF extends ProcessTableFunction<String> {
+ *   public void eval(Context ctx, @ArgumentHint(value = ArgumentTrait.SET_SEMANTIC_TABLE) Customer c) {
+ *     TableSemantics semantics = ctx.tableSemanticsFor("c");
+ *     // Always returns structured type of "Customer"
+ *     semantics.dataType();
+ *     ...
+ *   }
+ * }
+ *
+ * // Function with polymorphic table argument
+ * class MyPTF extends ProcessTableFunction<String> {
+ *   public void eval(Context ctx, @ArgumentHint(value = ArgumentTrait.SET_SEMANTIC_TABLE) Row t) {
+ *     TableSemantics semantics = ctx.tableSemanticsFor("t");
+ *     // Always returns "ROW" but content depends on the table that is passed into the call
+ *     semantics.dataType();
+ *     ...
+ *   }
+ * }
+ * }</pre>
+ *
+ * <h2>Context</h2>
+ *
+ * <p>A {@link Context} can be added as a first argument to the eval() method for additional
+ * information about the input tables and other services provided by the framework:
+ *
+ * <pre>{@code
+ * // Function that accesses the Context for reading the PARTITION BY columns and
+ * // excluding them when building a result string
+ * class ConcatNonKeysFunction extends ProcessTableFunction<String> {
+ *   public void eval(Context ctx, @ArgumentHint(ArgumentTrait.SET_SEMANTIC_TABLE) Row inputTable) {
+ *     TableSemantics semantics = ctx.tableSemanticsFor("inputTable");
+ *     List<Integer> keys = Arrays.asList(semantics.partitionByColumns());
+ *     return IntStream.range(0, inputTable.getArity())
+ *       .filter(pos -> !keys.contains(pos))
+ *       .mapToObj(inputTable::getField)
+ *       .map(Object::toString)
+ *       .collect(Collectors.joining(", "));
+ *   }
+ * }
+ * }</pre>
+ *
+ * <h1>State</h1>
+ *
+ * <p>A PTF that takes set semantic tables can be stateful. Intermediate results can be buffered,
+ * cached, aggregated, or simply stored for repeated access. A function can have one or more state
+ * entries which are managed by the framework. Flink takes care of storing and restoring those
+ * during failures or restarts (i.e. Flink managed state).
+ *
+ * <p>A state entry is partitioned by a key and cannot be accessed globally. The partitioning (or a
+ * single partition in case of no partitioning) is defined by the corresponding function call. In
+ * other words: Similar to how a virtual processor has access only to a portion of the entire table,
+ * a PTF has access only to a portion of the entire state defined by the PARTITION BY clause. In
+ * Flink, this concept is also known as keyed state.
+ *
+ * <p>State entries can be added as a mutable parameter to the eval() method. In order to
+ * distinguish them from call arguments, they must be declared before any other argument, but after
+ * an optional {@link Context} parameter. Furthermore, they must be annotated either via {@link
+ * StateHint} or declared as part of {@link FunctionHint#state()}.
+ *
+ * <p>For read and write access, only row or structured types (i.e. POJOs with default constructor)
+ * qualify as a data type. If no state is present, all fields are set to null (in case of a row
+ * type) or fields are set to their default value (in case of a structured type). For state
+ * efficiency, it is recommended to keep all fields nullable.
+ *
+ * <pre>{@code
+ * // Function that counts and stores its intermediate result in the CountState object
+ * // which will be persisted by Flink
+ * class CountingFunction extends ProcessTableFunction<String> {
+ *   public static class CountState {
+ *     public long count = 0L;
+ *   }
+ *
+ *   public void eval(@StateHint CountState memory, @ArgumentHint(SET_SEMANTIC_TABLE) Row input) {
+ *     memory.count++;
+ *     collect("Seen rows: " + memory.count);
+ *   }
+ * }
+ *
+ * // Function that waits for a second event coming in
+ * class CountingFunction extends ProcessTableFunction<String> {
+ *   public static class SeenState {
+ *     public String first;
+ *   }
+ *
+ *   public void eval(@StateHint SeenState memory, @ArgumentHint(SET_SEMANTIC_TABLE) Row input) {
+ *     if (memory.first == null) {
+ *       memory.first = input.toString();
+ *     } else {
+ *       collect("Event 1: " + memory.first + " and Event 2: " + input.toString());
+ *     }
+ *   }
+ * }
+ *
+ * // Function that uses Row for state
+ * class CountingFunction extends ProcessTableFunction<String> {
+ *   public void eval(@StateHint(type = @DataTypeHint("ROW < count BIGINT >")) Row memory, @ArgumentHint(SET_SEMANTIC_TABLE) Row input) {
+ *     Long newCount = 1L;
+ *     if (memory.getField("count") != null) {
+ *       newCount += memory.getFieldAs("count");
+ *     }
+ *     memory.setField("count", newCount);
+ *     collect("Seen rows: " + newCount);
+ *   }
+ * }
+ * }</pre>
+ *
+ * <h2>Large State</h2>
+ *
+ * <p>Flink's state backends provide different types of state to efficiently handle large state.
+ *
+ * <p>Every state entry can store data ranging from a single scalar, a composite type, or even a
+ * whole list or map. What differs is <i>how</i> the data is accessed:
+ *
+ * <ul>
+ *   <li><b>Eager value state</b>: The value follows a Read-Modify-Write cycle. On access the
+ *       complete value is deserialized, and on update it is serialized again - regardless of how
+ *       much of it is actually read or changed.
+ *   <li><b>Value view</b>: A value with lazy access via {@link ValueView}. The complete value is
+ *       only deserialized on read and serialized on update.
+ *   <li><b>List view</b>: A list of values with lazy access for each element via {@link ListView},
+ *       supporting operations like appending, removing, and iterating.
+ *   <li><b>Map view</b>: A map (key-value pair) with lazy access for each pair via {@link MapView},
+ *       supporting efficient lookups, modifications, and removal of individual entries.
+ * </ul>
+ *
+ * <p>By default, a state entry in a PTF is represented as eager value state. Value state is not
+ * limited to a single scalar. It can also hold a whole list or map (for example a {@code Row} or
+ * POJO with an {@code ARRAY} or {@code MAP} field). In that case the <i>complete</i> collection is
+ * deserialized when {@code eval()} is called and serialized again when it returns, no matter how
+ * many elements are actually accessed.
+ *
+ * <p>{@link ValueView}, {@link ListView}, and {@link MapView} are the lazy counterparts. They
+ * provide direct views to the underlying Flink state backend and are preferred over eager value
+ * state, especially when state is accessed conditionally or is too large to fit into memory.
+ *
+ * <p>For example, a {@link ListView} appends or iterates elements without materializing the full
+ * list, and a {@link MapView} accesses a value via {@link MapView#get(Object)} by only
+ * deserializing the value associated with the specified key. This allows for efficient access to
+ * individual entries without needing to load the entire collection.
+ *
+ * <p>State TTL is applied individually to each entry in a list or map, allowing for fine-grained
+ * expiration control over state elements.
+ *
+ * <pre>{@code
+ * // Function that uses a value view for counting events per user with lazy state access
+ * class CountingFunction extends ProcessTableFunction<String> {
+ *   public void eval(@StateHint ValueView<Integer> count, @ArgumentHint(SET_SEMANTIC_TABLE) Row input) {
+ *     Integer currentCount = count.getValue();
+ *     if (currentCount == null) {
+ *       currentCount = 0;
+ *     }
+ *     count.setValue(currentCount + 1);
+ *     collect("Count for user: " + (currentCount + 1));
+ *   }
+ * }
+ *
+ * // Function that uses a map view for storing a large map for an event history per user
+ * class HistoryFunction extends ProcessTableFunction<String> {
+ *   public void eval(@StateHint MapView<String, Integer> largeMemory, @ArgumentHint(SET_SEMANTIC_TABLE) Row input) {
+ *     String eventId = input.getFieldAs("eventId");
+ *     Integer count = largeMemory.get(eventId);
+ *     if (count == null) {
+ *       largeMemory.put(eventId, 1);
+ *     } else {
+ *       if (count > 1000) {
+ *         collect("Anomaly detected: " + eventId);
+ *       }
+ *       largeMemory.put(eventId, count + 1);
+ *     }
+ *   }
+ * }
+ * }</pre>
+ *
+ * <h2>Efficiency and Design Principles</h2>
+ *
+ * <p>A stateful function also means that data layout and data retention should be well thought
+ * through. An ever-growing state can happen by an unlimited number of partitions (i.e. an open
+ * keyspace) or even within a partition. Consider setting a {@link StateHint#ttl()} or call {@link
+ * Context#clearAllState()} eventually:
+ *
+ * <pre>{@code
+ * // Function that waits for a second event coming in BUT with better state efficiency
+ * class CountingFunction extends ProcessTableFunction<String> {
+ *   public static class SeenState {
+ *     public String first;
+ *   }
+ *
+ *   public void eval(Context ctx, @StateHint(ttl = "1 day") SeenState memory, @ArgumentHint(SET_SEMANTIC_TABLE) Row input) {
+ *     if (memory.first == null) {
+ *       memory.first = input.toString();
+ *     } else {
+ *       collect("Event 1: " + memory.first + " and Event 2: " + input.toString());
+ *       ctx.clearAllState();
+ *     }
+ *   }
+ * }
+ * }</pre>
+ *
+ * <p>We recommend the use of the {@code VARIANT} data type for future schema evolution. For
+ * example, a {@link ValueView} of {@link Variant} can lazily store semi-structured data whose
+ * schema may change over time:
+ *
+ * <pre>{@code
+ * // Function that lazily stores the latest semi-structured payload per key
+ * class VariantFunction extends ProcessTableFunction<String> {
+ *   public void eval(@StateHint ValueView<Variant> last, @ArgumentHint(SET_SEMANTIC_TABLE) Row input) {
+ *     Variant previous = last.getValue();
+ *     last.setValue(input.getFieldAs("payload"));
+ *     collect(previous == null ? "First payload" : "Updated payload");
+ *   }
+ * }
+ * }</pre>
+ *
+ * <h2>Broadcast State</h2>
+ *
+ * <p>Broadcast state enables patterns such as a rule engine where rules are dynamically updated at
+ * runtime, or dynamic configuration that influences the processing of the main table(s).
+ *
+ * <p>Broadcast state is tightly coupled to a broadcast semantic table. A table argument declared
+ * with {@link ArgumentTrait#BROADCAST_SEMANTIC_TABLE} acts as a "side" or "control" input. Every
+ * row of a broadcast table is sent to all virtual processors, regardless of any PARTITION BY
+ * clause. A PTF can store this broadcast information in state entries declared with
+ * {@code @StateHint(StateKind.BROADCAST)}. This broadcast state is shared across all sets and can
+ * be read when processing rows from the main table(s).
+ *
+ * <pre>{@code
+ * // Function that filters sentences using a dynamically updated list of bad words
+ * class RuleFunction extends ProcessTableFunction<String> {
+ *   public void eval(
+ *       @StateHint(StateKind.BROADCAST) MapView<String, Boolean> badWords,
+ *       @ArgumentHint(ROW_SEMANTIC_TABLE) Row data,
+ *       @ArgumentHint(BROADCAST_SEMANTIC_TABLE) Row rules) throws Exception {
+ *     // Write access to broadcast state for the broadcast table
+ *     if (rules != null) {
+ *       badWords.put(rules.getFieldAs("word"), true);
+ *       return;
+ *     }
+ *     // Read access to broadcast state for the main table
+ *     String sentence = data.getFieldAs("sentence");
+ *     for (String word : sentence.toLowerCase().split(" ")) {
+ *       if (badWords.contains(word)) {
+ *         return;
+ *       }
+ *     }
+ *     collect(sentence);
+ *   }
+ * }
+ * }</pre>
+ *
+ * <p>The following rules apply to broadcast tables and broadcast state:
+ *
+ * <ul>
+ *   <li>At least one table argument with row or set semantics must be declared next to broadcast
+ *       tables. Multiple broadcast tables and multiple broadcast state entries are supported.
+ *   <li>Broadcast state can only be modified while processing a broadcast row. This includes
+ *       clearing broadcast state. When processing rows of the main table(s), broadcast state is
+ *       read-only.
+ *   <li>While processing a broadcast row, there is no key context. State entries that are scoped to
+ *       a set are passed as null, results can not be emitted via {@code collect()}, and timers
+ *       cannot be registered or cleared. {@link Context#clearAllState()} only clears broadcast
+ *       state in this case.
+ *   <li>It is the responsibility of the PTF implementer to maintain identical broadcast state
+ *       across all virtual processors, i.e. broadcast state should only be updated
+ *       deterministically based on the broadcast rows.
+ * </ul>
+ *
+ * <p>Note: The system decides which input row is streamed through the virtual processor next. A
+ * change to a broadcast state entry has no effect on rows of the main table(s) that have been
+ * processed before.
+ *
+ * <p>Use {@link ArgumentTrait#NOTIFY_STATEFUL_SETS} to re-evaluate previously processed sets. For
+ * every broadcast row, {@code eval()} is then called multiple times: First, without scoping to a
+ * set to update the broadcast state, if available. Next, once for every set that holds at least one
+ * state entry: In this phase, the {@code eval()} implementation has access to the incoming
+ * broadcast row, as well as all (keyed) state entries. Notifying stateful sets is expensive and
+ * should only be used if broadcast rows are rare and the overall key space is relatively low.
+ *
+ * <h1>Time and Timers</h1>
+ *
+ * <p>A PTF supports event time natively. Time-based services are available via {@link
+ * Context#timeContext(Class)}.
+ *
+ * <h2>Time</h2>
+ *
+ * <p>Every PTF takes an optional {@code on_time} argument. The {@code on_time} argument in the
+ * function call declares the time attribute column for which a watermark has been declared. When
+ * processing a table's row, this timestamp can be accessed via {@link TimeContext#time()} and the
+ * watermark via {@link TimeContext#currentWatermark()}/{@link TimeContext#tableWatermark()}
+ * respectively.
+ *
+ * <p>Specifying an {@code on_time} argument in the function call instructs the framework to return
+ * a {@code rowtime} column in the function's output for subsequent time-based operations.
+ *
+ * <p>The {@link ArgumentTrait#REQUIRE_ON_TIME} makes the {@code on_time} argument mandatory if
+ * necessary.
+ *
+ * <h2>Timers</h2>
+ *
+ * <p>A PTF that takes set semantic tables can support timers. Timers allow for continuing the
+ * processing at a later point in time. This makes waiting, synchronization, or timeouts possible. A
+ * timer fires for the registered time when the watermark progresses the logical clock.
+ *
+ * <p>Timers can be named ({@link TimeContext#registerOnTime(String, Object)}) or unnamed ({@link
+ * TimeContext#registerOnTime(Object)}). The name of a timer can be useful for replacing or deleting
+ * an existing timer, or for identifying multiple timers via {@link OnTimerContext#currentTimer()}
+ * when they fire.
+ *
+ * <p>An {@code onTimer()} method must be declared next to the eval() method for reacting to timer
+ * events. The signature of the onTimer() method must contain an optional {@link OnTimerContext}
+ * followed by all state entries (as declared in the eval() method).
+ *
+ * <p>Flink takes care of storing and restoring timers during failures or restarts. Thus, timers are
+ * a special kind of state. Similarly, timers are scoped to a virtual processor defined by the
+ * PARTITION BY clause. A timer can only be registered and deleted in the current virtual processor.
+ *
+ * <pre>{@code
+ * // Function that waits for a second event or timeouts after 60 seconds
+ * class TimerFunction extends ProcessTableFunction<String> {
+ *   public static class SeenState {
+ *     public String seen = null;
+ *   }
+ *
+ *   public void eval(Context ctx, @StateHint SeenState memory, @ArgumentHint( { SET_SEMANTIC_TABLE, REQUIRE_ON_TIME } ) Row input) {
+ *     TimeContext<Instant> timeCtx = ctx.timeContext(Instant.class);
+ *     if (memory.seen == null) {
+ *       memory.seen = input.getField(0).toString();
+ *       timeCtx.registerOnTime("timeout", timeCtx.time().plusSeconds(60));
+ *     } else {
+ *       collect("Second event arrived for: " + memory.seen);
+ *       ctx.clearAll();
+ *     }
+ *   }
+ *
+ *   public void onTimer(SeenState memory) {
+ *     collect("Timeout for: " + memory.seen);
+ *   }
+ * }
+ * }</pre>
+ *
+ * <h2>Handling of Late Records</h2>
+ *
+ * <p>A late record is a record with a time attribute value that is less than or equal to the
+ * current watermark. PTFs handle late records just like non-late records by calling the {@code
+ * eval()} method. If the {@code on_time} argument is specified, the late timestamp is preserved in
+ * the output. This behavior is the same for PTFs with row and set semantics.
+ *
+ * <p>Registering a timer for a time that is less than or equal to the current watermark is allowed.
+ * If registered from within {@code eval()}, the timer fires on the next watermark advance. If
+ * registered from within {@code onTimer()}, the timer fires immediately after the current timer
+ * finishes. Note that unconditionally re-registering a past-time timer from within {@code
+ * onTimer()} causes an infinite loop.
+ *
+ * <h2>Efficiency and Design Principles</h2>
+ *
+ * <p>Registering too many timers might affect performance. An ever-growing timer state can happen
+ * by an unlimited number of partitions (i.e. an open keyspace) or even within a partition. Thus,
+ * reduce the number of registered timers to a minimum and consider cleaning up timers if they are
+ * not needed anymore via {@link Context#clearAllTimers()} or {@link
+ * TimeContext#clearTimer(String)}.
+ *
+ * <h1>Ordering</h1>
+ *
+ * <p>A PTF that takes a table with set semantics can optionally specify an ORDER BY clause in the
+ * function call to define the order in which rows are processed within each partition. The ORDER BY
+ * clause guarantees that rows are delivered to the eval() method in the specified order.
+ *
+ * <p>The ORDER BY clause requires that the first column is a time attribute column (i.e., a
+ * TIMESTAMP or TIMESTAMP_LTZ column with a watermark declaration). The first ORDER BY column must
+ * be specified in ascending order. This ensures that rows are processed in event-time order.
+ * Additional columns can be specified as secondary sort keys to define the ordering of rows with
+ * the same timestamp.
+ *
+ * <p>ORDER BY provides strict time-based ordering at the cost of holding back records until a
+ * watermark advances the logical clock. Consequently, any late data that violates this ordering is
+ * dropped. If you need to process late data or access intermediate results, it is highly
+ * recommended to bypass ORDER BY and implement custom handling within the PTF using state and
+ * timers.
+ *
+ * <p>Example SQL syntax:
+ *
+ * <pre>{@code
+ * SELECT * FROM my_ptf(
+ *   input_table => TABLE source_table
+ *     PARTITION BY user_id
+ *     ORDER BY (event_time ASC, priority DESC NULLS FIRST)
+ * )
+ * }</pre>
+ *
+ * <h2>Difference Between ORDER BY and on_time Argument</h2>
+ *
+ * <p>While both ORDER BY and the {@code on_time} argument relate to time attributes, they serve
+ * different purposes:
+ *
+ * <ul>
+ *   <li><b>on_time</b>: Declares which time attribute column powers the time context ({@link
+ *       TimeContext#time()}) and output timestamp. It does NOT affect the processing order of rows.
+ *   <li><b>ORDER BY</b>: Physically buffers and sorts rows within each partition to guarantee
+ *       ordered delivery to the eval() method. If both ORDER BY and {@code on_time} are specified
+ *       for the same table argument, they must reference the same time attribute column.
+ * </ul>
+ *
+ * <h2>Ordering Guarantees and Late Events</h2>
+ *
+ * <p>When ORDER BY is specified on a time attribute column, the framework maintains a sort buffer
+ * per partition and input table to reorder out-of-order events. The sort buffer is flushed when the
+ * watermark for the given input table advances, at which point all buffered rows with timestamps
+ * less than or equal to the watermark are delivered to the eval() method in sorted order. Late
+ * events (arriving after the watermark) are dropped to maintain the ordering guarantee.
+ *
+ * @param <T> The type of the output row. Either an explicit composite type or an atomic type
+ *     implicitly wrapped into a row consisting of one field.
+ */
+@PublicEvolving
+public abstract class ProcessTableFunction<T> extends UserDefinedFunction {
+
+    /** The code generated collector used to emit rows. */
+    private transient Collector<T> collector;
+
+    /** Internal use. Sets the current collector. */
+    public final void setCollector(Collector<T> collector) {
+        this.collector = collector;
+    }
+
+    /**
+     * Emits an (implicit or explicit) output row.
+     *
+     * <p>If null is emitted as an explicit row, it will be skipped by the runtime. For implicit
+     * rows, the row's field will be null.
+     *
+     * @param row the output row
+     */
+    protected final void collect(T row) {
+        collector.collect(row);
+    }
+
+    @Override
+    public final FunctionKind getKind() {
+        return FunctionKind.PROCESS_TABLE;
+    }
+
+    @Override
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    public TypeInference getTypeInference(DataTypeFactory typeFactory) {
+        return TypeInferenceExtractor.forProcessTableFunction(typeFactory, (Class) getClass());
+    }
+
+    /**
+     * Context that can be added as a first argument to the eval() method for additional information
+     * about the input tables and other services provided by the framework.
+     */
+    @PublicEvolving
+    public interface Context {
+
+        /**
+         * Returns a specialized {@link TimeContext} to work with time and timers.
+         *
+         * <p>Time and timer timestamps can be represented as either {@link Instant}, {@link
+         * LocalDateTime}, or {@link Long}. Time and timers are based on milliseconds since epoch
+         * and do not take the local session timezone into consideration.
+         *
+         * <p>Note: A timer context is always scoped under the currently processed event (either the
+         * current input row or a firing timer).
+         *
+         * @param conversionClass representation of time and timer timestamps
+         * @return the context for time and timer services
+         */
+        <TimeType> TimeContext<TimeType> timeContext(Class<TimeType> conversionClass);
+
+        /**
+         * Returns additional information about the semantics of a table argument.
+         *
+         * @param argName name of the table argument; either reflectively extracted or manually
+         *     defined via {@link ArgumentHint#name()}.
+         */
+        TableSemantics tableSemanticsFor(String argName);
+
+        /**
+         * Clears the given state entry within the virtual partition once the eval() method returns.
+         *
+         * <p>Semantically, this is equal to calling {@link DataView#clear()} on the state entry if
+         * backed by a data view. For eager value state, semantically this is equal to setting all
+         * fields of the state entry to null shortly before the eval() method returns.
+         *
+         * <p>A broadcast state entry (see {@link StateKind#BROADCAST}) can only be cleared while
+         * processing a table with broadcast semantics.
+         *
+         * @param stateName name of the state entry; either reflectively extracted or manually
+         *     defined via {@link StateHint#name()}.
+         */
+        void clearState(String stateName);
+
+        /**
+         * Clears all state entries within the virtual partition once the eval() method returns.
+         *
+         * <p>Semantically, this is equal to calling {@link #clearState(String)} on all state
+         * entries that are accessible in the current context.
+         *
+         * <p>A broadcast state entry (see {@link StateKind#BROADCAST}) can only be cleared while
+         * processing a table with broadcast semantics.
+         */
+        void clearAllState();
+
+        /**
+         * Clears all timers within the virtual partition.
+         *
+         * <p>While processing a table with broadcast semantics, this is a no-op.
+         */
+        void clearAllTimers();
+
+        /**
+         * Clears the virtual partition including timers and state.
+         *
+         * <p>This is a shortcut for {@link #clearAllState()} and {@link #clearAllTimers()}.
+         */
+        void clearAll();
+
+        /**
+         * Returns the {@link ChangelogMode} that the framework expects from this function.
+         *
+         * <p>By default, a PTF can only emit insert-only (append-only) changes and this method will
+         * therefore return {@link ChangelogMode#insertOnly()}. If the PTF needs to emit update or
+         * delete changes, it should implement {@link ChangelogFunction}.
+         *
+         * @return the produced {@link ChangelogMode}
+         */
+        ChangelogMode getChangelogMode();
+    }
+
+    /**
+     * A context that gives access to Flink's concepts of time and timers.
+     *
+     * <p>An event can have an event-time timestamp assigned. The timestamp can be accessed using
+     * the {@link #time()} method.
+     *
+     * <p>Timers allow for continuing the processing at a later point in time. This makes waiting,
+     * synchronization, or timeouts possible. A timer fires for the registered time when the
+     * watermark progresses the logical clock.
+     *
+     * <p>Flink takes care of storing and restoring timers during failures or restarts. Thus, timers
+     * are a special kind of state. Similarly, timers are scoped to a virtual processor defined by
+     * the PARTITION BY clause. A timer can only be registered and deleted in the current virtual
+     * processor.
+     *
+     * @param <TimeType> conversion class of timestamps, see {@link Context#timeContext(Class)}
+     */
+    @PublicEvolving
+    public interface TimeContext<TimeType> {
+
+        /**
+         * Returns the timestamp of the currently processed event.
+         *
+         * <p>An event can be either the row of a table or a firing timer:
+         *
+         * <h1>Row event timestamp</h1>
+         *
+         * <p>The timestamp of the row currently being processed within the {@code eval()} method.
+         *
+         * <p>Powered by the function call's {@code on_time} argument, this method will return the
+         * content of the referenced time attribute column. Returns {@code null} if the {@code
+         * on_time} argument doesn't reference a time attribute column in the currently processed
+         * table.
+         *
+         * <h1>Timer event timestamp</h1>
+         *
+         * <p>The timestamp of the firing timer currently being processed within the {@code
+         * onTimer()} method.
+         *
+         * @return the event-time timestamp, or {@code null} if no timestamp is present
+         */
+        TimeType time();
+
+        /**
+         * Returns the event-time watermark of the input table currently being processed.
+         *
+         * <p>Watermarks are generated in sources and sent through the topology for advancing the
+         * logical clock. The current watermark of an input table is the minimum watermark of all
+         * upstream Flink subtasks producing the table.
+         *
+         * <p>In multi-input scenarios, each input table can have its own independent watermark.
+         * This method returns the watermark specific to the input table that is currently being
+         * processed in the {@code eval()} method, rather than the global minimum watermark across
+         * all input tables (which is returned by {@link #currentWatermark()}).
+         *
+         * <p>This is particularly useful for late event detection on a per-input basis.
+         *
+         * <p>If a watermark has not yet been received from all upstream Flink subtasks producing
+         * the table, the method returns {@code null}.
+         *
+         * @return The current watermark of the input table being processed. {@code null} if called
+         *     within the {@code onTimer()} method or a watermark has not yet been received from all
+         *     upstream Flink subtasks producing the table.
+         */
+        TimeType tableWatermark();
+
+        /**
+         * Returns the current event-time watermark at this PTF instance.
+         *
+         * <p>Watermarks are generated in sources and sent through the topology for advancing the
+         * logical clock. The current watermark of a PTF instance is the global minimum watermark of
+         * all input tables (i.e., across all upstream Flink subtasks and table partitions).
+         *
+         * <p>This method returns the current watermark of the Flink subtask that evaluates the PTF.
+         * Thus, the returned timestamp represents the watermark of the entire Flink subtask,
+         * independent of the currently processed input table and partition. This behavior is
+         * similar to a call to {@code SELECT CURRENT_WATERMARK(...)} in SQL.
+         *
+         * <p>If a watermark has not yet been received from all input tables, the method returns
+         * {@code null}.
+         *
+         * @return The current watermark at the PTF instance across all upstream Flink subtasks and
+         *     table partitions. A null value is returned if no minimum logical time could be
+         *     calculated across all inputs; this happens during startup or recovery when one or
+         *     more active (i.e. not idle) inputs haven't sent a watermark yet.
+         */
+        TimeType currentWatermark();
+
+        /**
+         * Registers a timer under the given name.
+         *
+         * <p>The timer fires when the {@link #currentWatermark()} advances the logical clock of the
+         * Flink subtask to a timestamp later or equal to the desired timestamp. In other words: A
+         * timer only fires if a watermark was received from all inputs and the timestamp is smaller
+         * or equal to the minimum of all received watermarks.
+         *
+         * <p>If the timestamp of the registered timer is already less than or equal to the current
+         * watermark, the timer fires on the next watermark advance if registered from within {@code
+         * eval()}, or immediately after the current timer finishes if registered from within {@code
+         * onTimer()}. Note that unconditionally re-registering a past-time timer from within {@code
+         * onTimer()} causes an infinite loop.
+         *
+         * <p>Timers can be named for distinguishing them in the {@code onTimer()} method.
+         * Registering a timer under the same name twice will replace an existing timer.
+         *
+         * <p>Note: Because only PTFs taking set semantic tables support state, and timers are a
+         * special kind of state, at least one {@link ArgumentTrait#SET_SEMANTIC_TABLE} table
+         * argument must be declared.
+         *
+         * @param name identifier of the timer
+         * @param time timestamp when the timer should fire
+         */
+        void registerOnTime(String name, TimeType time);
+
+        /**
+         * Registers a timer.
+         *
+         * <p>The timer fires when the {@link #currentWatermark()} advances the logical clock of the
+         * Flink subtask to a timestamp later or equal to the desired timestamp. In other words: A
+         * timer only fires if a watermark was received from all inputs and the timestamp is smaller
+         * or equal to the minimum of all received watermarks.
+         *
+         * <p>If the timestamp of the registered timer is already less than or equal to the current
+         * watermark, the timer fires on the next watermark advance if registered from within {@code
+         * eval()}, or immediately after the current timer finishes if registered from within {@code
+         * onTimer()}. Note that unconditionally re-registering a past-time timer from within {@code
+         * onTimer()} causes an infinite loop.
+         *
+         * <p>Only one timer can be registered for a given time.
+         *
+         * <p>Note: Because only PTFs taking set semantic tables support state, and timers are a
+         * special kind of state, at least one {@link ArgumentTrait#SET_SEMANTIC_TABLE} table
+         * argument must be declared.
+         *
+         * @param time timestamp when the timer should fire
+         */
+        void registerOnTime(TimeType time);
+
+        /**
+         * Clears a timer that was previously registered under the given name.
+         *
+         * <p>The call is ignored if no timer can be found.
+         *
+         * @param name identifier of the timer
+         */
+        void clearTimer(String name);
+
+        /**
+         * Clears a timer that was previously registered for a given time.
+         *
+         * <p>The call is ignored if no timer can be found. Named timers cannot be deleted with this
+         * method.
+         *
+         * @param time timestamp when the timer should have fired
+         */
+        void clearTimer(TimeType time);
+
+        /** Deletes all timers within the virtual partition. */
+        void clearAllTimers();
+    }
+
+    /** Special {@link Context} that is available when the {@code onTimer()} method is called. */
+    @PublicEvolving
+    public interface OnTimerContext extends Context {
+
+        /**
+         * Returns the name of the timer currently being fired, if the timer is a named timer (i.e.
+         * registered using {@link TimeContext#registerOnTime(String, Object)}).
+         *
+         * <p>Note: The time of the firing timer is available via {@link
+         * OnTimerContext#timeContext(Class)}.
+         *
+         * @return the timer's name, or {@code null} if the timer is unnamed (i.e. registered using
+         *     {@link TimeContext#registerOnTime(Object)})
+         */
+        String currentTimer();
+    }
+}

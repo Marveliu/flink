@@ -19,12 +19,15 @@
 package org.apache.flink.runtime.webmonitor.handlers;
 
 import org.apache.flink.runtime.rest.messages.RestResponseMarshallingTestBase;
+import org.apache.flink.testutils.junit.extensions.parameterized.NoOpTestExtension;
 
-import static org.junit.Assert.assertEquals;
+import org.junit.jupiter.api.extension.ExtendWith;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 /** Tests for {@link JarUploadResponseBody}. */
-public class JarUploadResponseBodyTest
-        extends RestResponseMarshallingTestBase<JarUploadResponseBody> {
+@ExtendWith(NoOpTestExtension.class)
+class JarUploadResponseBodyTest extends RestResponseMarshallingTestBase<JarUploadResponseBody> {
 
     @Override
     protected Class<JarUploadResponseBody> getTestResponseClass() {
@@ -39,7 +42,7 @@ public class JarUploadResponseBodyTest
     @Override
     protected void assertOriginalEqualsToUnmarshalled(
             final JarUploadResponseBody expected, final JarUploadResponseBody actual) {
-        assertEquals(expected.getFilename(), actual.getFilename());
-        assertEquals(expected.getStatus(), actual.getStatus());
+        assertThat(actual.getFilename()).isEqualTo(expected.getFilename());
+        assertThat(actual.getStatus()).isEqualTo(expected.getStatus());
     }
 }

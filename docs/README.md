@@ -18,6 +18,8 @@ Both methods require you to execute commands in the directory of this module (`d
 
 ```sh
 $ git submodule update --init --recursive
+$ ./setup_docs.sh
+$ docker pull jakejarvis/hugo-extended:latest
 $ docker run -v $(pwd):/src -p 1313:1313 jakejarvis/hugo-extended:latest server --buildDrafts --buildFuture --bind 0.0.0.0
 ```
 
@@ -26,26 +28,45 @@ $ docker run -v $(pwd):/src -p 1313:1313 jakejarvis/hugo-extended:latest server 
 Make sure you have installed [Hugo](https://gohugo.io/getting-started/installing/) on your system.
 
 ```sh
-$ git submodule update --init --recursive
+$ ./setup_hugo.sh
+```
+
+Then build the docs from source:
+
+```sh
 $ ./build_docs.sh
+```
+
+The shell `./build_docs.sh` will integrate external connector docs, referencing `setup_docs.sh#integrate_connector_docs`.
+This process involves cloning the repo of some external connectors, which can be time-consuming and prone to network issues.
+So, if the connector docs have been synced before, and you wish to skip this step, you can do so by adding the following arg:
+
+```sh
+$ ./build_docs.sh --skip-integrate-connector-docs
 ```
 
 The site can be viewed at http://localhost:1313/
 
+## Include externally hosted documentation
+
+With the ongoing efforts to move Flink's connectors from this repository to individual, dedicated
+repositories, this also requires the documentation to be hosted outside this repo. However, 
+we still want to serve all documentation as a whole on the Flink documentation website.
+
+Adding new externally hosted documentation requires the following steps to be taken:
+
+1. (If necessary) Move the existing documentation to the new repository
+
+2. In the Flink repository, edit the `docs/setup_docs.sh` file and add a reference to your now 
+externally hosted documentation. The reference will look like `integrate_connector_docs <connector_name> <branch_or_tag>`.
+
+Replace <connector_name> with the name of your connector, e.g., `elasticsearch` for `flink-connector-elasticsearch`.
+
 ## Generate configuration tables
 
-Configuration descriptions are auto generated from code. To trigger the generation you need to run in the project root:
+Configuration descriptions are auto generated from code. To trigger the generation, you need to run a command in the project root (see [Configuration documentation](https://github.com/apache/flink/blob/master/flink-docs/README.md#configuration-documentation).)
 
-```
-mvn -Pgenerate-config-docs install -Dfast -DskipTests
-```
-
-The resulting html files will be written to `layouts/shortcodes/generated`. Tables are regenerated each time the command is invoked.
-These tables can be directly included into the documentation:
-
-```
-{{< generated/file_name >}}
-```
+The resulting html files will be written to `layouts/shortcodes/generated`.
 
 # Contribute
 
@@ -103,14 +124,14 @@ to its documentation markdown. The following are available for use:
 
 #### Flink Artifact
 
-    {{< artifact flink-streaming-scala withScalaVersion >}}
+    {{< artifact flink-table-api-scala withScalaVersion >}}
 
-This will be replaced by the maven artifact for flink-streaming-scala that users should copy into their pom.xml file. It will render out to:
+This will be replaced by the maven artifact for flink-table-api-scala that users should copy into their pom.xml file. It will render out to:
 
 ```xml
 <dependency>
     <groupId>org.apache.flink</groupId>
-    <artifactId>flink-streaming-scala_2.12</artifactId>
+    <artifactId>flink-table-api-scala_2.12</artifactId>
     <version><!-- current flink version --></version>
 </dependency>
 ```
@@ -125,6 +146,20 @@ You can also use the shortcodes (with same flags) instead:
 
 * `artifact_gradle` to show the Gradle syntax
 * `artifact_tabs` to create a tabbed view, showing both Maven and Gradle syntax
+
+#### Flink Connector Artifact
+
+    {{< connector_artifact flink-connector-elasticsearch 3.0.0 >}}
+
+This will be replaced by the maven artifact for flink-connector-elasticsearch that users should copy into their pom.xml file. It will render out to:
+
+```xml
+<dependency>
+    <groupId>org.apache.flink</groupId>
+    <artifactId>flink-connector-elasticsearch</artifactId>
+    <version>3.0.0</version>
+</dependency>
+```
 
 #### Back to Top
 

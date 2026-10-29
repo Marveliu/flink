@@ -52,17 +52,17 @@ For more information about classloading, refer to the section on [Classloading i
 
 Different Scala versions are not binary compatible with one another. All Flink dependencies that 
 (transitively) depend on Scala are suffixed with the Scala version that they are built for 
-(i.e. `flink-streaming-scala_2.12`).
+(i.e. `flink-table-api-scala-bridge_2.12`).
 
 If you are only using Flink's Java APIs, you can use any Scala version. If you are using Flink's Scala APIs, 
 you need to pick the Scala version that matches the application's Scala version.
 
-Please refer to the [build guide]({{< ref "docs/flinkDev/building" >}}#scala-versions) for details 
+Please refer to the [build guide]({{< github_repo >}}#building-apache-flink-from-source) for details
 on how to build Flink for a specific Scala version.
 
 Scala versions after 2.12.8 are not binary compatible with previous 2.12.x versions. This prevents
 the Flink project from upgrading its 2.12.x builds beyond 2.12.8. You can build Flink locally for
-later Scala versions by following the [build guide]({{< ref "docs/flinkDev/building" >}}#scala-versions).
+later Scala versions by following the [build guide]({{< github_repo >}}#building-apache-flink-from-source).
 For this to work, you will need to add `-Djapicmp.skip` to skip binary compatibility checks when building.
 
 See the [Scala 2.12.8 release notes](https://github.com/scala/scala/releases/tag/v2.12.8) for more details.
@@ -126,9 +126,6 @@ If you need some functionality from the planner, which is currently not exposed 
 ## Hadoop Dependencies
 
 **General rule:** It should not be necessary to add Hadoop dependencies directly to your application.
-The only exception is when you use existing Hadoop input/output formats with [Flink's Hadoop compatibility 
-wrappers](https://nightlies.apache.org/flink/flink-docs-master/docs/dev/dataset/hadoop_compatibility/).
-
 If you want to use Flink with Hadoop, you need to have a Flink setup that includes the Hadoop dependencies, 
 rather than adding Hadoop as an application dependency. In other words, Hadoop must be a dependency 
 of the Flink system itself and not of the user code that contains the application. Flink will use the

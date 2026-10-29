@@ -35,43 +35,44 @@ public class TestLoggerExtension implements TestWatcher, BeforeEachCallback {
     public void beforeEach(ExtensionContext context) {
         LOG.info(
                 "\n================================================================================"
-                        + "\nTest {}.{} is running."
+                        + "\nTest {}.{}[{}] is running."
                         + "\n--------------------------------------------------------------------------------",
                 context.getRequiredTestClass().getCanonicalName(),
-                context.getRequiredTestMethod().getName());
+                context.getRequiredTestMethod().getName(),
+                context.getDisplayName());
     }
 
     @Override
     public void testSuccessful(ExtensionContext context) {
         LOG.info(
                 "\n--------------------------------------------------------------------------------"
-                        + "\nTest {}.{} successfully run."
+                        + "\nTest {}.{}[{}] successfully run."
                         + "\n================================================================================",
                 context.getRequiredTestClass().getCanonicalName(),
-                context.getRequiredTestMethod().getName());
+                context.getRequiredTestMethod().getName(),
+                context.getDisplayName());
     }
 
     @Override
     public void testFailed(ExtensionContext context, Throwable cause) {
         LOG.error(
                 "\n--------------------------------------------------------------------------------"
-                        + "\nTest {}.{} failed with:\n{}"
+                        + "\nTest {}.{}[{}] failed with:\n{}"
                         + "\n================================================================================",
                 context.getRequiredTestClass().getCanonicalName(),
                 context.getRequiredTestMethod().getName(),
+                context.getDisplayName(),
                 exceptionToString(cause));
     }
 
-    private static String exceptionToString(Throwable t) {
+    static String exceptionToString(Throwable t) {
         if (t == null) {
             return "(null)";
         }
 
-        try {
-            StringWriter stm = new StringWriter();
-            PrintWriter wrt = new PrintWriter(stm);
+        try (StringWriter stm = new StringWriter();
+                PrintWriter wrt = new PrintWriter(stm)) {
             t.printStackTrace(wrt);
-            wrt.close();
             return stm.toString();
         } catch (Throwable ignored) {
             return t.getClass().getName() + " (error while printing stack trace)";

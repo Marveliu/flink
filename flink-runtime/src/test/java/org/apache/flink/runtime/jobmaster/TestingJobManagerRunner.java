@@ -20,14 +20,17 @@ package org.apache.flink.runtime.jobmaster;
 
 import org.apache.flink.api.common.JobID;
 import org.apache.flink.api.common.JobStatus;
-import org.apache.flink.api.common.time.Time;
 import org.apache.flink.core.testutils.OneShotLatch;
 import org.apache.flink.runtime.executiongraph.ArchivedExecutionGraph;
+import org.apache.flink.runtime.jobgraph.JobType;
 import org.apache.flink.runtime.messages.Acknowledge;
 import org.apache.flink.runtime.messages.webmonitor.JobDetails;
 import org.apache.flink.runtime.scheduler.ExecutionGraphInfo;
 import org.apache.flink.util.Preconditions;
 
+import javax.annotation.Nullable;
+
+import java.time.Duration;
 import java.util.concurrent.CompletableFuture;
 import java.util.function.Supplier;
 
@@ -48,7 +51,9 @@ public class TestingJobManagerRunner implements JobManagerRunner {
 
     private final CompletableFuture<JobManagerRunnerResult> resultFuture;
 
-    private final Supplier<JobDetails> jobDetailsFunction;
+    private final Supplier<CompletableFuture<JobDetails>> jobDetailsFunction;
+
+    private final Supplier<CompletableFuture<JobStatus>> jobStatusFunction;
 
     private final OneShotLatch closeAsyncCalledLatch = new OneShotLatch();
 
@@ -59,18 +64,30 @@ public class TestingJobManagerRunner implements JobManagerRunner {
             boolean blockingTermination,
             CompletableFuture<JobMasterGateway> jobMasterGatewayFuture,
             CompletableFuture<JobManagerRunnerResult> resultFuture,
-            Supplier<JobDetails> jobDetailsFunction) {
+            Supplier<CompletableFuture<JobDetails>> jobDetailsFunction,
+            @Nullable Supplier<CompletableFuture<JobStatus>> jobStatusFunction) {
         this.jobId = jobId;
         this.blockingTermination = blockingTermination;
         this.jobMasterGatewayFuture = jobMasterGatewayFuture;
         this.resultFuture = resultFuture;
         this.jobDetailsFunction = jobDetailsFunction;
+        this.jobStatusFunction =
+                jobStatusFunction != null
+                        ? jobStatusFunction
+                        : () -> CompletableFuture.completedFuture(this.jobStatus);
         this.terminationFuture = new CompletableFuture<>();
 
         final ExecutionGraphInfo suspendedExecutionGraphInfo =
                 new ExecutionGraphInfo(
                         ArchivedExecutionGraph.createSparseArchivedExecutionGraph(
-                                jobId, "TestJob", JobStatus.SUSPENDED, null, null, 0L),
+                                jobId,
+                                "TestJob",
+                                JobStatus.SUSPENDED,
+                                JobType.STREAMING,
+                                null,
+                                null,
+                                0L),
+                        null,
                         null);
         terminationFuture.whenComplete(
                 (ignored, ignoredThrowable) ->
@@ -97,28 +114,28 @@ public class TestingJobManagerRunner implements JobManagerRunner {
     }
 
     @Override
-    public CompletableFuture<Acknowledge> cancel(Time timeout) {
+    public CompletableFuture<Acknowledge> cancel(Duration timeout) {
         throw new UnsupportedOperationException();
     }
 
     @Override
-    public CompletableFuture<JobStatus> requestJobStatus(Time timeout) {
-        return CompletableFuture.completedFuture(jobStatus);
+    public CompletableFuture<JobStatus> requestJobStatus(Duration timeout) {
+        return jobStatusFunction.get();
     }
 
     @Override
-    public CompletableFuture<JobDetails> requestJobDetails(Time timeout) {
-        return CompletableFuture.completedFuture(jobDetailsFunction.get());
+    public CompletableFuture<JobDetails> requestJobDetails(Duration timeout) {
+        return jobDetailsFunction.get();
     }
 
     @Override
-    public CompletableFuture<ExecutionGraphInfo> requestJob(Time timeout) {
+    public CompletableFuture<ExecutionGraphInfo> requestJob(Duration timeout) {
         throw new UnsupportedOperationException();
     }
 
     @Override
     public boolean isInitialized() {
-        throw new UnsupportedOperationException();
+        return true;
     }
 
     @Override
@@ -175,10 +192,11 @@ public class TestingJobManagerRunner implements JobManagerRunner {
         private CompletableFuture<JobMasterGateway> jobMasterGatewayFuture =
                 new CompletableFuture<>();
         private CompletableFuture<JobManagerRunnerResult> resultFuture = new CompletableFuture<>();
-        private Supplier<JobDetails> jobDetailsFunction =
+        private Supplier<CompletableFuture<JobDetails>> jobDetailsFunction =
                 () -> {
                     throw new UnsupportedOperationException();
                 };
+        @Nullable private Supplier<CompletableFuture<JobStatus>> jobStatusFunction = null;
 
         private Builder() {
             // No-op.
@@ -208,7 +226,20 @@ public class TestingJobManagerRunner implements JobManagerRunner {
         }
 
         public Builder setJobDetailsFunction(Supplier<JobDetails> jobDetailsFunction) {
-            this.jobDetailsFunction = Preconditions.checkNotNull(jobDetailsFunction);
+            Preconditions.checkNotNull(jobDetailsFunction);
+            return setJobDetailsFutureFunction(
+                    () -> CompletableFuture.completedFuture(jobDetailsFunction.get()));
+        }
+
+        public Builder setJobDetailsFutureFunction(
+                Supplier<CompletableFuture<JobDetails>> jobDetailsFutureFunction) {
+            this.jobDetailsFunction = Preconditions.checkNotNull(jobDetailsFutureFunction);
+            return this;
+        }
+
+        public Builder setJobStatusFunction(
+                Supplier<CompletableFuture<JobStatus>> jobStatusFunction) {
+            this.jobStatusFunction = Preconditions.checkNotNull(jobStatusFunction);
             return this;
         }
 
@@ -219,7 +250,8 @@ public class TestingJobManagerRunner implements JobManagerRunner {
                     blockingTermination,
                     jobMasterGatewayFuture,
                     resultFuture,
-                    jobDetailsFunction);
+                    jobDetailsFunction,
+                    jobStatusFunction);
         }
     }
 }

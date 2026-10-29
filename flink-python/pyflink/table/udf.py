@@ -16,30 +16,41 @@
 # limitations under the License.
 ################################################################################
 import abc
-import collections
 import functools
 import inspect
-from typing import Union, List, Type, Callable, TypeVar, Generic, Iterable
+from typing import Union, List, Type, Callable, TypeVar, Generic, Iterable, Optional
 
 from pyflink.java_gateway import get_gateway
 from pyflink.metrics import MetricGroup
 from pyflink.table import Expression
-from pyflink.table.types import DataType, _to_java_type, _to_java_data_type
+from pyflink.table.types import DataType, _to_java_data_type
 from pyflink.util import java_utils
+from pyflink.util.api_stability_decorators import PublicEvolving, Internal
 
 __all__ = ['FunctionContext', 'AggregateFunction', 'ScalarFunction', 'TableFunction',
-           'TableAggregateFunction', 'udf', 'udtf', 'udaf', 'udtaf']
+           'TableAggregateFunction', 'AsyncScalarFunction', 'udf', 'udtf', 'udaf', 'udtaf']
 
 
+@PublicEvolving()
 class FunctionContext(object):
     """
     Used to obtain global runtime information about the context in which the
     user-defined function is executed. The information includes the metric group,
-    and global job parameters, etc.
+    global job parameters, and runtime task information such as task name, parallelism, etc.
     """
 
-    def __init__(self, base_metric_group):
+    def __init__(self, base_metric_group, job_parameters,
+                 task_name=None, task_name_with_subtasks=None,
+                 number_of_parallel_subtasks=None, max_number_of_parallel_subtasks=None,
+                 index_of_this_subtask=None, attempt_number=None):
         self._base_metric_group = base_metric_group
+        self._job_parameters = job_parameters
+        self._task_name = task_name
+        self._task_name_with_subtasks = task_name_with_subtasks
+        self._number_of_parallel_subtasks = number_of_parallel_subtasks
+        self._max_number_of_parallel_subtasks = max_number_of_parallel_subtasks
+        self._index_of_this_subtask = index_of_this_subtask
+        self._attempt_number = attempt_number
 
     def get_metric_group(self) -> MetricGroup:
         """
@@ -52,7 +63,71 @@ class FunctionContext(object):
                                "metric with the 'python.metric.enabled' configuration.")
         return self._base_metric_group
 
+    def get_job_parameter(self, key: str, default_value: str) -> str:
+        """
+        Gets the global job parameter value associated with the given key as a string.
 
+        :param key: The key pointing to the associated value.
+        :param default_value: The default value which is returned in case global job parameter is
+                              null or there is no value associated with the given key.
+
+        .. versionadded:: 1.17.0
+        """
+        return self._job_parameters[key] if key in self._job_parameters else default_value
+
+    def get_task_name(self) -> str:
+        """
+        Returns the name of the task in which the UDF runs, as assigned during plan construction.
+
+        .. versionadded:: 2.3.0
+        """
+        return self._task_name
+
+    def get_task_name_with_subtasks(self) -> str:
+        """
+        Returns the name of the task, appended with the subtask indicator, such as "MyTask (3/6)",
+        where 3 would be (:func:`get_index_of_this_subtask` + 1), and 6 would be
+        :func:`get_number_of_parallel_subtasks`.
+
+        .. versionadded:: 2.3.0
+        """
+        return self._task_name_with_subtasks
+
+    def get_number_of_parallel_subtasks(self) -> int:
+        """
+        Gets the parallelism with which the parallel task runs.
+
+        .. versionadded:: 2.3.0
+        """
+        return self._number_of_parallel_subtasks
+
+    def get_max_number_of_parallel_subtasks(self) -> int:
+        """
+        Gets the number of max-parallelism with which the parallel task runs.
+
+        .. versionadded:: 2.3.0
+        """
+        return self._max_number_of_parallel_subtasks
+
+    def get_index_of_this_subtask(self) -> int:
+        """
+        Gets the number of this parallel subtask. The numbering starts from 0 and goes up to
+        parallelism-1 (parallelism as returned by :func:`get_number_of_parallel_subtasks`).
+
+        .. versionadded:: 2.3.0
+        """
+        return self._index_of_this_subtask
+
+    def get_attempt_number(self) -> int:
+        """
+        Gets the attempt number of this parallel subtask. First attempt is numbered 0.
+
+        .. versionadded:: 2.3.0
+        """
+        return self._attempt_number
+
+
+@PublicEvolving()
 class UserDefinedFunction(abc.ABC):
     """
     Base interface for user-defined function.
@@ -90,6 +165,7 @@ class UserDefinedFunction(abc.ABC):
         return True
 
 
+@PublicEvolving()
 class ScalarFunction(UserDefinedFunction):
     """
     Base interface for user-defined scalar function. A user-defined scalar functions maps zero, one,
@@ -106,6 +182,40 @@ class ScalarFunction(UserDefinedFunction):
         pass
 
 
+@PublicEvolving()
+class AsyncScalarFunction(UserDefinedFunction):
+    """
+    Base interface for user-defined async scalar function. A user-defined async scalar function
+    maps zero, one, or multiple scalar values to a new scalar value asynchronously.
+
+    This function is similar to ScalarFunction but is executed asynchronously. It's useful when
+    interacting with external systems (e.g., databases, REST APIs) where I/O operations would
+    otherwise block.
+
+    The eval method should be an async coroutine function that returns the result asynchronously.
+
+    Example:
+        ::
+
+            >>> class AsyncLookupFunction(AsyncScalarFunction):
+            ...     async def eval(self, key):
+            ...         # Simulate async I/O operation
+            ...         await asyncio.sleep(0.1)
+            ...         return f"value_for_{key}"
+
+    .. versionadded:: 2.3.0
+    """
+
+    @abc.abstractmethod
+    async def eval(self, *args):
+        """
+        Async method which defines the logic of the async scalar function.
+        This method should be an async coroutine.
+        """
+        pass
+
+
+@PublicEvolving()
 class TableFunction(UserDefinedFunction):
     """
     Base interface for user-defined table function. A user-defined table function creates zero, one,
@@ -126,6 +236,7 @@ T = TypeVar('T')
 ACC = TypeVar('ACC')
 
 
+@PublicEvolving()
 class ImperativeAggregateFunction(UserDefinedFunction, Generic[T, ACC]):
     """
     Base interface for user-defined aggregate function and table aggregate function.
@@ -164,7 +275,7 @@ class ImperativeAggregateFunction(UserDefinedFunction, Generic[T, ACC]):
         :param accumulator: the accumulator which contains the current aggregated results
         :param args: the input value (usually obtained from new arrived data).
         """
-        pass
+        raise RuntimeError("Method retract is not implemented")
 
     def merge(self, accumulator: ACC, accumulators):
         """
@@ -178,27 +289,28 @@ class ImperativeAggregateFunction(UserDefinedFunction, Generic[T, ACC]):
                             custom merge method.
         :param accumulators: a group of accumulators that will be merged.
         """
-        pass
+        raise RuntimeError("Method merge is not implemented")
 
-    def get_result_type(self) -> DataType:
+    def get_result_type(self) -> Union[DataType, str]:
         """
         Returns the DataType of the AggregateFunction's result.
 
         :return: The :class:`~pyflink.table.types.DataType` of the AggregateFunction's result.
 
         """
-        pass
+        raise RuntimeError("Method get_result_type is not implemented")
 
-    def get_accumulator_type(self) -> DataType:
+    def get_accumulator_type(self) -> Union[DataType, str]:
         """
         Returns the DataType of the AggregateFunction's accumulator.
 
         :return: The :class:`~pyflink.table.types.DataType` of the AggregateFunction's accumulator.
 
         """
-        pass
+        raise RuntimeError("Method get_accumulator_type is not implemented")
 
 
+@PublicEvolving()
 class AggregateFunction(ImperativeAggregateFunction):
     """
     Base interface for user-defined aggregate function. A user-defined aggregate function maps
@@ -208,7 +320,7 @@ class AggregateFunction(ImperativeAggregateFunction):
     """
 
     @abc.abstractmethod
-    def get_value(self, accumulator: ACC) -> T:
+    def get_value(self, accumulator: ACC) -> T:  # type: ignore[type-var]
         """
         Called every time when an aggregation result should be materialized. The returned value
         could be either an early and incomplete result (periodically emitted as data arrives) or
@@ -220,6 +332,7 @@ class AggregateFunction(ImperativeAggregateFunction):
         pass
 
 
+@PublicEvolving()
 class TableAggregateFunction(ImperativeAggregateFunction):
     """
     Base class for a user-defined table aggregate function. A user-defined table aggregate function
@@ -243,6 +356,7 @@ class TableAggregateFunction(ImperativeAggregateFunction):
         pass
 
 
+@Internal()
 class DelegatingScalarFunction(ScalarFunction):
     """
     Helper scalar function implementation for lambda expression and python function. It's for
@@ -256,6 +370,21 @@ class DelegatingScalarFunction(ScalarFunction):
         return self.func(*args)
 
 
+@Internal()
+class DelegatingAsyncScalarFunction(AsyncScalarFunction):
+    """
+    Helper async scalar function implementation for async lambda expression and python async
+    function. It's for internal use only.
+    """
+
+    def __init__(self, func):
+        self.func = func
+
+    async def eval(self, *args):
+        return await self.func(*args)
+
+
+@Internal()
 class DelegationTableFunction(TableFunction):
     """
     Helper table function implementation for lambda expression and python function. It's for
@@ -269,6 +398,7 @@ class DelegationTableFunction(TableFunction):
         return self.func(*args)
 
 
+@Internal()
 class DelegatingPandasAggregateFunction(AggregateFunction):
     """
     Helper pandas aggregate function implementation for lambda expression and python function.
@@ -307,6 +437,7 @@ class PandasAggregateFunctionWrapper(object):
         self.func.close()
 
 
+@Internal()
 class UserDefinedFunctionWrapper(object):
     """
     Base Wrapper for Python user-defined function. It handles things like converting lambda
@@ -314,7 +445,8 @@ class UserDefinedFunctionWrapper(object):
     etc. It's for internal use only.
     """
 
-    def __init__(self, func, input_types, func_type, deterministic=None, name=None):
+    def __init__(self, func, input_types, func_type, deterministic=None, name=None,
+                 concurrency=None, batch_size=None):
         if inspect.isclass(func) or (
                 not isinstance(func, UserDefinedFunction) and not callable(func)):
             raise TypeError(
@@ -323,15 +455,18 @@ class UserDefinedFunctionWrapper(object):
 
         if input_types is not None:
             from pyflink.table.types import RowType
-            if not isinstance(input_types, collections.abc.Iterable) \
-                    or isinstance(input_types, RowType):
+            if isinstance(input_types, RowType):
+                input_types = input_types.field_types()
+            elif isinstance(input_types, (DataType, str)):
                 input_types = [input_types]
+            else:
+                input_types = list(input_types)
 
             for input_type in input_types:
-                if not isinstance(input_type, DataType):
+                if not isinstance(input_type, (DataType, str)):
                     raise TypeError(
-                        "Invalid input_type: input_type should be DataType but contains {}".format(
-                            input_type))
+                        "Invalid input_type: input_type should be DataType or str but contains {}"
+                        .format(input_type))
 
         self._func = func
         self._input_types = input_types
@@ -349,6 +484,9 @@ class UserDefinedFunctionWrapper(object):
         self._func_type = func_type
         self._judf_placeholder = None
         self._takes_row_as_input = False
+        self._returns_table_row = False
+        self._concurrency = concurrency
+        self._batch_size = batch_size
 
     def __call__(self, *args) -> Expression:
         from pyflink.table import expressions as expr
@@ -373,12 +511,17 @@ class UserDefinedFunctionWrapper(object):
                     return JPythonFunctionKind.GENERAL
                 elif self._func_type == "pandas":
                     return JPythonFunctionKind.PANDAS
+                elif self._func_type == "arrow":
+                    return JPythonFunctionKind.ARROW
                 else:
                     raise TypeError("Unsupported func_type: %s." % self._func_type)
 
             if self._input_types is not None:
-                j_input_types = java_utils.to_jarray(
-                    gateway.jvm.TypeInformation, [_to_java_type(i) for i in self._input_types])
+                if isinstance(self._input_types[0], str):
+                    j_input_types = java_utils.to_jarray(gateway.jvm.String, self._input_types)
+                else:
+                    j_input_types = java_utils.to_jarray(
+                        gateway.jvm.DataType, [_to_java_data_type(i) for i in self._input_types])
             else:
                 j_input_types = None
             j_function_kind = get_python_function_kind()
@@ -404,19 +547,24 @@ class UserDefinedScalarFunctionWrapper(UserDefinedFunctionWrapper):
     Wrapper for Python user-defined scalar function.
     """
 
-    def __init__(self, func, input_types, result_type, func_type, deterministic, name):
+    def __init__(self, func, input_types, result_type, func_type, deterministic, name,
+                 concurrency=None, batch_size=None):
         super(UserDefinedScalarFunctionWrapper, self).__init__(
-            func, input_types, func_type, deterministic, name)
+            func, input_types, func_type, deterministic, name, concurrency, batch_size)
 
-        if not isinstance(result_type, DataType):
+        if not isinstance(result_type, (DataType, str)):
             raise TypeError(
-                "Invalid returnType: returnType should be DataType but is {}".format(result_type))
+                "Invalid returnType: returnType should be DataType or str but is {}".format(
+                    result_type))
         self._result_type = result_type
         self._judf_placeholder = None
 
     def _create_judf(self, serialized_func, j_input_types, j_function_kind):
         gateway = get_gateway()
-        j_result_type = _to_java_type(self._result_type)
+        if isinstance(self._result_type, DataType):
+            j_result_type = _to_java_data_type(self._result_type)
+        else:
+            j_result_type = self._result_type
         PythonScalarFunction = gateway.jvm \
             .org.apache.flink.table.functions.python.PythonScalarFunction
         j_scalar_function = PythonScalarFunction(
@@ -427,11 +575,57 @@ class UserDefinedScalarFunctionWrapper(UserDefinedFunctionWrapper):
             j_function_kind,
             self._deterministic,
             self._takes_row_as_input,
-            _get_python_env())
+            self._returns_table_row,
+            _get_python_env(),
+            self._concurrency if self._concurrency is not None else -1,
+            self._batch_size if self._batch_size is not None else -1)
         return j_scalar_function
 
     def _create_delegate_function(self) -> UserDefinedFunction:
         return DelegatingScalarFunction(self._func)
+
+
+class UserDefinedAsyncScalarFunctionWrapper(UserDefinedFunctionWrapper):
+    """
+    Wrapper for Python user-defined async scalar function.
+    """
+
+    def __init__(self, func, input_types, result_type, func_type, deterministic, name,
+                 concurrency=None, batch_size=None):
+        super(UserDefinedAsyncScalarFunctionWrapper, self).__init__(
+            func, input_types, func_type, deterministic, name, concurrency, batch_size)
+
+        if not isinstance(result_type, (DataType, str)):
+            raise TypeError(
+                "Invalid returnType: returnType should be DataType or str but is {}".format(
+                    result_type))
+        self._result_type = result_type
+        self._judf_placeholder = None
+
+    def _create_judf(self, serialized_func, j_input_types, j_function_kind):
+        gateway = get_gateway()
+        if isinstance(self._result_type, DataType):
+            j_result_type = _to_java_data_type(self._result_type)
+        else:
+            j_result_type = self._result_type
+        PythonAsyncScalarFunction = gateway.jvm \
+            .org.apache.flink.table.functions.python.PythonAsyncScalarFunction
+        j_async_scalar_function = PythonAsyncScalarFunction(
+            self._name,
+            bytearray(serialized_func),
+            j_input_types,
+            j_result_type,
+            j_function_kind,
+            self._deterministic,
+            self._takes_row_as_input,
+            self._returns_table_row,
+            _get_python_env(),
+            self._concurrency if self._concurrency is not None else -1,
+            self._batch_size if self._batch_size is not None else -1)
+        return j_async_scalar_function
+
+    def _create_delegate_function(self) -> UserDefinedFunction:
+        return DelegatingAsyncScalarFunction(self._func)
 
 
 class UserDefinedTableFunctionWrapper(UserDefinedFunctionWrapper):
@@ -444,23 +638,41 @@ class UserDefinedTableFunctionWrapper(UserDefinedFunctionWrapper):
             func, input_types, "general", deterministic, name)
 
         from pyflink.table.types import RowType
-        if not isinstance(result_types, collections.abc.Iterable) \
-                or isinstance(result_types, RowType):
+        if isinstance(result_types, RowType):
+            # DataTypes.ROW([DataTypes.FIELD("f0", DataTypes.INT()),
+            #               DataTypes.FIELD("f1", DataTypes.BIGINT())])
+            result_types = result_types.field_types()
+        elif isinstance(result_types, str):
+            # ROW<f0 INT, f1 BIGINT>
+            result_types = result_types
+        elif isinstance(result_types, DataType):
+            # DataTypes.INT()
             result_types = [result_types]
+        else:
+            # [DataTypes.INT(), DataTypes.BIGINT()]
+            result_types = list(result_types)
 
         for result_type in result_types:
-            if not isinstance(result_type, DataType):
+            if not isinstance(result_type, (DataType, str)):
                 raise TypeError(
-                    "Invalid result_type: result_type should be DataType but contains {}".format(
-                        result_type))
+                    "Invalid result_type: result_type should be DataType or str but contains {}"
+                    .format(result_type))
 
         self._result_types = result_types
 
     def _create_judf(self, serialized_func, j_input_types, j_function_kind):
         gateway = get_gateway()
-        j_result_types = java_utils.to_jarray(gateway.jvm.TypeInformation,
-                                              [_to_java_type(i) for i in self._result_types])
-        j_result_type = gateway.jvm.org.apache.flink.api.java.typeutils.RowTypeInfo(j_result_types)
+
+        if isinstance(self._result_types, str):
+            j_result_type = self._result_types
+        elif isinstance(self._result_types[0], DataType):
+            j_result_types = java_utils.to_jarray(
+                gateway.jvm.DataType, [_to_java_data_type(i) for i in self._result_types])
+            j_result_type = gateway.jvm.DataTypes.ROW(j_result_types)
+        else:
+            j_result_type = 'Row<{0}>'.format(','.join(
+                ['f{0} {1}'.format(i, result_type)
+                 for i, result_type in enumerate(self._result_types)]))
         PythonTableFunction = gateway.jvm \
             .org.apache.flink.table.functions.python.PythonTableFunction
         j_table_function = PythonTableFunction(
@@ -491,33 +703,44 @@ class UserDefinedAggregateFunctionWrapper(UserDefinedFunctionWrapper):
             accumulator_type = func.get_accumulator_type()
         if result_type is None:
             result_type = func.get_result_type()
-        if not isinstance(result_type, DataType):
+        if not isinstance(result_type, (DataType, str)):
             raise TypeError(
-                "Invalid returnType: returnType should be DataType but is {}".format(result_type))
+                "Invalid returnType: returnType should be DataType or str but is {}"
+                .format(result_type))
         from pyflink.table.types import MapType
         if func_type == 'pandas' and isinstance(result_type, MapType):
             raise TypeError(
                 "Invalid returnType: Pandas UDAF doesn't support DataType type {} currently"
                 .format(result_type))
-        if accumulator_type is not None and not isinstance(accumulator_type, DataType):
+        if accumulator_type is not None and not isinstance(accumulator_type, (DataType, str)):
             raise TypeError(
-                "Invalid accumulator_type: accumulator_type should be DataType but is {}".format(
-                    accumulator_type))
+                "Invalid accumulator_type: accumulator_type should be DataType or str but is {}"
+                .format(accumulator_type))
+        if (func_type == "general" and
+                not (isinstance(result_type, str) and (accumulator_type, str) or
+                     isinstance(result_type, DataType) and isinstance(accumulator_type, DataType))):
+            raise TypeError("result_type and accumulator_type should be DataType or str "
+                            "at the same time.")
         self._result_type = result_type
         self._accumulator_type = accumulator_type
         self._is_table_aggregate = is_table_aggregate
 
     def _create_judf(self, serialized_func, j_input_types, j_function_kind):
         if self._func_type == "pandas":
-            from pyflink.table.types import DataTypes
-            self._accumulator_type = DataTypes.ARRAY(self._result_type)
+            if isinstance(self._result_type, DataType):
+                from pyflink.table.types import DataTypes
+                self._accumulator_type = DataTypes.ARRAY(self._result_type)
+            else:
+                self._accumulator_type = 'ARRAY<{0}>'.format(self._result_type)
 
-        if j_input_types is not None:
-            gateway = get_gateway()
-            j_input_types = java_utils.to_jarray(
-                gateway.jvm.DataType, [_to_java_data_type(i) for i in self._input_types])
-        j_result_type = _to_java_data_type(self._result_type)
-        j_accumulator_type = _to_java_data_type(self._accumulator_type)
+        if isinstance(self._result_type, DataType):
+            j_result_type = _to_java_data_type(self._result_type)
+        else:
+            j_result_type = self._result_type
+        if isinstance(self._accumulator_type, DataType):
+            j_accumulator_type = _to_java_data_type(self._accumulator_type)
+        else:
+            j_accumulator_type = self._accumulator_type
 
         gateway = get_gateway()
         if self._is_table_aggregate:
@@ -550,9 +773,29 @@ def _get_python_env():
     return gateway.jvm.org.apache.flink.table.functions.python.PythonEnv(exec_type)
 
 
-def _create_udf(f, input_types, result_type, func_type, deterministic, name):
-    return UserDefinedScalarFunctionWrapper(
-        f, input_types, result_type, func_type, deterministic, name)
+def _create_udf(f, input_types, result_type, func_type, deterministic, name,
+                concurrency=None, batch_size=None):
+    if func_type in ('pandas', 'arrow'):
+        target = f
+        while isinstance(target, functools.partial):
+            target = target.func
+        if isinstance(target, ScalarFunction):
+            target = target.eval
+        if inspect.iscoroutinefunction(target) or inspect.iscoroutinefunction(
+                getattr(target, '__call__', None)):
+            raise ValueError(f"Async scalar functions do not support {func_type} func_type.")
+    if isinstance(f, AsyncScalarFunction) or inspect.iscoroutinefunction(f):
+        if func_type in ('pandas', 'arrow'):
+            raise ValueError(
+                f"Async scalar functions do not support {func_type} func_type. "
+                "Please use func_type='general' (default) for async functions.")
+        return UserDefinedAsyncScalarFunctionWrapper(
+            f, input_types, result_type, func_type, deterministic, name,
+            concurrency, batch_size)
+    else:
+        return UserDefinedScalarFunctionWrapper(
+            f, input_types, result_type, func_type, deterministic, name,
+            concurrency, batch_size)
 
 
 def _create_udtf(f, input_types, result_types, deterministic, name):
@@ -569,12 +812,18 @@ def _create_udtaf(f, input_types, result_type, accumulator_type, func_type, dete
         f, input_types, result_type, accumulator_type, func_type, deterministic, name, True)
 
 
-def udf(f: Union[Callable, ScalarFunction, Type] = None,
-        input_types: Union[List[DataType], DataType] = None, result_type: DataType = None,
+def udf(f: Union[Callable, ScalarFunction, AsyncScalarFunction, Type] = None,
+        input_types: Union[List[DataType], DataType, str, List[str]] = None,
+        result_type: Union[DataType, str] = None,
         deterministic: bool = None, name: str = None, func_type: str = "general",
-        udf_type: str = None) -> Union[UserDefinedScalarFunctionWrapper, Callable]:
+        concurrency: Optional[int] = None, batch_size: Optional[int] = None
+        ) -> Union[
+        UserDefinedScalarFunctionWrapper, UserDefinedAsyncScalarFunctionWrapper, Callable]:
     """
-    Helper method for creating a user-defined function.
+    Helper method for creating a user-defined scalar function.
+
+    This decorator can automatically detect whether the function is async (defined with `async def`
+    or is an instance of AsyncScalarFunction).
 
     Example:
         ::
@@ -586,47 +835,79 @@ def udf(f: Union[Callable, ScalarFunction, Type] = None,
             ... def add(i, j):
             ...     return i + j
 
+            >>> # Specify result_type via string.
+            >>> @udf(result_type='BIGINT')
+            ... def add(i, j):
+            ...     return i + j
+
+            >>> # Async function will be automatically detected
+            >>> @udf(result_type=DataTypes.STRING())
+            ... async def async_lookup(key):
+            ...     await asyncio.sleep(0.1)
+            ...     return f"value_for_{key}"
+
             >>> class SubtractOne(ScalarFunction):
             ...     def eval(self, i):
             ...         return i - 1
             >>> subtract_one = udf(SubtractOne(), DataTypes.BIGINT(), DataTypes.BIGINT())
 
-    :param f: lambda function or user-defined function.
+            >>> # AsyncScalarFunction will be automatically detected
+            >>> class AsyncLookup(AsyncScalarFunction):
+            ...     async def eval(self, key):
+            ...         await asyncio.sleep(0.1)
+            ...         return f"value_for_{key}"
+            >>> async_lookup = udf(AsyncLookup(), result_type=DataTypes.STRING())
+
+    :param f: lambda function, user-defined function, or async function.
     :param input_types: optional, the input data types.
     :param result_type: the result data type.
     :param deterministic: the determinism of the function's results. True if and only if a call to
                           this function is guaranteed to always return the same result given the
                           same parameters. (default True)
     :param name: the function name.
-    :param func_type: the type of the python function, available value: general, pandas,
+    :param func_type: the type of the python function, available value: general, pandas, arrow,
                      (default: general)
-    :param udf_type: the type of the python function, available value: general, pandas,
-                    (default: general)
-    :return: UserDefinedScalarFunctionWrapper or function.
+    :param concurrency: optional parallelism for the Python operator that executes this UDF.
+                        Only supported for insert-only streaming inputs.
+    :param batch_size: optional maximum Arrow batch size. Only supported for pandas or Arrow UDFs.
+    :return: UserDefinedScalarFunctionWrapper, UserDefinedAsyncScalarFunctionWrapper, or function.
 
     .. versionadded:: 1.10.0
     """
-    if udf_type:
-        import warnings
-        warnings.warn("The param udf_type is deprecated in 1.12. Use func_type instead.")
-        func_type = udf_type
 
-    if func_type not in ('general', 'pandas'):
-        raise ValueError("The func_type must be one of 'general, pandas', got %s."
-                         % func_type)
+    if func_type not in ('general', 'pandas', 'arrow'):
+        raise ValueError(f"The func_type must be one of 'general, pandas, arrow', got {func_type}.")
+    _validate_udf_execution_options(func_type, concurrency, batch_size)
 
     # decorator
     if f is None:
         return functools.partial(_create_udf, input_types=input_types, result_type=result_type,
                                  func_type=func_type, deterministic=deterministic,
-                                 name=name)
+                                 name=name, concurrency=concurrency, batch_size=batch_size)
     else:
-        return _create_udf(f, input_types, result_type, func_type, deterministic, name)
+        return _create_udf(f, input_types, result_type, func_type, deterministic, name,
+                           concurrency, batch_size)
+
+
+def _validate_udf_execution_options(func_type, concurrency, batch_size):
+    for option_name, option_value in (
+            ('concurrency', concurrency), ('batch_size', batch_size)):
+        if option_value is not None and (
+                isinstance(option_value, bool)
+                or not isinstance(option_value, int)
+                or not 1 <= option_value <= 2147483647):
+            raise ValueError(
+                f"{option_name} must be a positive integer no greater than 2147483647, "
+                f"got: {option_value}")
+
+    if batch_size is not None and func_type not in ('pandas', 'arrow'):
+        raise ValueError("batch_size is only supported for pandas or Arrow UDFs.")
 
 
 def udtf(f: Union[Callable, TableFunction, Type] = None,
-         input_types: Union[List[DataType], DataType] = None,
-         result_types: Union[List[DataType], DataType] = None, deterministic: bool = None,
+         input_types: Union[List[DataType], DataType, str, List[str]] = None,
+         result_types: Union[List[DataType], DataType, str, List[str]] = None,
+         deterministic: bool = None,
          name: str = None) -> Union[UserDefinedTableFunctionWrapper, Callable]:
     """
     Helper method for creating a user-defined table function.
@@ -636,6 +917,18 @@ def udtf(f: Union[Callable, TableFunction, Type] = None,
 
             >>> # The input_types is optional.
             >>> @udtf(result_types=[DataTypes.BIGINT(), DataTypes.BIGINT()])
+            ... def range_emit(s, e):
+            ...     for i in range(e):
+            ...         yield s, i
+
+            >>> # Specify result_types via string
+            >>> @udtf(result_types=['BIGINT', 'BIGINT'])
+            ... def range_emit(s, e):
+            ...     for i in range(e):
+            ...         yield s, i
+
+            >>> # Specify result_types via row string
+            >>> @udtf(result_types='Row<a BIGINT, b BIGINT>')
             ... def range_emit(s, e):
             ...     for i in range(e):
             ...         yield s, i
@@ -665,8 +958,9 @@ def udtf(f: Union[Callable, TableFunction, Type] = None,
 
 
 def udaf(f: Union[Callable, AggregateFunction, Type] = None,
-         input_types: Union[List[DataType], DataType] = None, result_type: DataType = None,
-         accumulator_type: DataType = None, deterministic: bool = None, name: str = None,
+         input_types: Union[List[DataType], DataType, str, List[str]] = None,
+         result_type: Union[DataType, str] = None, accumulator_type: Union[DataType, str] = None,
+         deterministic: bool = None, name: str = None,
          func_type: str = "general") -> Union[UserDefinedAggregateFunctionWrapper, Callable]:
     """
     Helper method for creating a user-defined aggregate function.
@@ -676,6 +970,11 @@ def udaf(f: Union[Callable, AggregateFunction, Type] = None,
 
             >>> # The input_types is optional.
             >>> @udaf(result_type=DataTypes.FLOAT(), func_type="pandas")
+            ... def mean_udaf(v):
+            ...     return v.mean()
+
+            >>> # Specify result_type via string
+            >>> @udaf(result_type='FLOAT', func_type="pandas")
             ... def mean_udaf(v):
             ...     return v.mean()
 
@@ -707,8 +1006,10 @@ def udaf(f: Union[Callable, AggregateFunction, Type] = None,
 
 
 def udtaf(f: Union[Callable, TableAggregateFunction, Type] = None,
-          input_types: Union[List[DataType], DataType] = None, result_type: DataType = None,
-          accumulator_type: DataType = None, deterministic: bool = None, name: str = None,
+          input_types: Union[List[DataType], DataType, str, List[str]] = None,
+          result_type: Union[DataType, str] = None,
+          accumulator_type: Union[DataType, str] = None,
+          deterministic: bool = None, name: str = None,
           func_type: str = 'general') -> Union[UserDefinedAggregateFunctionWrapper, Callable]:
     """
     Helper method for creating a user-defined table aggregate function.
@@ -742,11 +1043,10 @@ def udtaf(f: Union[Callable, TableAggregateFunction, Type] = None,
         ...             self.accumulate(accumulator, other_acc[1])
         ...
         ...     def get_accumulator_type(self):
-        ...         return DataTypes.ARRAY(DataTypes.BIGINT())
+        ...         return 'ARRAY<BIGINT>'
         ...
         ...     def get_result_type(self):
-        ...         return DataTypes.ROW(
-        ...             [DataTypes.FIELD("a", DataTypes.BIGINT())])
+        ...         return 'ROW<a BIGINT>'
         >>> top2 = udtaf(Top2())
 
     :param f: user-defined table aggregate function.

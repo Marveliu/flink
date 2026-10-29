@@ -18,11 +18,11 @@
 
 package org.apache.flink.table.runtime.operators.sort;
 
+import org.apache.flink.core.memory.AbstractPagedOutputView;
 import org.apache.flink.runtime.io.compression.BlockCompressionFactory;
 import org.apache.flink.runtime.io.disk.ChannelReaderInputViewIterator;
 import org.apache.flink.runtime.io.disk.iomanager.AbstractChannelReaderInputView;
 import org.apache.flink.runtime.io.disk.iomanager.IOManager;
-import org.apache.flink.runtime.memory.AbstractPagedOutputView;
 import org.apache.flink.table.data.binary.BinaryRowData;
 import org.apache.flink.table.runtime.generated.RecordComparator;
 import org.apache.flink.table.runtime.typeutils.BinaryRowDataSerializer;
@@ -46,7 +46,7 @@ public class BinaryExternalMerger extends AbstractBinaryExternalMerger<BinaryRow
             SpillChannelManager channelManager,
             BinaryRowDataSerializer serializer,
             RecordComparator comparator,
-            boolean compressionEnable,
+            boolean compressionEnabled,
             BlockCompressionFactory compressionCodecFactory,
             int compressionBlockSize) {
         super(
@@ -54,7 +54,7 @@ public class BinaryExternalMerger extends AbstractBinaryExternalMerger<BinaryRow
                 pageSize,
                 maxFanIn,
                 channelManager,
-                compressionEnable,
+                compressionEnabled,
                 compressionCodecFactory,
                 compressionBlockSize);
         this.serializer = serializer;

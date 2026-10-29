@@ -21,6 +21,8 @@ package org.apache.flink.state.api.output.operators;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.api.common.state.BroadcastState;
 import org.apache.flink.api.common.state.MapStateDescriptor;
+import org.apache.flink.configuration.CheckpointingOptions;
+import org.apache.flink.configuration.Configuration;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.state.api.functions.BroadcastStateBootstrapFunction;
 import org.apache.flink.state.api.output.SnapshotUtils;
@@ -44,6 +46,8 @@ public class BroadcastStateBootstrapOperator<IN>
 
     private static final long serialVersionUID = 1L;
 
+    private final long checkpointId;
+
     private final long timestamp;
 
     private final Path savepointPath;
@@ -51,10 +55,14 @@ public class BroadcastStateBootstrapOperator<IN>
     private transient ContextImpl context;
 
     public BroadcastStateBootstrapOperator(
-            long timestamp, Path savepointPath, BroadcastStateBootstrapFunction<IN> function) {
+            long checkpointId,
+            long timestamp,
+            Path savepointPath,
+            BroadcastStateBootstrapFunction<IN> function) {
         super(function);
-        this.timestamp = timestamp;
 
+        this.checkpointId = checkpointId;
+        this.timestamp = timestamp;
         this.savepointPath = savepointPath;
     }
 
@@ -71,13 +79,15 @@ public class BroadcastStateBootstrapOperator<IN>
 
     @Override
     public void endInput() throws Exception {
+        Configuration jobConf = getContainingTask().getJobConfiguration();
         TaggedOperatorSubtaskState state =
                 SnapshotUtils.snapshot(
+                        checkpointId,
                         this,
-                        getRuntimeContext().getIndexOfThisSubtask(),
+                        getRuntimeContext().getTaskInfo().getIndexOfThisSubtask(),
                         timestamp,
-                        getContainingTask().getConfiguration().isExactlyOnceCheckpointMode(),
-                        getContainingTask().getConfiguration().isUnalignedCheckpointsEnabled(),
+                        CheckpointingOptions.getCheckpointingMode(jobConf),
+                        CheckpointingOptions.isUnalignedCheckpointEnabled(jobConf),
                         getContainingTask().getConfiguration().getConfiguration(),
                         savepointPath);
 

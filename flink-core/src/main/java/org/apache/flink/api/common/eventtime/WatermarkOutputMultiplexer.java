@@ -48,6 +48,15 @@ import static org.apache.flink.util.Preconditions.checkState;
  */
 @Internal
 public class WatermarkOutputMultiplexer {
+    /** A callback for propagating changes to split based watermarks. */
+    @Internal
+    public interface WatermarkUpdateListener {
+        /** Called when the watermark increases. */
+        void onWatermarkUpdate(long watermark);
+
+        /** Called when the idle state changes. */
+        void onIdleUpdate(boolean idle);
+    }
 
     /**
      * The {@link WatermarkOutput} that we use to emit our multiplexed watermark updates. We assume
@@ -78,14 +87,19 @@ public class WatermarkOutputMultiplexer {
      * an output ID that can be used to get a deferred or immediate {@link WatermarkOutput} for that
      * output.
      */
-    public void registerNewOutput(String id) {
-        final PartialWatermark outputState = new PartialWatermark();
+    public void registerNewOutput(String id, WatermarkUpdateListener onWatermarkUpdate) {
+        final PartialWatermark outputState = new PartialWatermark(onWatermarkUpdate);
 
         final PartialWatermark previouslyRegistered =
                 watermarkPerOutputId.putIfAbsent(id, outputState);
         checkState(previouslyRegistered == null, "Already contains an output for ID %s", id);
 
         combinedWatermarkStatus.add(outputState);
+    }
+
+    /** Registers a new multiplexed output with a no-op listener. */
+    public void registerNewOutput(String id) {
+        registerNewOutput(id, new NoOpWatermarkUpdateListener());
     }
 
     public boolean unregisterOutput(String id) {
@@ -134,15 +148,32 @@ public class WatermarkOutputMultiplexer {
 
     /**
      * Checks whether we need to update the combined watermark. Should be called when a newly
-     * emitted per-output watermark is higher than the max so far or if we need to combined the
+     * emitted per-output watermark is higher than the max so far or if we need to combine the
      * deferred per-output updates.
+     *
+     * <p>It also handles scenarios where both emitting a watermark and entering the idle state
+     * occur within the same invocation.
+     *
+     * <p>Idleness is propagated in both directions: the combined status is reported to the {@link
+     * #underlyingOutput} whenever it is idle or active. An output that is active but whose
+     * watermark does not advance produces neither a watermark nor an idle update, so without
+     * reporting the active state the underlying output would never learn that it is active again.
+     *
+     * <p>Activity is only announced for outputs that reported being active. An output is registered
+     * for every assigned split, even when the reader never reports anything through it, and
+     * reporting idleness on one output says nothing about the others: such outputs hold the
+     * combined watermark back, but they must not keep the downstream output active.
      */
     private void updateCombinedWatermark() {
         if (combinedWatermarkStatus.updateCombinedWatermark()) {
             underlyingOutput.emitWatermark(
                     new Watermark(combinedWatermarkStatus.getCombinedWatermark()));
-        } else if (combinedWatermarkStatus.isIdle()) {
+        }
+
+        if (combinedWatermarkStatus.isIdle()) {
             underlyingOutput.markIdle();
+        } else if (combinedWatermarkStatus.hasActiveOutput()) {
+            underlyingOutput.markActive();
         }
     }
 
@@ -215,5 +246,15 @@ public class WatermarkOutputMultiplexer {
         public void markActive() {
             state.setIdle(false);
         }
+    }
+
+    /** A No-op implementation of {@link WatermarkUpdateListener}. */
+    @Internal
+    public static class NoOpWatermarkUpdateListener implements WatermarkUpdateListener {
+        @Override
+        public void onWatermarkUpdate(long watermark) {}
+
+        @Override
+        public void onIdleUpdate(boolean idle) {}
     }
 }

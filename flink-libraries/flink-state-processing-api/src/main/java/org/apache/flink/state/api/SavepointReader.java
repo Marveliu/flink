@@ -18,6 +18,7 @@
 
 package org.apache.flink.state.api;
 
+import org.apache.flink.annotation.Experimental;
 import org.apache.flink.annotation.PublicEvolving;
 import org.apache.flink.api.common.InvalidProgramException;
 import org.apache.flink.api.common.functions.InvalidTypesException;
@@ -25,7 +26,6 @@ import org.apache.flink.api.common.state.ListStateDescriptor;
 import org.apache.flink.api.common.state.MapStateDescriptor;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.common.typeutils.TypeSerializer;
-import org.apache.flink.api.java.Utils;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.api.java.typeutils.TupleTypeInfo;
 import org.apache.flink.api.java.typeutils.TypeExtractor;
@@ -33,13 +33,16 @@ import org.apache.flink.runtime.checkpoint.OperatorState;
 import org.apache.flink.runtime.checkpoint.metadata.CheckpointMetadata;
 import org.apache.flink.runtime.state.StateBackend;
 import org.apache.flink.runtime.state.VoidNamespace;
+import org.apache.flink.state.api.filter.SavepointKeyFilter;
 import org.apache.flink.state.api.functions.KeyedStateReaderFunction;
+import org.apache.flink.state.api.functions.WindowKeyedStateReaderFunction;
 import org.apache.flink.state.api.input.BroadcastStateInputFormat;
 import org.apache.flink.state.api.input.KeyedStateInputFormat;
 import org.apache.flink.state.api.input.ListStateInputFormat;
 import org.apache.flink.state.api.input.SourceBuilder;
 import org.apache.flink.state.api.input.UnionStateInputFormat;
 import org.apache.flink.state.api.input.operator.KeyedStateReaderOperator;
+import org.apache.flink.state.api.input.operator.WindowKeyedStateReaderOperator;
 import org.apache.flink.state.api.runtime.MutableConfig;
 import org.apache.flink.state.api.runtime.SavepointLoader;
 import org.apache.flink.state.api.runtime.metadata.SavepointMetadataV2;
@@ -48,11 +51,13 @@ import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.windowing.assigners.WindowAssigner;
 import org.apache.flink.streaming.api.windowing.windows.Window;
 import org.apache.flink.util.Preconditions;
+import org.apache.flink.util.Utils;
 
 import javax.annotation.Nullable;
 
 import java.io.IOException;
 import java.util.Comparator;
+import java.util.List;
 
 /** The entry point for reading state from a Flink savepoint. */
 @PublicEvolving
@@ -82,7 +87,10 @@ public class SavepointReader {
 
         SavepointMetadataV2 savepointMetadata =
                 new SavepointMetadataV2(
-                        maxParallelism, metadata.getMasterStates(), metadata.getOperatorStates());
+                        metadata.getCheckpointId(),
+                        maxParallelism,
+                        metadata.getMasterStates(),
+                        metadata.getOperatorStates());
         return new SavepointReader(env, savepointMetadata, null);
     }
 
@@ -111,7 +119,10 @@ public class SavepointReader {
 
         SavepointMetadataV2 savepointMetadata =
                 new SavepointMetadataV2(
-                        maxParallelism, metadata.getMasterStates(), metadata.getOperatorStates());
+                        metadata.getCheckpointId(),
+                        maxParallelism,
+                        metadata.getMasterStates(),
+                        metadata.getOperatorStates());
         return new SavepointReader(env, savepointMetadata, stateBackend);
     }
 
@@ -146,24 +157,17 @@ public class SavepointReader {
     /**
      * Read operator {@code ListState} from a {@code Savepoint}.
      *
-     * @param uid The uid of the operator.
+     * @param identifier The identifier of the operator.
      * @param name The (unique) name for the state.
      * @param typeInfo The type of the elements in the state.
      * @param <T> The type of the values that are in the list state.
      * @return A {@code DataStream} representing the elements in state.
      * @throws IOException If the savepoint path is invalid or the uid does not exist.
      */
-    public <T> DataStream<T> readListState(String uid, String name, TypeInformation<T> typeInfo)
+    public <T> DataStream<T> readListState(
+            OperatorIdentifier identifier, String name, TypeInformation<T> typeInfo)
             throws IOException {
-        OperatorState operatorState = metadata.getOperatorState(uid);
-        ListStateDescriptor<T> descriptor = new ListStateDescriptor<>(name, typeInfo);
-        ListStateInputFormat<T> inputFormat =
-                new ListStateInputFormat<>(
-                        operatorState,
-                        MutableConfig.of(env.getConfiguration()),
-                        stateBackend,
-                        descriptor);
-        return SourceBuilder.fromFormat(env, inputFormat, typeInfo);
+        return readListState(identifier, typeInfo, new ListStateDescriptor<>(name, typeInfo));
     }
 
     /**
@@ -171,7 +175,7 @@ public class SavepointReader {
      * e.g., a different serializer than the one returned by {@code
      * TypeInformation#createSerializer}.
      *
-     * @param uid The uid of the operator.
+     * @param identifier The identifier of the operator.
      * @param name The (unique) name for the state.
      * @param typeInfo The type of the elements in the state.
      * @param serializer The serializer used to write the elements into state.
@@ -180,41 +184,45 @@ public class SavepointReader {
      * @throws IOException If the savepoint path is invalid or the uid does not exist.
      */
     public <T> DataStream<T> readListState(
-            String uid, String name, TypeInformation<T> typeInfo, TypeSerializer<T> serializer)
+            OperatorIdentifier identifier,
+            String name,
+            TypeInformation<T> typeInfo,
+            TypeSerializer<T> serializer)
+            throws IOException {
+        return readListState(identifier, typeInfo, new ListStateDescriptor<>(name, serializer));
+    }
+
+    private <T> DataStream<T> readListState(
+            OperatorIdentifier identifier,
+            TypeInformation<T> typeInfo,
+            ListStateDescriptor<T> descriptor)
             throws IOException {
 
-        OperatorState operatorState = metadata.getOperatorState(uid);
-        ListStateDescriptor<T> descriptor = new ListStateDescriptor<>(name, serializer);
+        OperatorState operatorState = metadata.getOperatorState(identifier);
         ListStateInputFormat<T> inputFormat =
                 new ListStateInputFormat<>(
                         operatorState,
                         MutableConfig.of(env.getConfiguration()),
                         stateBackend,
-                        descriptor);
+                        descriptor,
+                        env.getConfig());
         return SourceBuilder.fromFormat(env, inputFormat, typeInfo);
     }
 
     /**
      * Read operator {@code UnionState} from a {@code Savepoint}.
      *
-     * @param uid The uid of the operator.
+     * @param identifier The identifier of the operator.
      * @param name The (unique) name for the state.
      * @param typeInfo The type of the elements in the state.
      * @param <T> The type of the values that are in the union state.
      * @return A {@code DataStream} representing the elements in state.
      * @throws IOException If the savepoint path is invalid or the uid does not exist.
      */
-    public <T> DataStream<T> readUnionState(String uid, String name, TypeInformation<T> typeInfo)
+    public <T> DataStream<T> readUnionState(
+            OperatorIdentifier identifier, String name, TypeInformation<T> typeInfo)
             throws IOException {
-        OperatorState operatorState = metadata.getOperatorState(uid);
-        ListStateDescriptor<T> descriptor = new ListStateDescriptor<>(name, typeInfo);
-        UnionStateInputFormat<T> inputFormat =
-                new UnionStateInputFormat<>(
-                        operatorState,
-                        MutableConfig.of(env.getConfiguration()),
-                        stateBackend,
-                        descriptor);
-        return SourceBuilder.fromFormat(env, inputFormat, typeInfo);
+        return readUnionState(identifier, typeInfo, new ListStateDescriptor<>(name, typeInfo));
     }
 
     /**
@@ -222,7 +230,7 @@ public class SavepointReader {
      * e.g., a different serializer than the one returned by {@code
      * TypeInformation#createSerializer}.
      *
-     * @param uid The uid of the operator.
+     * @param identifier The identifier of the operator.
      * @param name The (unique) name for the state.
      * @param typeInfo The type of the elements in the state.
      * @param serializer The serializer used to write the elements into state.
@@ -231,24 +239,35 @@ public class SavepointReader {
      * @throws IOException If the savepoint path is invalid or the uid does not exist.
      */
     public <T> DataStream<T> readUnionState(
-            String uid, String name, TypeInformation<T> typeInfo, TypeSerializer<T> serializer)
+            OperatorIdentifier identifier,
+            String name,
+            TypeInformation<T> typeInfo,
+            TypeSerializer<T> serializer)
+            throws IOException {
+        return readUnionState(identifier, typeInfo, new ListStateDescriptor<>(name, serializer));
+    }
+
+    private <T> DataStream<T> readUnionState(
+            OperatorIdentifier identifier,
+            TypeInformation<T> typeInfo,
+            ListStateDescriptor<T> descriptor)
             throws IOException {
 
-        OperatorState operatorState = metadata.getOperatorState(uid);
-        ListStateDescriptor<T> descriptor = new ListStateDescriptor<>(name, serializer);
+        OperatorState operatorState = metadata.getOperatorState(identifier);
         UnionStateInputFormat<T> inputFormat =
                 new UnionStateInputFormat<>(
                         operatorState,
                         MutableConfig.of(env.getConfiguration()),
                         stateBackend,
-                        descriptor);
+                        descriptor,
+                        env.getConfig());
         return SourceBuilder.fromFormat(env, inputFormat, typeInfo);
     }
 
     /**
      * Read operator {@code BroadcastState} from a {@code Savepoint}.
      *
-     * @param uid The uid of the operator.
+     * @param identifier The identifier of the operator.
      * @param name The (unique) name for the state.
      * @param keyTypeInfo The type information for the keys in the state.
      * @param valueTypeInfo The type information for the values in the state.
@@ -258,23 +277,16 @@ public class SavepointReader {
      * @throws IOException If the savepoint does not contain the specified uid.
      */
     public <K, V> DataStream<Tuple2<K, V>> readBroadcastState(
-            String uid,
+            OperatorIdentifier identifier,
             String name,
             TypeInformation<K> keyTypeInfo,
             TypeInformation<V> valueTypeInfo)
             throws IOException {
-
-        OperatorState operatorState = metadata.getOperatorState(uid);
-        MapStateDescriptor<K, V> descriptor =
-                new MapStateDescriptor<>(name, keyTypeInfo, valueTypeInfo);
-        BroadcastStateInputFormat<K, V> inputFormat =
-                new BroadcastStateInputFormat<>(
-                        operatorState,
-                        MutableConfig.of(env.getConfiguration()),
-                        stateBackend,
-                        descriptor);
-        return SourceBuilder.fromFormat(
-                env, inputFormat, new TupleTypeInfo<>(keyTypeInfo, valueTypeInfo));
+        return readBroadcastState(
+                identifier,
+                keyTypeInfo,
+                valueTypeInfo,
+                new MapStateDescriptor<>(name, keyTypeInfo, valueTypeInfo));
     }
 
     /**
@@ -282,7 +294,7 @@ public class SavepointReader {
      * used; e.g., a different serializer than the one returned by {@code
      * TypeInformation#createSerializer}.
      *
-     * @param uid The uid of the operator.
+     * @param identifier The identifier of the operator.
      * @param name The (unique) name for the state.
      * @param keyTypeInfo The type information for the keys in the state.
      * @param valueTypeInfo The type information for the values in the state.
@@ -294,23 +306,35 @@ public class SavepointReader {
      * @throws IOException If the savepoint path is invalid or the uid does not exist.
      */
     public <K, V> DataStream<Tuple2<K, V>> readBroadcastState(
-            String uid,
+            OperatorIdentifier identifier,
             String name,
             TypeInformation<K> keyTypeInfo,
             TypeInformation<V> valueTypeInfo,
             TypeSerializer<K> keySerializer,
             TypeSerializer<V> valueSerializer)
             throws IOException {
+        return readBroadcastState(
+                identifier,
+                keyTypeInfo,
+                valueTypeInfo,
+                new MapStateDescriptor<>(name, keySerializer, valueSerializer));
+    }
 
-        OperatorState operatorState = metadata.getOperatorState(uid);
-        MapStateDescriptor<K, V> descriptor =
-                new MapStateDescriptor<>(name, keySerializer, valueSerializer);
+    private <K, V> DataStream<Tuple2<K, V>> readBroadcastState(
+            OperatorIdentifier identifier,
+            TypeInformation<K> keyTypeInfo,
+            TypeInformation<V> valueTypeInfo,
+            MapStateDescriptor<K, V> descriptor)
+            throws IOException {
+
+        OperatorState operatorState = metadata.getOperatorState(identifier);
         BroadcastStateInputFormat<K, V> inputFormat =
                 new BroadcastStateInputFormat<>(
                         operatorState,
                         MutableConfig.of(env.getConfiguration()),
                         stateBackend,
-                        descriptor);
+                        descriptor,
+                        env.getConfig());
         return SourceBuilder.fromFormat(
                 env, inputFormat, new TupleTypeInfo<>(keyTypeInfo, valueTypeInfo));
     }
@@ -318,7 +342,7 @@ public class SavepointReader {
     /**
      * Read keyed state from an operator in a {@code Savepoint}.
      *
-     * @param uid The uid of the operator.
+     * @param identifier The identifier of the operator.
      * @param function The {@link KeyedStateReaderFunction} that is called for each key in state.
      * @param <K> The type of the key in state.
      * @param <OUT> The output type of the transform function.
@@ -326,7 +350,8 @@ public class SavepointReader {
      * @throws IOException If the savepoint does not contain operator state with the given uid.
      */
     public <K, OUT> DataStream<OUT> readKeyedState(
-            String uid, KeyedStateReaderFunction<K, OUT> function) throws IOException {
+            OperatorIdentifier identifier, KeyedStateReaderFunction<K, OUT> function)
+            throws IOException {
 
         TypeInformation<K> keyTypeInfo;
         TypeInformation<OUT> outType;
@@ -360,13 +385,13 @@ public class SavepointReader {
                     e);
         }
 
-        return readKeyedState(uid, function, keyTypeInfo, outType);
+        return readKeyedState(identifier, function, keyTypeInfo, outType);
     }
 
     /**
      * Read keyed state from an operator in a {@code Savepoint}.
      *
-     * @param uid The uid of the operator.
+     * @param identifier The identifier of the operator.
      * @param function The {@link KeyedStateReaderFunction} that is called for each key in state.
      * @param keyTypeInfo The type information of the key in state.
      * @param outTypeInfo The type information of the output of the transform reader function.
@@ -376,19 +401,93 @@ public class SavepointReader {
      * @throws IOException If the savepoint does not contain operator state with the given uid.
      */
     public <K, OUT> DataStream<OUT> readKeyedState(
-            String uid,
+            OperatorIdentifier identifier,
             KeyedStateReaderFunction<K, OUT> function,
             TypeInformation<K> keyTypeInfo,
             TypeInformation<OUT> outTypeInfo)
             throws IOException {
+        return readKeyedState(identifier, function, keyTypeInfo, outTypeInfo, null);
+    }
 
-        OperatorState operatorState = metadata.getOperatorState(uid);
+    /**
+     * Read keyed state from an operator in a {@code Savepoint}, optionally pruning input splits and
+     * keys with a {@link SavepointKeyFilter}.
+     *
+     * @param identifier The identifier of the operator.
+     * @param function The {@link KeyedStateReaderFunction} that is called for each key in state.
+     * @param keyTypeInfo The type information of the key in state.
+     * @param outTypeInfo The type information of the output of the transform reader function.
+     * @param keyFilter Optional filter on the state key. When present, input splits whose key
+     *     groups cannot contain any matching key are skipped, and within each split only matching
+     *     keys are iterated.
+     * @param <K> The type of the key in state.
+     * @param <OUT> The output type of the transform function.
+     * @return A {@code DataStream} of objects read from keyed state.
+     * @throws IOException If the savepoint does not contain operator state with the given uid.
+     */
+    @Experimental
+    public <K, OUT> DataStream<OUT> readKeyedState(
+            OperatorIdentifier identifier,
+            KeyedStateReaderFunction<K, OUT> function,
+            TypeInformation<K> keyTypeInfo,
+            TypeInformation<OUT> outTypeInfo,
+            @Nullable SavepointKeyFilter<K> keyFilter)
+            throws IOException {
+
+        OperatorState operatorState = metadata.getOperatorState(identifier);
         KeyedStateInputFormat<K, VoidNamespace, OUT> inputFormat =
                 new KeyedStateInputFormat<>(
                         operatorState,
                         stateBackend,
                         MutableConfig.of(env.getConfiguration()),
-                        new KeyedStateReaderOperator<>(function, keyTypeInfo));
+                        new KeyedStateReaderOperator<>(function, keyTypeInfo),
+                        env.getConfig(),
+                        keyFilter);
+
+        return SourceBuilder.fromFormat(env, inputFormat, outTypeInfo);
+    }
+
+    /**
+     * Read state registered under an arbitrary namespace (e.g. a window operator's window-scoped
+     * state) from an operator in a {@code Savepoint}.
+     *
+     * @param identifier The identifier of the operator.
+     * @param function The {@link WindowKeyedStateReaderFunction} that is called for each (key,
+     *     namespace) pair in state.
+     * @param keyTypeInfo The type information of the key in state.
+     * @param namespaceSerializer The serializer of the namespace under which the state is
+     *     registered (e.g. a window serializer).
+     * @param stateNames The names of the namespaced states to read (key, namespace) pairs from.
+     * @param outTypeInfo The type information of the output of the transform reader function.
+     * @param keyFilter Optional filter on the state key. When present, input splits whose key
+     *     groups cannot contain any matching key are skipped, and within each split only matching
+     *     keys are iterated.
+     * @param <K> The type of the key in state.
+     * @param <OUT> The output type of the transform function.
+     * @return A {@code DataStream} of objects read from namespaced keyed state.
+     * @throws IOException If the savepoint does not contain operator state with the given uid.
+     */
+    @Experimental
+    public <K, OUT> DataStream<OUT> readWindowKeyedState(
+            OperatorIdentifier identifier,
+            WindowKeyedStateReaderFunction<K, OUT> function,
+            TypeInformation<K> keyTypeInfo,
+            TypeSerializer<Object> namespaceSerializer,
+            List<String> stateNames,
+            TypeInformation<OUT> outTypeInfo,
+            @Nullable SavepointKeyFilter<K> keyFilter)
+            throws IOException {
+
+        OperatorState operatorState = metadata.getOperatorState(identifier);
+        KeyedStateInputFormat<K, Object, OUT> inputFormat =
+                new KeyedStateInputFormat<>(
+                        operatorState,
+                        stateBackend,
+                        MutableConfig.of(env.getConfiguration()),
+                        new WindowKeyedStateReaderOperator<>(
+                                function, keyTypeInfo, namespaceSerializer, stateNames),
+                        env.getConfig(),
+                        keyFilter);
 
         return SourceBuilder.fromFormat(env, inputFormat, outTypeInfo);
     }

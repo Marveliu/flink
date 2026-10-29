@@ -15,7 +15,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.planner.plan.nodes.physical.stream
 
 import org.apache.flink.table.planner.calcite.FlinkTypeFactory
@@ -24,6 +23,7 @@ import org.apache.flink.table.planner.plan.nodes.exec.spec.DynamicTableSourceSpe
 import org.apache.flink.table.planner.plan.nodes.exec.stream.StreamExecTableSourceScan
 import org.apache.flink.table.planner.plan.nodes.physical.common.CommonPhysicalTableSourceScan
 import org.apache.flink.table.planner.plan.schema.TableSourceTable
+import org.apache.flink.table.planner.utils.ShortcutUtils.unwrapTableConfig
 
 import org.apache.calcite.plan._
 import org.apache.calcite.rel.RelNode
@@ -40,14 +40,29 @@ class StreamPhysicalTableSourceScan(
     cluster: RelOptCluster,
     traitSet: RelTraitSet,
     hints: util.List[RelHint],
-    tableSourceTable: TableSourceTable)
+    tableSourceTable: TableSourceTable,
+    val eventTimeSnapshotRequired: Boolean = false)
   extends CommonPhysicalTableSourceScan(cluster, traitSet, hints, tableSourceTable)
   with StreamPhysicalRel {
 
   override def requireWatermark: Boolean = false
 
   override def copy(traitSet: RelTraitSet, inputs: java.util.List[RelNode]): RelNode = {
-    new StreamPhysicalTableSourceScan(cluster, traitSet, getHints, tableSourceTable)
+    new StreamPhysicalTableSourceScan(
+      cluster,
+      traitSet,
+      getHints,
+      tableSourceTable,
+      eventTimeSnapshotRequired)
+  }
+
+  override def copy(relOptTable: TableSourceTable): RelNode = {
+    new StreamPhysicalTableSourceScan(
+      cluster,
+      traitSet,
+      getHints,
+      relOptTable,
+      eventTimeSnapshotRequired)
   }
 
   override def computeSelfCost(planner: RelOptPlanner, mq: RelMetadataQuery): RelOptCost = {
@@ -63,6 +78,7 @@ class StreamPhysicalTableSourceScan(
     tableSourceSpec.setTableSource(tableSource)
 
     new StreamExecTableSourceScan(
+      unwrapTableConfig(this),
       tableSourceSpec,
       FlinkTypeFactory.toLogicalRowType(getRowType),
       getRelDetailedDescription)

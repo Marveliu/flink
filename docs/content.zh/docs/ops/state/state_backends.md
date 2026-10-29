@@ -38,26 +38,40 @@ under the License.
 在启动 CheckPoint 机制时，状态会随着 CheckPoint 而持久化，以防止数据丢失、保障恢复时的一致性。
 状态内部的存储格式、状态在 CheckPoint 时如何持久化以及持久化在哪里均取决于选择的 **State Backend**。
 
-# 可用的 State Backends
+<a name="available-state-backends"></a>
+
+## 可用的 State Backends
 
 Flink 内置了以下这些开箱即用的 state backends ：
 
  - *HashMapStateBackend*
  - *EmbeddedRocksDBStateBackend*
+ - *ForStStateBackend*
 
 如果不设置，默认使用 HashMapStateBackend。
 
+
+<a name="the-hashmapstatebackend"></a>
 
 ### HashMapStateBackend
 
 在 *HashMapStateBackend* 内部，数据以 Java 对象的形式存储在堆中。 Key/value 形式的状态和窗口算子会持有一个 hash table，其中存储着状态值、触发器。
 
+HashMapStateBackend 的局限：
+
+  - 状态大小受限于 TaskManager 上可用的 JVM 堆内存。从 checkpoint 或 savepoint 恢复时，每个 TaskManager 必须有足够的堆内存来容纳其分配到的状态。
+  - 仅支持全量快照，不支持增量 checkpoint。每次 checkpoint 都会捕获完整的状态，随着状态规模增长，checkpoint 时长和恢复时间也会随之延长。
+
 HashMapStateBackend 的适用场景：
 
-  - 有较大 state，较长 window 和较大 key/value 状态的 Job。
-  - 所有的高可用场景。
+  - 状态可以完全放入 TaskManager JVM 堆内存的 Job，需要快速、基于内存的状态访问。
+  - 对延迟敏感、希望避免每次状态访问都进行序列化/反序列化开销的 Job。
 
 建议同时将 [managed memory]({{< ref "docs/deployment/memory/mem_setup_tm" >}}#managed-memory) 设为0，以保证将最大限度的内存分配给 JVM 上的用户代码。
+
+与 EmbeddedRocksDBStateBackend 不同的是，由于 HashMapStateBackend 将数据以对象形式存储在堆中，因此重用这些对象数据是不安全的。
+
+<a name="the-embeddedrocksdbstatebackend"></a>
 
 ### EmbeddedRocksDBStateBackend
 
@@ -79,6 +93,7 @@ EmbeddedRocksDBStateBackend 的适用场景：
 注意，你可以保留的状态大小仅受磁盘空间的限制。与状态存储在内存中的 HashMapStateBackend 相比，EmbeddedRocksDBStateBackend 允许存储非常大的状态。
 然而，这也意味着使用 EmbeddedRocksDBStateBackend 将会使应用程序的最大吞吐量降低。
 所有的读写都必须序列化、反序列化操作，这个比基于堆内存的 state backend 的效率要低很多。
+同时因为存在这些序列化、反序列化操作，重用放入 EmbeddedRocksDBStateBackend 的对象是安全的。
 
 请同时参考 [Task Executor 内存配置]({{< ref "docs/deployment/memory/mem_tuning" >}}#rocksdb-state-backend) 中关于 EmbeddedRocksDBStateBackend 的建议。
 
@@ -88,7 +103,47 @@ EmbeddedRocksDBStateBackend 是目前唯一支持增量 CheckPoint 的 State Bac
 
 每个 slot 中的 RocksDB instance 的内存大小是有限制的，详情请见 [这里]({{< ref "docs/ops/state/large_state_tuning" >}})。
 
-# 选择合适的 State Backend
+<a name="the-forststatebackend"></a>
+
+### The ForStStateBackend
+
+The *ForStStateBackend* is a state backend that is based on [ForSt project](https://github.com/ververica/ForSt),
+which is also a LSM-tree structured key-value store and built on top of the RocksDB.
+It is designed for disaggregated state management, for more details, see [here]({{< ref "docs/ops/state/disaggregated_state" >}}).
+Most importantly, it can hold its sst files on remote file systems that Flink supports, such as HDFS, S3, etc.
+This allows Flink to scale the state size beyond the local disk capacity of the TaskManager.
+Moreover, by putting the sst files on remote file systems, it can also provide a more lightweight
+way to perform checkpoint and recovery.
+
+The ForStStateBackend is still in the experimental stage and is not fully available for production.
+It always performs asynchronous incremental snapshots.
+
+The ForStStateBackend is encouraged for:
+
+- Jobs with very large state, long windows, large key/value states. Local disk may not be enough to 
+store the state.
+- All high-availability setups.
+- Asynchronous state access is preferred. Since the ForStStateBackend is the only one supporting 
+asynchronous state access.
+- Jobs that require lightweight checkpoint and recovery, such as cloud-native applications.
+
+Limitations of the ForStStateBackend (for now):
+
+- Same as EmbeddedRocksDBStateBackend, the maximum supported size per key and per value is 2^31 bytes each.
+- Does not support canonical savepoint, full snapshot, changelog and file-merging checkpoints.
+Always perform incremental snapshots.
+
+Compared with EmbeddedRocksDBStateBackend, ForStStateBackend stores data on remote file system, thus
+the amount of state that you can keep is unlimited. The local disk of TaskManager is only used to
+store cache of file, to provide better performance. Note that when most of the active state is on
+remote file system, the performance of state access may be affected by the network latency. Flink
+introduces asynchronous state access to mitigate this issue. If you are using the asynchronous state
+methods in State API V2, you can benefit from the asynchronous state access. To get familiar with the
+State API V2, please refer to the [State API V2 documentation]({{< ref "docs/dev/datastream/fault-tolerance/state_v2" >}}).
+
+<a name="choose-the-right-state-backend"></a>
+
+## 选择合适的 State Backend
 
 在选择 `HashMapStateBackend` 和 `RocksDB` 的时候，其实就是在性能与可扩展性之间权衡。`HashMapStateBackend` 是非常快的，因为每个状态的读取和算子对于 objects 的更新都是在 Java 的 heap 上；但是状态的大小受限于集群中可用的内存。
 另一方面，`RocksDB` 可以根据可用的 disk 空间扩展，并且只有它支持增量 snapshot。
@@ -99,10 +154,14 @@ EmbeddedRocksDBStateBackend 是目前唯一支持增量 CheckPoint 的 State Bac
 从 1.13 版本开始，所有的 state backends 都会生成一种普适的格式。因此，如果想切换 state backend 的话，那么最好先升级你的 Flink 版本，在新版本中生成 savepoint，在这之后你才可以使用一个不同的 state backend 来读取并恢复它。
 {{< /hint >}}
 
+<a name="configuring-a-state-backend"></a>
+
 ## 设置 State Backend
 
-如果没有明确指定，将使用 jobmanager 做为默认的 state backend。你能在 **flink-conf.yaml** 中为所有 Job 设置其他默认的 State Backend。
+如果没有明确指定，将使用 `HashMapStateBackend` 做为默认的 state backend。你能在 [**Flink 配置文件**]({{< ref "docs/deployment/config#flink-配置文件" >}}) 中为所有 Job 设置其他默认的 State Backend。
 每一个 Job 的 state backend 配置会覆盖默认的 state backend 配置，如下所示：
+
+<a name="setting-the-per-job-state-backend"></a>
 
 ### 设置每个 Job 的 State Backend
 
@@ -111,14 +170,16 @@ EmbeddedRocksDBStateBackend 是目前唯一支持增量 CheckPoint 的 State Bac
 {{< tabs "c8226811-7dea-4c75-8f56-44ee2f40a682" >}}
 {{< tab "Java" >}}
 ```java
-StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
-env.setStateBackend(new HashMapStateBackend());
+Configuration config = new Configuration();
+config.set(StateBackendOptions.STATE_BACKEND, "hashmap");
+env.configure(config);
 ```
 {{< /tab >}}
-{{< tab "Scala" >}}
-```scala
-val env = StreamExecutionEnvironment.getExecutionEnvironment()
-env.setStateBackend(new HashMapStateBackend())
+{{< tab "Python" >}}
+```python
+config = Configuration()
+config.set_string('state.backend.type', 'hashmap')
+env = StreamExecutionEnvironment.get_execution_environment(config)
 ```
 {{< /tab >}}
 {{< /tabs >}}
@@ -135,19 +196,20 @@ env.setStateBackend(new HashMapStateBackend())
 ```
 
 {{< hint info >}}
-  **注意:** 由于 RocksDB 是 Flink 默认分发包的一部分，所以如果你没在代码中使用 RocksDB，则不需要添加此依赖。而且可以在 `flink-conf.yaml` 文件中通过 `state.backend` 配置 State Backend，以及更多的 [checkpointing]({{< ref "docs/deployment/config" >}}#checkpointing) 和 [RocksDB 特定的]({{< ref "docs/deployment/config" >}}#rocksdb-state-backend) 参数。
+  **注意:** 由于 RocksDB 是 Flink 默认分发包的一部分，所以如果你没在代码中使用 RocksDB，则不需要添加此依赖。而且可以在 [Flink 配置文件]({{< ref "docs/deployment/config#flink-配置文件" >}})中通过 `state.backend.type` 配置 State Backend，以及更多的 [checkpointing]({{< ref "docs/deployment/config" >}}#checkpointing) 和 [RocksDB 特定的]({{< ref "docs/deployment/config" >}}#rocksdb-state-backend) 参数。
 {{< /hint >}}
 
+<a name="setting-default-state-backend"></a>
 
 ### 设置默认的（全局的） State Backend
 
-在 `flink-conf.yaml` 可以通过键 `state.backend` 设置默认的 State Backend。
+在 [Flink 配置文件]({{< ref "docs/deployment/config#flink-配置文件" >}}) 可以通过键 `state.backend.type` 设置默认的 State Backend。
 
-可选值包括 *jobmanager* (HashMapStateBackend), *rocksdb* (EmbeddedRocksDBStateBackend)，
-或使用实现了 state backend 工厂 [StateBackendFactory](https://github.com/apache/flink/blob/master/flink-runtime/src/main/java/org/apache/flink/runtime/state/StateBackendFactory.java) 的类的全限定类名，
-例如： EmbeddedRocksDBStateBackend 对应为 `org.apache.flink.contrib.streaming.state.EmbeddedRocksDBStateBackendFactory`。
+可选值包括 *hashmap* (HashMapStateBackend), *rocksdb* (EmbeddedRocksDBStateBackend)，
+或使用实现了 state backend 工厂 {{< gh_link file="flink-runtime/src/main/java/org/apache/flink/runtime/state/StateBackendFactory.java" name="StateBackendFactory" >}} 的类的全限定类名，
+例如： EmbeddedRocksDBStateBackend 对应为 `org.apache.flink.state.rocksdb.EmbeddedRocksDBStateBackendFactory`。
 
-`state.checkpoints.dir` 选项指定了所有 State Backend 写 CheckPoint 数据和写元数据文件的目录。
+`execution.checkpointing.dir` 选项指定了所有 State Backend 写 CheckPoint 数据和写元数据文件的目录。
 你能在 [这里]({{< ref "docs/ops/state/checkpoints" >}}#directory-structure) 找到关于 CheckPoint 目录结构的详细信息。
 
 配置文件的部分示例如下所示：
@@ -155,17 +217,21 @@ env.setStateBackend(new HashMapStateBackend())
 ```yaml
 # 用于存储 operator state 快照的 State Backend
 
-state.backend: filesystem
+state.backend: hashmap
 
 
 # 存储快照的目录
 
-state.checkpoints.dir: hdfs://namenode:40010/flink/checkpoints
+execution.checkpointing.dir: hdfs://namenode:40010/flink/checkpoints
 ```
 
-# RocksDB State Backend 进阶
+<a name="rocksdb-state-backend-details"></a>
+
+## RocksDB State Backend 进阶
 
 *该小节描述 RocksDB state backend 的更多细节*
+
+<a name="incremental-checkpoints"></a>
 
 ### 增量快照
 
@@ -176,10 +242,12 @@ RocksDB 支持*增量快照*。不同于产生一个包含所有数据的全量�
 和基于全量快照的恢复时间相比，如果网络带宽是瓶颈，那么基于增量快照恢复可能会消耗更多时间，因为增量快照包含的 sst 文件之间可能存在数据重叠导致需要下载的数据量变大；而当 CPU 或者 IO 是瓶颈的时候，基于增量快照恢复会更快，因为从增量快照恢复不需要解析 Flink 的统一快照格式来重建本地的 RocksDB 数据表，而是可以直接基于 sst 文件加载。
 
 虽然状态数据量很大时我们推荐使用增量快照，但这并不是默认的快照机制，您需要通过下述配置手动开启该功能：
-  - 在 `flink-conf.yaml` 中设置：`state.backend.incremental: true` 或者
+  - 在 [Flink 配置文件]({{< ref "docs/deployment/config#flink-配置文件" >}}) 中设置：`execution.checkpointing.incremental: true` 或者
   - 在代码中按照右侧方式配置（来覆盖默认配置）：`EmbeddedRocksDBStateBackend backend = new EmbeddedRocksDBStateBackend(true);`
 
 需要注意的是，一旦启用了增量快照，网页上展示的 `Checkpointed Data Size` 只代表增量上传的数据量，而不是一次快照的完整数据量。
+
+<a name="memory-management"></a>
 
 ### 内存管理
 
@@ -207,8 +275,10 @@ Flink还提供了两个参数来控制*写路径*（MemTable）和*读路径*（
 <span class="label label-info">注意</span> 上述机制开启时将覆盖用户在 [`PredefinedOptions`](#predefined-per-columnfamily-options) 和 [`RocksDBOptionsFactory`](#passing-options-factory-to-rocksdb) 中对 block cache 和 write buffer 进行的配置。
 
 <span class="label label-info">注意</span> *仅面向专业用户*：若要手动控制内存，可以将 `state.backend.rocksdb.memory.managed` 设置为 `false`，并通过 [`ColumnFamilyOptions`](#passing-options-factory-to-rocksdb) 配置 RocksDB。
-或者可以复用上述 cache/write-buffer-manager 机制，但将内存大小设置为与 Flink 的托管内存大小无关的固定大小（通过 `state.backend.rocksdb.memory.fixed-per-slot` 选项）。
+或者可以复用上述 cache/write-buffer-manager 机制，但将内存大小设置为与 Flink 的托管内存大小无关的固定大小（通过 `state.backend.rocksdb.memory.fixed-per-slot`/`state.backend.rocksdb.memory.fixed-per-tm` 选项）。
 注意在这两种情况下，用户都需要确保在 JVM 之外有足够的内存可供 RocksDB 使用。
+
+<a name="timers-heap-vs-rocksdb"></a>
 
 ### 计时器（内存 vs. RocksDB）
 
@@ -220,6 +290,8 @@ Flink还提供了两个参数来控制*写路径*（MemTable）和*读路径*（
 
 <span class="label label-info">注意</span> *在 RocksDB state backend 中使用基于堆的计时器的组合当前不支持计时器状态的异步快照。其他状态（如 keyed state）可以被异步快照。*
 
+<a name="enabling-rocksdb-native-metrics"></a>
+
 ### 开启 RocksDB 原生监控指标
 
 您可以选择使用 Flink 的监控指标系统来汇报 RocksDB 的原生指标，并且可以选择性的指定特定指标进行汇报。
@@ -229,24 +301,24 @@ Flink还提供了两个参数来控制*写路径*（MemTable）和*读路径*（
   **注意：** 启用 RocksDB 的原生指标可能会对应用程序的性能产生负面影响。
 {{< /hint >}}
 
-### 列族（ColumnFamily）级别的预定义选项
+#### 列族（ColumnFamily）级别的预定义选项
 
 <span class="label label-info">注意</span> 在引入 [RocksDB 使用托管内存](#memory-management) 功能后，此机制应限于在*专家调优*或*故障处理*中使用。
 
 使用*预定义选项*，用户可以在每个 RocksDB 列族上应用一些预定义的配置，例如配置内存使用、线程、Compaction 设置等。目前每个算子的每个状态都在 RocksDB 中有专门的一个列族存储。
 
 有两种方法可以选择要应用的预定义选项：
-  - 通过 `state.backend.rocksdb.predefined-options` 配置项将选项名称设置进 `flink-conf.yaml` 。
+  - 通过 `state.backend.rocksdb.predefined-options` 配置项将选项名称设置进 [Flink 配置文件]({{< ref "docs/deployment/config#flink-配置文件" >}}) 。
   - 通过程序设置：`EmbeddedRocksDBStateBackend.setPredefinedOptions(PredefinedOptions.SPINNING_DISK_OPTIMIZED_HIGH_MEM)` 。
 
 该选项的默认值是 `DEFAULT` ，对应 `PredefinedOptions.DEFAULT` 。
 
-#### 从 flink-conf.yaml 中读取列族选项
+#### 从 Flink 配置文件中读取列族选项
 
 RocksDB State Backend 会将 [这里定义]({{< ref "docs/deployment/config" >}}#advanced-rocksdb-state-backends-options) 的所有配置项全部加载。
 因此您可以简单的通过关闭 RocksDB 使用托管内存的功能并将需要的设置选项加入配置文件来配置底层的列族选项。
 
-### 通过 RocksDBOptionsFactory 配置 RocksDB 选项
+#### 通过 RocksDBOptionsFactory 配置 RocksDB 选项
 
 <span class="label label-info">注意</span> 在引入 [RocksDB 使用托管内存](#memory-management) 功能后，此机制应限于在*专家调优*或*故障处理*中使用。
 
@@ -254,11 +326,11 @@ RocksDB State Backend 会将 [这里定义]({{< ref "docs/deployment/config" >}}
 
 有两种方法可以将 `RocksDBOptionsFactory` 传递给 RocksDB State Backend：
 
-  - 通过 `state.backend.rocksdb.options-factory` 选项将工厂实现类的名称设置到`flink-conf.yaml` 。
+  - 通过 `state.backend.rocksdb.options-factory` 选项将工厂实现类的名称设置到[Flink 配置文件]({{< ref "docs/deployment/config#flink-配置文件" >}}) 。
   
   - 通过程序设置，例如 `EmbeddedRocksDBStateBackend.setRocksDBOptions(new MyOptionsFactory());` 。
   
-<span class="label label-info">注意</span> 通过程序设置的 `RocksDBOptionsFactory` 将覆盖 `flink-conf.yaml` 配置文件的设置，且 `RocksDBOptionsFactory` 设置的优先级高于预定义选项（`PredefinedOptions`）。
+<span class="label label-info">注意</span> 通过程序设置的 `RocksDBOptionsFactory` 将覆盖 [Flink 配置文件]({{< ref "docs/deployment/config#flink-配置文件" >}}) 的设置，且 `RocksDBOptionsFactory` 设置的优先级高于预定义选项（`PredefinedOptions`）。
 
 <span class="label label-info">注意</span> RocksDB是一个本地库，它直接从进程分配内存，
 而不是从JVM分配内存。分配给 RocksDB 的任何内存都必须被考虑在内，通常需要将这部分内存从任务管理器（`TaskManager`）的JVM堆中减去。
@@ -266,6 +338,8 @@ RocksDB State Backend 会将 [这里定义]({{< ref "docs/deployment/config" >}}
 
 下面是自定义 `ConfigurableRocksDBOptionsFactory` 的一个示例 (开发完成后，请将您的实现类全名设置到 `state.backend.rocksdb.options-factory`).
 
+{{< tabs "6e6f1fd6-fcc6-4af4-929f-97dc7d639ef9" >}}
+{{< tab "Java" >}}
 ```java
 public class MyOptionsFactory implements ConfigurableRocksDBOptionsFactory {
     public static final ConfigOption<Integer> BLOCK_RESTART_INTERVAL = ConfigOptions
@@ -300,91 +374,89 @@ public class MyOptionsFactory implements ConfigurableRocksDBOptionsFactory {
     }
 }
 ```
-
+{{< /tab >}}
+{{< tab "Python" >}}
+```python
+Python API 中尚不支持该特性。
+```
+{{< /tab >}}
+{{< /tabs >}}
 {{< top >}}
 
-## Enabling Changelog
+<a name="enabling-changelog"></a>
 
-{{< hint warning >}} This feature is in experimental status. {{< /hint >}}
+## 开启 Changelog
 
-{{< hint warning >}} Enabling Changelog may have a negative performance impact on your application (see below). {{< /hint >}}
+<a name="introduction"></a>
 
-### Introduction
+### 介绍
 
-Changelog is a feature that aims to decrease checkpointing time and, therefore, end-to-end latency in exactly-once mode.
+Changelog 是一项旨在减少 checkpointing 时间的功能，因此也可以减少 exactly-once 模式下的端到端延迟。
 
-Most commonly, checkpoint duration is affected by:
+一般情况下 checkpoint 的持续时间受如下因素影响：
 
-1. Barrier travel time and alignment, addressed by
-   [Unaligned checkpoints]({{< ref "docs/ops/state/checkpointing_under_backpressure#unaligned-checkpoints" >}})
-   and [Buffer debloating]({{< ref "docs/ops/state/checkpointing_under_backpressure#buffer-debloating" >}})
-2. Snapshot creation time (so-called synchronous phase), addressed by asynchronous snapshots (mentioned [above]({{<
-   ref "#the-embeddedrocksdbstatebackend">}}))
-4. Snapshot upload time (asynchronous phase)
+1. Barrier 到达和对齐时间，可以通过 [Unaligned checkpoints]({{< ref "docs/ops/state/checkpointing_under_backpressure#unaligned-checkpoints" >}}) 和 [Buffer debloating]({{< ref "docs/ops/state/checkpointing_under_backpressure#buffer-debloating" >}}) 解决。
 
-Upload time can be decreased by [incremental checkpoints]({{< ref "#incremental-checkpoints" >}}).
-However, most incremental state backends perform some form of compaction periodically, which results in re-uploading the
-old state in addition to the new changes. In large deployments, the probability of at least one task uploading lots of
-data tends to be very high in every checkpoint.
+2. 快照制作时间（所谓同步阶段）, 可以通过异步快照解决（如[上文]({{<
+   ref "#the-embeddedrocksdbstatebackend">}})所述）。
 
-With Changelog enabled, Flink uploads state changes continuously and forms a changelog. On checkpoint, only the relevant
-part of this changelog needs to be uploaded. The configured state backend is snapshotted in the
-background periodically. Upon successful upload, the changelog is truncated.
+3. 快照上传时间（异步阶段）。
 
-As a result, asynchronous phase duration is reduced, as well as synchronous phase - because no data needs to be flushed
-to disk. In particular, long-tail latency is improved.
+可以用[增量 checkpoints]({{< ref "#incremental-checkpoints" >}}) 来减少上传时间。但是，大多数支持增量checkpoint的状态后端会定期执行合并类型的操作，这会导致除了新的变更之外还要重新上传旧状态。在大规模部署中，每次 checkpoint 中至少有一个 task 上传大量数据的可能性往往非常高。
 
-However, resource usage is higher:
+开启 Changelog 功能之后，Flink 会不断上传状态变更并形成 changelog。创建 checkpoint 时，只有 changelog 中的相关部分需要上传。而配置的状态后端则会定期在后台进行快照，快照成功上传后，相关的changelog 将会被截断。
 
-- more files are created on DFS
-- more files can be left undeleted DFS (this will be addressed in the future versions in FLINK-25511 and FLINK-25512)
-- more IO bandwidth is used to upload state changes
-- more CPU used to serialize state changes
-- more memory used by Task Managers to buffer state changes
+基于此，异步阶段的持续时间减少（另外因为不需要将数据刷新到磁盘，同步阶段持续时间也减少了），特别是长尾延迟得到了改善。同时，还可以获得一些其他好处：
+1. 更稳定、更低的端到端时延。
+2. Failover 后数据重放更少。
+3. 资源利用更加稳定。
 
-Recovery time is another thing to consider. Depending on the `state.backend.changelog.periodic-materialize.interval`
-setting, the changelog can become lengthy and replaying it may take more time. However, recovery time combined with
-checkpoint duration will likely still be lower than in non-changelog setups, providing lower end-to-end latency even in
-failover case. However, it's also possible that the effective recovery time will increase, depending on the actual ratio
-of the aforementioned times.
+但是，资源使用会变得更高：
 
-For more details, see [FLIP-158](https://cwiki.apache.org/confluence/display/FLINK/FLIP-158%3A+Generalized+incremental+checkpoints).
+- 将会在 DFS 上创建更多文件
+- 将使用更多的 IO 带宽用来上传状态变更
+- 将使用更多 CPU 资源来序列化状态变更
+- Task Managers 将会使用更多内存来缓存状态变更
 
-### Installation
+值得注意的是虽然 Changelog 增加了少量的日常 CPU 和网络带宽资源使用，
+但会降低峰值的 CPU 和网络带宽使用量。
 
-Changelog JARs are included into the standard Flink distribution.
+另一项需要考虑的事情是恢复时间。取决于 `state.changelog.periodic-materialize.interval` 的设置，changelog 可能会变得冗长，因此重放会花费更多时间。即使这样，恢复时间加上 checkpoint 持续时间仍然可能低于不开启 changelog 功能的时间，从而在故障恢复的情况下也能提供更低的端到端延迟。当然，取决于上述时间的实际比例，有效恢复时间也有可能会增加。
 
-Make sure to [add]({{< ref "docs/deployment/filesystems/overview" >}}) the necessary filesystem plugins.
+有关更多详细信息，请参阅 [FLIP-158](https://cwiki.apache.org/confluence/display/FLINK/FLIP-158%3A+Generalized+incremental+checkpoints)。
 
-### Configuration
+<a name="installation"></a>
 
-Here is an example configuration in YAML:
+### 安装
+
+标准的 Flink 发行版包含 Changelog 所需要的 JAR包。
+
+请确保[添加]({{< ref "docs/deployment/filesystems/overview" >}})所需的文件系统插件。
+
+<a name="configuration"></a>
+
+### 配置
+
+这是 YAML 中的示例配置：
 ```yaml
-state.backend.changelog.enabled: true
-state.backend.changelog.storage: filesystem # currently, only filesystem and memory (for tests) are supported
-dstl.dfs.base-path: s3://<bucket-name> # similar to state.checkpoints.dir
+state.changelog.enabled: true
+state.changelog.storage: filesystem # 当前只支持 filesystem 和 memory（仅供测试用）
+state.changelog.dstl.dfs.base-path: s3://<bucket-name> # 类似于 execution.checkpointing.dir
 ```
 
-Please keep the following defaults (see [limitations](#limitations)):
+请将如下配置保持默认值 （参见[限制](#limitations)）:
 ```yaml
 execution.checkpointing.max-concurrent-checkpoints: 1
-state.backend.local-recovery: false
 ```
 
-Please refer to the [configuration section]({{< ref "docs/deployment/config#state-changelog-options" >}}) for other options.
+有关其他配置选项，请参阅[配置]({{< ref "docs/deployment/config#state-changelog-options" >}})部分。
 
-Changelog can also be enabled or disabled per job programmatically:
+也可以通过编程方式为每个作业开启或关闭 Changelog：
 {{< tabs  >}}
 {{< tab "Java" >}}
 ```java
 StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
 env.enableChangelogStateBackend(true);
-```
-{{< /tab >}}
-{{< tab "Scala" >}}
-```scala
-val env = StreamExecutionEnvironment.getExecutionEnvironment()
-env.enableChangelogStateBackend(true)
 ```
 {{< /tab >}}
 {{< tab "Python" >}}
@@ -395,38 +467,44 @@ env.enable_changelog_statebackend(true)
 {{< /tab >}}
 {{< /tabs >}}
 
-### Monitoring
+<a name="monitoring"></a>
 
-Available metrics are listed [here]({{< ref "docs/ops/metrics#changelog" >}}).
+### 监控
 
-If a task is backpressured by writing state changes, it will be shown as busy (red) in the UI.
+[此处]({{< ref "docs/ops/metrics#state-changelog" >}})列出了可用的指标。
 
-### Upgrading existing jobs
+如果 task 因写状态变更而被反压，他将在 UI 中被显示为忙碌（红色）。
 
-**Enabling Changelog**
+<a name="upgrading-existing-jobs"></a>
 
-Resuming only from savepoints in canonical format is supported:
-- given an existing non-changelog job
-- take a [savepoint]({{< ref "docs/ops/state/savepoints#resuming-from-savepoints" >}}) (canonical format is the default)
-- alter configuration (enable Changelog)
-- resume from the taken snapshot
+### 升级现有作业
 
-**Disabling Changelog**
+**开启 Changelog**
 
-Resuming only from [savepoints]({{< ref "docs/ops/state/savepoints#resuming-from-savepoints" >}})
-is supported. Resuming from [checkpoints]({{<  ref "docs/ops/state/checkpoints#resuming-from-a-retained-checkpoint" >}})
-is planned in the future versions.
+支持从 savepoint 或 checkpoint 恢复：
+- 给定一个没有开启 Changelog 的作业
+- 创建一个 [savepoint]({{< ref "docs/ops/state/savepoints#resuming-from-savepoints" >}}) 或一个 [checkpoint]({{< ref "docs/ops/state/checkpoints#resuming-from-a-retained-checkpoint" >}})
+- 更改配置（开启 Changelog）
+- 从创建的 snapshot 恢复
 
-**State migration** (including changing TTL) is currently not supported
+**关闭 Changelog**
 
-### Limitations
- - At most one concurrent checkpoint
- - Local recovery not supported
- - As of Flink 1.15, only `filesystem` changelog implementation is available
- - State migration (including changing TTL) is currently not supported
-- [NO_CLAIM]({{< ref "docs/deployment/config#execution-savepoint-restore-mode" >}}) mode not supported
+支持从 savepoint 或 checkpoint 恢复：
+- 给定一个开启 Changelog 的作业
+- 创建一个 [savepoint]({{< ref "docs/ops/state/savepoints#resuming-from-savepoints" >}}) 或一个 [checkpoint]({{< ref "docs/ops/state/checkpoints#resuming-from-a-retained-checkpoint" >}})
+- 更改配置（关闭 Changelog）
+- 从创建的 snapshot 恢复
+
+<a name="limitations"></a>
+
+### 限制
+- 最多同时创建一个 checkpoint
+- 到 Flink 1.15 为止, 只有 `filesystem` changelog 实现可用
+- 尚不支持 [NO_CLAIM]({{< ref "docs/deployment/config#execution-savepoint-restore-mode" >}}) 模式
 
 {{< top >}}
+
+<a name="migrating-from-legacy-backends"></a>
 
 ## 自旧版本迁移
 
@@ -439,14 +517,14 @@ is planned in the future versions.
 
 旧版本的 `MemoryStateBackend` 等价于使用 [`HashMapStateBackend`](#the-hashmapstatebackend) 和 [`JobManagerCheckpointStorage`]({{< ref "docs/ops/state/checkpoints#the-jobmanagercheckpointstorage" >}})。
 
-#### `flink-conf.yaml` 配置 
+####  使用 Flink 配置文件
 
 ```yaml
 state.backend: hashmap
 
 # Optional, Flink will automatically default to JobManagerCheckpointStorage
 # when no checkpoint directory is specified.
-state.checkpoint-storage: jobmanager
+execution.checkpointing.storage: jobmanager
 ```
 
 #### 代码配置
@@ -454,16 +532,18 @@ state.checkpoint-storage: jobmanager
 {{< tabs "memorystatebackendmigration" >}}
 {{< tab "Java" >}}
 ```java
-StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
-env.setStateBackend(new HashMapStateBackend());
-env.getCheckpointConfig().setCheckpointStorage(new JobManagerStateBackend());
+Configuration config = new Configuration();
+config.set(StateBackendOptions.STATE_BACKEND, "hashmap");
+config.set(CheckpointingOptions.CHECKPOINT_STORAGE, "jobmanager");
+env.configure(config);
 ```
 {{< /tab >}}
-{{< tab "Scala" >}}
-```scala
-val env = StreamExecutionEnvironment.getExecutionEnvironment
-env.setStateBackend(new HashMapStateBackend)
-env.getCheckpointConfig().setCheckpointStorage(new JobManagerStateBackend)
+{{< tab "Python" >}}
+```python
+config = Configuration()
+config.set_string('state.backend.type', 'hashmap')
+config.set_string('execution.checkpointing.storage', 'jobmanager')
+env = StreamExecutionEnvironment.get_execution_environment(config)
 ```
 {{< /tab >}}
 {{< /tabs>}}
@@ -472,15 +552,15 @@ env.getCheckpointConfig().setCheckpointStorage(new JobManagerStateBackend)
 
 旧版本的 `FsStateBackend` 等价于使用 [`HashMapStateBackend`](#the-hashmapstatebackend) 和 [`FileSystemCheckpointStorage`]({{< ref "docs/ops/state/checkpoints#the-filesystemcheckpointstorage" >}})。
 
-#### `flink-conf.yaml` 配置
+#### 使用 Flink 配置文件
 
 ```yaml
 state.backend: hashmap
-state.checkpoints.dir: file:///checkpoint-dir/
+execution.checkpointing.dir: file:///checkpoint-dir/
 
 # Optional, Flink will automatically default to FileSystemCheckpointStorage
 # when a checkpoint directory is specified.
-state.checkpoint-storage: filesystem
+execution.checkpointing.storage: filesystem
 ```
 
 #### 代码配置
@@ -488,26 +568,32 @@ state.checkpoint-storage: filesystem
 {{< tabs "fsstatebackendmigration" >}}
 {{< tab "Java" >}}
 ```java
-StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
-env.setStateBackend(new HashMapStateBackend());
-env.getCheckpointConfig().setCheckpointStorage("file:///checkpoint-dir");
+Configuration config = new Configuration();
+config.set(StateBackendOptions.STATE_BACKEND, "hashmap");
+config.set(CheckpointingOptions.CHECKPOINT_STORAGE, "filesystem");
+config.set(CheckpointingOptions.CHECKPOINTS_DIRECTORY, "file:///checkpoint-dir");
+env.configure(config);
 
 
 // Advanced FsStateBackend configurations, such as write buffer size
-// can be set by manually instantiating a FileSystemCheckpointStorage object.
-env.getCheckpointConfig().setCheckpointStorage(new FileSystemCheckpointStorage("file:///checkpoint-dir"));
+// can be set manually by using CheckpointingOptions.
+config.set(CheckpointingOptions.FS_WRITE_BUFFER_SIZE, 4 * 1024);
+env.configure(config);
 ```
 {{< /tab >}}
-{{< tab "Scala" >}}
-```scala
-val env = StreamExecutionEnvironment.getExecutionEnvironment
-env.setStateBackend(new HashMapStateBackend)
-env.getCheckpointConfig().setCheckpointStorage("file:///checkpoint-dir")
+{{< tab "Python" >}}
+```python
+config = Configuration()
+config.set_string('state.backend.type', 'hashmap')
+config.set_string('execution.checkpointing.storage', 'filesystem')
+config.set_string('execution.checkpointing.dir', 'file:///checkpoint-dir')
+env = StreamExecutionEnvironment.get_execution_environment(config)
 
 
-// Advanced FsStateBackend configurations, such as write buffer size
-// can be set by using manually instantiating a FileSystemCheckpointStorage object.
-env.getCheckpointConfig().setCheckpointStorage(new FileSystemCheckpointStorage("file:///checkpoint-dir"))
+# Advanced FsStateBackend configurations, such as write buffer size
+# can be set manually by using CheckpointingOptions.
+config.set_string('state.storage.fs.write-buffer-size', '4096');
+env.configure(config);
 ```
 {{< /tab >}}
 {{< /tabs>}}
@@ -516,15 +602,15 @@ env.getCheckpointConfig().setCheckpointStorage(new FileSystemCheckpointStorage("
 
 旧版本的 `RocksDBStateBackend` 等价于使用 [`EmbeddedRocksDBStateBackend`](#the-embeddedrocksdbstatebackend) 和 [`FileSystemCheckpointStorage`]({{< ref "docs/ops/state/checkpoints#the-filesystemcheckpointstorage" >}}).
 
-#### `flink-conf.yaml` 配置 
+#### 使用 Flink 配置文件
 
 ```yaml
 state.backend: rocksdb
-state.checkpoints.dir: file:///checkpoint-dir/
+execution.checkpointing.dir: file:///checkpoint-dir/
 
 # Optional, Flink will automatically default to FileSystemCheckpointStorage
 # when a checkpoint directory is specified.
-state.checkpoint-storage: filesystem
+execution.checkpointing.storage: filesystem
 ```
 
 #### 代码配置
@@ -532,28 +618,34 @@ state.checkpoint-storage: filesystem
 {{< tabs "rocksdbstatebackendmigration" >}}
 {{< tab "Java" >}}
 ```java
-StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
-env.setStateBackend(new EmbeddedRocksDBStateBackend());
-env.getCheckpointConfig().setCheckpointStorage("file:///checkpoint-dir");
+Configuration config = new Configuration();
+config.set(StateBackendOptions.STATE_BACKEND, "rocksdb");
+config.set(CheckpointingOptions.CHECKPOINT_STORAGE, "filesystem");
+config.set(CheckpointingOptions.CHECKPOINTS_DIRECTORY, "file:///checkpoint-dir");
+env.configure(config);
 
 
 // If you manually passed FsStateBackend into the RocksDBStateBackend constructor
 // to specify advanced checkpointing configurations such as write buffer size,
-// you can achieve the same results by using manually instantiating a FileSystemCheckpointStorage object.
-env.getCheckpointConfig().setCheckpointStorage(new FileSystemCheckpointStorage("file:///checkpoint-dir"));
+// you can achieve the same results by using CheckpointingOptions.
+config.set(CheckpointingOptions.FS_WRITE_BUFFER_SIZE, 4 * 1024);
+env.configure(config);
 ```
 {{< /tab >}}
-{{< tab "Scala" >}}
-```java
-val env = StreamExecutionEnvironment.getExecutionEnvironment
-env.setStateBackend(new EmbeddedRocksDBStateBackend)
-env.getCheckpointConfig().setCheckpointStorage("file:///checkpoint-dir")
+{{< tab "Python" >}}
+```python
+config = Configuration()
+config.set_string('state.backend.type', 'hashmap')
+config.set_string('execution.checkpointing.storage', 'filesystem')
+config.set_string('execution.checkpointing.dir', 'file:///checkpoint-dir')
+env = StreamExecutionEnvironment.get_execution_environment(config)
 
 
-// If you manually passed FsStateBackend into the RocksDBStateBackend constructor
-// to specify advanced checkpointing configurations such as write buffer size,
-// you can achieve the same results by using manually instantiating a FileSystemCheckpointStorage object.
-env.getCheckpointConfig().setCheckpointStorage(new FileSystemCheckpointStorage("file:///checkpoint-dir"))
+# If you manually passed FsStateBackend into the RocksDBStateBackend constructor
+# to specify advanced checkpointing configurations such as write buffer size,
+# you can achieve the same results by using CheckpointingOptions.
+config.set_string('state.storage.fs.write-buffer-size', '4096');
+env.configure(config);
 ```
 {{< /tab >}}
 {{< /tabs>}}

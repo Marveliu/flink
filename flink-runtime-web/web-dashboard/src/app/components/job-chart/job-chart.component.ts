@@ -1,0 +1,179 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+import {
+  AfterViewInit,
+  ChangeDetectionStrategy,
+  ChangeDetectorRef,
+  Component,
+  ElementRef,
+  EventEmitter,
+  HostBinding,
+  Input,
+  OnDestroy,
+  Output,
+  ViewChild
+} from '@angular/core';
+import { Subject } from 'rxjs';
+import { takeUntil } from 'rxjs/operators';
+
+import { Chart } from '@antv/g2';
+import { HumanizeChartNumericPipe } from '@flink-runtime-web/components/humanize-chart-numeric.pipe';
+import { JobChartService } from '@flink-runtime-web/components/job-chart/job-chart.service';
+import { timeFormat } from 'd3-time-format';
+import { NzButtonModule } from 'ng-zorro-antd/button';
+import { NzIconModule } from 'ng-zorro-antd/icon';
+import { NzSpaceModule } from 'ng-zorro-antd/space';
+
+// g2 5's string labelFormatter uses d3's numeric formatter, so a time scale needs a function.
+const formatTimeAxis = timeFormat('%H:%M:%S');
+
+// The chart is narrow: label the first sample plus one tick at 3/4 of the range so labels never touch or clip.
+const timeAxisTicks = (min: Date, max: Date): Date[] => [
+  min,
+  new Date(Number(min) + (Number(max) - Number(min)) * 0.75)
+];
+
+@Component({
+  selector: 'flink-job-chart',
+  templateUrl: './job-chart.component.html',
+  styleUrls: ['./job-chart.component.less'],
+  changeDetection: ChangeDetectionStrategy.OnPush,
+  imports: [NzButtonModule, NzIconModule, NzSpaceModule, HumanizeChartNumericPipe]
+})
+export class JobChartComponent implements AfterViewInit, OnDestroy {
+  @Input() title: string;
+  @Output() closed = new EventEmitter();
+  @ViewChild('chart', { static: true }) chart: ElementRef;
+  size = 'small';
+  displayMode: 'chart' | 'numeric' = 'chart';
+  chartInstance: Chart;
+  lineMark!: ReturnType<Chart['line']>;
+  data: Array<{ time: number; value: number; type: string }> = [];
+  latestValue: number;
+  destroy$ = new Subject<void>();
+
+  @HostBinding('class.big')
+  get isBig(): boolean {
+    return this.size === 'big';
+  }
+
+  refresh(res: { timestamp: number; values: { [id: string]: number } }): void {
+    this.latestValue = res.values[this.title];
+    if (this.displayMode === 'numeric') {
+      this.cdr.detectChanges();
+    }
+    this.data.push({
+      time: res.timestamp,
+      value: this.latestValue,
+      type: this.title
+    });
+
+    if (this.data.length > 20) {
+      this.data.shift();
+    }
+    if (this.chartInstance) {
+      // g2 5 centers a constant series on a degenerate [v, v] domain; anchor it to the bottom like g2 4 did,
+      // labelling only its value.
+      const values = this.data.map(d => d.value);
+      const min = Math.min(...values);
+      this.lineMark.scale(
+        'y',
+        min === Math.max(...values)
+          ? { domain: [min, min + 1], tickMethod: () => [min] }
+          : { domain: undefined, tickMethod: undefined, tickCount: 4 }
+      );
+      this.lineMark.data(this.data);
+      this.chartInstance.render();
+    }
+  }
+
+  setMode(mode: 'chart' | 'numeric'): void {
+    this.displayMode = mode;
+    this.cdr.detectChanges();
+  }
+
+  resize(size: string): void {
+    this.size = size;
+    this.cdr.detectChanges();
+    setTimeout(() => this.chartInstance.forceFit());
+  }
+
+  close(): void {
+    this.closed.emit(this.title);
+  }
+
+  constructor(
+    private cdr: ChangeDetectorRef,
+    private jobChartService: JobChartService
+  ) {}
+
+  ngAfterViewInit(): void {
+    this.cdr.detach();
+    this.chartInstance = new Chart({
+      container: this.chart.nativeElement,
+      height: 150,
+      autoFit: true
+    });
+    this.lineMark = this.chartInstance
+      .line()
+      .data(this.data)
+      .encode('x', 'time')
+      .encode('y', 'value')
+      .encode('color', 'type')
+      .encode('shape', 'smooth')
+      .scale('x', { type: 'time', tickMethod: timeAxisTicks })
+      .style('lineWidth', 2)
+      .animate(false)
+      .axis('x', {
+        title: false,
+        grid: false,
+        line: true,
+        lineStroke: '#bfbfbf',
+        lineStrokeOpacity: 1,
+        lineLineWidth: 1,
+        labelTransform: 'rotate(0)',
+        labelFormatter: (d: Date) => formatTimeAxis(new Date(d))
+      })
+      .axis('y', {
+        title: false,
+        tick: false,
+        grid: true,
+        gridLineDash: [0, 0],
+        gridStroke: '#d9d9d9',
+        gridStrokeOpacity: 1
+      })
+      .legend(false);
+    this.chartInstance.render();
+    this.jobChartService.resize$.pipe(takeUntil(this.destroy$)).subscribe(() => {
+      if (this.chartInstance) {
+        setTimeout(() => {
+          this.chartInstance.forceFit();
+        });
+      }
+    });
+  }
+
+  ngOnDestroy(): void {
+    this.destroy$.next();
+    this.destroy$.complete();
+    if (this.chartInstance) {
+      this.chartInstance.destroy();
+    }
+  }
+}

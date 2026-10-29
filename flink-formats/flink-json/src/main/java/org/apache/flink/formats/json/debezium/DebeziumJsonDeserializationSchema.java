@@ -33,8 +33,12 @@ import org.apache.flink.table.types.utils.DataTypeUtils;
 import org.apache.flink.types.RowKind;
 import org.apache.flink.util.Collector;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.io.IOException;
 import java.io.Serializable;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.stream.Collectors;
@@ -55,6 +59,9 @@ import static java.lang.String.format;
 @Internal
 public final class DebeziumJsonDeserializationSchema implements DeserializationSchema<RowData> {
     private static final long serialVersionUID = 1L;
+
+    private static final Logger LOG =
+            LoggerFactory.getLogger(DebeziumJsonDeserializationSchema.class);
 
     private static final String OP_READ = "r"; // snapshot read
     private static final String OP_CREATE = "c"; // insert
@@ -88,6 +95,9 @@ public final class DebeziumJsonDeserializationSchema implements DeserializationS
     /** Flag indicating whether to ignore invalid fields/rows (default: throw an exception). */
     private final boolean ignoreParseErrors;
 
+    /** List of data to be processed. */
+    private transient List<GenericRowData> genericRowDataList;
+
     public DebeziumJsonDeserializationSchema(
             DataType physicalDataType,
             List<ReadableMetadata> requestedMetadata,
@@ -116,6 +126,12 @@ public final class DebeziumJsonDeserializationSchema implements DeserializationS
     }
 
     @Override
+    public void open(InitializationContext context) throws Exception {
+        genericRowDataList = new ArrayList<>();
+        jsonDeserializer.open(context);
+    }
+
+    @Override
     public RowData deserialize(byte[] message) {
         throw new RuntimeException(
                 "Please invoke DeserializationSchema#deserialize(byte[], Collector<RowData>) instead.");
@@ -127,6 +143,7 @@ public final class DebeziumJsonDeserializationSchema implements DeserializationS
             // skip tombstone messages
             return;
         }
+        genericRowDataList.clear();
         try {
             GenericRowData row = (GenericRowData) jsonDeserializer.deserialize(message);
             GenericRowData payload;
@@ -141,7 +158,7 @@ public final class DebeziumJsonDeserializationSchema implements DeserializationS
             String op = payload.getField(2).toString();
             if (OP_CREATE.equals(op) || OP_READ.equals(op)) {
                 after.setRowKind(RowKind.INSERT);
-                emitRow(row, after, out);
+                genericRowDataList.add(handleRow(row, after));
             } else if (OP_UPDATE.equals(op)) {
                 if (before == null) {
                     throw new IllegalStateException(
@@ -149,21 +166,27 @@ public final class DebeziumJsonDeserializationSchema implements DeserializationS
                 }
                 before.setRowKind(RowKind.UPDATE_BEFORE);
                 after.setRowKind(RowKind.UPDATE_AFTER);
-                emitRow(row, before, out);
-                emitRow(row, after, out);
+                genericRowDataList.add(handleRow(row, before));
+                genericRowDataList.add(handleRow(row, after));
             } else if (OP_DELETE.equals(op)) {
                 if (before == null) {
                     throw new IllegalStateException(
                             String.format(REPLICA_IDENTITY_EXCEPTION, "DELETE"));
                 }
                 before.setRowKind(RowKind.DELETE);
-                emitRow(row, before, out);
+                genericRowDataList.add(handleRow(row, before));
             } else {
                 if (!ignoreParseErrors) {
                     throw new IOException(
                             format(
                                     "Unknown \"op\" value \"%s\". The Debezium JSON message is '%s'",
                                     op, new String(message)));
+                }
+                if (LOG.isDebugEnabled()) {
+                    LOG.debug(
+                            "Unknown \"op\" value '{}'. The Debezium JSON message is '{}'.",
+                            op,
+                            new String(message));
                 }
             }
         } catch (Throwable t) {
@@ -172,15 +195,19 @@ public final class DebeziumJsonDeserializationSchema implements DeserializationS
                 throw new IOException(
                         format("Corrupt Debezium JSON message '%s'.", new String(message)), t);
             }
+            if (LOG.isDebugEnabled()) {
+                LOG.debug("Corrupt Debezium JSON message '{}'.", new String(message), t);
+            }
+        }
+        for (GenericRowData genericRowData : genericRowDataList) {
+            out.collect(genericRowData);
         }
     }
 
-    private void emitRow(
-            GenericRowData rootRow, GenericRowData physicalRow, Collector<RowData> out) {
+    private GenericRowData handleRow(GenericRowData rootRow, GenericRowData physicalRow) {
         // shortcut in case no output projection is required
         if (!hasMetadata) {
-            out.collect(physicalRow);
-            return;
+            return physicalRow;
         }
 
         final int physicalArity = physicalRow.getArity();
@@ -197,8 +224,7 @@ public final class DebeziumJsonDeserializationSchema implements DeserializationS
             producedRow.setField(
                     physicalArity + metadataPos, metadataConverters[metadataPos].convert(rootRow));
         }
-
-        out.collect(producedRow);
+        return producedRow;
     }
 
     @Override

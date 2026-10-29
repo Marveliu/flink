@@ -32,6 +32,9 @@ under the License.
 
 [Canal](https://github.com/alibaba/canal/wiki) 是一个 CDC（ChangeLog Data Capture，变更日志数据捕获）工具，可以实时地将 MySQL 变更传输到其他系统。Canal 为变更日志提供了统一的数据格式，并支持使用 JSON 或 [protobuf](https://developers.google.com/protocol-buffers) 序列化消息（Canal 默认使用 protobuf）。
 
+This format reads change events that Canal has already written to a system such as Kafka. To
+read changes directly from a database instead, see [Flink CDC](https://nightlies.apache.org/flink/flink-cdc-docs-stable/docs/connectors/flink-sources/overview/).
+
 Flink 支持将 Canal 的 JSON 消息解析为 INSERT / UPDATE / DELETE 消息到 Flink SQL 系统中。在很多情况下，利用这个特性非常的有用，例如
  - 将增量数据从数据库同步到其他系统
  - 日志审计
@@ -178,6 +181,12 @@ metadata fields for its value format.
       <td>The timestamp at which the connector processed the event. Corresponds to the <code>ts</code>
       field in the Canal record.</td>
     </tr>
+    <tr>
+      <td><code>event-timestamp</code></td>
+      <td><code>TIMESTAMP(3) WITH LOCAL TIME ZONE NULL</code></td>
+      <td>The timestamp when the corresponding change was executed in MySQL server. Corresponds to the <code>es</code>
+      field in the Canal record.</td>
+    </tr>
     </tbody>
 </table>
 
@@ -190,9 +199,11 @@ CREATE TABLE KafkaTable (
   origin_sql_type MAP<STRING, INT> METADATA FROM 'value.sql-type' VIRTUAL,
   origin_pk_names ARRAY<STRING> METADATA FROM 'value.pk-names' VIRTUAL,
   origin_ts TIMESTAMP(3) METADATA FROM 'value.ingestion-timestamp' VIRTUAL,
+  origin_es TIMESTAMP(3) METADATA FROM 'value.event-timestamp' VIRTUAL,
   user_id BIGINT,
   item_id BIGINT,
-  behavior STRING
+  behavior STRING,
+  WATERMARK FOR origin_es AS origin_es - INTERVAL '5' SECOND
 ) WITH (
   'connector' = 'kafka',
   'topic' = 'user_behavior',

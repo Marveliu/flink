@@ -18,27 +18,25 @@
 
 package org.apache.flink.runtime.blob;
 
+import org.apache.flink.api.common.ApplicationID;
 import org.apache.flink.api.common.JobID;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.core.testutils.CheckedThread;
+import org.apache.flink.testutils.junit.utils.TempDirUtils;
 import org.apache.flink.util.FlinkException;
 import org.apache.flink.util.OperatingSystem;
 import org.apache.flink.util.Preconditions;
-import org.apache.flink.util.TestLogger;
 import org.apache.flink.util.concurrent.FutureUtils;
 
 import org.apache.commons.io.FileUtils;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.ExpectedException;
-import org.junit.rules.TemporaryFolder;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 import javax.annotation.Nullable;
 
 import java.io.ByteArrayInputStream;
 import java.io.File;
-import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.InetSocketAddress;
@@ -64,25 +62,20 @@ import static org.apache.flink.runtime.blob.BlobKey.BlobType.PERMANENT_BLOB;
 import static org.apache.flink.runtime.blob.BlobKey.BlobType.TRANSIENT_BLOB;
 import static org.apache.flink.runtime.blob.BlobKeyTest.verifyKeyDifferentHashEquals;
 import static org.apache.flink.runtime.blob.BlobServerGetTest.get;
+import static org.apache.flink.util.Preconditions.checkArgument;
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.junit.Assert.assertArrayEquals;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
-import static org.junit.Assume.assumeTrue;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assumptions.assumeThat;
 
 /**
  * Tests for successful and failing PUT operations against the BLOB server, and successful GET
  * operations.
  */
-public class BlobServerPutTest extends TestLogger {
+class BlobServerPutTest {
+
+    @TempDir private java.nio.file.Path tempDir;
 
     private final Random rnd = new Random();
-
-    @Rule public TemporaryFolder temporaryFolder = new TemporaryFolder();
-
-    @Rule public final ExpectedException exception = ExpectedException.none();
 
     // --- concurrency tests for utility methods which could fail during the put operation ---
 
@@ -105,25 +98,41 @@ public class BlobServerPutTest extends TestLogger {
         }
     }
 
+    /** Checked thread that calls {@link BlobServer#getStorageLocation(JobID, BlobKey)}. */
+    public static class ContentAddressableGetStorageLocationForApplication extends CheckedThread {
+        private final BlobServer server;
+        private final ApplicationID applicationId;
+        private final BlobKey key;
+
+        ContentAddressableGetStorageLocationForApplication(
+                BlobServer server, ApplicationID applicationId, BlobKey key) {
+            this.server = server;
+            this.applicationId = applicationId;
+            this.key = key;
+        }
+
+        @Override
+        public void go() throws Exception {
+            server.getStorageLocation(applicationId, key);
+        }
+    }
+
     /** Tests concurrent calls to {@link BlobServer#getStorageLocation(JobID, BlobKey)}. */
     @Test
-    public void testServerContentAddressableGetStorageLocationConcurrentNoJob() throws Exception {
+    void testServerContentAddressableGetStorageLocationConcurrentNoJob() throws Exception {
         testServerContentAddressableGetStorageLocationConcurrent(null);
     }
 
     /** Tests concurrent calls to {@link BlobServer#getStorageLocation(JobID, BlobKey)}. */
     @Test
-    public void testServerContentAddressableGetStorageLocationConcurrentForJob() throws Exception {
+    void testServerContentAddressableGetStorageLocationConcurrentForJob() throws Exception {
         testServerContentAddressableGetStorageLocationConcurrent(new JobID());
     }
 
     private void testServerContentAddressableGetStorageLocationConcurrent(
             @Nullable final JobID jobId) throws Exception {
-        final Configuration config = new Configuration();
 
-        try (BlobServer server =
-                new BlobServer(config, temporaryFolder.newFolder(), new VoidBlobStore())) {
-
+        try (BlobServer server = TestingBlobUtils.createServer(tempDir)) {
             server.start();
 
             BlobKey key1 = new TransientBlobKey();
@@ -136,6 +145,35 @@ public class BlobServerPutTest extends TestLogger {
                         new ContentAddressableGetStorageLocation(server, jobId, key2),
                         new ContentAddressableGetStorageLocation(server, jobId, key2),
                         new ContentAddressableGetStorageLocation(server, jobId, key2)
+                    };
+            checkedThreadSimpleTest(threads);
+        }
+    }
+
+    /** Tests concurrent calls to {@link BlobServer#getStorageLocation(ApplicationID, BlobKey)}. */
+    @Test
+    void testServerContentAddressableGetStorageLocationConcurrentForApplication() throws Exception {
+        final ApplicationID applicationId = new ApplicationID();
+
+        try (BlobServer server = TestingBlobUtils.createServer(tempDir)) {
+            server.start();
+
+            BlobKey key1 = new TransientBlobKey();
+            BlobKey key2 = new PermanentBlobKey();
+            CheckedThread[] threads =
+                    new CheckedThread[] {
+                        new ContentAddressableGetStorageLocationForApplication(
+                                server, applicationId, key1),
+                        new ContentAddressableGetStorageLocationForApplication(
+                                server, applicationId, key1),
+                        new ContentAddressableGetStorageLocationForApplication(
+                                server, applicationId, key1),
+                        new ContentAddressableGetStorageLocationForApplication(
+                                server, applicationId, key2),
+                        new ContentAddressableGetStorageLocationForApplication(
+                                server, applicationId, key2),
+                        new ContentAddressableGetStorageLocationForApplication(
+                                server, applicationId, key2)
                     };
             checkedThreadSimpleTest(threads);
         }
@@ -163,27 +201,27 @@ public class BlobServerPutTest extends TestLogger {
     // --------------------------------------------------------------------------------------------
 
     @Test
-    public void testPutBufferSuccessfulGet1() throws IOException {
+    void testPutBufferSuccessfulGet1() throws IOException {
         testPutBufferSuccessfulGet(null, null, TRANSIENT_BLOB);
     }
 
     @Test
-    public void testPutBufferSuccessfulGet2() throws IOException {
+    void testPutBufferSuccessfulGet2() throws IOException {
         testPutBufferSuccessfulGet(null, new JobID(), TRANSIENT_BLOB);
     }
 
     @Test
-    public void testPutBufferSuccessfulGet3() throws IOException {
+    void testPutBufferSuccessfulGet3() throws IOException {
         testPutBufferSuccessfulGet(new JobID(), new JobID(), TRANSIENT_BLOB);
     }
 
     @Test
-    public void testPutBufferSuccessfulGet4() throws IOException {
+    void testPutBufferSuccessfulGet4() throws IOException {
         testPutBufferSuccessfulGet(new JobID(), null, TRANSIENT_BLOB);
     }
 
     @Test
-    public void testPutBufferSuccessfulGetHa() throws IOException {
+    void testPutBufferSuccessfulGetHa() throws IOException {
         testPutBufferSuccessfulGet(new JobID(), new JobID(), PERMANENT_BLOB);
     }
 
@@ -199,11 +237,7 @@ public class BlobServerPutTest extends TestLogger {
             @Nullable JobID jobId1, @Nullable JobID jobId2, BlobKey.BlobType blobType)
             throws IOException {
 
-        final Configuration config = new Configuration();
-
-        try (BlobServer server =
-                new BlobServer(config, temporaryFolder.newFolder(), new VoidBlobStore())) {
-
+        try (BlobServer server = TestingBlobUtils.createServer(tempDir)) {
             server.start();
 
             byte[] data = new byte[2000000];
@@ -212,14 +246,14 @@ public class BlobServerPutTest extends TestLogger {
 
             // put data for jobId1 and verify
             BlobKey key1a = put(server, jobId1, data, blobType);
-            assertNotNull(key1a);
+            assertThat(key1a).isNotNull();
             // second upload of same data should yield a different BlobKey
             BlobKey key1a2 = put(server, jobId1, data, blobType);
-            assertNotNull(key1a2);
+            assertThat(key1a2).isNotNull();
             verifyKeyDifferentHashEquals(key1a, key1a2);
 
             BlobKey key1b = put(server, jobId1, data2, blobType);
-            assertNotNull(key1b);
+            assertThat(key1b).isNotNull();
 
             verifyContents(server, jobId1, key1a, data);
             verifyContents(server, jobId1, key1a2, data);
@@ -227,11 +261,11 @@ public class BlobServerPutTest extends TestLogger {
 
             // now put data for jobId2 and verify that both are ok
             BlobKey key2a = put(server, jobId2, data, blobType);
-            assertNotNull(key2a);
+            assertThat(key2a).isNotNull();
             verifyKeyDifferentHashEquals(key1a, key2a);
 
             BlobKey key2b = put(server, jobId2, data2, blobType);
-            assertNotNull(key2b);
+            assertThat(key2b).isNotNull();
             verifyKeyDifferentHashEquals(key1b, key2b);
 
             // verify the accessibility and the BLOB contents
@@ -251,27 +285,27 @@ public class BlobServerPutTest extends TestLogger {
     // --------------------------------------------------------------------------------------------
 
     @Test
-    public void testPutStreamSuccessfulGet1() throws IOException {
+    void testPutStreamSuccessfulGet1() throws IOException {
         testPutStreamSuccessfulGet(null, null, TRANSIENT_BLOB);
     }
 
     @Test
-    public void testPutStreamSuccessfulGet2() throws IOException {
+    void testPutStreamSuccessfulGet2() throws IOException {
         testPutStreamSuccessfulGet(null, new JobID(), TRANSIENT_BLOB);
     }
 
     @Test
-    public void testPutStreamSuccessfulGet3() throws IOException {
+    void testPutStreamSuccessfulGet3() throws IOException {
         testPutStreamSuccessfulGet(new JobID(), new JobID(), TRANSIENT_BLOB);
     }
 
     @Test
-    public void testPutStreamSuccessfulGet4() throws IOException {
+    void testPutStreamSuccessfulGet4() throws IOException {
         testPutStreamSuccessfulGet(new JobID(), null, TRANSIENT_BLOB);
     }
 
     @Test
-    public void testPutStreamSuccessfulGetHa() throws IOException {
+    void testPutStreamSuccessfulGetHa() throws IOException {
         testPutStreamSuccessfulGet(new JobID(), new JobID(), PERMANENT_BLOB);
     }
 
@@ -287,11 +321,7 @@ public class BlobServerPutTest extends TestLogger {
             @Nullable JobID jobId1, @Nullable JobID jobId2, BlobKey.BlobType blobType)
             throws IOException {
 
-        final Configuration config = new Configuration();
-
-        try (BlobServer server =
-                new BlobServer(config, temporaryFolder.newFolder(), new VoidBlobStore())) {
-
+        try (BlobServer server = TestingBlobUtils.createServer(tempDir)) {
             server.start();
 
             byte[] data = new byte[2000000];
@@ -300,14 +330,14 @@ public class BlobServerPutTest extends TestLogger {
 
             // put data for jobId1 and verify
             BlobKey key1a = put(server, jobId1, new ByteArrayInputStream(data), blobType);
-            assertNotNull(key1a);
+            assertThat(key1a).isNotNull();
             // second upload of same data should yield a different BlobKey
             BlobKey key1a2 = put(server, jobId1, new ByteArrayInputStream(data), blobType);
-            assertNotNull(key1a2);
+            assertThat(key1a2).isNotNull();
             verifyKeyDifferentHashEquals(key1a, key1a2);
 
             BlobKey key1b = put(server, jobId1, new ByteArrayInputStream(data2), blobType);
-            assertNotNull(key1b);
+            assertThat(key1b).isNotNull();
 
             verifyContents(server, jobId1, key1a, data);
             verifyContents(server, jobId1, key1a2, data);
@@ -315,11 +345,11 @@ public class BlobServerPutTest extends TestLogger {
 
             // now put data for jobId2 and verify that both are ok
             BlobKey key2a = put(server, jobId2, new ByteArrayInputStream(data), blobType);
-            assertNotNull(key2a);
+            assertThat(key2a).isNotNull();
             verifyKeyDifferentHashEquals(key1a, key2a);
 
             BlobKey key2b = put(server, jobId2, new ByteArrayInputStream(data2), blobType);
-            assertNotNull(key2b);
+            assertThat(key2b).isNotNull();
             verifyKeyDifferentHashEquals(key1b, key2b);
 
             // verify the accessibility and the BLOB contents
@@ -336,30 +366,94 @@ public class BlobServerPutTest extends TestLogger {
         }
     }
 
+    @Test
+    void testPutStreamSuccessfulGetForApplication() throws IOException {
+        testPutStreamSuccessfulGetForApplication(new ApplicationID(), new ApplicationID());
+    }
+
+    /**
+     * Uploads two file streams for different applications into the server via the {@link
+     * BlobServer}. File transfers should be successful.
+     *
+     * @param applicationId1 first application id
+     * @param applicationId2 second application id
+     */
+    private void testPutStreamSuccessfulGetForApplication(
+            ApplicationID applicationId1, ApplicationID applicationId2) throws IOException {
+
+        try (BlobServer server = TestingBlobUtils.createServer(tempDir)) {
+            server.start();
+
+            byte[] data = new byte[2000000];
+            rnd.nextBytes(data);
+            byte[] data2 = Arrays.copyOfRange(data, 10, 54);
+
+            // put data for applicationId1 and verify
+            BlobKey key1a =
+                    put(server, applicationId1, new ByteArrayInputStream(data), PERMANENT_BLOB);
+            assertThat(key1a).isNotNull();
+            // second upload of same data should yield a different BlobKey
+            BlobKey key1a2 =
+                    put(server, applicationId1, new ByteArrayInputStream(data), PERMANENT_BLOB);
+            assertThat(key1a2).isNotNull();
+            verifyKeyDifferentHashEquals(key1a, key1a2);
+
+            BlobKey key1b =
+                    put(server, applicationId1, new ByteArrayInputStream(data2), PERMANENT_BLOB);
+            assertThat(key1b).isNotNull();
+
+            verifyContents(server, applicationId1, key1a, data);
+            verifyContents(server, applicationId1, key1a2, data);
+            verifyContents(server, applicationId1, key1b, data2);
+
+            // now put data for applicationId2 and verify that both are ok
+            BlobKey key2a =
+                    put(server, applicationId2, new ByteArrayInputStream(data), PERMANENT_BLOB);
+            assertThat(key2a).isNotNull();
+            verifyKeyDifferentHashEquals(key1a, key2a);
+
+            BlobKey key2b =
+                    put(server, applicationId2, new ByteArrayInputStream(data2), PERMANENT_BLOB);
+            assertThat(key2b).isNotNull();
+            verifyKeyDifferentHashEquals(key1b, key2b);
+
+            // verify the accessibility and the BLOB contents
+            verifyContents(server, applicationId2, key2a, data);
+            verifyContents(server, applicationId2, key2b, data2);
+
+            // verify the accessibility and the BLOB contents one more time
+            verifyContents(server, applicationId1, key1a, data);
+            verifyContents(server, applicationId1, key1a2, data);
+            verifyContents(server, applicationId1, key1b, data2);
+            verifyContents(server, applicationId2, key2a, data);
+            verifyContents(server, applicationId2, key2b, data2);
+        }
+    }
+
     // --------------------------------------------------------------------------------------------
 
     @Test
-    public void testPutChunkedStreamSuccessfulGet1() throws IOException {
+    void testPutChunkedStreamSuccessfulGet1() throws IOException {
         testPutChunkedStreamSuccessfulGet(null, null, TRANSIENT_BLOB);
     }
 
     @Test
-    public void testPutChunkedStreamSuccessfulGet2() throws IOException {
+    void testPutChunkedStreamSuccessfulGet2() throws IOException {
         testPutChunkedStreamSuccessfulGet(null, new JobID(), TRANSIENT_BLOB);
     }
 
     @Test
-    public void testPutChunkedStreamSuccessfulGet3() throws IOException {
+    void testPutChunkedStreamSuccessfulGet3() throws IOException {
         testPutChunkedStreamSuccessfulGet(new JobID(), new JobID(), TRANSIENT_BLOB);
     }
 
     @Test
-    public void testPutChunkedStreamSuccessfulGet4() throws IOException {
+    void testPutChunkedStreamSuccessfulGet4() throws IOException {
         testPutChunkedStreamSuccessfulGet(new JobID(), null, TRANSIENT_BLOB);
     }
 
     @Test
-    public void testPutChunkedStreamSuccessfulGetHa() throws IOException {
+    void testPutChunkedStreamSuccessfulGetHa() throws IOException {
         testPutChunkedStreamSuccessfulGet(new JobID(), new JobID(), PERMANENT_BLOB);
     }
 
@@ -375,11 +469,7 @@ public class BlobServerPutTest extends TestLogger {
             @Nullable JobID jobId1, @Nullable JobID jobId2, BlobKey.BlobType blobType)
             throws IOException {
 
-        final Configuration config = new Configuration();
-
-        try (BlobServer server =
-                new BlobServer(config, temporaryFolder.newFolder(), new VoidBlobStore())) {
-
+        try (BlobServer server = TestingBlobUtils.createServer(tempDir)) {
             server.start();
 
             byte[] data = new byte[2000000];
@@ -388,14 +478,14 @@ public class BlobServerPutTest extends TestLogger {
 
             // put data for jobId1 and verify
             BlobKey key1a = put(server, jobId1, new ChunkedInputStream(data, 19), blobType);
-            assertNotNull(key1a);
+            assertThat(key1a).isNotNull();
             // second upload of same data should yield a different BlobKey
             BlobKey key1a2 = put(server, jobId1, new ChunkedInputStream(data, 19), blobType);
-            assertNotNull(key1a2);
+            assertThat(key1a2).isNotNull();
             verifyKeyDifferentHashEquals(key1a, key1a2);
 
             BlobKey key1b = put(server, jobId1, new ChunkedInputStream(data2, 19), blobType);
-            assertNotNull(key1b);
+            assertThat(key1b).isNotNull();
 
             verifyContents(server, jobId1, key1a, data);
             verifyContents(server, jobId1, key1a2, data);
@@ -403,11 +493,11 @@ public class BlobServerPutTest extends TestLogger {
 
             // now put data for jobId2 and verify that both are ok
             BlobKey key2a = put(server, jobId2, new ChunkedInputStream(data, 19), blobType);
-            assertNotNull(key2a);
+            assertThat(key2a).isNotNull();
             verifyKeyDifferentHashEquals(key1a, key2a);
 
             BlobKey key2b = put(server, jobId2, new ChunkedInputStream(data2, 19), blobType);
-            assertNotNull(key2b);
+            assertThat(key2b).isNotNull();
             verifyKeyDifferentHashEquals(key1b, key2b);
 
             // verify the accessibility and the BLOB contents
@@ -424,20 +514,84 @@ public class BlobServerPutTest extends TestLogger {
         }
     }
 
+    @Test
+    void testPutChunkedStreamSuccessfulGetForApplication() throws IOException {
+        testPutChunkedStreamSuccessfulGetForApplication(new ApplicationID(), new ApplicationID());
+    }
+
+    /**
+     * Uploads two chunked file streams for different applications into the server via the {@link
+     * BlobServer}. File transfers should be successful.
+     *
+     * @param applicationId1 first application id
+     * @param applicationId2 second application id
+     */
+    private void testPutChunkedStreamSuccessfulGetForApplication(
+            ApplicationID applicationId1, ApplicationID applicationId2) throws IOException {
+
+        try (BlobServer server = TestingBlobUtils.createServer(tempDir)) {
+            server.start();
+
+            byte[] data = new byte[2000000];
+            rnd.nextBytes(data);
+            byte[] data2 = Arrays.copyOfRange(data, 10, 54);
+
+            // put data for applicationId1 and verify
+            BlobKey key1a =
+                    put(server, applicationId1, new ChunkedInputStream(data, 19), PERMANENT_BLOB);
+            assertThat(key1a).isNotNull();
+            // second upload of same data should yield a different BlobKey
+            BlobKey key1a2 =
+                    put(server, applicationId1, new ChunkedInputStream(data, 19), PERMANENT_BLOB);
+            assertThat(key1a2).isNotNull();
+            verifyKeyDifferentHashEquals(key1a, key1a2);
+
+            BlobKey key1b =
+                    put(server, applicationId1, new ChunkedInputStream(data2, 19), PERMANENT_BLOB);
+            assertThat(key1b).isNotNull();
+
+            verifyContents(server, applicationId1, key1a, data);
+            verifyContents(server, applicationId1, key1a2, data);
+            verifyContents(server, applicationId1, key1b, data2);
+
+            // now put data for applicationId2 and verify that both are ok
+            BlobKey key2a =
+                    put(server, applicationId2, new ChunkedInputStream(data, 19), PERMANENT_BLOB);
+            assertThat(key2a).isNotNull();
+            verifyKeyDifferentHashEquals(key1a, key2a);
+
+            BlobKey key2b =
+                    put(server, applicationId2, new ChunkedInputStream(data2, 19), PERMANENT_BLOB);
+            assertThat(key2b).isNotNull();
+            verifyKeyDifferentHashEquals(key1b, key2b);
+
+            // verify the accessibility and the BLOB contents
+            verifyContents(server, applicationId2, key2a, data);
+            verifyContents(server, applicationId2, key2b, data2);
+
+            // verify the accessibility and the BLOB contents one more time
+            verifyContents(server, applicationId1, key1a, data);
+            verifyContents(server, applicationId1, key1a2, data);
+            verifyContents(server, applicationId1, key1b, data2);
+            verifyContents(server, applicationId2, key2a, data);
+            verifyContents(server, applicationId2, key2b, data2);
+        }
+    }
+
     // --------------------------------------------------------------------------------------------
 
     @Test
-    public void testPutBufferFailsNoJob() throws IOException {
+    void testPutBufferFailsNoJob() throws IOException {
         testPutBufferFails(null, TRANSIENT_BLOB);
     }
 
     @Test
-    public void testPutBufferFailsForJob() throws IOException {
+    void testPutBufferFailsForJob() throws IOException {
         testPutBufferFails(new JobID(), TRANSIENT_BLOB);
     }
 
     @Test
-    public void testPutBufferFailsForJobHa() throws IOException {
+    void testPutBufferFailsForJobHa() throws IOException {
         testPutBufferFails(new JobID(), PERMANENT_BLOB);
     }
 
@@ -450,51 +604,41 @@ public class BlobServerPutTest extends TestLogger {
      */
     private void testPutBufferFails(@Nullable final JobID jobId, BlobKey.BlobType blobType)
             throws IOException {
-        assumeTrue(!OperatingSystem.isWindows()); // setWritable doesn't work on Windows.
+        assumeThat(OperatingSystem.isWindows()).as("setWritable doesn't work on Windows").isFalse();
 
-        final Configuration config = new Configuration();
-
-        File tempFileDir = null;
-        try (BlobServer server =
-                new BlobServer(config, temporaryFolder.newFolder(), new VoidBlobStore())) {
-
+        try (BlobServer server = TestingBlobUtils.createServer(tempDir)) {
             server.start();
 
             // make sure the blob server cannot create any files in its storage dir
-            tempFileDir = server.createTemporaryFilename().getParentFile().getParentFile();
-            assertTrue(tempFileDir.setExecutable(true, false));
-            assertTrue(tempFileDir.setReadable(true, false));
-            assertTrue(tempFileDir.setWritable(false, false));
+            File tempFileDir = server.createTemporaryFilename().getParentFile().getParentFile();
+            assertThat(tempFileDir.setExecutable(true, false)).isTrue();
+            assertThat(tempFileDir.setReadable(true, false)).isTrue();
+            assertThat(tempFileDir.setWritable(false, false)).isTrue();
 
             byte[] data = new byte[2000000];
             rnd.nextBytes(data);
 
             // upload the file to the server directly
-            exception.expect(AccessDeniedException.class);
+            assertThatThrownBy(() -> put(server, jobId, data, blobType))
+                    .isInstanceOf(AccessDeniedException.class);
 
-            put(server, jobId, data, blobType);
-
-        } finally {
             // set writable again to make sure we can remove the directory
-            if (tempFileDir != null) {
-                //noinspection ResultOfMethodCallIgnored
-                tempFileDir.setWritable(true, false);
-            }
+            assertThat(tempFileDir.setWritable(true, false)).isTrue();
         }
     }
 
     @Test
-    public void testPutBufferFailsIncomingNoJob() throws IOException {
+    void testPutBufferFailsIncomingNoJob() throws IOException {
         testPutBufferFailsIncoming(null, TRANSIENT_BLOB);
     }
 
     @Test
-    public void testPutBufferFailsIncomingForJob() throws IOException {
+    void testPutBufferFailsIncomingForJob() throws IOException {
         testPutBufferFailsIncoming(new JobID(), TRANSIENT_BLOB);
     }
 
     @Test
-    public void testPutBufferFailsIncomingForJobHa() throws IOException {
+    void testPutBufferFailsIncomingForJobHa() throws IOException {
         testPutBufferFailsIncoming(new JobID(), PERMANENT_BLOB);
     }
 
@@ -507,35 +651,30 @@ public class BlobServerPutTest extends TestLogger {
      */
     private void testPutBufferFailsIncoming(@Nullable final JobID jobId, BlobKey.BlobType blobType)
             throws IOException {
-        assumeTrue(!OperatingSystem.isWindows()); // setWritable doesn't work on Windows.
-
-        final Configuration config = new Configuration();
+        assumeThat(OperatingSystem.isWindows()).as("setWritable doesn't work on Windows").isFalse();
 
         File tempFileDir = null;
-        try (BlobServer server =
-                new BlobServer(config, temporaryFolder.newFolder(), new VoidBlobStore())) {
-
+        try (BlobServer server = TestingBlobUtils.createServer(tempDir)) {
             server.start();
 
             // make sure the blob server cannot create any files in its storage dir
             tempFileDir = server.createTemporaryFilename().getParentFile();
-            assertTrue(tempFileDir.setExecutable(true, false));
-            assertTrue(tempFileDir.setReadable(true, false));
-            assertTrue(tempFileDir.setWritable(false, false));
+            assertThat(tempFileDir.setExecutable(true, false)).isTrue();
+            assertThat(tempFileDir.setReadable(true, false)).isTrue();
+            assertThat(tempFileDir.setWritable(false, false)).isTrue();
 
             byte[] data = new byte[2000000];
             rnd.nextBytes(data);
 
-            // upload the file to the server directly
-            exception.expect(IOException.class);
-            exception.expectMessage(" (Permission denied)");
-
             try {
-                put(server, jobId, data, blobType);
+                // upload the file to the server directly
+                assertThatThrownBy(() -> put(server, jobId, data, blobType))
+                        .isInstanceOf(IOException.class)
+                        .hasMessageEndingWith(" (Permission denied)");
             } finally {
                 File storageDir = tempFileDir.getParentFile();
                 // only the incoming directory should exist (no job directory!)
-                assertArrayEquals(new String[] {"incoming"}, storageDir.list());
+                assertThat(storageDir.list()).containsExactly("incoming");
             }
         } finally {
             // set writable again to make sure we can remove the directory
@@ -547,17 +686,17 @@ public class BlobServerPutTest extends TestLogger {
     }
 
     @Test
-    public void testPutBufferFailsStoreNoJob() throws IOException {
+    void testPutBufferFailsStoreNoJob() throws IOException {
         testPutBufferFailsStore(null, TRANSIENT_BLOB);
     }
 
     @Test
-    public void testPutBufferFailsStoreForJob() throws IOException {
+    void testPutBufferFailsStoreForJob() throws IOException {
         testPutBufferFailsStore(new JobID(), TRANSIENT_BLOB);
     }
 
     @Test
-    public void testPutBufferFailsStoreForJobHa() throws IOException {
+    void testPutBufferFailsStoreForJobHa() throws IOException {
         testPutBufferFailsStore(new JobID(), PERMANENT_BLOB);
     }
 
@@ -570,38 +709,33 @@ public class BlobServerPutTest extends TestLogger {
      */
     private void testPutBufferFailsStore(@Nullable final JobID jobId, BlobKey.BlobType blobType)
             throws IOException {
-        assumeTrue(!OperatingSystem.isWindows()); // setWritable doesn't work on Windows.
-
-        final Configuration config = new Configuration();
+        assumeThat(OperatingSystem.isWindows()).as("setWritable doesn't work on Windows").isFalse();
 
         File jobStoreDir = null;
-        try (BlobServer server =
-                new BlobServer(config, temporaryFolder.newFolder(), new VoidBlobStore())) {
-
+        try (BlobServer server = TestingBlobUtils.createServer(tempDir)) {
             server.start();
 
             // make sure the blob server cannot create any files in its storage dir
             jobStoreDir =
                     server.getStorageLocation(jobId, BlobKey.createKey(blobType)).getParentFile();
-            assertTrue(jobStoreDir.setExecutable(true, false));
-            assertTrue(jobStoreDir.setReadable(true, false));
-            assertTrue(jobStoreDir.setWritable(false, false));
+            assertThat(jobStoreDir.setExecutable(true, false)).isTrue();
+            assertThat(jobStoreDir.setReadable(true, false)).isTrue();
+            assertThat(jobStoreDir.setWritable(false, false)).isTrue();
 
             byte[] data = new byte[2000000];
             rnd.nextBytes(data);
 
-            // upload the file to the server directly
-            exception.expect(AccessDeniedException.class);
-
             try {
-                put(server, jobId, data, blobType);
+                // upload the file to the server directly
+                assertThatThrownBy(() -> put(server, jobId, data, blobType))
+                        .isInstanceOf(AccessDeniedException.class);
             } finally {
                 // there should be no remaining incoming files
                 File incomingFileDir = new File(jobStoreDir.getParent(), "incoming");
-                assertArrayEquals(new String[] {}, incomingFileDir.list());
+                assertThat(incomingFileDir.list()).isEmpty();
 
                 // there should be no files in the job directory
-                assertArrayEquals(new String[] {}, jobStoreDir.list());
+                assertThat(jobStoreDir.list()).isEmpty();
             }
         } finally {
             // set writable again to make sure we can remove the directory
@@ -613,30 +747,30 @@ public class BlobServerPutTest extends TestLogger {
     }
 
     @Test
-    public void testConcurrentPutOperationsNoJob()
+    void testConcurrentPutOperationsNoJob()
             throws IOException, ExecutionException, InterruptedException {
         testConcurrentPutOperations(null, TRANSIENT_BLOB);
     }
 
     @Test
-    public void testConcurrentPutOperationsForJob()
+    void testConcurrentPutOperationsForJob()
             throws IOException, ExecutionException, InterruptedException {
         testConcurrentPutOperations(new JobID(), TRANSIENT_BLOB);
     }
 
     @Test
-    public void testConcurrentPutOperationsForJobHa()
+    void testConcurrentPutOperationsForJobHa()
             throws IOException, ExecutionException, InterruptedException {
         testConcurrentPutOperations(new JobID(), PERMANENT_BLOB);
     }
 
     @Test
-    public void testFailedBlobStorePutsDeletesLocalBlob() throws IOException {
+    void testFailedBlobStorePutsDeletesLocalBlob() throws IOException {
         final BlobKey.BlobType blobType = PERMANENT_BLOB;
         final JobID jobId = JobID.generate();
         final byte[] data = new byte[] {1, 2, 3};
 
-        final File storageDir = temporaryFolder.newFolder();
+        final File storageDir = TempDirUtils.newFolder(tempDir);
         final TestingBlobStore blobStore =
                 new TestingBlobStoreBuilder()
                         .setPutFunction(
@@ -646,12 +780,8 @@ public class BlobServerPutTest extends TestLogger {
                         .createTestingBlobStore();
         try (final BlobServer blobServer =
                 new BlobServer(new Configuration(), storageDir, blobStore)) {
-            try {
-                put(blobServer, jobId, data, blobType);
-                fail("Expected that the put operation fails with an IOException.");
-            } catch (IOException expected) {
-                // expected :-)
-            }
+            assertThatThrownBy(() -> put(blobServer, jobId, data, blobType))
+                    .isInstanceOf(IOException.class);
 
             final File jobSpecificStorageDirectory =
                     new File(BlobUtils.getStorageLocationPath(storageDir.getAbsolutePath(), jobId));
@@ -691,9 +821,7 @@ public class BlobServerPutTest extends TestLogger {
 
         ExecutorService executor = Executors.newFixedThreadPool(concurrentPutOperations);
 
-        try (final BlobServer server =
-                new BlobServer(config, temporaryFolder.newFolder(), blobStore)) {
-
+        try (BlobServer server = TestingBlobUtils.createServer(tempDir, config, blobStore)) {
             server.start();
 
             for (int i = 0; i < concurrentPutOperations; i++) {
@@ -726,7 +854,7 @@ public class BlobServerPutTest extends TestLogger {
 
             Iterator<BlobKey> blobKeyIterator = blobKeys.iterator();
 
-            assertTrue(blobKeyIterator.hasNext());
+            assertThat(blobKeyIterator).hasNext();
 
             BlobKey blobKey = blobKeyIterator.next();
 
@@ -749,6 +877,125 @@ public class BlobServerPutTest extends TestLogger {
             }
         } finally {
             executor.shutdownNow();
+        }
+    }
+
+    @Test
+    void testConcurrentPutOperationsForApplication()
+            throws IOException, ExecutionException, InterruptedException {
+        testConcurrentPutOperationsForApplication(new ApplicationID());
+    }
+
+    /**
+     * [FLINK-6020] Tests that concurrent put operations will only upload the file once to the
+     * {@link BlobStore} and that the files are not corrupt at any time.
+     *
+     * @param applicationId application ID to use
+     */
+    private void testConcurrentPutOperationsForApplication(ApplicationID applicationId)
+            throws IOException, InterruptedException, ExecutionException {
+        final Configuration config = new Configuration();
+        final int concurrentPutOperations = 2;
+        final int dataSize = 1024;
+
+        Collection<BlobKey> persistedBlobs = ConcurrentHashMap.newKeySet();
+        TestingBlobStore blobStore =
+                new TestingBlobStoreBuilder()
+                        .setPutForApplicationFunction(
+                                (file, appId, blobKey) -> {
+                                    persistedBlobs.add(blobKey);
+                                    return true;
+                                })
+                        .createTestingBlobStore();
+
+        final CountDownLatch countDownLatch = new CountDownLatch(concurrentPutOperations);
+        final byte[] data = new byte[dataSize];
+
+        ArrayList<CompletableFuture<BlobKey>> allFutures = new ArrayList<>(concurrentPutOperations);
+
+        ExecutorService executor = Executors.newFixedThreadPool(concurrentPutOperations);
+
+        try (BlobServer server = TestingBlobUtils.createServer(tempDir, config, blobStore)) {
+            server.start();
+
+            for (int i = 0; i < concurrentPutOperations; i++) {
+                CompletableFuture<BlobKey> putFuture =
+                        CompletableFuture.supplyAsync(
+                                () -> {
+                                    try {
+                                        BlockingInputStream inputStream =
+                                                new BlockingInputStream(countDownLatch, data);
+                                        BlobKey uploadedKey =
+                                                put(
+                                                        server,
+                                                        applicationId,
+                                                        inputStream,
+                                                        PERMANENT_BLOB);
+                                        // check the uploaded file's contents (concurrently)
+                                        verifyContents(server, applicationId, uploadedKey, data);
+                                        return uploadedKey;
+                                    } catch (IOException e) {
+                                        throw new CompletionException(
+                                                new FlinkException("Could not upload blob.", e));
+                                    }
+                                },
+                                executor);
+
+                allFutures.add(putFuture);
+            }
+
+            FutureUtils.ConjunctFuture<Collection<BlobKey>> conjunctFuture =
+                    FutureUtils.combineAll(allFutures);
+
+            // wait until all operations have completed and check that no exception was thrown
+            Collection<BlobKey> blobKeys = conjunctFuture.get();
+
+            Iterator<BlobKey> blobKeyIterator = blobKeys.iterator();
+
+            assertThat(blobKeyIterator).hasNext();
+
+            BlobKey blobKey = blobKeyIterator.next();
+
+            // make sure that all blob keys are the same
+            while (blobKeyIterator.hasNext()) {
+                verifyKeyDifferentHashEquals(blobKey, blobKeyIterator.next());
+            }
+
+            // check the uploaded file's contents
+            verifyContents(server, applicationId, blobKey, data);
+
+            // check that we only uploaded the file once to the blob store
+            assertThat(persistedBlobs).hasSameElementsAs(blobKeys);
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
+    @Test
+    void testFailedBlobStorePutsDeletesLocalBlobForApplication() throws IOException {
+        final BlobKey.BlobType blobType = PERMANENT_BLOB;
+        final ApplicationID applicationId = ApplicationID.generate();
+        final byte[] data = new byte[] {1, 2, 3};
+
+        final File storageDir = TempDirUtils.newFolder(tempDir);
+        final TestingBlobStore blobStore =
+                new TestingBlobStoreBuilder()
+                        .setPutForApplicationFunction(
+                                (file, appId, blobKey) -> {
+                                    throw new IOException("Could not persist the file.");
+                                })
+                        .createTestingBlobStore();
+        try (final BlobServer blobServer =
+                new BlobServer(new Configuration(), storageDir, blobStore)) {
+            assertThatThrownBy(() -> put(blobServer, applicationId, data, blobType))
+                    .isInstanceOf(IOException.class);
+
+            final File applicationSpecificStorageDirectory =
+                    new File(
+                            BlobUtils.getStorageLocationPath(
+                                    storageDir.getAbsolutePath(), applicationId));
+
+            assertThat(applicationSpecificStorageDirectory).isEmptyDirectory();
         }
     }
 
@@ -803,7 +1050,7 @@ public class BlobServerPutTest extends TestLogger {
                             Collections.singletonList(new Path(tmpFile.getAbsolutePath()));
                     List<PermanentBlobKey> keys =
                             BlobClient.uploadFiles(serverAddress, clientConfig, jobId, jars);
-                    assertEquals(1, keys.size());
+                    assertThat(keys).hasSize(1);
                     return keys.get(0);
                 } finally {
                     //noinspection ResultOfMethodCallIgnored
@@ -815,6 +1062,46 @@ public class BlobServerPutTest extends TestLogger {
         } else {
             return service.getTransientBlobService().putTransient(jobId, data);
         }
+    }
+
+    /**
+     * Helper to put a blob for an application.
+     *
+     * @param service BlobServer to use
+     * @param applicationId application ID
+     * @param data blob data
+     * @param blobType whether the BLOB should become permanent or transient
+     * @return blob key for the uploaded data
+     */
+    static BlobKey put(
+            BlobService service,
+            ApplicationID applicationId,
+            byte[] data,
+            BlobKey.BlobType blobType)
+            throws IOException {
+        checkArgument(blobType == PERMANENT_BLOB);
+        checkArgument(service instanceof BlobServer);
+        return ((BlobServer) service).putPermanent(applicationId, data);
+    }
+
+    /**
+     * Helper to put a blob for an application using an InputStream.
+     *
+     * @param service BlobServer to use
+     * @param applicationId application ID
+     * @param data blob data
+     * @param blobType whether the BLOB should become permanent or transient
+     * @return blob key for the uploaded data
+     */
+    static BlobKey put(
+            BlobService service,
+            ApplicationID applicationId,
+            InputStream data,
+            BlobKey.BlobType blobType)
+            throws IOException {
+        checkArgument(blobType == PERMANENT_BLOB);
+        checkArgument(service instanceof BlobServer);
+        return ((BlobServer) service).putPermanent(applicationId, data);
     }
 
     /**
@@ -830,7 +1117,7 @@ public class BlobServerPutTest extends TestLogger {
             throws IOException {
 
         File file = get(blobService, jobId, key);
-        validateGetAndClose(new FileInputStream(file), data);
+        validateGetAndClose(Files.newInputStream(file.toPath()), data);
     }
 
     /**
@@ -846,7 +1133,41 @@ public class BlobServerPutTest extends TestLogger {
             throws IOException {
 
         File file = get(blobService, jobId, key);
-        validateGetAndClose(new FileInputStream(file), data);
+        validateGetAndClose(Files.newInputStream(file.toPath()), data);
+    }
+
+    /**
+     * GET the data stored at the key for an application and check that it is equal to
+     * <tt>data</tt>.
+     *
+     * @param blobService BlobServer to use
+     * @param applicationId application ID
+     * @param key blob key
+     * @param data expected data
+     */
+    static void verifyContents(
+            BlobService blobService, ApplicationID applicationId, BlobKey key, byte[] data)
+            throws IOException {
+
+        File file = get(blobService, applicationId, key);
+        validateGetAndClose(Files.newInputStream(file.toPath()), data);
+    }
+
+    /**
+     * GET the data stored at the key for an application and check that it is equal to
+     * <tt>data</tt>.
+     *
+     * @param blobService BlobServer to use
+     * @param applicationId application ID
+     * @param key blob key
+     * @param data expected data
+     */
+    static void verifyContents(
+            BlobService blobService, ApplicationID applicationId, BlobKey key, InputStream data)
+            throws IOException {
+
+        File file = get(blobService, applicationId, key);
+        validateGetAndClose(Files.newInputStream(file.toPath()), data);
     }
 
     // --------------------------------------------------------------------------------------------
@@ -924,7 +1245,7 @@ public class BlobServerPutTest extends TestLogger {
         }
 
         @Override
-        public int read(byte[] b, int off, int len) throws IOException {
+        public int read(byte[] b, int off, int len) {
             if (len == 0) {
                 return 0;
             }

@@ -19,32 +19,37 @@
 package org.apache.flink.runtime.webmonitor.history;
 
 import org.apache.flink.annotation.VisibleForTesting;
-import org.apache.flink.api.java.utils.ParameterTool;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.GlobalConfiguration;
 import org.apache.flink.configuration.HistoryServerOptions;
-import org.apache.flink.configuration.IllegalConfigurationException;
 import org.apache.flink.core.fs.FileSystem;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.core.plugin.PluginUtils;
-import org.apache.flink.runtime.history.FsJobArchivist;
+import org.apache.flink.runtime.history.FsJsonArchivist;
 import org.apache.flink.runtime.io.network.netty.SSLHandlerFactory;
 import org.apache.flink.runtime.net.SSLUtils;
+import org.apache.flink.runtime.rest.handler.job.GeneratedLogUrlHandler;
 import org.apache.flink.runtime.rest.handler.router.Router;
 import org.apache.flink.runtime.rest.messages.DashboardConfiguration;
+import org.apache.flink.runtime.rest.messages.JobManagerLogUrlHeaders;
+import org.apache.flink.runtime.rest.messages.TaskManagerLogUrlHeaders;
 import org.apache.flink.runtime.security.SecurityConfiguration;
 import org.apache.flink.runtime.security.SecurityUtils;
 import org.apache.flink.runtime.util.EnvironmentInformation;
 import org.apache.flink.runtime.util.Runnables;
+import org.apache.flink.runtime.webmonitor.history.retaining.CompositeArchiveRetainedStrategy;
+import org.apache.flink.runtime.webmonitor.utils.LogUrlUtil;
 import org.apache.flink.runtime.webmonitor.utils.WebFrontendBootstrap;
 import org.apache.flink.util.ExceptionUtils;
 import org.apache.flink.util.ExecutorUtils;
 import org.apache.flink.util.FatalExitExceptionHandler;
 import org.apache.flink.util.FileUtils;
 import org.apache.flink.util.FlinkException;
+import org.apache.flink.util.ParameterTool;
 import org.apache.flink.util.Preconditions;
 import org.apache.flink.util.ShutdownHookUtil;
 import org.apache.flink.util.concurrent.ExecutorThreadFactory;
+import org.apache.flink.util.jackson.JacksonMapperFactory;
 
 import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.databind.ObjectMapper;
 
@@ -54,7 +59,6 @@ import org.slf4j.LoggerFactory;
 import javax.annotation.Nullable;
 
 import java.io.File;
-import java.io.FileWriter;
 import java.io.IOException;
 import java.lang.reflect.UndeclaredThrowableException;
 import java.nio.file.Files;
@@ -63,6 +67,8 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.Callable;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -70,12 +76,20 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 
+import static org.apache.flink.configuration.HistoryServerOptions.HISTORY_SERVER_LAZY_FETCH_EXECUTOR_COMMON_POOL_SIZE;
+import static org.apache.flink.configuration.HistoryServerOptions.HISTORY_SERVER_LAZY_FETCH_EXECUTOR_INDIVIDUAL_POOL_SIZE;
+import static org.apache.flink.configuration.HistoryServerOptions.HistoryServerArchiveLoadMode.LAZY;
+import static org.apache.flink.runtime.webmonitor.history.HistoryServerApplicationArchiveFetcher.APPLICATIONS_SUBDIR;
+import static org.apache.flink.runtime.webmonitor.history.HistoryServerApplicationArchiveFetcher.APPLICATION_OVERVIEWS_SUBDIR;
+import static org.apache.flink.runtime.webmonitor.history.HistoryServerArchiveFetcher.JOBS_SUBDIR;
+import static org.apache.flink.runtime.webmonitor.history.HistoryServerArchiveFetcher.JOB_OVERVIEWS_SUBDIR;
+
 /**
  * The HistoryServer provides a WebInterface and REST API to retrieve information about finished
  * jobs for which the JobManager may have already shut down.
  *
  * <p>The HistoryServer regularly checks a set of directories for job archives created by the {@link
- * FsJobArchivist} and caches these in a local directory. See {@link HistoryServerArchiveFetcher}.
+ * FsJsonArchivist} and caches these in a local directory. See {@link HistoryServerArchiveFetcher}.
  *
  * <p>All configuration options are defined in{@link HistoryServerOptions}.
  *
@@ -87,6 +101,8 @@ import java.util.function.Consumer;
  *   <li>/config
  *   <li>/joboverview
  *   <li>/jobs/:jobid/*
+ *   <li>/applications/overview
+ *   <li>/applications/:applicationid/*
  * </ul>
  *
  * <p>and relies on static files that are served by the {@link
@@ -95,7 +111,7 @@ import java.util.function.Consumer;
 public class HistoryServer {
 
     private static final Logger LOG = LoggerFactory.getLogger(HistoryServer.class);
-    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+    private static final ObjectMapper OBJECT_MAPPER = JacksonMapperFactory.createObjectMapper();
 
     private final Configuration config;
 
@@ -104,7 +120,17 @@ public class HistoryServer {
     private final long webRefreshIntervalMillis;
     private final File webDir;
 
-    private final HistoryServerArchiveFetcher archiveFetcher;
+    /**
+     * The archive fetcher is responsible for fetching job archives that are not part of an
+     * application (legacy jobs created before application archiving was introduced in FLINK-38761).
+     */
+    private final HistoryServerArchiveFetcher<?> archiveFetcher;
+
+    /**
+     * The archive fetcher is responsible for fetching application archives and their associated job
+     * archives.
+     */
+    private final HistoryServerApplicationArchiveFetcher<?> applicationArchiveFetcher;
 
     @Nullable private final SSLHandlerFactory serverSSLFactory;
     private WebFrontendBootstrap netty;
@@ -117,6 +143,10 @@ public class HistoryServer {
     private final Object startupShutdownLock = new Object();
     private final AtomicBoolean shutdownRequested = new AtomicBoolean(false);
     private final Thread shutdownHook;
+
+    private final ArchiveStorage<?> archiveStorage;
+    private final HistoryServerOptions.HistoryServerArchiveLoadMode archiveLoadMode;
+    private final AbstractHistoryServerHandler<?> historyServerHandler;
 
     public static void main(String[] args) throws Exception {
         EnvironmentInformation.logEnvironmentInfo(LOG, "HistoryServer", args);
@@ -155,7 +185,7 @@ public class HistoryServer {
     }
 
     public HistoryServer(Configuration config) throws IOException, FlinkException {
-        this(config, (event) -> {});
+        this(config, (event) -> {}, (event) -> {});
     }
 
     /**
@@ -169,7 +199,9 @@ public class HistoryServer {
      */
     public HistoryServer(
             Configuration config,
-            Consumer<HistoryServerArchiveFetcher.ArchiveEvent> jobArchiveEventListener)
+            Consumer<HistoryServerArchiveFetcher.ArchiveEvent> jobArchiveEventListener,
+            Consumer<HistoryServerApplicationArchiveFetcher.ArchiveEvent>
+                    applicationArchiveEventListener)
             throws IOException, FlinkException {
         Preconditions.checkNotNull(config);
         Preconditions.checkNotNull(jobArchiveEventListener);
@@ -186,26 +218,19 @@ public class HistoryServer {
             this.serverSSLFactory = null;
         }
 
-        webAddress = config.getString(HistoryServerOptions.HISTORY_SERVER_WEB_ADDRESS);
-        webPort = config.getInteger(HistoryServerOptions.HISTORY_SERVER_WEB_PORT);
+        webAddress = config.get(HistoryServerOptions.HISTORY_SERVER_WEB_ADDRESS);
+        webPort = config.get(HistoryServerOptions.HISTORY_SERVER_WEB_PORT);
         webRefreshIntervalMillis =
-                config.getLong(HistoryServerOptions.HISTORY_SERVER_WEB_REFRESH_INTERVAL);
+                config.get(HistoryServerOptions.HISTORY_SERVER_WEB_REFRESH_INTERVAL).toMillis();
 
-        String webDirectory = config.getString(HistoryServerOptions.HISTORY_SERVER_WEB_DIR);
-        if (webDirectory == null) {
-            webDirectory =
-                    System.getProperty("java.io.tmpdir")
-                            + File.separator
-                            + "flink-web-history-"
-                            + UUID.randomUUID();
-        }
-        webDir = new File(webDirectory);
+        webDir = clearWebDir(config);
 
-        boolean cleanupExpiredArchives =
-                config.getBoolean(HistoryServerOptions.HISTORY_SERVER_CLEANUP_EXPIRED_JOBS);
+        boolean cleanupExpiredJobs =
+                config.get(HistoryServerOptions.HISTORY_SERVER_CLEANUP_EXPIRED_JOBS);
+        boolean cleanupExpiredApplications =
+                config.get(HistoryServerOptions.HISTORY_SERVER_CLEANUP_EXPIRED_APPLICATIONS);
 
-        String refreshDirectories =
-                config.getString(HistoryServerOptions.HISTORY_SERVER_ARCHIVE_DIRS);
+        String refreshDirectories = config.get(HistoryServerOptions.HISTORY_SERVER_ARCHIVE_DIRS);
         if (refreshDirectories == null) {
             throw new FlinkException(
                     HistoryServerOptions.HISTORY_SERVER_ARCHIVE_DIRS + " was not configured.");
@@ -230,26 +255,114 @@ public class HistoryServer {
             throw new FlinkException(
                     "Failed to validate any of the configured directories to monitor.");
         }
-
         refreshIntervalMillis =
-                config.getLong(HistoryServerOptions.HISTORY_SERVER_ARCHIVE_REFRESH_INTERVAL);
-        int maxHistorySize = config.getInteger(HistoryServerOptions.HISTORY_SERVER_RETAINED_JOBS);
-        if (maxHistorySize == 0 || maxHistorySize < -1) {
-            throw new IllegalConfigurationException(
-                    "Cannot set %s to 0 or less than -1",
-                    HistoryServerOptions.HISTORY_SERVER_RETAINED_JOBS.key());
+                config.get(HistoryServerOptions.HISTORY_SERVER_ARCHIVE_REFRESH_INTERVAL).toMillis();
+
+        archiveLoadMode = config.get(HistoryServerOptions.HISTORY_SERVER_ARCHIVE_LOAD_MODE);
+        HistoryServerOptions.HistoryServerArchiveStorageType archiveStorageType =
+                config.get(HistoryServerOptions.HISTORY_SERVER_ARCHIVE_STORAGE_TYPE);
+        LOG.info(
+                "HistoryServer effective configuration: storage.type={}, load.mode={}, "
+                        + "retained-jobs={}, retained-applications={}, retained-ttl={}, "
+                        + "clean-expired-jobs={}, clean-expired-applications={}.",
+                archiveStorageType,
+                archiveLoadMode,
+                config.get(HistoryServerOptions.HISTORY_SERVER_RETAINED_JOBS),
+                config.get(HistoryServerOptions.HISTORY_SERVER_RETAINED_APPLICATIONS),
+                config.getOptional(HistoryServerOptions.HISTORY_SERVER_RETAINED_TTL)
+                        .map(Object::toString)
+                        .orElse("unset"),
+                cleanupExpiredJobs,
+                cleanupExpiredApplications);
+        AbstractHistoryServerHandler.HistoryServerHandlerFactory historyServerHandlerFactory;
+        switch (archiveStorageType) {
+            case FILE:
+                // create directories for job and application overview updates
+                Files.createDirectories(webDir.toPath().resolve(JOBS_SUBDIR));
+                Files.createDirectories(webDir.toPath().resolve(JOB_OVERVIEWS_SUBDIR));
+                Files.createDirectories(webDir.toPath().resolve(APPLICATIONS_SUBDIR));
+                Files.createDirectories(webDir.toPath().resolve(APPLICATION_OVERVIEWS_SUBDIR));
+                archiveStorage = new FileArchiveStorage(webDir);
+                historyServerHandlerFactory =
+                        createFileHandlerFactory((FileArchiveStorage) archiveStorage, webDir);
+                break;
+            case ROCKSDB:
+                File dbPath = new File(webDir, "rocksdb-" + UUID.randomUUID());
+                Files.createDirectories(dbPath.toPath());
+                archiveStorage = new RocksDBArchiveStorage(dbPath, config);
+                historyServerHandlerFactory =
+                        createRocksDBHandlerFactory((RocksDBArchiveStorage) archiveStorage, webDir);
+                break;
+            default:
+                throw new FlinkException("Unsupported archive storage type: " + archiveStorageType);
         }
+
+        ConcurrentHashMap<String, ArchiveMetaInfo> archiveMetaInfoCache = new ConcurrentHashMap<>();
+        ConcurrentHashMap<String, ArchiveMetaInfo> applicationArchiveMetaInfoCache =
+                new ConcurrentHashMap<>();
+        int lazyFetchExecutorCommonPoolSize =
+                config.get(HISTORY_SERVER_LAZY_FETCH_EXECUTOR_COMMON_POOL_SIZE);
+        int lazyFetchExecutorIndividualPoolSize =
+                config.get(HISTORY_SERVER_LAZY_FETCH_EXECUTOR_INDIVIDUAL_POOL_SIZE);
         archiveFetcher =
-                new HistoryServerArchiveFetcher(
+                new HistoryServerArchiveFetcher<>(
                         refreshDirs,
                         webDir,
                         jobArchiveEventListener,
-                        cleanupExpiredArchives,
-                        maxHistorySize);
+                        cleanupExpiredJobs,
+                        CompositeArchiveRetainedStrategy.createForJobFromConfig(config),
+                        archiveStorage,
+                        archiveMetaInfoCache,
+                        lazyFetchExecutorCommonPoolSize,
+                        lazyFetchExecutorIndividualPoolSize);
+        applicationArchiveFetcher =
+                new HistoryServerApplicationArchiveFetcher<>(
+                        refreshDirs,
+                        webDir,
+                        applicationArchiveEventListener,
+                        cleanupExpiredApplications,
+                        CompositeArchiveRetainedStrategy.createForApplicationFromConfig(config),
+                        archiveStorage,
+                        archiveMetaInfoCache,
+                        applicationArchiveMetaInfoCache,
+                        lazyFetchExecutorCommonPoolSize,
+                        lazyFetchExecutorIndividualPoolSize);
+
+        historyServerHandler =
+                historyServerHandlerFactory.createHistoryServerHandler(
+                        archiveFetcher, applicationArchiveFetcher);
 
         this.shutdownHook =
                 ShutdownHookUtil.addShutdownHook(
                         HistoryServer.this::stop, HistoryServer.class.getSimpleName(), LOG);
+    }
+
+    private File clearWebDir(Configuration config) throws IOException {
+        String webDirectory = config.get(HistoryServerOptions.HISTORY_SERVER_WEB_DIR);
+        if (webDirectory == null) {
+            webDirectory =
+                    System.getProperty("java.io.tmpdir")
+                            + File.separator
+                            + "flink-web-history-"
+                            + UUID.randomUUID();
+        }
+        final File webDir = new File(webDirectory);
+        LOG.info("Clear the web directory {}", webDir);
+        if (webDir.exists() && webDir.isDirectory() && webDir.listFiles() != null) {
+            // Reset the current working directory to eliminate the risk of local file leakage.
+            // This is because when the current process is forcibly terminated by an external
+            // command,
+            // the hook methods for cleaning up local files will not be called.
+            for (File subFile : webDir.listFiles()) {
+                FileUtils.deleteFileOrDirectory(subFile);
+            }
+        }
+        return webDir;
+    }
+
+    @VisibleForTesting
+    File getWebDir() {
+        return webDir;
     }
 
     @VisibleForTesting
@@ -259,7 +372,7 @@ public class HistoryServer {
 
     @VisibleForTesting
     void fetchArchives() {
-        executor.execute(getArchiveFetchingRunnable());
+        executor.execute(getArchiveFetchingRunnable(archiveLoadMode));
     }
 
     public void run() {
@@ -271,6 +384,30 @@ public class HistoryServer {
         } finally {
             stop();
         }
+    }
+
+    @SuppressWarnings("unchecked")
+    private AbstractHistoryServerHandler.HistoryServerHandlerFactory createFileHandlerFactory(
+            FileArchiveStorage fileArchiveStorage, File webDir) {
+        return (archiveFetcher, applicationArchiveFetcher) ->
+                new HistoryServerStaticFileServerHandler(
+                        fileArchiveStorage,
+                        archiveLoadMode,
+                        (HistoryServerArchiveFetcher<File>) archiveFetcher,
+                        (HistoryServerApplicationArchiveFetcher<File>) applicationArchiveFetcher,
+                        webDir);
+    }
+
+    @SuppressWarnings("unchecked")
+    private AbstractHistoryServerHandler.HistoryServerHandlerFactory createRocksDBHandlerFactory(
+            RocksDBArchiveStorage rocksDBArchiveStorage, File webDir) {
+        return (archiveFetcher, applicationArchiveFetcher) ->
+                new HistoryServerRocksDBHandler(
+                        rocksDBArchiveStorage,
+                        archiveLoadMode,
+                        (HistoryServerArchiveFetcher<String>) archiveFetcher,
+                        (HistoryServerApplicationArchiveFetcher<String>) applicationArchiveFetcher,
+                        webDir);
     }
 
     // ------------------------------------------------------------------------
@@ -285,12 +422,43 @@ public class HistoryServer {
             LOG.info("Using directory {} as local cache.", webDir);
 
             Router router = new Router();
-            router.addGet("/:*", new HistoryServerStaticFileServerHandler(webDir));
+
+            LogUrlUtil.getValidLogUrlPattern(
+                            config, HistoryServerOptions.HISTORY_SERVER_JOBMANAGER_LOG_URL_PATTERN)
+                    .ifPresent(
+                            pattern ->
+                                    router.addGet(
+                                            JobManagerLogUrlHeaders.getInstance()
+                                                    .getTargetRestEndpointURL(),
+                                            new GeneratedLogUrlHandler(
+                                                    CompletableFuture.completedFuture(pattern))));
+            LogUrlUtil.getValidLogUrlPattern(
+                            config, HistoryServerOptions.HISTORY_SERVER_TASKMANAGER_LOG_URL_PATTERN)
+                    .ifPresent(
+                            pattern ->
+                                    router.addGet(
+                                            TaskManagerLogUrlHeaders.getInstance()
+                                                    .getTargetRestEndpointURL(),
+                                            new GeneratedLogUrlHandler(
+                                                    CompletableFuture.completedFuture(pattern))));
 
             createDashboardConfigFile();
+            router.addGet("/:*", historyServerHandler);
 
-            executor.scheduleWithFixedDelay(
-                    getArchiveFetchingRunnable(), 0, refreshIntervalMillis, TimeUnit.MILLISECONDS);
+            if (LAZY.equals(archiveLoadMode)) {
+                executor.submit(getArchiveFetchingRunnable(archiveLoadMode));
+                executor.scheduleWithFixedDelay(
+                        getArchiveCleaningRunnable(),
+                        refreshIntervalMillis,
+                        refreshIntervalMillis,
+                        TimeUnit.MILLISECONDS);
+            } else {
+                executor.scheduleWithFixedDelay(
+                        getArchiveFetchingRunnable(archiveLoadMode),
+                        0,
+                        refreshIntervalMillis,
+                        TimeUnit.MILLISECONDS);
+            }
 
             netty =
                     new WebFrontendBootstrap(
@@ -298,9 +466,23 @@ public class HistoryServer {
         }
     }
 
-    private Runnable getArchiveFetchingRunnable() {
+    private Runnable getArchiveFetchingRunnable(
+            HistoryServerOptions.HistoryServerArchiveLoadMode archiveLoadMode) {
         return Runnables.withUncaughtExceptionHandler(
-                () -> archiveFetcher.fetchArchives(), FatalExitExceptionHandler.INSTANCE);
+                () -> {
+                    archiveFetcher.fetchArchives(archiveLoadMode);
+                    applicationArchiveFetcher.fetchArchives(archiveLoadMode);
+                },
+                FatalExitExceptionHandler.INSTANCE);
+    }
+
+    private Runnable getArchiveCleaningRunnable() {
+        return Runnables.withUncaughtExceptionHandler(
+                () -> {
+                    archiveFetcher.cleanUpArchives(archiveLoadMode);
+                    applicationArchiveFetcher.cleanUpArchives(archiveLoadMode);
+                },
+                FatalExitExceptionHandler.INSTANCE);
     }
 
     void stop() {
@@ -315,6 +497,24 @@ public class HistoryServer {
                 }
 
                 ExecutorUtils.gracefulShutdown(1, TimeUnit.SECONDS, executor);
+
+                try {
+                    archiveStorage.close();
+                } catch (Throwable t) {
+                    LOG.warn("Error while closing archive storage.", t);
+                }
+
+                try {
+                    archiveFetcher.close();
+                } catch (Throwable t) {
+                    LOG.warn("Error while closing archive fetcher.", t);
+                }
+
+                try {
+                    applicationArchiveFetcher.close();
+                } catch (Throwable t) {
+                    LOG.warn("Error while closing application archive fetcher.", t);
+                }
 
                 try {
                     LOG.info("Removing web dashboard root cache directory {}", webDir);
@@ -335,26 +535,17 @@ public class HistoryServer {
     // File generation
     // ------------------------------------------------------------------------
 
-    static FileWriter createOrGetFile(File folder, String name) throws IOException {
-        File file = new File(folder, name + ".json");
-        if (!file.exists()) {
-            Files.createFile(file.toPath());
-        }
-        FileWriter fr = new FileWriter(file);
-        return fr;
-    }
-
     private void createDashboardConfigFile() throws IOException {
-        try (FileWriter fw = createOrGetFile(webDir, "config")) {
-            fw.write(
-                    createConfigJson(
-                            DashboardConfiguration.from(
-                                    webRefreshIntervalMillis, ZonedDateTime.now(), false, false)));
-            fw.flush();
-        } catch (IOException ioe) {
-            LOG.error("Failed to write config file.");
-            throw ioe;
-        }
+        String configJson =
+                createConfigJson(
+                        DashboardConfiguration.from(
+                                webRefreshIntervalMillis,
+                                ZonedDateTime.now(),
+                                false,
+                                false,
+                                false,
+                                true));
+        archiveStorage.putArchiveContent("config.json", configJson);
     }
 
     private static String createConfigJson(DashboardConfiguration dashboardConfiguration)
@@ -367,7 +558,7 @@ public class HistoryServer {
         private final Path path;
         private final FileSystem fs;
 
-        private RefreshLocation(Path path, FileSystem fs) {
+        RefreshLocation(Path path, FileSystem fs) {
             this.path = path;
             this.fs = fs;
         }

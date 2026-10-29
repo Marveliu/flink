@@ -34,8 +34,12 @@ import org.apache.flink.util.Collector;
 
 import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.databind.JsonNode;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.io.IOException;
 import java.io.Serializable;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.stream.Collectors;
@@ -55,6 +59,9 @@ import static java.lang.String.format;
  */
 public class MaxwellJsonDeserializationSchema implements DeserializationSchema<RowData> {
     private static final long serialVersionUID = 2L;
+
+    private static final Logger LOG =
+            LoggerFactory.getLogger(MaxwellJsonDeserializationSchema.class);
 
     private static final String FIELD_OLD = "old";
     private static final String OP_INSERT = "insert";
@@ -81,6 +88,9 @@ public class MaxwellJsonDeserializationSchema implements DeserializationSchema<R
 
     /** Number of physical fields. */
     private final int fieldCount;
+
+    /** List of data to be processed. */
+    private transient List<GenericRowData> genericRowDataList;
 
     public MaxwellJsonDeserializationSchema(
             DataType physicalDataType,
@@ -110,6 +120,12 @@ public class MaxwellJsonDeserializationSchema implements DeserializationSchema<R
     }
 
     @Override
+    public void open(InitializationContext context) throws Exception {
+        genericRowDataList = new ArrayList<>();
+        jsonDeserializer.open(context);
+    }
+
+    @Override
     public RowData deserialize(byte[] message) throws IOException {
         throw new RuntimeException(
                 "Please invoke DeserializationSchema#deserialize(byte[], Collector<RowData>) instead.");
@@ -120,6 +136,7 @@ public class MaxwellJsonDeserializationSchema implements DeserializationSchema<R
         if (message == null || message.length == 0) {
             return;
         }
+        genericRowDataList.clear();
         try {
             final JsonNode root = jsonDeserializer.deserializeToJsonNode(message);
             final GenericRowData row = (GenericRowData) jsonDeserializer.convertToRowData(root);
@@ -128,7 +145,7 @@ public class MaxwellJsonDeserializationSchema implements DeserializationSchema<R
                 // "data" field is a row, contains inserted rows
                 GenericRowData insert = (GenericRowData) row.getRow(0, fieldCount);
                 insert.setRowKind(RowKind.INSERT);
-                emitRow(row, insert, out);
+                genericRowDataList.add(handleRow(row, insert));
             } else if (OP_UPDATE.equals(type)) {
                 // "data" field is a row, contains new rows
                 // "old" field is a row, contains old values
@@ -146,19 +163,25 @@ public class MaxwellJsonDeserializationSchema implements DeserializationSchema<R
                 }
                 before.setRowKind(RowKind.UPDATE_BEFORE);
                 after.setRowKind(RowKind.UPDATE_AFTER);
-                emitRow(row, before, out);
-                emitRow(row, after, out);
+                genericRowDataList.add(handleRow(row, before));
+                genericRowDataList.add(handleRow(row, after));
             } else if (OP_DELETE.equals(type)) {
                 // "data" field is a row, contains deleted rows
                 GenericRowData delete = (GenericRowData) row.getRow(0, fieldCount);
                 delete.setRowKind(RowKind.DELETE);
-                emitRow(row, delete, out);
+                genericRowDataList.add(handleRow(row, delete));
             } else {
                 if (!ignoreParseErrors) {
                     throw new IOException(
                             format(
                                     "Unknown \"type\" value \"%s\". The Maxwell JSON message is '%s'",
                                     type, new String(message)));
+                }
+                if (LOG.isDebugEnabled()) {
+                    LOG.debug(
+                            "Unknown \"type\" value '{}'. The Maxwell JSON message is '{}'.",
+                            type,
+                            new String(message));
                 }
             }
         } catch (Throwable t) {
@@ -167,15 +190,19 @@ public class MaxwellJsonDeserializationSchema implements DeserializationSchema<R
                 throw new IOException(
                         format("Corrupt Maxwell JSON message '%s'.", new String(message)), t);
             }
+            if (LOG.isDebugEnabled()) {
+                LOG.debug("Corrupt Maxwell JSON message '{}'.", new String(message), t);
+            }
+        }
+        for (GenericRowData genericRowData : genericRowDataList) {
+            out.collect(genericRowData);
         }
     }
 
-    private void emitRow(
-            GenericRowData rootRow, GenericRowData physicalRow, Collector<RowData> out) {
+    private GenericRowData handleRow(GenericRowData rootRow, GenericRowData physicalRow) {
         // shortcut in case no output projection is required
         if (!hasMetadata) {
-            out.collect(physicalRow);
-            return;
+            return physicalRow;
         }
         final int metadataArity = metadataConverters.length;
         final GenericRowData producedRow =
@@ -187,7 +214,7 @@ public class MaxwellJsonDeserializationSchema implements DeserializationSchema<R
             producedRow.setField(
                     fieldCount + metadataPos, metadataConverters[metadataPos].convert(rootRow));
         }
-        out.collect(producedRow);
+        return producedRow;
     }
 
     @Override

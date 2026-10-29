@@ -15,16 +15,15 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.planner.utils
 
 import org.apache.flink.api.java.tuple.{Tuple2 => JTuple2}
 import org.apache.flink.table.annotation.{DataTypeHint, FunctionHint}
-import org.apache.flink.table.api.Types
 import org.apache.flink.table.api.dataview.MapView
 import org.apache.flink.table.data.{GenericRowData, RowData}
 import org.apache.flink.table.functions.TableAggregateFunction
 import org.apache.flink.table.functions.python.{PythonEnv, PythonFunction}
+import org.apache.flink.table.legacy.api.Types
 import org.apache.flink.table.planner.JLong
 import org.apache.flink.util.Collector
 
@@ -34,10 +33,13 @@ import java.util
 
 import scala.collection.mutable.ListBuffer
 
-/**** Note: Functions in this class suffer performance problem. Only use it in tests. ****/
+/**
+ * ** Note: Functions in this class suffer performance problem. Only use it in tests. ***
+ */
 
-
-/****** Function for testing basic functionality of TableAggregateFunction ******/
+/**
+ * **** Function for testing basic functionality of TableAggregateFunction *****
+ */
 
 class Top3Accum {
   var data: util.Map[JInt, JInt] = _
@@ -86,7 +88,7 @@ class Top3 extends TableAggregateFunction[JTuple2[JInt, JInt], Top3Accum] {
     }
   }
 
-  def accumulate(acc: Top3Accum, v: JInt) {
+  def accumulate(acc: Top3Accum, v: JInt): Unit = {
     if (acc.size == 0) {
       acc.size = 1
       acc.smallest = v
@@ -128,7 +130,9 @@ class Top3 extends TableAggregateFunction[JTuple2[JInt, JInt], Top3Accum] {
   }
 }
 
-/****** Function for testing MapView ******/
+/**
+ * **** Function for testing MapView *****
+ */
 
 class Top3WithMapViewAccum {
   var data: MapView[JInt, JInt] = _
@@ -141,7 +145,7 @@ class Top3WithMapView extends TableAggregateFunction[JTuple2[JInt, JInt], Top3Wi
   @Override
   def createAccumulator(): Top3WithMapViewAccum = {
     val acc = new Top3WithMapViewAccum
-    acc.data = new MapView(Types.INT, Types.INT)
+    acc.data = new MapView()
     acc.size = 0
     acc.smallest = Integer.MAX_VALUE
     acc
@@ -179,7 +183,7 @@ class Top3WithMapView extends TableAggregateFunction[JTuple2[JInt, JInt], Top3Wi
     }
   }
 
-  def accumulate(acc: Top3WithMapViewAccum, v: Int) {
+  def accumulate(acc: Top3WithMapViewAccum, v: Int): Unit = {
     if (acc.size == 0) {
       acc.size = 1
       acc.smallest = v
@@ -207,7 +211,9 @@ class Top3WithMapView extends TableAggregateFunction[JTuple2[JInt, JInt], Top3Wi
   }
 }
 
-/****** Function for testing retract input ******/
+/**
+ * **** Function for testing retract input *****
+ */
 
 class Top3WithRetractInputAcc {
   @DataTypeHint("RAW")
@@ -224,11 +230,11 @@ class Top3WithRetractInput
     acc
   }
 
-  def accumulate(acc: Top3WithRetractInputAcc, v: JInt) {
+  def accumulate(acc: Top3WithRetractInputAcc, v: JInt): Unit = {
     acc.data.append(v)
   }
 
-  def retract(acc: Top3WithRetractInputAcc, v: JInt) {
+  def retract(acc: Top3WithRetractInputAcc, v: JInt): Unit = {
     acc.data.remove(acc.data.indexOf(v))
   }
 
@@ -244,7 +250,9 @@ class Top3WithRetractInput
   }
 }
 
-/****** Function for testing internal accumulator type ******/
+/**
+ * **** Function for testing internal accumulator type *****
+ */
 
 @FunctionHint(accumulator = new DataTypeHint(value = "ROW<i INT>", bridgedTo = classOf[RowData]))
 class TableAggSum extends TableAggregateFunction[JInt, RowData] {
@@ -269,9 +277,7 @@ class TableAggSum extends TableAggregateFunction[JInt, RowData] {
   }
 }
 
-/**
-  * Test function for plan test.
-  */
+/** Test function for plan test. */
 class EmptyTableAggFunc extends TableAggregateFunction[JTuple2[JInt, JInt], Top3Accum] {
 
   override def createAccumulator(): Top3Accum = new Top3Accum

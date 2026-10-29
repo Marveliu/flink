@@ -35,23 +35,27 @@ import org.apache.flink.table.runtime.typeutils.RowDataSerializer;
 import org.apache.flink.table.types.logical.IntType;
 import org.apache.flink.table.types.logical.RowType;
 import org.apache.flink.table.types.logical.VarCharType;
+import org.apache.flink.types.bitmap.Bitmap;
+import org.apache.flink.types.variant.Variant;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
 import java.sql.Timestamp;
 import java.time.LocalDateTime;
 
 import static org.apache.flink.table.data.StringData.fromString;
+import static org.apache.flink.table.data.util.DataFormatTestUtil.nonCompactBoundaryDecimals;
+import static org.apache.flink.table.data.util.DataFormatTestUtil.toSegments;
 import static org.apache.flink.table.utils.RawValueDataAsserter.equivalent;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.HamcrestCondition.matching;
 
 /** Test of {@link BinaryArrayData} and {@link BinaryArrayWriter}. */
-public class BinaryArrayDataTest {
+class BinaryArrayDataTest {
 
     @Test
-    public void testArray() {
+    void testArray() {
         // 1.array test
         BinaryArrayData array = new BinaryArrayData();
         BinaryArrayWriter writer = new BinaryArrayWriter(array, 3, 4);
@@ -98,7 +102,7 @@ public class BinaryArrayDataTest {
     }
 
     @Test
-    public void testArrayTypes() {
+    void testArrayTypes() {
         {
             // test bool
             BinaryArrayData array = new BinaryArrayData();
@@ -311,6 +315,46 @@ public class BinaryArrayDataTest {
             assertThat(newArray.getString(1)).isEqualTo(fromString("jaja"));
         }
 
+        {
+            // test variant
+            Variant variant = Variant.newBuilder().of(1);
+
+            BinaryArrayData array = new BinaryArrayData();
+            BinaryArrayWriter writer = new BinaryArrayWriter(array, 2, 8);
+            writer.setNullAt(0);
+            writer.writeVariant(1, variant);
+            writer.complete();
+
+            assertThat(array.isNullAt(0)).isTrue();
+            assertThat(array.getVariant(1)).isEqualTo(variant);
+
+            BinaryArrayData newArray = splitArray(array);
+            assertThat(newArray.isNullAt(0)).isTrue();
+            assertThat(newArray.getVariant(1)).isEqualTo(variant);
+        }
+
+        {
+            // test bitmap
+            Bitmap bm1 = Bitmap.empty();
+            Bitmap bm2 = Bitmap.fromArray(new int[] {1});
+
+            BinaryArrayData array = new BinaryArrayData();
+            BinaryArrayWriter writer = new BinaryArrayWriter(array, 3, 8);
+            writer.setNullAt(0);
+            writer.writeBitmap(1, bm1);
+            writer.writeBitmap(2, bm2);
+            writer.complete();
+
+            assertThat(array.isNullAt(0)).isTrue();
+            assertThat(array.getBitmap(1)).isEqualTo(bm1);
+            assertThat(array.getBitmap(2)).isEqualTo(bm2);
+
+            BinaryArrayData newArray = splitArray(array);
+            assertThat(newArray.isNullAt(0)).isTrue();
+            assertThat(newArray.getBitmap(1)).isEqualTo(bm1);
+            assertThat(newArray.getBitmap(2)).isEqualTo(bm2);
+        }
+
         BinaryArrayData subArray = new BinaryArrayData();
         BinaryArrayWriter subWriter = new BinaryArrayWriter(subArray, 2, 8);
         subWriter.setNullAt(0);
@@ -356,7 +400,7 @@ public class BinaryArrayDataTest {
     }
 
     @Test
-    public void testMap() {
+    void testMap() {
         BinaryArrayData array1 = new BinaryArrayData();
         BinaryArrayWriter writer1 = new BinaryArrayWriter(array1, 3, 4);
         writer1.writeInt(0, 6);
@@ -417,7 +461,7 @@ public class BinaryArrayDataTest {
     }
 
     @Test
-    public void testToArray() {
+    void testToArray() {
         BinaryArrayData array = new BinaryArrayData();
         BinaryArrayWriter writer = new BinaryArrayWriter(array, 3, 2);
         writer.writeShort(0, (short) 5);
@@ -442,7 +486,7 @@ public class BinaryArrayDataTest {
     }
 
     @Test
-    public void testDecimal() {
+    void testDecimal() {
 
         BinaryArrayData array = new BinaryArrayData();
         BinaryArrayWriter writer = new BinaryArrayWriter(array, 2, 8);
@@ -481,10 +525,40 @@ public class BinaryArrayDataTest {
             array.setDecimal(0, decimal2, precision);
             assertThat(array.getDecimal(0, precision, scale).toString()).isEqualTo("6.55000");
         }
+
+        // 3.not compact, values around the 8-byte boundary, non-zero offset and across segments
+        {
+            int precision = 38;
+            int scale = 2;
+            DecimalData[] decimals = nonCompactBoundaryDecimals(precision, scale);
+            BinaryArrayData nonCompactArray = new BinaryArrayData();
+            BinaryArrayWriter nonCompactWriter =
+                    new BinaryArrayWriter(nonCompactArray, decimals.length, 8);
+            for (int i = 0; i < decimals.length; i++) {
+                nonCompactWriter.writeDecimal(i, decimals[i], precision);
+            }
+            nonCompactWriter.complete();
+
+            int size = nonCompactArray.getSizeInBytes();
+            byte[] bytes =
+                    BinarySegmentUtils.copyToBytes(
+                            nonCompactArray.getSegments(), nonCompactArray.getOffset(), size);
+            int baseOffset = 3;
+            for (int segmentSize = 1; segmentSize <= baseOffset + size; segmentSize++) {
+                BinaryArrayData splitArray = new BinaryArrayData();
+                splitArray.pointTo(toSegments(bytes, baseOffset, segmentSize), baseOffset, size);
+                for (int i = 0; i < decimals.length; i++) {
+                    DecimalData decimal = splitArray.getDecimal(i, precision, scale);
+                    assertThat(decimal.toBigDecimal()).isEqualTo(decimals[i].toBigDecimal());
+                    assertThat(decimal.longBacked)
+                            .isEqualTo(decimals[i].toUnscaledBytes().length <= 8);
+                }
+            }
+        }
     }
 
     @Test
-    public void testGeneric() {
+    void testGeneric() {
         BinaryArrayData array = new BinaryArrayData();
         BinaryArrayWriter writer = new BinaryArrayWriter(array, 2, 8);
         RawValueData<String> generic = RawValueData.fromObject("hahah");
@@ -500,7 +574,7 @@ public class BinaryArrayDataTest {
     }
 
     @Test
-    public void testNested() {
+    void testNested() {
         BinaryArrayData array = new BinaryArrayData();
         BinaryArrayWriter writer = new BinaryArrayWriter(array, 2, 8);
         writer.writeRow(
@@ -517,7 +591,7 @@ public class BinaryArrayDataTest {
     }
 
     @Test
-    public void testBinary() {
+    void testBinary() {
         BinaryArrayData array = new BinaryArrayData();
         BinaryArrayWriter writer = new BinaryArrayWriter(array, 2, 8);
         byte[] bytes1 = new byte[] {1, -1, 5};
@@ -531,7 +605,7 @@ public class BinaryArrayDataTest {
     }
 
     @Test
-    public void testTimestampData() {
+    void testTimestampData() {
         BinaryArrayData array = new BinaryArrayData();
         BinaryArrayWriter writer = new BinaryArrayWriter(array, 2, 8);
 

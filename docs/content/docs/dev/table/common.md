@@ -35,11 +35,17 @@ Structure of Table API and SQL Programs
 
 The following code example shows the common structure of Table API and SQL programs.
 
+{{< hint warning >}}
+All Flink Scala APIs are deprecated and will be removed in a future Flink version. You can still build your application in Scala, but you should move to the Java version of either the DataStream and/or Table API.
+
+See <a href="https://cwiki.apache.org/confluence/display/FLINK/FLIP-265+Deprecate+and+remove+Scala+API+support">FLIP-265 Deprecate and remove Scala API support</a>
+{{< /hint >}}
+
 {{< tabs "0727d1e7-3f22-4eba-a25f-6a554b6a1359" >}}
 {{< tab "Java" >}}
 ```java
 import org.apache.flink.table.api.*;
-import org.apache.flink.connector.datagen.table.DataGenOptions;
+import org.apache.flink.connector.datagen.table.DataGenConnectorOptions;
 
 // Create a TableEnvironment for batch or streaming execution.
 // See the "Create a TableEnvironment" section for details.
@@ -50,26 +56,26 @@ tableEnv.createTemporaryTable("SourceTable", TableDescriptor.forConnector("datag
     .schema(Schema.newBuilder()
       .column("f0", DataTypes.STRING())
       .build())
-    .option(DataGenOptions.ROWS_PER_SECOND, 100)
-    .build())
+    .option(DataGenConnectorOptions.ROWS_PER_SECOND, 100L)
+    .build());
 
 // Create a sink table (using SQL DDL)
-tableEnv.executeSql("CREATE TEMPORARY TABLE SinkTable WITH ('connector' = 'blackhole') LIKE SourceTable");
+tableEnv.executeSql("CREATE TEMPORARY TABLE SinkTable WITH ('connector' = 'blackhole') LIKE SourceTable (EXCLUDING OPTIONS) ");
 
 // Create a Table object from a Table API query
-Table table2 = tableEnv.from("SourceTable");
+Table table1 = tableEnv.from("SourceTable");
 
 // Create a Table object from a SQL query
-Table table3 = tableEnv.sqlQuery("SELECT * FROM SourceTable");
+Table table2 = tableEnv.sqlQuery("SELECT * FROM SourceTable");
 
 // Emit a Table API result Table to a TableSink, same for SQL result
-TableResult tableResult = table2.insertInto("SinkTable").execute();
+TableResult tableResult = table1.insertInto("SinkTable").execute();
 ```
 {{< /tab >}}
 {{< tab "Scala" >}}
 ```scala
 import org.apache.flink.table.api._
-import org.apache.flink.connector.datagen.table.DataGenOptions
+import org.apache.flink.connector.datagen.table.DataGenConnectorOptions
 
 // Create a TableEnvironment for batch or streaming execution.
 // See the "Create a TableEnvironment" section for details.
@@ -80,11 +86,11 @@ tableEnv.createTemporaryTable("SourceTable", TableDescriptor.forConnector("datag
   .schema(Schema.newBuilder()
     .column("f0", DataTypes.STRING())
     .build())
-  .option(DataGenOptions.ROWS_PER_SECOND, 100)
+  .option(DataGenConnectorOptions.ROWS_PER_SECOND, 100L)
   .build())
 
 // Create a sink table (using SQL DDL)
-tableEnv.executeSql("CREATE TEMPORARY TABLE SinkTable WITH ('connector' = 'blackhole') LIKE SourceTable")
+tableEnv.executeSql("CREATE TEMPORARY TABLE SinkTable WITH ('connector' = 'blackhole') LIKE SourceTable (EXCLUDING OPTIONS) ")
 
 // Create a Table object from a Table API query
 val table1 = tableEnv.from("SourceTable")
@@ -113,7 +119,7 @@ table_env.executeSql("""CREATE TEMPORARY TABLE SourceTable (
 """)
 
 # Create a sink table
-table_env.executeSql("CREATE TEMPORARY TABLE SinkTable WITH ('connector' = 'blackhole') LIKE SourceTable")
+table_env.executeSql("CREATE TEMPORARY TABLE SinkTable WITH ('connector' = 'blackhole') LIKE SourceTable (EXCLUDING OPTIONS) ")
 
 # Create a Table from a Table API query
 table1 = table_env.from_path("SourceTable").select(...)
@@ -146,6 +152,8 @@ The `TableEnvironment` is the entrypoint for Table API and SQL integration and i
 * Executing SQL queries
 * Registering a user-defined (scalar, table, or aggregation) function
 * Converting between `DataStream` and `Table` (in case of `StreamTableEnvironment`)
+
+For a complete reference of all `TableEnvironment` methods, see the [TableEnvironment API]({{< ref "docs/dev/table/table_environment" >}}) page.
 
 A `Table` is always bound to a specific `TableEnvironment`.
 It is not possible to combine tables of different TableEnvironments in the same query, e.g., to join or union them.
@@ -249,7 +257,7 @@ external data, such as a file, database table, or message queue.
 Tables may either be temporary, and tied to the lifecycle of a single Flink session, or permanent,
 and visible across multiple Flink sessions and clusters.
 
-Permanent tables require a [catalog]({{< ref "docs/dev/table/catalogs" >}}) (such as Hive Metastore)
+Permanent tables require a [catalog]({{< ref "docs/sql/catalogs" >}}) (such as Hive Metastore)
 to maintain metadata about the table. Once a permanent table is created, it is visible to any Flink
 session that is connected to the catalog and will continue to exist until the table is explicitly
 dropped.
@@ -331,21 +339,42 @@ The connector describes the external system that stores the data of a table. Sto
 
 Such tables can either be created using the Table API directly, or by switching to SQL DDL.
 
+{{< tabs "059e9a56-282c-5e78-98d3-85be5abd04a2" >}}
+{{< tab "Java" >}}
 ```java
 // Using table descriptors
 final TableDescriptor sourceDescriptor = TableDescriptor.forConnector("datagen")
     .schema(Schema.newBuilder()
     .column("f0", DataTypes.STRING())
     .build())
-    .option(DataGenOptions.ROWS_PER_SECOND, 100)
+    .option(DataGenConnectorOptions.ROWS_PER_SECOND, 100L)
     .build();
 
 tableEnv.createTable("SourceTableA", sourceDescriptor);
 tableEnv.createTemporaryTable("SourceTableB", sourceDescriptor);
 
 // Using SQL DDL
-tableEnv.executeSql("CREATE [TEMPORARY] TABLE MyTable (...) WITH (...)")
+tableEnv.executeSql("CREATE [TEMPORARY] TABLE MyTable (...) WITH (...)");
 ```
+{{< /tab >}}
+{{< tab "Python" >}}
+```python
+# Using table descriptors
+source_descriptor = TableDescriptor.for_connector("datagen") \
+    .schema(Schema.new_builder()
+            .column("f0", DataTypes.STRING())
+            .build()) \
+    .option("rows-per-second", "100") \
+    .build()
+
+t_env.create_table("SourceTableA", source_descriptor)
+t_env.create_temporary_table("SourceTableB", source_descriptor)
+
+# Using SQL DDL
+t_env.execute_sql("CREATE [TEMPORARY] TABLE MyTable (...) WITH (...)")
+```
+{{< /tab >}}
+{{< /tabs >}}
 
 ### Expanding Table identifiers
 
@@ -409,6 +438,28 @@ tableEnv.createTemporaryView("`example.View`", table)
 // register the view named 'exampleView' in the catalog named 'other_catalog'
 // in the database named 'other_database' 
 tableEnv.createTemporaryView("other_catalog.other_database.exampleView", table)
+```
+{{< /tab >}}
+{{< tab "Python" >}}
+```python
+# get a TableEnvironment
+t_env = TableEnvironment.create(...)
+t_env.use_catalog("custom_catalog")
+t_env.use_database("custom_database")
+
+table = ...
+
+# register the view named 'exampleView' in the catalog named 'custom_catalog'
+# in the database named 'custom_database'
+t_env.create_temporary_view("other_database.exampleView", table)
+
+# register the view named 'example.View' in the catalog named 'custom_catalog'
+# in the database named 'custom_database'
+t_env.create_temporary_view("`example.View`", table)
+
+# register the view named 'exampleView' in the catalog named 'other_catalog'
+# in the database named 'other_database'
+t_env.create_temporary_view("other_catalog.other_database.exampleView", table)
 ```
 {{< /tab >}}
 {{< /tabs >}}
@@ -480,9 +531,9 @@ table_env = # see "Create a TableEnvironment" section
 orders = table_env.from_path("Orders")
 # compute revenue for all customers from France
 revenue = orders \
-    .filter(orders.cCountry == 'FRANCE') \
-    .group_by(orders.cID, orders.cName) \
-    .select(orders.cID, orders.cName, orders.revenue.sum.alias('revSum'))
+    .filter(col('cCountry') == 'FRANCE') \
+    .group_by(col('cID'), col('cName')) \
+    .select(col('cID'), col('cName'), col('revenue').sum.alias('revSum'))
 
 # emit or convert Table
 # execute query
@@ -496,7 +547,7 @@ revenue = orders \
 
 Flink's SQL integration is based on [Apache Calcite](https://calcite.apache.org), which implements the SQL standard. SQL queries are specified as regular Strings.
 
-The [SQL]({{< ref "docs/dev/table/sql/overview" >}}) document describes Flink's SQL support for streaming and batch tables.
+The [SQL]({{< ref "docs/sql/reference/overview" >}}) document describes Flink's SQL support for streaming and batch tables.
 
 The following example shows how to specify a query and return the result as a `Table`.
 
@@ -672,7 +723,7 @@ tableEnv.createTemporaryTable("CsvSinkTable", TableDescriptor.forConnector("file
     .build());
 
 // compute a result Table using Table API operators and/or SQL queries
-Table result = ...
+Table result = ...;
 
 // Prepare the insert into pipeline
 TablePipeline pipeline = result.insertInto("CsvSinkTable");
@@ -748,6 +799,161 @@ result.execute_insert("CsvSinkTable")
 {{< /tab >}}
 {{< /tabs >}}
 
+### Print the Table
+
+You can print the content of a `Table` to the console for debugging and development purposes. This is done by calling `Table.execute().print()`.
+
+{{< tabs "print-table" >}}
+{{< tab "Java" >}}
+```java
+Table table = tableEnv.fromValues(1, 2, 3);
+table.execute().print();
+```
+{{< /tab >}}
+{{< tab "Scala" >}}
+```scala
+val table = tableEnv.fromValues(1, 2, 3)
+table.execute().print()
+```
+{{< /tab >}}
+{{< tab "Python" >}}
+```python
+table = table_env.from_elements([(1, 'Hi'), (2, 'Hello')], ['id', 'data'])
+table.execute().print()
+```
+{{< /tab >}}
+{{< /tabs >}}
+
+{{< hint info >}}
+This triggers the materialization of the table and collects the content to the client's memory. For large tables, it's recommended to limit the number of rows using `Table.limit()`.
+{{< /hint >}}
+
+### Collect Results to Client
+
+You can collect the results of a `Table` to the client using `TableResult.collect()`. This returns an iterator that you can use to process results programmatically.
+
+{{< tabs "collect-results" >}}
+{{< tab "Java" >}}
+```java
+Table table = tableEnv.fromValues(1, 2, 3);
+try (CloseableIterator<Row> it = table.execute().collect()) {
+    while (it.hasNext()) {
+        Row row = it.next();
+        // process row
+    }
+}
+```
+{{< /tab >}}
+{{< tab "Scala" >}}
+```scala
+val table = tableEnv.fromValues(1, 2, 3)
+val it = table.execute().collect()
+try {
+  while (it.hasNext) {
+    val row = it.next()
+    // process row
+  }
+} finally {
+  it.close()
+}
+```
+{{< /tab >}}
+{{< tab "Python" >}}
+```python
+table = table_env.from_elements([(1, 'Hi'), (2, 'Hello')], ['id', 'data'])
+with table.execute().collect() as results:
+    for row in results:
+        print(row)
+```
+{{< /tab >}}
+{{< /tabs >}}
+
+{{< hint info >}}
+This triggers the materialization of the table and collects the content to the client's memory. For large tables, it's recommended to limit the number of rows using `Table.limit()`.
+{{< /hint >}}
+
+### Emit Results to Multiple Sink Tables
+
+You can use a `StatementSet` to emit multiple `Table`s to multiple sink tables in a single job. This is more efficient than executing multiple separate jobs.
+
+{{< tabs "statement-set" >}}
+{{< tab "Java" >}}
+```java
+// create source table
+Table sourceTable = tableEnv.from("SourceTable");
+
+// create sink tables
+tableEnv.executeSql("CREATE TABLE SinkTable1 (...) WITH (...)");
+tableEnv.executeSql("CREATE TABLE SinkTable2 (...) WITH (...)");
+
+// create a statement set
+StatementSet stmtSet = tableEnv.createStatementSet();
+
+// add insert statements
+stmtSet.add(sourceTable.insertInto("SinkTable1"));
+stmtSet.addInsertSql("INSERT INTO SinkTable2 SELECT * FROM SourceTable");
+
+// execute all statements together
+stmtSet.execute();
+```
+{{< /tab >}}
+{{< tab "Scala" >}}
+```scala
+// create source table
+val sourceTable = tableEnv.from("SourceTable")
+
+// create sink tables
+tableEnv.executeSql("CREATE TABLE SinkTable1 (...) WITH (...)")
+tableEnv.executeSql("CREATE TABLE SinkTable2 (...) WITH (...)")
+
+// create a statement set
+val stmtSet = tableEnv.createStatementSet()
+
+// add insert statements
+stmtSet.add(sourceTable.insertInto("SinkTable1"))
+stmtSet.addInsertSql("INSERT INTO SinkTable2 SELECT * FROM SourceTable")
+
+// execute all statements together
+stmtSet.execute()
+```
+{{< /tab >}}
+{{< tab "Python" >}}
+```python
+# create source table
+table = table_env.from_elements([(1, 'Hi'), (2, 'Hello')], ['id', 'data'])
+table_env.create_temporary_view("source_table", table)
+
+# create sink tables
+table_env.execute_sql("""
+    CREATE TABLE first_sink_table (
+        id BIGINT,
+        data VARCHAR
+    ) WITH (
+        'connector' = 'print'
+    )
+""")
+table_env.execute_sql("""
+    CREATE TABLE second_sink_table (
+        id BIGINT,
+        data VARCHAR
+    ) WITH (
+        'connector' = 'print'
+    )
+""")
+
+# create a statement set
+statement_set = table_env.create_statement_set()
+
+# add insert statements
+statement_set.add_insert("first_sink_table", table)
+statement_set.add_insert_sql("INSERT INTO second_sink_table SELECT * FROM source_table")
+
+# execute all statements together
+statement_set.execute().wait()
+```
+{{< /tab >}}
+{{< /tabs >}}
+
 {{< top >}}
 
 
@@ -804,7 +1010,7 @@ This is done through the `Table.explain()` method or `StatementSet.explain()` me
 2. the optimized logical query plan, and
 3. the physical execution plan.
 
-`TableEnvironment.explainSql()` and `TableEnvironment.executeSql()` support execute a `EXPLAIN` statement to get the plans, Please refer to [EXPLAIN]({{< ref "docs/dev/table/sql/explain" >}}) page.
+`TableEnvironment.explainSql()` and `TableEnvironment.executeSql()` support execute a `EXPLAIN` statement to get the plans, Please refer to [EXPLAIN]({{< ref "docs/sql/reference/utility/explain" >}}) page.
 
 The following code shows an example and the corresponding output for given `Table` using `Table.explain()` method:
 
@@ -849,7 +1055,7 @@ t_env = StreamTableEnvironment.create(env)
 table1 = t_env.from_elements([(1, "hello")], ["count", "word"])
 table2 = t_env.from_elements([(1, "hello")], ["count", "word"])
 table = table1 \
-    .where(table1.word.like('F%')) \
+    .where(col('word').like('F%')) \
     .union_all(table2)
 print(table.explain())
 
@@ -859,7 +1065,7 @@ print(table.explain())
 
 The result of the above example is
 
-{{< expand "Explain" >}}
+{{< details "Explain" >}}
 ```text
 
 == Abstract Syntax Tree ==
@@ -881,7 +1087,7 @@ Union(all=[true], union=[count, word])
 +- DataStreamScan(table=[[Unregistered_DataStream_2]], fields=[count, word])
 
 ```
-{{< /expand >}}
+{{< /details >}}
 
 The following code shows an example and the corresponding output for multiple-sinks plan using `StatementSet.explain()` method:
 
@@ -921,10 +1127,10 @@ tEnv.createTemporaryTable("MySink2", TableDescriptor.forConnector("filesystem")
 StatementSet stmtSet = tEnv.createStatementSet();
 
 Table table1 = tEnv.from("MySource1").where($("word").like("F%"));
-stmtSet.add(table1.insertInto("MySink1");
+stmtSet.add(table1.insertInto("MySink1"));
 
 Table table2 = table1.unionAll(tEnv.from("MySource2"));
-stmtSet.add(table2.insertInto("MySink2");
+stmtSet.add(table2.insertInto("MySink2"));
 
 String explanation = stmtSet.explain();
 System.out.println(explanation);
@@ -1023,7 +1229,7 @@ print(explanation)
 
 the result of multiple-sinks plan is
 
-{{< expand "MultiTable Explain" >}}
+{{< details "MultiTable Explain" >}}
 ```text
 
 == Abstract Syntax Tree ==
@@ -1061,7 +1267,7 @@ LegacySink(name=[`default_catalog`.`default_database`.`MySink2`], fields=[count,
    +- LegacyTableSourceScan(table=[[default_catalog, default_database, MySource2, source: [CsvTableSource(read fields: count, word)]]], fields=[count, word])
 
 ```
-{{< /expand >}}
+{{< /details >}}
 
 {{< top >}}
 

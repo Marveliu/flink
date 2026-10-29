@@ -25,7 +25,6 @@ import org.apache.flink.api.common.time.Deadline;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.client.program.ClusterClient;
 import org.apache.flink.configuration.CheckpointingOptions;
-import org.apache.flink.configuration.ConfigConstants;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.HeartbeatManagerOptions;
 import org.apache.flink.configuration.MemorySize;
@@ -38,12 +37,14 @@ import org.apache.flink.runtime.state.StateBackendLoader;
 import org.apache.flink.runtime.testutils.MiniClusterResourceConfiguration;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.test.util.MiniClusterWithClientResource;
-import org.apache.flink.test.util.TestBaseUtils;
+import org.apache.flink.testutils.junit.utils.TempDirUtils;
+import org.apache.flink.util.TestLoggerExtension;
 
 import org.apache.commons.io.FileUtils;
-import org.junit.ClassRule;
-import org.junit.Rule;
-import org.junit.rules.TemporaryFolder;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.api.io.TempDir;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -51,6 +52,7 @@ import java.io.File;
 import java.io.Serializable;
 import java.net.URI;
 import java.net.URL;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.util.Collection;
 import java.util.LinkedList;
@@ -60,30 +62,29 @@ import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
-import static org.junit.Assert.assertNotEquals;
-import static org.junit.Assert.fail;
-
-/** Test savepoint migration. */
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.fail;
 
 /**
  * Base for testing snapshot migration. The base test supports snapshots types as defined in {@link
  * SnapshotType}.
  */
-public abstract class SnapshotMigrationTestBase extends TestBaseUtils {
+@ExtendWith(TestLoggerExtension.class)
+public abstract class SnapshotMigrationTestBase {
 
-    @ClassRule public static final TemporaryFolder TEMP_FOLDER = new TemporaryFolder();
+    @TempDir private Path tempFolder;
 
-    @Rule public final MiniClusterWithClientResource miniClusterResource;
+    private MiniClusterWithClientResource miniClusterResource;
 
     private static final Logger LOG = LoggerFactory.getLogger(SnapshotMigrationTestBase.class);
 
-    protected static final int DEFAULT_PARALLELISM = 4;
+    private static final int DEFAULT_PARALLELISM = 4;
 
     /**
      * Modes for migration test execution. This enum is supposed to serve as a switch between two
      * modes of test execution: 1) create snapshots and 2) verify snapshots:
      */
-    public enum ExecutionMode {
+    protected enum ExecutionMode {
         /** Create binary snapshot(s), i.e. run the checkpointing functions. */
         CREATE_SNAPSHOT,
         /** Verify snapshot(s), i.e, restore snapshot and check execution result. */
@@ -91,13 +92,33 @@ public abstract class SnapshotMigrationTestBase extends TestBaseUtils {
     }
 
     /** Types of snapshot supported by this base test. */
-    public enum SnapshotType {
+    protected enum SnapshotType {
         /** Savepoints with Flink canonical format. */
         SAVEPOINT_CANONICAL,
         /** Savepoint with native format of respective state backend. */
         SAVEPOINT_NATIVE,
         /** Checkpoint. */
         CHECKPOINT
+    }
+
+    @BeforeEach
+    void setupMiniCluster() throws Exception {
+        miniClusterResource =
+                new MiniClusterWithClientResource(
+                        new MiniClusterResourceConfiguration.Builder()
+                                .setConfiguration(getConfiguration())
+                                .setNumberTaskManagers(1)
+                                .setNumberSlotsPerTaskManager(DEFAULT_PARALLELISM)
+                                .build());
+        miniClusterResource.before();
+    }
+
+    @AfterEach
+    void destroyMiniCluster() {
+        if (miniClusterResource != null) {
+            miniClusterResource.after();
+            miniClusterResource = null;
+        }
     }
 
     /**
@@ -162,7 +183,7 @@ public abstract class SnapshotMigrationTestBase extends TestBaseUtils {
          * @param snapshotType Specifies the snapshot type.
          * @param flinkVersions A collection of {@link FlinkVersion}.
          * @return A collection of {@link SnapshotSpec} that differ only by means of {@link
-         *     FlinkVersion} FlinkVersion}.
+         *     FlinkVersion}.
          */
         public static Collection<SnapshotSpec> withVersions(
                 String stateBackendType,
@@ -182,9 +203,6 @@ public abstract class SnapshotMigrationTestBase extends TestBaseUtils {
             switch (stateBackendType) {
                 case StateBackendLoader.ROCKSDB_STATE_BACKEND_NAME:
                     str.append("-rocksdb");
-                    break;
-                case StateBackendLoader.MEMORY_STATE_BACKEND_NAME:
-                    // This is implicit due to backwards compatibility with legacy artifact names.
                     break;
                 case StateBackendLoader.HASHMAP_STATE_BACKEND_NAME:
                     str.append("-hashmap");
@@ -219,26 +237,18 @@ public abstract class SnapshotMigrationTestBase extends TestBaseUtils {
         return resource.getFile();
     }
 
-    protected SnapshotMigrationTestBase() throws Exception {
-        miniClusterResource =
-                new MiniClusterWithClientResource(
-                        new MiniClusterResourceConfiguration.Builder()
-                                .setConfiguration(getConfiguration())
-                                .setNumberTaskManagers(1)
-                                .setNumberSlotsPerTaskManager(DEFAULT_PARALLELISM)
-                                .build());
-    }
-
     private Configuration getConfiguration() throws Exception {
         // Flink configuration
         final Configuration config = new Configuration();
 
-        config.setInteger(ConfigConstants.LOCAL_NUMBER_TASK_MANAGER, 1);
-        config.setInteger(TaskManagerOptions.NUM_TASK_SLOTS, DEFAULT_PARALLELISM);
+        config.set(TaskManagerOptions.MINI_CLUSTER_NUM_TASK_MANAGERS, 1);
+        config.set(TaskManagerOptions.NUM_TASK_SLOTS, DEFAULT_PARALLELISM);
 
         UUID id = UUID.randomUUID();
-        final File checkpointDir = TEMP_FOLDER.newFolder("checkpoints_" + id).getAbsoluteFile();
-        final File savepointDir = TEMP_FOLDER.newFolder("savepoints_" + id).getAbsoluteFile();
+        final File checkpointDir =
+                TempDirUtils.newFolder(tempFolder, "checkpoints_" + id).getAbsoluteFile();
+        final File savepointDir =
+                TempDirUtils.newFolder(tempFolder, "savepoints_" + id).getAbsoluteFile();
 
         if (!checkpointDir.exists() || !savepointDir.exists()) {
             throw new Exception("Test setup failed: failed to create (temporary) directories.");
@@ -247,12 +257,11 @@ public abstract class SnapshotMigrationTestBase extends TestBaseUtils {
         LOG.info("Created temporary checkpoint directory: " + checkpointDir + ".");
         LOG.info("Created savepoint directory: " + savepointDir + ".");
 
-        config.setString(StateBackendOptions.STATE_BACKEND, "memory");
-        config.setString(
-                CheckpointingOptions.CHECKPOINTS_DIRECTORY, checkpointDir.toURI().toString());
+        config.set(StateBackendOptions.STATE_BACKEND, "memory");
+        config.set(CheckpointingOptions.CHECKPOINTS_DIRECTORY, checkpointDir.toURI().toString());
         config.set(CheckpointingOptions.FS_SMALL_FILE_THRESHOLD, MemorySize.ZERO);
-        config.setString(CheckpointingOptions.SAVEPOINT_DIRECTORY, savepointDir.toURI().toString());
-        config.setLong(HeartbeatManagerOptions.HEARTBEAT_INTERVAL, 300L);
+        config.set(CheckpointingOptions.SAVEPOINT_DIRECTORY, savepointDir.toURI().toString());
+        config.set(HeartbeatManagerOptions.HEARTBEAT_INTERVAL, Duration.ofMillis(300L));
 
         return config;
     }
@@ -301,9 +310,9 @@ public abstract class SnapshotMigrationTestBase extends TestBaseUtils {
             }
         }
 
-        if (!done) {
-            fail("Did not see the expected accumulator results within time limit.");
-        }
+        assertThat(done)
+                .as("Did not see the expected accumulator results within time limit.")
+                .isTrue();
 
         LOG.info("Triggering snapshot.");
 
@@ -374,7 +383,7 @@ public abstract class SnapshotMigrationTestBase extends TestBaseUtils {
                                     .get()
                                     .deserializeError(ClassLoader.getSystemClassLoader()));
                 }
-                assertNotEquals(JobStatus.FAILED, jobStatus);
+                assertThat(jobStatus).isNotEqualTo(JobStatus.FAILED);
             } catch (Exception e) {
                 fail("Could not connect to job: " + e);
             }
@@ -401,8 +410,8 @@ public abstract class SnapshotMigrationTestBase extends TestBaseUtils {
             }
         }
 
-        if (!done) {
-            fail("Did not see the expected accumulator results within time limit.");
-        }
+        assertThat(done)
+                .as("Did not see the expected accumulator results within time limit.")
+                .isTrue();
     }
 }

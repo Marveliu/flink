@@ -18,28 +18,40 @@
 
 package org.apache.flink.runtime.scheduler.adaptive;
 
+import org.apache.flink.api.common.JobID;
 import org.apache.flink.api.common.JobStatus;
 import org.apache.flink.runtime.executiongraph.ArchivedExecutionGraph;
-import org.apache.flink.runtime.scheduler.GlobalFailureHandler;
+import org.apache.flink.runtime.scheduler.adaptive.timeline.Durable;
 import org.apache.flink.util.function.FunctionWithException;
 import org.apache.flink.util.function.ThrowingConsumer;
 
 import org.slf4j.Logger;
 
+import java.time.Instant;
 import java.util.Optional;
+import java.util.function.Consumer;
 
 /**
  * State abstraction of the {@link AdaptiveScheduler}. This interface contains all methods every
  * state implementation must support.
  */
-interface State extends GlobalFailureHandler {
+public interface State extends LabeledGlobalFailureHandler {
+
+    /**
+     * Get the durable time information of the current state.
+     *
+     * @return The durable time information of the current state.
+     */
+    Durable getDurable();
 
     /**
      * This method is called whenever one transitions out of this state.
      *
      * @param newState newState is the state into which the scheduler transitions
      */
-    default void onLeave(Class<? extends State> newState) {}
+    default void onLeave(Class<? extends State> newState) {
+        getDurable().setLeaveTimestamp(Instant.now().toEpochMilli());
+    }
 
     /** Cancels the job execution. */
     void cancel();
@@ -50,6 +62,15 @@ interface State extends GlobalFailureHandler {
      * @param cause cause for the suspension
      */
     void suspend(Throwable cause);
+
+    /**
+     * Gets the {@link JobID} of the job. The implementation should avoid to use the {@link
+     * State#getJob()} method as it may create the {@link ArchivedExecutionGraph} which is
+     * expensive.
+     *
+     * @return the {@link JobID} of the job
+     */
+    JobID getJobId();
 
     /**
      * Gets the current {@link JobStatus}. The returned job status will remain unchanged at least
@@ -101,17 +122,45 @@ interface State extends GlobalFailureHandler {
      */
     default <T, E extends Exception> void tryRun(
             Class<? extends T> clazz, ThrowingConsumer<T, E> action, String debugMessage) throws E {
+        tryRun(
+                clazz,
+                x -> {
+                    getLogger()
+                            .debug(
+                                    "Running '{}' in state {}.",
+                                    debugMessage,
+                                    this.getClass().getSimpleName());
+                    ThrowingConsumer.unchecked(action).accept(x);
+                },
+                logger ->
+                        logger.debug(
+                                "Cannot run '{}' because the actual state is {} and not {}.",
+                                debugMessage,
+                                this.getClass().getSimpleName(),
+                                clazz.getSimpleName()));
+    }
+
+    /**
+     * Tries to run the action if this state is of type clazz.
+     *
+     * @param clazz clazz describes the target type
+     * @param action action to run if this state is of the target type
+     * @param invalidStateCallback that is called if the state isn't matching the expected one.
+     * @param <T> target type
+     * @param <E> error type
+     * @throws E an exception if the action fails
+     */
+    default <T, E extends Exception> void tryRun(
+            Class<? extends T> clazz,
+            ThrowingConsumer<T, E> action,
+            Consumer<Logger> invalidStateCallback)
+            throws E {
         final Optional<? extends T> asOptional = as(clazz);
 
         if (asOptional.isPresent()) {
             action.accept(asOptional.get());
         } else {
-            getLogger()
-                    .debug(
-                            "Cannot run '{}' because the actual state is {} and not {}.",
-                            debugMessage,
-                            this.getClass().getSimpleName(),
-                            clazz.getSimpleName());
+            invalidStateCallback.accept(getLogger());
         }
     }
 

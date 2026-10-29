@@ -14,3 +14,6 @@
 # limitations under the License.
 
 org.apache.flink.table.catalog.GenericInMemoryCatalogFactory
+org.apache.flink.table.catalog.GenericInMemoryCatalogStoreFactory
+org.apache.flink.table.catalog.FileCatalogStoreFactory
+org.apache.flink.table.secret.GenericInMemorySecretStoreFactory

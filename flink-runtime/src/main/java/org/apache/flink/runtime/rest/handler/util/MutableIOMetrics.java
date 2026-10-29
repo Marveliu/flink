@@ -47,7 +47,7 @@ public class MutableIOMetrics extends IOMetrics {
     private boolean numRecordsOutComplete = true;
 
     public MutableIOMetrics() {
-        super(0, 0, 0, 0);
+        super(0, 0, 0, 0, 0, 0, 0);
     }
 
     public boolean isNumBytesInComplete() {
@@ -72,12 +72,15 @@ public class MutableIOMetrics extends IOMetrics {
      * {@link MetricFetcher} is used to retrieve the required metrics.
      *
      * @param attempt Attempt whose IO metrics should be added
-     * @param fetcher MetricFetcher to retrieve metrics for running jobs
+     * @param jobMetrics metrics for running jobs
      * @param jobID JobID to which the attempt belongs
      * @param taskID TaskID to which the attempt belongs
      */
     public void addIOMetrics(
-            AccessExecution attempt, @Nullable MetricFetcher fetcher, String jobID, String taskID) {
+            AccessExecution attempt,
+            @Nullable MetricStore.JobMetricStoreSnapshot jobMetrics,
+            String jobID,
+            String taskID) {
         if (attempt.getState().isTerminal()) {
             IOMetrics ioMetrics = attempt.getIOMetrics();
             if (ioMetrics != null) { // execAttempt is already finished, use final metrics stored in
@@ -86,14 +89,22 @@ public class MutableIOMetrics extends IOMetrics {
                 this.numBytesOut += ioMetrics.getNumBytesOut();
                 this.numRecordsIn += ioMetrics.getNumRecordsIn();
                 this.numRecordsOut += ioMetrics.getNumRecordsOut();
+                this.accumulateBackPressuredTime += ioMetrics.getAccumulateBackPressuredTime();
+                this.accumulateIdleTime += ioMetrics.getAccumulateIdleTime();
+                if (Double.isNaN(ioMetrics.getAccumulateBusyTime())) {
+                    this.accumulateBusyTime = Double.NaN;
+                } else {
+                    this.accumulateBusyTime += ioMetrics.getAccumulateBusyTime();
+                }
             }
         } else { // execAttempt is still running, use MetricQueryService instead
-            if (fetcher != null) {
-                fetcher.update();
+            if (jobMetrics != null) {
                 MetricStore.ComponentMetricStore metrics =
-                        fetcher.getMetricStore()
-                                .getSubtaskMetricStore(
-                                        jobID, taskID, attempt.getParallelSubtaskIndex());
+                        jobMetrics.getSubtaskAttemptMetricStore(
+                                jobID,
+                                taskID,
+                                attempt.getParallelSubtaskIndex(),
+                                attempt.getAttemptNumber());
                 if (metrics != null) {
                     /**
                      * We want to keep track of missing metrics to be able to make a difference
@@ -126,6 +137,29 @@ public class MutableIOMetrics extends IOMetrics {
                     } else {
                         this.numRecordsOut +=
                                 Long.valueOf(metrics.getMetric(MetricNames.IO_NUM_RECORDS_OUT));
+                    }
+
+                    if (metrics.getMetric(MetricNames.ACC_TASK_BACK_PRESSURED_TIME) != null) {
+                        this.accumulateBackPressuredTime +=
+                                Long.parseLong(
+                                        metrics.getMetric(
+                                                MetricNames.ACC_TASK_BACK_PRESSURED_TIME));
+                    }
+
+                    if (metrics.getMetric(MetricNames.ACC_TASK_IDLE_TIME) != null) {
+                        this.accumulateIdleTime +=
+                                Long.parseLong(metrics.getMetric(MetricNames.ACC_TASK_IDLE_TIME));
+                    }
+
+                    if (metrics.getMetric(MetricNames.ACC_TASK_BUSY_TIME) != null) {
+                        double busyTime =
+                                Double.parseDouble(
+                                        metrics.getMetric(MetricNames.ACC_TASK_BUSY_TIME));
+                        if (Double.isNaN(busyTime)) {
+                            this.accumulateBusyTime = Double.NaN;
+                        } else {
+                            this.accumulateBusyTime += busyTime;
+                        }
                     }
                 } else {
                     this.numBytesInComplete = false;

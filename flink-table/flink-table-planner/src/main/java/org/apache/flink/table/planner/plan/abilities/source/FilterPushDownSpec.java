@@ -24,13 +24,14 @@ import org.apache.flink.table.connector.source.abilities.SupportsFilterPushDown;
 import org.apache.flink.table.expressions.Expression;
 import org.apache.flink.table.expressions.ResolvedExpression;
 import org.apache.flink.table.expressions.resolver.ExpressionResolver;
-import org.apache.flink.table.planner.calcite.FlinkTypeFactory;
 import org.apache.flink.table.planner.plan.utils.FlinkRexUtil;
 import org.apache.flink.table.planner.plan.utils.RexNodeToExpressionConverter;
 import org.apache.flink.table.planner.utils.JavaScalaConversionUtil;
 import org.apache.flink.table.types.logical.RowType;
 
 import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.annotation.JsonCreator;
+import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.annotation.JsonIgnore;
+import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.annotation.JsonProperty;
 import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.annotation.JsonTypeName;
 
@@ -41,8 +42,9 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.TimeZone;
 import java.util.stream.Collectors;
+
+import scala.Option;
 
 import static org.apache.flink.util.Preconditions.checkNotNull;
 
@@ -50,6 +52,7 @@ import static org.apache.flink.util.Preconditions.checkNotNull;
  * A sub-class of {@link SourceAbilitySpec} that can not only serialize/deserialize the filter
  * to/from JSON, but also can push the filter into a {@link SupportsFilterPushDown}.
  */
+@JsonIgnoreProperties(ignoreUnknown = true)
 @JsonTypeName("FilterPushDown")
 public final class FilterPushDownSpec extends SourceAbilitySpecBase {
     public static final String FIELD_NAME_PREDICATES = "predicates";
@@ -57,9 +60,30 @@ public final class FilterPushDownSpec extends SourceAbilitySpecBase {
     @JsonProperty(FIELD_NAME_PREDICATES)
     private final List<RexNode> predicates;
 
+    /**
+     * A flag which indicates all predicates are retained in the outer Filter operator.
+     *
+     * <p>This flag is only used for optimization phase, and should not be serialized.
+     */
+    @JsonIgnore private final boolean allPredicatesRetained;
+
+    public FilterPushDownSpec(List<RexNode> predicates, boolean allPredicatesRetained) {
+        this.predicates = new ArrayList<>(checkNotNull(predicates));
+        this.allPredicatesRetained = allPredicatesRetained;
+    }
+
     @JsonCreator
     public FilterPushDownSpec(@JsonProperty(FIELD_NAME_PREDICATES) List<RexNode> predicates) {
-        this.predicates = new ArrayList<>(checkNotNull(predicates));
+        this(predicates, true);
+    }
+
+    @JsonIgnore
+    public boolean isAllPredicatesRetained() {
+        return allPredicatesRetained;
+    }
+
+    public List<RexNode> getPredicates() {
+        return predicates;
     }
 
     @Override
@@ -75,53 +99,82 @@ public final class FilterPushDownSpec extends SourceAbilitySpecBase {
             DynamicTableSource tableSource,
             SourceAbilityContext context) {
         if (tableSource instanceof SupportsFilterPushDown) {
-            RexNodeToExpressionConverter converter =
-                    new RexNodeToExpressionConverter(
-                            new RexBuilder(FlinkTypeFactory.INSTANCE()),
-                            context.getSourceRowType().getFieldNames().toArray(new String[0]),
-                            context.getFunctionCatalog(),
-                            context.getCatalogManager(),
-                            TimeZone.getTimeZone(context.getTableConfig().getLocalTimeZone()));
-            List<Expression> filters =
-                    predicates.stream()
-                            .map(
-                                    p -> {
-                                        scala.Option<ResolvedExpression> expr = p.accept(converter);
-                                        if (expr.isDefined()) {
-                                            return expr.get();
-                                        } else {
-                                            throw new TableException(
-                                                    String.format(
-                                                            "%s can not be converted to Expression, please make sure %s can accept %s.",
-                                                            p.toString(),
-                                                            tableSource.getClass().getSimpleName(),
-                                                            p.toString()));
-                                        }
-                                    })
-                            .collect(Collectors.toList());
-            ExpressionResolver resolver =
-                    ExpressionResolver.resolverFor(
-                                    context.getTableConfig(),
-                                    name -> Optional.empty(),
-                                    context.getFunctionCatalog()
-                                            .asLookup(
-                                                    str -> {
-                                                        throw new TableException(
-                                                                "We should not need to lookup any expressions at this point");
-                                                    }),
-                                    context.getCatalogManager().getDataTypeFactory(),
-                                    (sqlExpression, inputRowType, outputType) -> {
-                                        throw new TableException(
-                                                "SQL expression parsing is not supported at this location.");
-                                    })
-                            .build();
-            return ((SupportsFilterPushDown) tableSource).applyFilters(resolver.resolve(filters));
+            List<ResolvedExpression> resolved =
+                    resolvePredicates(predicates, context.getSourceRowType(), tableSource, context);
+            return ((SupportsFilterPushDown) tableSource).applyFilters(resolved);
         } else {
             throw new TableException(
                     String.format(
                             "%s does not support SupportsFilterPushDown.",
                             tableSource.getClass().getName()));
         }
+    }
+
+    /**
+     * Converts {@link RexNode} predicates to {@link ResolvedExpression}s, preserving 1:1 input
+     * order so callers can correlate by position. Shared between physical and metadata filter
+     * push-down paths.
+     */
+    static List<ResolvedExpression> resolvePredicates(
+            List<RexNode> predicates,
+            RowType rowType,
+            DynamicTableSource tableSource,
+            SourceAbilityContext context) {
+        RexNodeToExpressionConverter converter =
+                new RexNodeToExpressionConverter(
+                        new RexBuilder(context.getTypeFactory()),
+                        rowType.getFieldNames().toArray(new String[0]),
+                        context.getFunctionCatalog(),
+                        context.getCatalogManager(),
+                        Option.apply(context.getTypeFactory().buildRelNodeRowType(rowType)));
+        List<Expression> filters =
+                predicates.stream()
+                        .map(
+                                p -> {
+                                    scala.Option<ResolvedExpression> expr = p.accept(converter);
+                                    if (expr.isDefined()) {
+                                        return expr.get();
+                                    } else {
+                                        throw new TableException(
+                                                String.format(
+                                                        "%s can not be converted to Expression, please make sure %s can accept %s.",
+                                                        p,
+                                                        tableSource.getClass().getSimpleName(),
+                                                        p));
+                                    }
+                                })
+                        .collect(Collectors.toList());
+        ExpressionResolver resolver =
+                ExpressionResolver.resolverFor(
+                                context.getTableConfig(),
+                                context.getClassLoader(),
+                                name -> Optional.empty(),
+                                context.getFunctionCatalog()
+                                        .asLookup(
+                                                str -> {
+                                                    throw new TableException(
+                                                            "We should not need to lookup any expressions at this point");
+                                                }),
+                                context.getCatalogManager().getDataTypeFactory(),
+                                (sqlExpression, inputRowType, outputType) -> {
+                                    throw new TableException(
+                                            "SQL expression parsing is not supported at this location.");
+                                })
+                        .build();
+        List<ResolvedExpression> resolved = resolver.resolve(filters);
+        if (resolved.size() != predicates.size()) {
+            throw new TableException(
+                    String.format(
+                            "Internal error: ExpressionResolver returned %d resolved expressions "
+                                    + "for %d input predicates.",
+                            resolved.size(), predicates.size()));
+        }
+        return resolved;
+    }
+
+    @Override
+    public boolean needAdjustFieldReferenceAfterProjection() {
+        return true;
     }
 
     @Override
@@ -138,7 +191,7 @@ public final class FilterPushDownSpec extends SourceAbilitySpecBase {
         return String.format(
                 "filter=[%s]",
                 expressionStrs.stream()
-                        .reduce((l, r) -> String.format("and(%s, %s)", l, r))
+                        .reduce((l, r) -> String.format("AND(%s, %s)", l, r))
                         .orElse(""));
     }
 

@@ -24,8 +24,6 @@ import org.apache.flink.core.memory.DataOutputView;
 
 import java.io.IOException;
 
-import static org.apache.flink.api.common.typeutils.TypeSerializerConfigSnapshot.ADAPTER_VERSION;
-
 /**
  * A {@code TypeSerializerSnapshot} is a point-in-time view of a {@link TypeSerializer}'s
  * configuration. The configuration snapshot of a serializer is persisted within checkpoints as a
@@ -38,8 +36,9 @@ import static org.apache.flink.api.common.typeutils.TypeSerializerConfigSnapshot
  *       This is explained in more detail below.
  *   <li><strong>Compatibility checks for new serializers:</strong> when new serializers are
  *       available, they need to be checked whether or not they are compatible to read the data
- *       written by the previous serializer. This is performed by providing the new serializer to
- *       the corresponding serializer configuration snapshots in checkpoints.
+ *       written by the previous serializer. This is performed by providing the new serializer
+ *       snapshots to resolve the compatibility with the corresponding previous serializer snapshots
+ *       in checkpoints.
  *   <li><strong>Factory for a read serializer when schema conversion is required:</strong> in the
  *       case that new serializers are not compatible to read previous data, a schema conversion
  *       process executed across all data is required before the new serializer can be continued to
@@ -114,7 +113,7 @@ public interface TypeSerializerSnapshot<T> {
     TypeSerializer<T> restoreSerializer();
 
     /**
-     * Checks a new serializer's compatibility to read data written by the prior serializer.
+     * Checks current serializer's compatibility to read data written by the prior serializer.
      *
      * <p>When a checkpoint/savepoint is restored, this method checks whether the serialization
      * format of the data in the checkpoint/savepoint is compatible for the format of the serializer
@@ -126,11 +125,49 @@ public interface TypeSerializerSnapshot<T> {
      * program's serializer re-serializes the data, thus converting the format during the restore
      * operation.
      *
-     * @param newSerializer the new serializer to check.
+     * <p>This method must be implemented to clarify the compatibility. See FLIP-263 for more
+     * details.
+     *
+     * @param oldSerializerSnapshot the old serializer snapshot to check.
      * @return the serializer compatibility result.
      */
     TypeSerializerSchemaCompatibility<T> resolveSchemaCompatibility(
-            TypeSerializer<T> newSerializer);
+            TypeSerializerSnapshot<T> oldSerializerSnapshot);
+
+    /**
+     * Migrates a single state value from the schema described by {@code oldSerializerSnapshot} to
+     * the schema described by this (new) snapshot. Like {@link
+     * #resolveSchemaCompatibility(TypeSerializerSnapshot)}, this is invoked on the new snapshot and
+     * receives the old snapshot as its argument.
+     *
+     * <p>The default implementation returns the value unchanged: a value already deserialized with
+     * the prior serializer is structurally compatible with the current serializer, so the caller
+     * can re-serialize it as-is. A serializer whose in-memory representation is coupled to its
+     * schema should override this to transform the value into the new layout -- for example by
+     * inserting nulls for added fields or reordering fields by name. An implementation may return
+     * the given value or a new instance.
+     *
+     * <p>The migration is not applied recursively to nested serializers. The snapshot of a
+     * composite type returns its value unchanged unless it overrides this method to decompose the
+     * value and migrate each part, so a caller that needs a nested value migrated must reach the
+     * nested snapshot itself. An implementation that does so should not assume that the old and the
+     * new snapshot expose nested snapshots of the same type: restoring may have replaced those of
+     * the old snapshot with decorators, so nested snapshots are best matched by position or name
+     * rather than by class.
+     *
+     * @param oldSerializerSnapshot snapshot of the serializer that wrote the value. A caller that
+     *     holds the snapshot persisted with the state should pass that one in preference to a
+     *     snapshot re-derived from a serializer restored from it, because that round trip does not
+     *     always reproduce the schema that was written.
+     * @param value the value, already deserialized with the prior serializer. It may be {@code
+     *     null} wherever the prior serializer can produce {@code null}. An implementation that
+     *     decomposes a composite value may likewise pass {@code null} to a nested snapshot for an
+     *     absent part, even where that part's serializer would reject {@code null} at top level.
+     * @return the value adapted to the schema of the current serializer.
+     */
+    default T migrate(TypeSerializerSnapshot<T> oldSerializerSnapshot, T value) {
+        return value;
+    }
 
     // ------------------------------------------------------------------------
     //  read / write utilities
@@ -162,18 +199,7 @@ public interface TypeSerializerSnapshot<T> {
                 TypeSerializerSnapshotSerializationUtil.readAndInstantiateSnapshotClass(in, cl);
 
         int version = in.readInt();
-
-        if (version == ADAPTER_VERSION && !(snapshot instanceof TypeSerializerConfigSnapshot)) {
-            // the snapshot was upgraded directly in-place from a TypeSerializerConfigSnapshot;
-            // read and drop the previously Java-serialized serializer, and get the actual correct
-            // read version.
-            // NOTE: this implicitly assumes that the version was properly written before the actual
-            // snapshot content.
-            TypeSerializerSerializationUtil.tryReadSerializer(in, cl, true);
-            version = in.readInt();
-        }
         snapshot.readSnapshot(version, in, cl);
-
         return snapshot;
     }
 }

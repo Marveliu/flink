@@ -19,12 +19,11 @@
 package org.apache.flink.runtime.checkpoint;
 
 import org.apache.flink.api.common.JobStatus;
-import org.apache.flink.api.common.time.Time;
-import org.apache.flink.runtime.concurrent.ComponentMainThreadExecutorServiceAdapter;
 import org.apache.flink.runtime.execution.ExecutionState;
 import org.apache.flink.runtime.executiongraph.Execution;
 import org.apache.flink.runtime.executiongraph.ExecutionGraph;
 import org.apache.flink.runtime.executiongraph.ExecutionVertex;
+import org.apache.flink.runtime.executiongraph.TestingComponentMainThreadExecutor;
 import org.apache.flink.runtime.jobgraph.JobGraph;
 import org.apache.flink.runtime.jobgraph.JobGraphBuilder;
 import org.apache.flink.runtime.jobgraph.JobVertex;
@@ -32,28 +31,41 @@ import org.apache.flink.runtime.jobgraph.tasks.AbstractInvokable;
 import org.apache.flink.runtime.jobgraph.tasks.CheckpointCoordinatorConfiguration;
 import org.apache.flink.runtime.jobgraph.tasks.JobCheckpointingSettings;
 import org.apache.flink.runtime.scheduler.DefaultScheduler;
+import org.apache.flink.runtime.scheduler.DefaultSchedulerBuilder;
 import org.apache.flink.runtime.scheduler.SchedulerBase;
-import org.apache.flink.runtime.scheduler.SchedulerTestingUtils;
 import org.apache.flink.runtime.taskmanager.TaskExecutionState;
-import org.apache.flink.util.TestLogger;
+import org.apache.flink.testutils.TestingUtils;
+import org.apache.flink.testutils.executor.TestExecutorExtension;
 
-import org.hamcrest.Matchers;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.RegisterExtension;
 
+import java.time.Duration;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ScheduledExecutorService;
 
-import static org.hamcrest.Matchers.is;
-import static org.junit.Assert.assertThat;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Tests for the interaction between the {@link DefaultScheduler}, {@link ExecutionGraph} and the
  * {@link CheckpointCoordinator}.
  */
-public class DefaultSchedulerCheckpointCoordinatorTest extends TestLogger {
+class DefaultSchedulerCheckpointCoordinatorTest {
+
+    @RegisterExtension
+    private static final TestExecutorExtension<ScheduledExecutorService> EXECUTOR_EXTENSION =
+            TestingUtils.defaultExecutorExtension();
+
+    @RegisterExtension
+    static final TestingComponentMainThreadExecutor.Extension MAIN_EXECUTOR_RESOURCE =
+            new TestingComponentMainThreadExecutor.Extension();
+
+    private final TestingComponentMainThreadExecutor mainThreadExecutor =
+            MAIN_EXECUTOR_RESOURCE.getComponentMainThreadTestExecutor();
 
     /** Tests that the checkpoint coordinator is shut down if the execution graph is failed. */
     @Test
-    public void testClosingSchedulerShutsDownCheckpointCoordinatorOnFailedExecutionGraph()
+    void testClosingSchedulerShutsDownCheckpointCoordinatorOnFailedExecutionGraph()
             throws Exception {
         final CompletableFuture<JobStatus> counterShutdownFuture = new CompletableFuture<>();
         CheckpointIDCounter counter =
@@ -69,21 +81,26 @@ public class DefaultSchedulerCheckpointCoordinatorTest extends TestLogger {
         final ExecutionGraph graph = scheduler.getExecutionGraph();
         final CheckpointCoordinator checkpointCoordinator = graph.getCheckpointCoordinator();
 
-        assertThat(checkpointCoordinator, Matchers.notNullValue());
-        assertThat(checkpointCoordinator.isShutdown(), is(false));
+        assertThat(checkpointCoordinator).isNotNull();
+        assertThat(checkpointCoordinator.isShutdown()).isFalse();
 
-        graph.failJob(new Exception("Test Exception"), System.currentTimeMillis());
+        mainThreadExecutor
+                .execute(
+                        () -> {
+                            graph.failJob(
+                                    new Exception("Test Exception"), System.currentTimeMillis());
+                            return scheduler.closeAsync();
+                        })
+                .get();
 
-        scheduler.closeAsync().get();
-
-        assertThat(checkpointCoordinator.isShutdown(), is(true));
-        assertThat(counterShutdownFuture.get(), is(JobStatus.FAILED));
-        assertThat(storeShutdownFuture.get(), is(JobStatus.FAILED));
+        assertThat(checkpointCoordinator.isShutdown()).isTrue();
+        assertThat(counterShutdownFuture).isCompletedWithValue(JobStatus.FAILED);
+        assertThat(storeShutdownFuture).isCompletedWithValue(JobStatus.FAILED);
     }
 
     /** Tests that the checkpoint coordinator is shut down if the execution graph is suspended. */
     @Test
-    public void testClosingSchedulerShutsDownCheckpointCoordinatorOnSuspendedExecutionGraph()
+    void testClosingSchedulerShutsDownCheckpointCoordinatorOnSuspendedExecutionGraph()
             throws Exception {
         final CompletableFuture<JobStatus> counterShutdownFuture = new CompletableFuture<>();
         CheckpointIDCounter counter =
@@ -99,21 +116,25 @@ public class DefaultSchedulerCheckpointCoordinatorTest extends TestLogger {
         final ExecutionGraph graph = scheduler.getExecutionGraph();
         final CheckpointCoordinator checkpointCoordinator = graph.getCheckpointCoordinator();
 
-        assertThat(checkpointCoordinator, Matchers.notNullValue());
-        assertThat(checkpointCoordinator.isShutdown(), is(false));
+        assertThat(checkpointCoordinator).isNotNull();
+        assertThat(checkpointCoordinator.isShutdown()).isFalse();
 
-        graph.suspend(new Exception("Test Exception"));
+        mainThreadExecutor
+                .execute(
+                        () -> {
+                            graph.suspend(new Exception("Test Exception"));
+                            return scheduler.closeAsync();
+                        })
+                .get();
 
-        scheduler.closeAsync().get();
-
-        assertThat(checkpointCoordinator.isShutdown(), is(true));
-        assertThat(counterShutdownFuture.get(), is(JobStatus.SUSPENDED));
-        assertThat(storeShutdownFuture.get(), is(JobStatus.SUSPENDED));
+        assertThat(checkpointCoordinator.isShutdown()).isTrue();
+        assertThat(counterShutdownFuture).isCompletedWithValue(JobStatus.SUSPENDED);
+        assertThat(storeShutdownFuture).isCompletedWithValue(JobStatus.SUSPENDED);
     }
 
     /** Tests that the checkpoint coordinator is shut down if the execution graph is finished. */
     @Test
-    public void testClosingSchedulerShutsDownCheckpointCoordinatorOnFinishedExecutionGraph()
+    void testClosingSchedulerShutsDownCheckpointCoordinatorOnFinishedExecutionGraph()
             throws Exception {
         final CompletableFuture<JobStatus> counterShutdownFuture = new CompletableFuture<>();
         CheckpointIDCounter counter =
@@ -129,30 +150,34 @@ public class DefaultSchedulerCheckpointCoordinatorTest extends TestLogger {
         final ExecutionGraph graph = scheduler.getExecutionGraph();
         final CheckpointCoordinator checkpointCoordinator = graph.getCheckpointCoordinator();
 
-        assertThat(checkpointCoordinator, Matchers.notNullValue());
-        assertThat(checkpointCoordinator.isShutdown(), is(false));
+        assertThat(checkpointCoordinator).isNotNull();
+        assertThat(checkpointCoordinator.isShutdown()).isFalse();
 
-        scheduler.startScheduling();
+        mainThreadExecutor.execute(
+                () -> {
+                    scheduler.startScheduling();
+                    for (ExecutionVertex executionVertex : graph.getAllExecutionVertices()) {
+                        final Execution currentExecutionAttempt =
+                                executionVertex.getCurrentExecutionAttempt();
+                        scheduler.updateTaskExecutionState(
+                                new TaskExecutionState(
+                                        currentExecutionAttempt.getAttemptId(),
+                                        ExecutionState.FINISHED));
+                    }
+                });
 
-        for (ExecutionVertex executionVertex : graph.getAllExecutionVertices()) {
-            final Execution currentExecutionAttempt = executionVertex.getCurrentExecutionAttempt();
-            scheduler.updateTaskExecutionState(
-                    new TaskExecutionState(
-                            currentExecutionAttempt.getAttemptId(), ExecutionState.FINISHED));
-        }
+        assertThat(graph.getTerminationFuture()).isCompletedWithValue(JobStatus.FINISHED);
 
-        assertThat(graph.getTerminationFuture().get(), is(JobStatus.FINISHED));
+        mainThreadExecutor.execute(scheduler::closeAsync).get();
 
-        scheduler.closeAsync().get();
-
-        assertThat(checkpointCoordinator.isShutdown(), is(true));
-        assertThat(counterShutdownFuture.get(), is(JobStatus.FINISHED));
-        assertThat(storeShutdownFuture.get(), is(JobStatus.FINISHED));
+        assertThat(checkpointCoordinator.isShutdown()).isTrue();
+        assertThat(counterShutdownFuture).isCompletedWithValue(JobStatus.FINISHED);
+        assertThat(storeShutdownFuture).isCompletedWithValue(JobStatus.FINISHED);
     }
 
     /** Tests that the checkpoint coordinator is shut down if the execution graph is suspended. */
     @Test
-    public void testClosingSchedulerSuspendsExecutionGraphAndShutsDownCheckpointCoordinator()
+    void testClosingSchedulerSuspendsExecutionGraphAndShutsDownCheckpointCoordinator()
             throws Exception {
         final CompletableFuture<JobStatus> counterShutdownFuture = new CompletableFuture<>();
         CheckpointIDCounter counter =
@@ -168,22 +193,23 @@ public class DefaultSchedulerCheckpointCoordinatorTest extends TestLogger {
         final ExecutionGraph graph = scheduler.getExecutionGraph();
         final CheckpointCoordinator checkpointCoordinator = graph.getCheckpointCoordinator();
 
-        assertThat(checkpointCoordinator, Matchers.notNullValue());
-        assertThat(checkpointCoordinator.isShutdown(), is(false));
+        assertThat(checkpointCoordinator).isNotNull();
+        assertThat(checkpointCoordinator.isShutdown()).isFalse();
 
-        scheduler.closeAsync().get();
+        mainThreadExecutor.execute(scheduler::closeAsync).get();
 
-        assertThat(graph.getState(), is(JobStatus.SUSPENDED));
-        assertThat(checkpointCoordinator.isShutdown(), is(true));
-        assertThat(counterShutdownFuture.get(), is(JobStatus.SUSPENDED));
-        assertThat(storeShutdownFuture.get(), is(JobStatus.SUSPENDED));
+        assertThat(graph.getState()).isEqualTo(JobStatus.SUSPENDED);
+        assertThat(checkpointCoordinator.isShutdown()).isTrue();
+        assertThat(counterShutdownFuture).isCompletedWithValue(JobStatus.SUSPENDED);
+        assertThat(storeShutdownFuture).isCompletedWithValue(JobStatus.SUSPENDED);
     }
 
     private DefaultScheduler createSchedulerAndEnableCheckpointing(
             CheckpointIDCounter counter, CompletedCheckpointStore store) throws Exception {
-        final Time timeout = Time.days(1L);
+        final Duration timeout = Duration.ofDays(1L);
 
         final JobVertex jobVertex = new JobVertex("MockVertex");
+        jobVertex.setParallelism(1);
         jobVertex.setInvokableClass(AbstractInvokable.class);
 
         final CheckpointCoordinatorConfiguration chkConfig =
@@ -200,8 +226,10 @@ public class DefaultSchedulerCheckpointCoordinatorTest extends TestLogger {
                         .setJobCheckpointingSettings(checkpointingSettings)
                         .build();
 
-        return SchedulerTestingUtils.newSchedulerBuilder(
-                        jobGraph, ComponentMainThreadExecutorServiceAdapter.forMainThread())
+        return new DefaultSchedulerBuilder(
+                        jobGraph,
+                        mainThreadExecutor.getMainThreadExecutor(),
+                        EXECUTOR_EXTENSION.getExecutor())
                 .setCheckpointRecoveryFactory(new TestingCheckpointRecoveryFactory(store, counter))
                 .setRpcTimeout(timeout)
                 .build();

@@ -15,29 +15,34 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.planner.plan.nodes.physical.stream
 
+import org.apache.flink.table.api.InsertConflictStrategy
+import org.apache.flink.table.api.InsertConflictStrategy.ConflictBehavior
+import org.apache.flink.table.api.config.ExecutionConfigOptions.{SinkUpsertMaterializeStrategy, TABLE_EXEC_SINK_UPSERT_MATERIALIZE_STRATEGY}
 import org.apache.flink.table.catalog.ContextResolvedTable
 import org.apache.flink.table.connector.sink.DynamicTableSink
 import org.apache.flink.table.planner.calcite.FlinkTypeFactory
 import org.apache.flink.table.planner.plan.abilities.sink.SinkAbilitySpec
+import org.apache.flink.table.planner.plan.metadata.FlinkRelMetadataQuery
 import org.apache.flink.table.planner.plan.nodes.calcite.Sink
+import org.apache.flink.table.planner.plan.nodes.exec.{ExecNode, InputProperty}
 import org.apache.flink.table.planner.plan.nodes.exec.spec.DynamicTableSinkSpec
 import org.apache.flink.table.planner.plan.nodes.exec.stream.StreamExecSink
-import org.apache.flink.table.planner.plan.nodes.exec.{ExecNode, InputProperty}
-import org.apache.flink.table.planner.plan.utils.{ChangelogPlanUtils, RelDescriptionWriterImpl}
+import org.apache.flink.table.planner.plan.utils.{ChangelogPlanUtils, UpsertKeyUtil}
+import org.apache.flink.table.planner.utils.ShortcutUtils.unwrapTableConfig
 
 import org.apache.calcite.plan.{RelOptCluster, RelTraitSet}
-import org.apache.calcite.rel.RelNode
+import org.apache.calcite.rel.{RelNode, RelWriter}
 import org.apache.calcite.rel.hint.RelHint
+import org.apache.calcite.util.ImmutableBitSet
 
-import java.io.{PrintWriter, StringWriter}
 import java.util
 
+import scala.collection.JavaConverters._
+
 /**
- * Stream physical RelNode to to write data into an external sink defined by a
- * [[DynamicTableSink]].
+ * Stream physical RelNode to write data into an external sink defined by a [[DynamicTableSink]].
  */
 class StreamPhysicalSink(
     cluster: RelOptCluster,
@@ -46,9 +51,19 @@ class StreamPhysicalSink(
     hints: util.List[RelHint],
     contextResolvedTable: ContextResolvedTable,
     tableSink: DynamicTableSink,
+    targetColumns: Array[Array[Int]],
     abilitySpecs: Array[SinkAbilitySpec],
-    upsertMaterialize: Boolean = false)
-  extends Sink(cluster, traitSet, inputRel, hints, contextResolvedTable, tableSink)
+    val upsertMaterialize: Boolean = false,
+    val conflictStrategy: InsertConflictStrategy)
+  extends Sink(
+    cluster,
+    traitSet,
+    inputRel,
+    hints,
+    targetColumns,
+    contextResolvedTable,
+    tableSink,
+    abilitySpecs)
   with StreamPhysicalRel {
 
   override def requireWatermark: Boolean = false
@@ -61,8 +76,10 @@ class StreamPhysicalSink(
       hints,
       contextResolvedTable,
       tableSink,
+      targetColumns,
       abilitySpecs,
-      upsertMaterialize)
+      upsertMaterialize,
+      conflictStrategy)
   }
 
   def copy(newUpsertMaterialize: Boolean): StreamPhysicalSink = {
@@ -73,37 +90,83 @@ class StreamPhysicalSink(
       hints,
       contextResolvedTable,
       tableSink,
+      targetColumns,
       abilitySpecs,
-      newUpsertMaterialize)
+      newUpsertMaterialize,
+      conflictStrategy)
   }
 
   override def translateToExecNode(): ExecNode[_] = {
-    val inputChangelogMode = ChangelogPlanUtils.getChangelogMode(
-      getInput.asInstanceOf[StreamPhysicalRel]).get
-    val tableSinkSpec = new DynamicTableSinkSpec(
-      contextResolvedTable,
-      util.Arrays.asList(abilitySpecs: _*))
+    val inputChangelogMode =
+      ChangelogPlanUtils.getChangelogMode(getInput.asInstanceOf[StreamPhysicalRel]).get
+    val tableSinkSpec =
+      new DynamicTableSinkSpec(
+        contextResolvedTable,
+        util.Arrays.asList(abilitySpecs: _*),
+        targetColumns)
     tableSinkSpec.setTableSink(tableSink)
+    // no need to call getUpsertKeysInKeyGroupRange here because there's no exchange before sink,
+    // and only add exchange in exec sink node.
+    val inputUpsertKeys = FlinkRelMetadataQuery
+      .reuseOrCreate(cluster.getMetadataQuery)
+      .getUpsertKeys(inputRel)
+
+    val config = unwrapTableConfig(this)
     new StreamExecSink(
+      config,
       tableSinkSpec,
       inputChangelogMode,
       InputProperty.DEFAULT,
       FlinkTypeFactory.toLogicalRowType(getRowType),
       upsertMaterialize,
-      getDescriptionWithUpsert(upsertMaterialize)
-    )
+      // persist upsertMaterialize strategy separately in the compiled plan to make it immutable;
+      // null means default (LEGACY) and is not written to the compiled plan for compatibility
+      // (in particular, for the existing tests)
+      // later on, it can't be obtained from the node config because it is merged with the new environment
+      config
+        .getOptional(TABLE_EXEC_SINK_UPSERT_MATERIALIZE_STRATEGY)
+        .filter(strategy => !strategy.equals(SinkUpsertMaterializeStrategy.LEGACY))
+        .orElse(null),
+      UpsertKeyUtil.getSmallestKey(inputUpsertKeys),
+      conflictStrategy,
+      getRelDetailedDescription)
   }
 
-  /**
-   * The inputChangelogMode can only be obtained in translateToExecNode phase.
-   */
-  def getDescriptionWithUpsert(upsertMaterialize: Boolean): String = {
-    val sw = new StringWriter
-    val pw = new PrintWriter(sw)
-    val relWriter = new RelDescriptionWriterImpl(pw)
-    this.explainTerms(relWriter)
-    relWriter.itemIf("upsertMaterialize", "true", upsertMaterialize)
-    relWriter.done(this)
-    sw.toString
+  override def explainTerms(pw: RelWriter): RelWriter = {
+    super
+      .explainTerms(pw)
+      .itemIf("upsertMaterialize", "true", upsertMaterialize)
+      .itemIf("conflictStrategy", conflictStrategy, conflictStrategy != null)
+  }
+
+  def isDeduplicateConflictStrategy: Boolean = {
+    conflictStrategy != null && conflictStrategy.getBehavior == ConflictBehavior.DEDUPLICATE
+  }
+
+  def primaryKeysContainsUpsertKey: Boolean = {
+    val primaryKeys = contextResolvedTable.getResolvedSchema.getPrimaryKeyIndexes
+    val pks = ImmutableBitSet.of(primaryKeys: _*)
+    val fmq = FlinkRelMetadataQuery.reuseOrCreate(getCluster.getMetadataQuery)
+    val changeLogUpsertKeys = fmq.getUpsertKeys(getInput)
+    changeLogUpsertKeys != null && changeLogUpsertKeys.asScala.exists(pks.contains)
+  }
+
+  def getUpsertKeyNames: String = {
+    val fmq = FlinkRelMetadataQuery.reuseOrCreate(getCluster.getMetadataQuery)
+    val changeLogUpsertKeys = fmq.getUpsertKeys(getInput)
+    if (changeLogUpsertKeys == null) {
+      "none"
+    } else {
+      val fieldNames = contextResolvedTable.getResolvedSchema.getColumnNames
+      changeLogUpsertKeys.asScala
+        .map(uk => uk.toArray.map(fieldNames.get).mkString("[", ", ", "]"))
+        .mkString(", ")
+    }
+  }
+
+  def getPrimaryKeyNames: String = {
+    val fieldNames = contextResolvedTable.getResolvedSchema.getColumnNames
+    val primaryKeys = contextResolvedTable.getResolvedSchema.getPrimaryKeyIndexes
+    primaryKeys.map(fieldNames.get).mkString("[", ", ", "]")
   }
 }

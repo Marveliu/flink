@@ -25,8 +25,7 @@ under the License.
 	<parent>
 		<groupId>org.apache.flink</groupId>
 		<artifactId>flink-formats</artifactId>
-		<version>1.16-SNAPSHOT</version>
-		<relativePath>..</relativePath>
+		<version>2.5-SNAPSHOT</version>
 	</parent>
 
 	<artifactId>flink-sql-avro-confluent-registry</artifactId>
@@ -34,11 +33,23 @@ under the License.
 
 	<packaging>jar</packaging>
 
+	<properties>
+		<japicmp.skip>true</japicmp.skip>
+	</properties>
+
+	<repositories>
+		<repository>
+			<id>confluent</id>
+			<url>https://packages.confluent.io/maven/</url>
+		</repository>
+	</repositories>
+
 	<dependencies>
 		<dependency>
 			<groupId>org.apache.flink</groupId>
 			<artifactId>flink-avro-confluent-registry</artifactId>
 			<version>${project.version}</version>
+			<optional>${flink.markBundledAsOptional}</optional>
 		</dependency>
 	</dependencies>
 
@@ -57,21 +68,11 @@ under the License.
 						<configuration>
 							<artifactSet>
 								<includes>
-									<include>io.confluent:*</include>
-									<!--we include only kafka-clients which is used in
-									schema-registry-client (e.g. configuration classes). -->
-									<include>org.apache.kafka:kafka-clients</include>
-									<include>org.apache.flink:flink-avro</include>
-									<include>org.apache.flink:flink-avro-confluent-registry</include>
-									<include>org.apache.avro:avro</include>
-									<include>com.fasterxml.jackson.core:*</include>
-									<include>jakarta.ws.rs:jakarta.ws.rs-api</include>
-									<include>jakarta.annotation:jakarta.annotation-api</include>
-									<include>org.glassfish.jersey.core:jersey-common</include>
-									<include>org.glassfish.hk2.external:jakarta.inject</include>
-									<include>org.glassfish.hk2:osgi-resource-locator</include>
-									<include>org.apache.commons:commons-compress</include>
+									<include>*:*</include>
 								</includes>
+								<excludes>
+									<exclude>com.google.code.findbugs:jsr305</exclude>
+								</excludes>
 							</artifactSet>
 							<relocations combine.children="append">
 								<relocation>
@@ -88,6 +89,41 @@ under the License.
 									<pattern>com.fasterxml.jackson</pattern>
 									<shadedPattern>org.apache.flink.avro.shaded.com.fasterxml.jackson</shadedPattern>
 								</relocation>
+								<!--
+								Manually relocate multi-release classes to the correct shaded package. This is needed
+								due to a bug in the Maven Shade plugin, which only relocates the content but not
+								the package structure itself, see https://github.com/apache/maven-shade-plugin/issues/652
+								-->
+								<relocation>
+									<pattern>META-INF/versions/(\d+)/com/fasterxml/jackson/</pattern>
+									<shadedPattern>META-INF/versions/$1/org/apache/flink/avro/shaded/com/fasterxml/jackson/</shadedPattern>
+									<rawString>true</rawString>
+								</relocation>
+								<!--
+								Same maven-shade-plugin#652 workaround as the jackson relocation above, extended to every
+								relocated package: keep each dependency's multi-release (META-INF/versions/N) classes aligned
+								with its relocated base classes. No-op for non-multi-release jars.
+								-->
+								<relocation>
+									<pattern>META-INF/versions/(\d+)/org/apache/kafka/</pattern>
+									<shadedPattern>META-INF/versions/$1/org/apache/flink/avro/registry/confluent/shaded/org/apache/kafka/</shadedPattern>
+									<rawString>true</rawString>
+								</relocation>
+								<relocation>
+									<pattern>META-INF/versions/(\d+)/io/confluent/</pattern>
+									<shadedPattern>META-INF/versions/$1/org/apache/flink/avro/registry/confluent/shaded/io/confluent/</shadedPattern>
+									<rawString>true</rawString>
+								</relocation>
+								<relocation>
+									<pattern>META-INF/versions/(\d+)/org/apache/avro/</pattern>
+									<shadedPattern>META-INF/versions/$1/org/apache/flink/avro/shaded/org/apache/avro/</shadedPattern>
+									<rawString>true</rawString>
+								</relocation>
+								<relocation>
+									<pattern>META-INF/versions/(\d+)/org/apache/commons/compress/</pattern>
+									<shadedPattern>META-INF/versions/$1/org/apache/flink/avro/shaded/org/apache/commons/compress/</shadedPattern>
+									<rawString>true</rawString>
+								</relocation>
 								<relocation>
 									<pattern>org.apache.avro</pattern>
 									<shadedPattern>org.apache.flink.avro.shaded.org.apache.avro</shadedPattern>
@@ -98,13 +134,6 @@ under the License.
 								</relocation>
 							</relocations>
 							<filters>
-								<filter>
-									<artifact>org.glassfish.jersey.core:jersey-common</artifact>
-									<excludes>
-										<!-- exclude Java 9+ specific classes as otherwise the shade-plugin crashes -->
-										<exclude>META-INF/versions/**</exclude>
-									</excludes>
-								</filter>
 								<filter>
 									<artifact>org.apache.kafka:*</artifact>
 									<excludes>
@@ -117,7 +146,20 @@ under the License.
 										<exclude>common/**</exclude>
 									</excludes>
 								</filter>
+								<filter>
+									<artifact>*:*</artifact>
+									<excludes>
+										<exclude>META-INF/**/module-info.class</exclude>
+									</excludes>
+								</filter>
 							</filters>
+							<transformers combine.children="append">
+								<transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+									<manifestEntries>
+										<Multi-Release>true</Multi-Release>
+									</manifestEntries>
+								</transformer>
+							</transformers>
 						</configuration>
 					</execution>
 				</executions>

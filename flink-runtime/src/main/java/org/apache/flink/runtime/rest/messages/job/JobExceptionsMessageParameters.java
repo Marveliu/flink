@@ -23,17 +23,22 @@ import org.apache.flink.runtime.rest.messages.JobMessageParameters;
 import org.apache.flink.runtime.rest.messages.MessageParameters;
 import org.apache.flink.runtime.rest.messages.MessageQueryParameter;
 
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 
 /** {@link MessageParameters} for {@link JobExceptionsHandler}. */
 public class JobExceptionsMessageParameters extends JobMessageParameters {
 
-    private final UpperLimitExceptionParameter upperLimitExceptionParameter =
+    public final UpperLimitExceptionParameter upperLimitExceptionParameter =
             new UpperLimitExceptionParameter();
+
+    private final FailureLabelFilterParameter failureLabelExceptionParameter =
+            new FailureLabelFilterParameter();
 
     @Override
     public Collection<MessageQueryParameter<?>> getQueryParameters() {
-        return Collections.singletonList(upperLimitExceptionParameter);
+        return Collections.unmodifiableList(
+                Arrays.asList(upperLimitExceptionParameter, failureLabelExceptionParameter));
     }
 }

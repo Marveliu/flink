@@ -15,6 +15,8 @@
 #  See the License for the specific language governing permissions and
 # limitations under the License.
 #################################################################################
+import calendar
+import datetime
 import glob
 import logging
 import os
@@ -22,19 +24,20 @@ import re
 import shutil
 import sys
 import tempfile
+import time
 import unittest
 from abc import abstractmethod
-
+from decimal import Decimal
+from functools import wraps
 from py4j.java_gateway import JavaObject
 
-from pyflink.common import JobExecutionResult
+from pyflink.common import JobExecutionResult, Time, Instant, Row, RowKind
 from pyflink.datastream.execution_mode import RuntimeExecutionMode
-from pyflink.table.sources import CsvTableSource
 from pyflink.datastream.stream_execution_environment import StreamExecutionEnvironment
 from pyflink.find_flink_home import _find_flink_home, _find_flink_source_root
-from pyflink.table.table_environment import TableEnvironment
-from pyflink.table.environment_settings import EnvironmentSettings
 from pyflink.java_gateway import get_gateway
+from pyflink.table.table_environment import StreamTableEnvironment
+from pyflink.util.api_stability_decorators import PublicEvolving, Experimental, Internal, Public
 from pyflink.util.java_utils import add_jars_to_context_class_loader, to_jarray
 
 if os.getenv("VERBOSE"):
@@ -107,74 +110,190 @@ class PyFlinkTestCase(unittest.TestCase):
     @classmethod
     def to_py_list(cls, actual):
         py_list = []
-        for i in range(0, actual.length()):
-            py_list.append(actual.apply(i))
+        for i in range(0, actual.size()):
+            py_list.append(actual.get(i))
         return py_list
 
+
+class PyFlinkITTestCase(PyFlinkTestCase):
+
     @classmethod
-    def prepare_csv_source(cls, path, data, data_types, fields):
-        if os.path.isfile(path):
-            os.remove(path)
-        csv_data = ""
-        for item in data:
-            if isinstance(item, list) or isinstance(item, tuple):
-                csv_data += ",".join([str(element) for element in item]) + "\n"
-            else:
-                csv_data += str(item) + "\n"
-        with open(path, 'w') as f:
-            f.write(csv_data)
-            f.close()
-        return CsvTableSource(path, fields, data_types)
+    def setUpClass(cls):
+        super(PyFlinkITTestCase, cls).setUpClass()
+        gateway = get_gateway()
+        MiniClusterResourceConfiguration = (
+            gateway.jvm.org.apache.flink.runtime.testutils.MiniClusterResourceConfiguration
+            .Builder()
+            .setNumberTaskManagers(8)
+            .setNumberSlotsPerTaskManager(1)
+            .setRpcServiceSharing(
+                get_gateway().jvm.org.apache.flink.runtime.minicluster.RpcServiceSharing.DEDICATED)
+            .withHaLeadershipControl()
+            .build())
+        cls.resource = (
+            get_gateway().jvm.org.apache.flink.test.util.
+            MiniClusterWithClientResource(MiniClusterResourceConfiguration))
+        cls.resource.before()
+
+        cls.env = StreamExecutionEnvironment(
+            get_gateway().jvm.org.apache.flink.streaming.util.TestStreamEnvironment(
+                cls.resource.getMiniCluster(), 2))
+
+    @classmethod
+    def tearDownClass(cls):
+        super(PyFlinkITTestCase, cls).tearDownClass()
+        cls.resource.after()
 
 
-class PyFlinkStreamTableTestCase(PyFlinkTestCase):
+class PyFlinkUTTestCase(PyFlinkTestCase):
+    def setUp(self) -> None:
+        self.env = StreamExecutionEnvironment.get_execution_environment()
+        self.env.set_runtime_mode(RuntimeExecutionMode.STREAMING)
+        self.env.set_parallelism(2)
+        self.t_env = StreamTableEnvironment.create(self.env)
+        self.t_env.get_config().set("python.fn-execution.bundle.size", "1")
+
+
+class PyFlinkDataFrameUTTestCase(PyFlinkUTTestCase):
+    """Base class for planner-backed DataFrame interface tests."""
+
+    def setUp(self) -> None:
+        from pyflink.dataframe import get_table_environment, set_table_environment
+
+        super().setUp()
+        previous_environment = get_table_environment()
+        self.addCleanup(set_table_environment, previous_environment)
+        set_table_environment(self.t_env)
+
+    def assert_dataframe_schema(
+        self,
+        dataframe,
+        expected_column_names,
+        expected_column_data_types=None,
+    ):
+        resolved_schema = dataframe._table.get_resolved_schema()
+        self.assertEqual(
+            list(resolved_schema.get_column_names()),
+            expected_column_names,
+        )
+        if expected_column_data_types is not None:
+            self.assertEqual(
+                resolved_schema.get_column_data_types(),
+                expected_column_data_types,
+            )
+
+    def assert_dataframe_sql(self, dataframe, expected_sql, invoke):
+        environment = dataframe._table._t_env
+        original = environment.sql_query
+        captured = {}
+
+        def capture(query):
+            captured["sql"] = query
+            return original(query)
+
+        environment.sql_query = capture
+        try:
+            invoke()
+        finally:
+            del environment.sql_query
+
+        if "sql" in captured:
+            actual_sql = re.sub(r"UnnamedTable\$\d+", "SRC", captured["sql"])
+        else:
+            actual_sql = None
+        self.assertEqual(actual_sql, expected_sql)
+
+
+class PyFlinkStreamTableTestCase(PyFlinkITTestCase):
     """
     Base class for table stream tests.
     """
 
-    def setUp(self):
-        super(PyFlinkStreamTableTestCase, self).setUp()
-        self.t_env = TableEnvironment.create(EnvironmentSettings.in_streaming_mode())
-        self.t_env.get_config().get_configuration().set_string("parallelism.default", "2")
-        self.t_env.get_config().get_configuration().set_string(
-            "python.fn-execution.bundle.size", "1")
+    @classmethod
+    def setUpClass(cls):
+        super(PyFlinkStreamTableTestCase, cls).setUpClass()
+        cls.env.set_runtime_mode(RuntimeExecutionMode.STREAMING)
+        cls.env.set_parallelism(2)
+        cls.t_env = StreamTableEnvironment.create(cls.env)
+        cls.t_env.get_config().set("python.fn-execution.bundle.size", "1")
 
 
-class PyFlinkBatchTableTestCase(PyFlinkTestCase):
+class PyFlinkStreamDataFrameTestCase(PyFlinkStreamTableTestCase):
+    """Base class for DataFrame streaming tests."""
+
+    @classmethod
+    def setUpClass(cls):
+        from pyflink.dataframe import get_table_environment, set_table_environment
+
+        cls._previous_table_environment = get_table_environment()
+        super(PyFlinkStreamDataFrameTestCase, cls).setUpClass()
+        set_table_environment(cls.t_env)
+
+    @classmethod
+    def tearDownClass(cls):
+        from pyflink.dataframe import set_table_environment
+
+        try:
+            super(PyFlinkStreamDataFrameTestCase, cls).tearDownClass()
+        finally:
+            set_table_environment(cls._previous_table_environment)
+
+    @staticmethod
+    def _materialize(dataframe, key=None):
+        # Fold the collected changelog into the final table so assertions read as the
+        # resulting rows rather than the raw +I/-U/+U events.
+        columns = dataframe._table.get_resolved_schema().get_column_names()
+        if key is None:
+            indices = list(range(len(columns)))
+        else:
+            indices = [columns.index(name) for name in key]
+
+        state = {}
+        for row in dataframe.collect():
+            key_value = tuple(row[index] for index in indices)
+            if row.get_row_kind() in (RowKind.INSERT, RowKind.UPDATE_AFTER):
+                state[key_value] = tuple(row)
+            else:
+                state.pop(key_value, None)
+        return sorted(state.values())
+
+
+class PyFlinkBatchTableTestCase(PyFlinkITTestCase):
     """
     Base class for table batch tests.
     """
 
-    def setUp(self):
-        super(PyFlinkBatchTableTestCase, self).setUp()
-        self.t_env = TableEnvironment.create(EnvironmentSettings.in_batch_mode())
-        self.t_env.get_config().get_configuration().set_string("parallelism.default", "2")
-        self.t_env.get_config().get_configuration().set_string(
-            "python.fn-execution.bundle.size", "1")
+    @classmethod
+    def setUpClass(cls):
+        super(PyFlinkBatchTableTestCase, cls).setUpClass()
+        cls.env.set_runtime_mode(RuntimeExecutionMode.BATCH)
+        cls.env.set_parallelism(2)
+        cls.t_env = StreamTableEnvironment.create(cls.env)
+        cls.t_env.get_config().set("python.fn-execution.bundle.size", "1")
 
 
-class PyFlinkStreamingTestCase(PyFlinkTestCase):
+class PyFlinkStreamingTestCase(PyFlinkITTestCase):
     """
     Base class for streaming tests.
     """
 
-    def setUp(self):
-        super(PyFlinkStreamingTestCase, self).setUp()
-        self.env = StreamExecutionEnvironment.get_execution_environment()
-        self.env.set_parallelism(2)
-        self.env.set_runtime_mode(RuntimeExecutionMode.STREAMING)
+    @classmethod
+    def setUpClass(cls):
+        super(PyFlinkStreamingTestCase, cls).setUpClass()
+        cls.env.set_parallelism(2)
+        cls.env.set_runtime_mode(RuntimeExecutionMode.STREAMING)
 
 
-class PyFlinkBatchTestCase(PyFlinkTestCase):
+class PyFlinkBatchTestCase(PyFlinkITTestCase):
     """
     Base class for batch tests.
     """
 
-    def setUp(self):
-        super(PyFlinkBatchTestCase, self).setUp()
-        self.env = StreamExecutionEnvironment.get_execution_environment()
-        self.env.set_parallelism(2)
-        self.env.set_runtime_mode(RuntimeExecutionMode.BATCH)
+    @classmethod
+    def setUpClass(cls):
+        super(PyFlinkBatchTestCase, cls).setUpClass()
+        cls.env.set_parallelism(2)
+        cls.env.set_runtime_mode(RuntimeExecutionMode.BATCH)
 
 
 class PythonAPICompletenessTestCase(object):
@@ -193,6 +312,10 @@ class PythonAPICompletenessTestCase(object):
         output = ''.join(x.capitalize() or '_' for x in method_name.split('_'))
         return output[0].lower() + output[1:]
 
+    @classmethod
+    def get_python_stability_decorators(cls, python_class):
+        return getattr(python_class, '__stability_decorators', set())
+
     @staticmethod
     def get_java_class_methods(java_class):
         gateway = get_gateway()
@@ -200,6 +323,15 @@ class PythonAPICompletenessTestCase(object):
         method_arr = gateway.jvm.Class.forName(java_class).getMethods()
         for i in range(0, len(method_arr)):
             s.add(method_arr[i].getName())
+        return s
+
+    @staticmethod
+    def get_java_class_annotations(java_class):
+        gateway = get_gateway()
+        s = set()
+        annotations_arr = gateway.jvm.Class.forName(java_class).getDeclaredAnnotations()
+        for i in range(0, len(annotations_arr)):
+            s.add(annotations_arr[i].toString())
         return s
 
     @classmethod
@@ -213,6 +345,45 @@ class PythonAPICompletenessTestCase(object):
         if len(missing_methods) > 0:
             raise Exception('Methods: %s in Java class %s have not been added in Python class %s.'
                             % (missing_methods, cls.java_class(), cls.python_class()))
+
+    @classmethod
+    def check_stability_decorators(cls):
+        stability_decorator_mapping = [
+            ("@org.apache.flink.annotation.Public()", Public),
+            ("@org.apache.flink.annotation.PublicEvolving()", PublicEvolving),
+            ("@org.apache.flink.annotation.Experimental()", Experimental),
+            ("@org.apache.flink.annotation.Internal()", Internal),
+        ]
+
+        java_annotations = cls.get_java_class_annotations(cls.java_class())
+        python_decorators = cls.get_python_stability_decorators(cls.python_class())
+
+        missing_python_decorators = []
+        unnecessary_python_decorators = []
+
+        for java_annotation, python_decorator in stability_decorator_mapping:
+            java_has_annotation = java_annotation in java_annotations
+            python_has_decorator = python_decorator in python_decorators
+
+            if java_has_annotation and not python_has_decorator:
+                missing_python_decorators.append(java_annotation)
+
+            if python_has_decorator and not java_has_annotation:
+                unnecessary_python_decorators.append(python_decorator.__name__)
+
+        if missing_python_decorators or unnecessary_python_decorators:
+            error_parts = []
+            if missing_python_decorators:
+                error_parts.append(
+                    f"Annotations {missing_python_decorators} present on Java class "
+                    f"{cls.java_class()} are not present on Python class {cls.python_class()}"
+                )
+            if unnecessary_python_decorators:
+                error_parts.append(
+                    f"Decorations {unnecessary_python_decorators} present on Python class "
+                    f"{cls.python_class()} are not present on Java class {cls.java_class()}"
+                )
+            raise Exception("\n".join(error_parts))
 
     @classmethod
     def java_method_name(cls, python_method_name):
@@ -251,8 +422,18 @@ class PythonAPICompletenessTestCase(object):
         """
         return {"equals", "hashCode", "toString"}
 
+    @classmethod
+    def ignore_decorators(cls):
+        """
+        Whether to ignore stability annotation/decorator alignment checks. Useful
+        if the underlying class is not a class, but a module.
+        """
+        return False
+
     def test_completeness(self):
         self.check_methods()
+        if not self.ignore_decorators():
+            self.check_stability_decorators()
 
 
 def replace_uuid(input_obj):
@@ -293,3 +474,116 @@ class TestEnv(object):
         for item in self.result:
             result[item.f0] = item.f1
         return result
+
+
+DATE_EPOCH_ORDINAL = datetime.datetime(1970, 1, 1).toordinal()
+TIME_EPOCH_ORDINAL = calendar.timegm(time.localtime(0)) * 10 ** 3
+
+
+def _date_to_millis(d: datetime.date):
+    return (d.toordinal() - DATE_EPOCH_ORDINAL) * 86400 * 1000
+
+
+def _time_to_millis(t: datetime.time):
+    if t.tzinfo is not None:
+        offset = t.utcoffset()
+        offset = offset if offset else datetime.timedelta()
+        offset_millis = \
+            (offset.days * 86400 + offset.seconds) * 10 ** 3 + offset.microseconds // 1000
+    else:
+        offset_millis = TIME_EPOCH_ORDINAL
+    minutes = t.hour * 60 + t.minute
+    seconds = minutes * 60 + t.second
+    return seconds * 10 ** 3 + t.microsecond // 1000 - offset_millis
+
+
+def to_java_data_structure(value):
+    jvm = get_gateway().jvm
+    if isinstance(value, (int, float, str, bytes)):
+        return value
+    elif isinstance(value, Decimal):
+        return jvm.java.math.BigDecimal.valueOf(float(value))
+    elif isinstance(value, datetime.datetime):
+        if value.tzinfo is None:
+            return jvm.java.sql.Timestamp(
+                _date_to_millis(value.date()) + _time_to_millis(value.time())
+            )
+        return jvm.java.time.Instant.ofEpochMilli(
+            (
+                calendar.timegm(value.utctimetuple()) +
+                calendar.timegm(time.localtime(0))
+            ) * 1000 +
+            value.microsecond // 1000
+        )
+    elif isinstance(value, datetime.date):
+        return jvm.java.sql.Date(_date_to_millis(value))
+    elif isinstance(value, datetime.time):
+        return jvm.java.sql.Time(_time_to_millis(value))
+    elif isinstance(value, Time):
+        return jvm.java.sql.Time(value.to_milliseconds())
+    elif isinstance(value, Instant):
+        return jvm.java.time.Instant.ofEpochMilli(value.to_epoch_milli())
+    elif isinstance(value, (list, tuple)):
+        j_list = jvm.java.util.ArrayList()
+        for i in value:
+            j_list.add(to_java_data_structure(i))
+        return j_list
+    elif isinstance(value, dict):
+        j_map = jvm.java.util.HashMap()
+        for k, v in value.items():
+            j_map.put(to_java_data_structure(k), to_java_data_structure(v))
+        return j_map
+    elif isinstance(value, Row):
+        if hasattr(value, '_fields'):
+            j_row = jvm.org.apache.flink.types.Row.withNames(value.get_row_kind().to_j_row_kind())
+            for field_name, value in zip(value._fields, value._values):
+                j_row.setField(field_name, to_java_data_structure(value))
+        else:
+            j_row = jvm.org.apache.flink.types.Row.withPositions(
+                value.get_row_kind().to_j_row_kind(), len(value)
+            )
+            for idx, value in enumerate(value._values):
+                j_row.setField(idx, to_java_data_structure(value))
+        return j_row
+    else:
+        raise TypeError('unsupported value type {}'.format(str(type(value))))
+
+
+def run_with_config(config_dict):
+    """
+    Decorator to run a test with specific configuration and restore previous config after test.
+
+    :param config_dict: Dictionary of configuration key-value pairs to set for the test.
+    """
+
+    def decorator(func):
+        @wraps(func)
+        def wrapper(self, *args, **kwargs):
+            # Save original configuration values
+            from pyflink.util.java_utils import get_j_env_configuration
+            config = get_j_env_configuration(self.env._j_stream_execution_environment)
+            original_config = {}
+            for key in config_dict:
+                try:
+                    original_config[key] = config.getString(key)
+                except:
+                    original_config[key] = None
+
+            # Set new configuration
+            for key, value in config_dict.items():
+                config.setString(key, value)
+
+            try:
+                # Run the test
+                return func(self, *args, **kwargs)
+            finally:
+                # Restore original configuration
+                for key, original_value in original_config.items():
+                    if original_value is not None:
+                        config.setString(key, original_value)
+                    else:
+                        config.removeKey(key)
+
+        return wrapper
+
+    return decorator

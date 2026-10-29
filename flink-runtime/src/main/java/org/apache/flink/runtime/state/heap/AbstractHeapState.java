@@ -24,6 +24,9 @@ import org.apache.flink.api.common.typeutils.TypeSerializer;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.queryablestate.client.state.serialization.KvStateSerializer;
 import org.apache.flink.runtime.state.internal.InternalKvState;
+import org.apache.flink.runtime.state.ttl.TtlAwareSerializer;
+import org.apache.flink.runtime.state.ttl.TtlTimeProvider;
+import org.apache.flink.runtime.state.ttl.TtlValue;
 import org.apache.flink.util.Preconditions;
 
 /**
@@ -44,11 +47,11 @@ public abstract class AbstractHeapState<K, N, SV> implements InternalKvState<K, 
 
     protected final TypeSerializer<K> keySerializer;
 
-    protected final TypeSerializer<SV> valueSerializer;
+    protected TypeSerializer<SV> valueSerializer;
 
-    protected final TypeSerializer<N> namespaceSerializer;
+    protected TypeSerializer<N> namespaceSerializer;
 
-    private final SV defaultValue;
+    private SV defaultValue;
 
     /**
      * Creates a new key/value state for the given hash map of key/value pairs.
@@ -112,6 +115,18 @@ public abstract class AbstractHeapState<K, N, SV> implements InternalKvState<K, 
         return KvStateSerializer.serializeValue(result, safeValueSerializer);
     }
 
+    @SuppressWarnings("unchecked")
+    public SV migrateTtlValue(
+            SV stateValue,
+            TtlAwareSerializer<SV, ?> currentTtlAwareSerializer,
+            TtlTimeProvider ttlTimeProvider) {
+        if (currentTtlAwareSerializer.isTtlEnabled()) {
+            return (SV) new TtlValue<>(stateValue, ttlTimeProvider.currentTimestamp());
+        }
+
+        return (SV) ((TtlValue<?>) stateValue).getUserValue();
+    }
+
     /** This should only be used for testing. */
     @VisibleForTesting
     public StateTable<K, N, SV> getStateTable() {
@@ -124,6 +139,22 @@ public abstract class AbstractHeapState<K, N, SV> implements InternalKvState<K, 
         } else {
             return null;
         }
+    }
+
+    protected AbstractHeapState<K, N, SV> setNamespaceSerializer(
+            TypeSerializer<N> namespaceSerializer) {
+        this.namespaceSerializer = namespaceSerializer;
+        return this;
+    }
+
+    protected AbstractHeapState<K, N, SV> setValueSerializer(TypeSerializer<SV> valueSerializer) {
+        this.valueSerializer = valueSerializer;
+        return this;
+    }
+
+    protected AbstractHeapState<K, N, SV> setDefaultValue(SV defaultValue) {
+        this.defaultValue = defaultValue;
+        return this;
     }
 
     @Override

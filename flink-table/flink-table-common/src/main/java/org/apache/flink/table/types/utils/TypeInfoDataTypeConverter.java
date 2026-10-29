@@ -43,6 +43,8 @@ import org.apache.flink.table.types.logical.RawType;
 import org.apache.flink.table.types.logical.RowType;
 import org.apache.flink.table.types.logical.StructuredType;
 import org.apache.flink.types.Row;
+import org.apache.flink.types.bitmap.Bitmap;
+import org.apache.flink.types.variant.Variant;
 
 import javax.annotation.Nullable;
 
@@ -56,6 +58,7 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
@@ -147,6 +150,9 @@ public final class TypeInfoDataTypeConverter {
                 PrimitiveArrayTypeInfo.DOUBLE_PRIMITIVE_ARRAY_TYPE_INFO,
                 DataTypes.ARRAY(DataTypes.DOUBLE().notNull().bridgedTo(double.class))
                         .bridgedTo(double[].class));
+        conversionMap.put(Types.UUID, DataTypes.UUID().bridgedTo(UUID.class));
+        conversionMap.put(Types.VARIANT, DataTypes.VARIANT().bridgedTo(Variant.class));
+        conversionMap.put(Types.BITMAP, DataTypes.BITMAP().bridgedTo(Bitmap.class));
     }
 
     /** Converts the given {@link TypeInformation} into {@link DataType}. */

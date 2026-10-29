@@ -19,6 +19,7 @@
 package org.apache.flink.sql.parser;
 
 import org.apache.calcite.rel.type.RelDataType;
+import org.apache.calcite.rel.type.StructKind;
 import org.apache.calcite.sql.type.SqlTypeName;
 
 import java.util.List;
@@ -29,6 +30,7 @@ public class Fixture {
 
     static final String RAW_TYPE_INT_CLASS = "java.lang.Integer";
     static final String RAW_TYPE_INT_SERIALIZER_STRING = "<Serializer Snapshot>";
+    static final String STRUCTURED_TYPE_NAME = "org.apache.flink.MyStructuredType";
 
     final RelDataType char1Type;
     final RelDataType char33Type;
@@ -112,8 +114,14 @@ public class Fixture {
         return typeFactory.createStructType(keyTypes, names);
     }
 
-    public RelDataType createRawType(String className, String serializerString) {
-        return typeFactory.createRawType(className, serializerString);
+    public RelDataType createStructType(
+            StructKind structKind, List<RelDataType> keyTypes, List<String> names) {
+        return typeFactory.createStructType(structKind, keyTypes, names);
+    }
+
+    public RelDataType createStructuredType(
+            String className, List<RelDataType> typeList, List<String> fieldNameList) {
+        return typeFactory.createStructuredType(className, typeList, fieldNameList);
     }
 
     public RelDataType nullable(RelDataType type) {

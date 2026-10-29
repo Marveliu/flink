@@ -33,6 +33,8 @@ import org.apache.flink.table.functions.ScalarFunctionDefinition;
 import org.apache.flink.table.functions.TableAggregateFunctionDefinition;
 import org.apache.flink.table.functions.TableFunctionDefinition;
 import org.apache.flink.table.functions.UserDefinedFunction;
+import org.apache.flink.table.planner.calcite.RexTableArgCall;
+import org.apache.flink.table.planner.calcite.RexTableArgCall.SortOrder;
 import org.apache.flink.table.planner.functions.bridging.BridgingSqlAggFunction;
 import org.apache.flink.table.planner.functions.bridging.BridgingSqlFunction;
 import org.apache.flink.table.planner.functions.sql.BuiltInSqlOperator;
@@ -63,6 +65,7 @@ import org.apache.calcite.util.Sarg;
 import java.io.IOException;
 import java.math.BigDecimal;
 
+import static org.apache.calcite.sql.type.SqlTypeName.SARG;
 import static org.apache.flink.table.functions.UserDefinedFunctionHelper.isClassNameSerializable;
 import static org.apache.flink.table.planner.typeutils.SymbolUtil.calciteToSerializable;
 
@@ -80,10 +83,10 @@ final class RexNodeJsonSerializer extends StdSerializer<RexNode> {
     static final String FIELD_NAME_VALUE = "value";
     static final String FIELD_NAME_TYPE = "type";
     static final String FIELD_NAME_NAME = "name";
+    static final String FIELD_NAME_INPUT_INDEX = "inputIndex";
 
     // INPUT_REF
     static final String KIND_INPUT_REF = "INPUT_REF";
-    static final String FIELD_NAME_INPUT_INDEX = "inputIndex";
 
     // LITERAL
     static final String KIND_LITERAL = "LITERAL";
@@ -93,7 +96,9 @@ final class RexNodeJsonSerializer extends StdSerializer<RexNode> {
     static final String FIELD_NAME_BOUND_LOWER = "lower";
     static final String FIELD_NAME_BOUND_UPPER = "upper";
     static final String FIELD_NAME_BOUND_TYPE = "boundType";
+
     static final String FIELD_NAME_CONTAINS_NULL = "containsNull";
+    static final String FIELD_NAME_NULL_AS = "nullAs";
     // Symbol fields
     static final String FIELD_NAME_SYMBOL = "symbol";
 
@@ -116,7 +121,14 @@ final class RexNodeJsonSerializer extends StdSerializer<RexNode> {
     static final String FIELD_NAME_SYSTEM_NAME = "systemName";
     static final String FIELD_NAME_CATALOG_NAME = "catalogName";
     static final String FIELD_NAME_SYNTAX = "syntax";
+    static final String FIELD_NAME_SQL_KIND = "sqlKind";
     static final String FIELD_NAME_CLASS = "class";
+
+    // TABLE_ARG_CALL
+    static final String KIND_TABLE_ARG_CALL = "TABLE_ARG_CALL";
+    static final String FIELD_NAME_PARTITION_KEYS = "partitionKeys";
+    static final String FIELD_NAME_ORDER_KEYS = "orderKeys";
+    static final String FIELD_NAME_ORDER_DIRECTIONS = "orderDirections";
 
     RexNodeJsonSerializer() {
         super(RexNode.class);
@@ -150,7 +162,10 @@ final class RexNodeJsonSerializer extends StdSerializer<RexNode> {
                         (RexPatternFieldRef) rexNode, jsonGenerator, serializerProvider);
                 break;
             default:
-                if (rexNode instanceof RexCall) {
+                if (rexNode instanceof RexTableArgCall) {
+                    serializeTableArgCall(
+                            (RexTableArgCall) rexNode, jsonGenerator, serializerProvider);
+                } else if (rexNode instanceof RexCall) {
                     serializeCall(
                             (RexCall) rexNode,
                             jsonGenerator,
@@ -189,22 +204,17 @@ final class RexNodeJsonSerializer extends StdSerializer<RexNode> {
         gen.writeStartObject();
         gen.writeStringField(FIELD_NAME_KIND, KIND_LITERAL);
         final Comparable<?> value = literal.getValueAs(Comparable.class);
-        serializeLiteralValue(
-                value,
-                literal.getTypeName(),
-                literal.getType().getSqlTypeName(),
-                gen,
-                serializerProvider);
+        if (literal.getTypeName() == SARG) {
+            serializeSargValue((Sarg<?>) value, literal.getType().getSqlTypeName(), gen);
+        } else {
+            serializeLiteralValue(value, literal.getType().getSqlTypeName(), gen);
+        }
         serializerProvider.defaultSerializeField(FIELD_NAME_TYPE, literal.getType(), gen);
         gen.writeEndObject();
     }
 
     private static void serializeLiteralValue(
-            Comparable<?> value,
-            SqlTypeName literalTypeName,
-            SqlTypeName elementTypeName,
-            JsonGenerator gen,
-            SerializerProvider serializerProvider)
+            Comparable<?> value, SqlTypeName literalTypeName, JsonGenerator gen)
             throws IOException {
         if (value == null) {
             gen.writeNullField(FIELD_NAME_VALUE);
@@ -227,12 +237,8 @@ final class RexNodeJsonSerializer extends StdSerializer<RexNode> {
             case BIGINT:
                 gen.writeNumberField(FIELD_NAME_VALUE, ((BigDecimal) value).longValue());
                 break;
-            case FLOAT:
-                gen.writeNumberField(FIELD_NAME_VALUE, ((BigDecimal) value).floatValue());
-                break;
             case DOUBLE:
-                gen.writeNumberField(FIELD_NAME_VALUE, ((BigDecimal) value).doubleValue());
-                break;
+            case FLOAT:
             case DECIMAL:
             case INTERVAL_YEAR:
             case INTERVAL_YEAR_MONTH:
@@ -266,9 +272,6 @@ final class RexNodeJsonSerializer extends StdSerializer<RexNode> {
                 gen.writeStringField(FIELD_NAME_SYMBOL, symbol.getKind());
                 gen.writeStringField(FIELD_NAME_VALUE, symbol.getValue());
                 break;
-            case SARG:
-                serializeSargValue((Sarg<?>) value, elementTypeName, gen, serializerProvider);
-                break;
             default:
                 throw new TableException(
                         String.format(
@@ -279,11 +282,7 @@ final class RexNodeJsonSerializer extends StdSerializer<RexNode> {
 
     @SuppressWarnings("UnstableApiUsage")
     private static void serializeSargValue(
-            Sarg<?> value,
-            SqlTypeName sqlTypeName,
-            JsonGenerator gen,
-            SerializerProvider serializerProvider)
-            throws IOException {
+            Sarg<?> value, SqlTypeName sqlTypeName, JsonGenerator gen) throws IOException {
         gen.writeFieldName(FIELD_NAME_SARG);
         gen.writeStartObject();
         gen.writeFieldName(FIELD_NAME_RANGES);
@@ -293,8 +292,7 @@ final class RexNodeJsonSerializer extends StdSerializer<RexNode> {
             if (range.hasLowerBound()) {
                 gen.writeFieldName(FIELD_NAME_BOUND_LOWER);
                 gen.writeStartObject();
-                serializeLiteralValue(
-                        range.lowerEndpoint(), sqlTypeName, sqlTypeName, gen, serializerProvider);
+                serializeLiteralValue(range.lowerEndpoint(), sqlTypeName, gen);
                 final SerializableSymbol symbol = calciteToSerializable(range.lowerBoundType());
                 gen.writeStringField(FIELD_NAME_BOUND_TYPE, symbol.getValue());
                 gen.writeEndObject();
@@ -302,8 +300,7 @@ final class RexNodeJsonSerializer extends StdSerializer<RexNode> {
             if (range.hasUpperBound()) {
                 gen.writeFieldName(FIELD_NAME_BOUND_UPPER);
                 gen.writeStartObject();
-                serializeLiteralValue(
-                        range.upperEndpoint(), sqlTypeName, sqlTypeName, gen, serializerProvider);
+                serializeLiteralValue(range.upperEndpoint(), sqlTypeName, gen);
                 final SerializableSymbol symbol = calciteToSerializable(range.upperBoundType());
                 gen.writeStringField(FIELD_NAME_BOUND_TYPE, symbol.getValue());
                 gen.writeEndObject();
@@ -311,7 +308,8 @@ final class RexNodeJsonSerializer extends StdSerializer<RexNode> {
             gen.writeEndObject();
         }
         gen.writeEndArray();
-        gen.writeBooleanField(FIELD_NAME_CONTAINS_NULL, value.containsNull);
+        final SerializableSymbol symbol = calciteToSerializable(value.nullAs);
+        gen.writeStringField(FIELD_NAME_NULL_AS, symbol.getValue());
         gen.writeEndObject();
     }
 
@@ -336,6 +334,33 @@ final class RexNodeJsonSerializer extends StdSerializer<RexNode> {
         gen.writeEndObject();
     }
 
+    private static void serializeTableArgCall(
+            RexTableArgCall tableArgCall, JsonGenerator gen, SerializerProvider serializerProvider)
+            throws IOException {
+        gen.writeStartObject();
+        gen.writeStringField(FIELD_NAME_KIND, KIND_TABLE_ARG_CALL);
+        gen.writeNumberField(FIELD_NAME_INPUT_INDEX, tableArgCall.getInputIndex());
+        if (tableArgCall.getPartitionKeys().length > 0) {
+            gen.writeFieldName(FIELD_NAME_PARTITION_KEYS);
+            gen.writeArray(
+                    tableArgCall.getPartitionKeys(), 0, tableArgCall.getPartitionKeys().length);
+        }
+        if (tableArgCall.getOrderKeys().length > 0) {
+            gen.writeFieldName(FIELD_NAME_ORDER_KEYS);
+            gen.writeArray(tableArgCall.getOrderKeys(), 0, tableArgCall.getOrderKeys().length);
+            if (tableArgCall.getSortOrder().length > 0) {
+                gen.writeFieldName(FIELD_NAME_ORDER_DIRECTIONS);
+                gen.writeStartArray();
+                for (SortOrder order : tableArgCall.getSortOrder()) {
+                    gen.writeString(order.name());
+                }
+                gen.writeEndArray();
+            }
+        }
+        serializerProvider.defaultSerializeField(FIELD_NAME_TYPE, tableArgCall.getType(), gen);
+        gen.writeEndObject();
+    }
+
     private static void serializeCall(
             RexCall call,
             JsonGenerator gen,
@@ -349,12 +374,14 @@ final class RexNodeJsonSerializer extends StdSerializer<RexNode> {
                 gen,
                 serializerProvider,
                 compilationStrategy == CatalogPlanCompilation.ALL);
-        gen.writeFieldName(FIELD_NAME_OPERANDS);
-        gen.writeStartArray();
-        for (RexNode operand : call.getOperands()) {
-            serializerProvider.defaultSerializeValue(operand, gen);
+        if (!call.getOperands().isEmpty()) {
+            gen.writeFieldName(FIELD_NAME_OPERANDS);
+            gen.writeStartArray();
+            for (RexNode operand : call.getOperands()) {
+                serializerProvider.defaultSerializeValue(operand, gen);
+            }
+            gen.writeEndArray();
         }
-        gen.writeEndArray();
         serializerProvider.defaultSerializeField(FIELD_NAME_TYPE, call.getType(), gen);
         gen.writeEndObject();
     }
@@ -393,10 +420,15 @@ final class RexNodeJsonSerializer extends StdSerializer<RexNode> {
                 || operator instanceof AggSqlFunction) {
             throw legacyException(operator.toString());
         } else {
-            // We assume that all regular SqlOperators are internal. Only the function definitions
-            // stack is exposed to the user and can thus be external.
-            gen.writeStringField(
-                    FIELD_NAME_INTERNAL_NAME, BuiltInSqlOperator.toQualifiedName(operator));
+            if (operator.getName().isEmpty()) {
+                gen.writeStringField(FIELD_NAME_SQL_KIND, operator.getKind().name());
+            } else {
+                // We assume that all regular SqlOperators are internal. Only the function
+                // definitions
+                // stack is exposed to the user and can thus be external.
+                gen.writeStringField(
+                        FIELD_NAME_INTERNAL_NAME, BuiltInSqlOperator.toQualifiedName(operator));
+            }
         }
     }
 
@@ -477,7 +509,7 @@ final class RexNodeJsonSerializer extends StdSerializer<RexNode> {
             assert identifier.getIdentifier().isPresent();
             serializeCatalogFunction(
                     identifier.getIdentifier().get(),
-                    resolvedFunction.getDefinition(),
+                    resolvedFunction,
                     gen,
                     serializerProvider,
                     serializeCatalogObjects);
@@ -486,7 +518,7 @@ final class RexNodeJsonSerializer extends StdSerializer<RexNode> {
 
     private static void serializeCatalogFunction(
             ObjectIdentifier objectIdentifier,
-            FunctionDefinition definition,
+            ContextResolvedFunction resolvedFunction,
             JsonGenerator gen,
             SerializerProvider serializerProvider,
             boolean serializeCatalogObjects)
@@ -497,6 +529,18 @@ final class RexNodeJsonSerializer extends StdSerializer<RexNode> {
             return;
         }
 
+        if (resolvedFunction.getCatalogFunction() != null
+                && !resolvedFunction.getCatalogFunction().getOptions().isEmpty()) {
+            throw new TableException(
+                    String.format(
+                            "Catalog functions with custom options can not be serialized into the "
+                                    + "compiled plan. Please set the option '%s'='%s' to only"
+                                    + " serialize the function's identifier.",
+                            TableConfigOptions.PLAN_COMPILE_CATALOG_OBJECTS.key(),
+                            CatalogPlanCompilation.IDENTIFIER));
+        }
+
+        final FunctionDefinition definition = resolvedFunction.getDefinition();
         if (!(definition instanceof UserDefinedFunction)
                 || !isClassNameSerializable((UserDefinedFunction) definition)) {
             throw cannotSerializePermanentCatalogFunction(objectIdentifier);

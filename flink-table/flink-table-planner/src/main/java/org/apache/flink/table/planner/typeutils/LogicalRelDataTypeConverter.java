@@ -22,18 +22,21 @@ import org.apache.flink.annotation.Internal;
 import org.apache.flink.table.api.TableException;
 import org.apache.flink.table.catalog.DataTypeFactory;
 import org.apache.flink.table.planner.calcite.FlinkTypeFactory;
+import org.apache.flink.table.planner.plan.schema.BitmapRelDataType;
 import org.apache.flink.table.planner.plan.schema.RawRelDataType;
 import org.apache.flink.table.planner.plan.schema.StructuredRelDataType;
 import org.apache.flink.table.planner.plan.schema.TimeIndicatorRelDataType;
 import org.apache.flink.table.types.logical.ArrayType;
 import org.apache.flink.table.types.logical.BigIntType;
 import org.apache.flink.table.types.logical.BinaryType;
+import org.apache.flink.table.types.logical.BitmapType;
 import org.apache.flink.table.types.logical.BooleanType;
 import org.apache.flink.table.types.logical.CharType;
 import org.apache.flink.table.types.logical.DateType;
 import org.apache.flink.table.types.logical.DayTimeIntervalType;
 import org.apache.flink.table.types.logical.DayTimeIntervalType.DayTimeResolution;
 import org.apache.flink.table.types.logical.DecimalType;
+import org.apache.flink.table.types.logical.DescriptorType;
 import org.apache.flink.table.types.logical.DistinctType;
 import org.apache.flink.table.types.logical.DoubleType;
 import org.apache.flink.table.types.logical.FloatType;
@@ -54,8 +57,10 @@ import org.apache.flink.table.types.logical.TimeType;
 import org.apache.flink.table.types.logical.TimestampKind;
 import org.apache.flink.table.types.logical.TimestampType;
 import org.apache.flink.table.types.logical.TinyIntType;
+import org.apache.flink.table.types.logical.UuidType;
 import org.apache.flink.table.types.logical.VarBinaryType;
 import org.apache.flink.table.types.logical.VarCharType;
+import org.apache.flink.table.types.logical.VariantType;
 import org.apache.flink.table.types.logical.YearMonthIntervalType;
 import org.apache.flink.table.types.logical.YearMonthIntervalType.YearMonthResolution;
 import org.apache.flink.table.types.logical.ZonedTimestampType;
@@ -454,6 +459,26 @@ public final class LogicalRelDataTypeConverter {
         }
 
         @Override
+        public RelDataType visit(DescriptorType descriptorType) {
+            return relDataTypeFactory.createSqlType(SqlTypeName.COLUMN_LIST);
+        }
+
+        @Override
+        public RelDataType visit(VariantType variantType) {
+            return relDataTypeFactory.createSqlType(SqlTypeName.VARIANT);
+        }
+
+        @Override
+        public RelDataType visit(UuidType uuidType) {
+            return relDataTypeFactory.createSqlType(SqlTypeName.UUID);
+        }
+
+        @Override
+        public RelDataType visit(BitmapType bitmapType) {
+            return new BitmapRelDataType(bitmapType);
+        }
+
+        @Override
         public RelDataType visit(LogicalType other) {
             throw new TableException(
                     String.format(
@@ -573,19 +598,26 @@ public final class LogicalRelDataTypeConverter {
                                                         toLogicalType(
                                                                 f.getType(), dataTypeFactory)))
                                 .collect(Collectors.toList()));
+            case COLUMN_LIST:
+                return new DescriptorType(false);
+            case VARIANT:
+                return new VariantType(false);
+            case UUID:
+                return new UuidType(false);
             case STRUCTURED:
             case OTHER:
                 if (relDataType instanceof StructuredRelDataType) {
                     return ((StructuredRelDataType) relDataType).getStructuredType();
                 } else if (relDataType instanceof RawRelDataType) {
                     return ((RawRelDataType) relDataType).getRawType();
+                } else if (relDataType instanceof BitmapRelDataType) {
+                    return ((BitmapRelDataType) relDataType).getBitmapType();
                 }
-                // fall through
+            // fall through
             case REAL:
             case TIME_WITH_LOCAL_TIME_ZONE:
             case ANY:
             case CURSOR:
-            case COLUMN_LIST:
             case DYNAMIC_STAR:
             case GEOMETRY:
             case SARG:

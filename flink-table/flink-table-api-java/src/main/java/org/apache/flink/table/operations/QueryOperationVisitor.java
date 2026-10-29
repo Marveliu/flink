@@ -33,6 +33,8 @@ public interface QueryOperationVisitor<T> {
 
     T visit(WindowAggregateQueryOperation windowAggregate);
 
+    T visit(WindowTableFunctionQueryOperation windowTableFunction);
+
     T visit(JoinQueryOperation join);
 
     T visit(SetQueryOperation setOperation);
@@ -43,7 +45,11 @@ public interface QueryOperationVisitor<T> {
 
     T visit(SortQueryOperation sort);
 
-    T visit(CalculatedQueryOperation calculatedTable);
+    T visit(FunctionQueryOperation function);
+
+    T visit(PartitionQueryOperation partition);
+
+    T visit(CorrelatedFunctionQueryOperation correlatedFunction);
 
     T visit(SourceQueryOperation catalogTable);
 

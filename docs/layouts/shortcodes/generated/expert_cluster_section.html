@@ -9,6 +9,12 @@
     </thead>
     <tbody>
         <tr>
+            <td><h5>cluster.id</h5></td>
+            <td style="word-wrap: break-word;">"00000000000000000000000000000000"</td>
+            <td>String</td>
+            <td>The ID of the Flink cluster, used to separate multiple Flink clusters from each other. Currently, this option is primarily used to determine the archive path, and may also be used as the fixed application/job id (if not specified by the user) in high availability mode.The expected format is [0-9a-fA-F]{32}, e.g. fd72014d4c864993a2e5a9287b4a9c5d.<br />If this option is not configured but <code class="highlighter-rouge">high-availability.cluster-id</code> is configured, the value will be derived from the value of <code class="highlighter-rouge">high-availability.cluster-id</code>.</td>
+        </tr>
+        <tr>
             <td><h5>cluster.intercept-user-system-exit</h5></td>
             <td style="word-wrap: break-word;">DISABLED</td>
             <td><p>Enum</p></td>
@@ -21,8 +27,14 @@
             <td>Whether processes should halt on fatal errors instead of performing a graceful shutdown. In some environments (e.g. Java 8 with the G1 garbage collector), a regular graceful shutdown can lead to a JVM deadlock. See <a href="https://issues.apache.org/jira/browse/FLINK-16510">FLINK-16510</a> for details.</td>
         </tr>
         <tr>
+            <td><h5>cluster.thread-dump.default-mode</h5></td>
+            <td style="word-wrap: break-word;">FULL</td>
+            <td><p>Enum</p></td>
+            <td>Default granularity of the JobManager/TaskManager thread-dump REST endpoint when no explicit <code class="highlighter-rouge">mode</code> query parameter is supplied. The default is <code class="highlighter-rouge">FULL</code> to preserve historical behavior; operators of large clusters are strongly encouraged to switch to <code class="highlighter-rouge">LITE</code> to avoid heartbeat timeouts caused by long safepoint pauses.<br /><br />Possible values:<ul><li>"LITE": Stack traces only, without lock information. Negligible JVM pause.</li><li>"FULL": Additionally collects locked monitors and j.u.c. synchronizers, equivalent to jstack -l. Pauses the JVM in a safepoint for a duration that scales with heap size and thread count, which can take seconds on large TaskManagers.</li></ul></td>
+        </tr>
+        <tr>
             <td><h5>cluster.thread-dump.stacktrace-max-depth</h5></td>
-            <td style="word-wrap: break-word;">8</td>
+            <td style="word-wrap: break-word;">50</td>
             <td>Integer</td>
             <td>The maximum stacktrace depth of TaskManager and JobManager's thread dump web-frontend displayed.</td>
         </tr>

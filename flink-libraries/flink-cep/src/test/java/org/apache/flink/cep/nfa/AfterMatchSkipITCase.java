@@ -29,25 +29,24 @@ import org.apache.flink.cep.utils.NFATestHarness;
 import org.apache.flink.cep.utils.TestSharedBuffer;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
 import org.apache.flink.util.FlinkRuntimeException;
-import org.apache.flink.util.TestLogger;
 
-import org.apache.flink.shaded.guava30.com.google.common.collect.Lists;
+import org.apache.flink.shaded.guava33.com.google.common.collect.Lists;
 
-import org.hamcrest.Matchers;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
 import static org.apache.flink.cep.utils.NFATestUtilities.comparePatterns;
-import static org.junit.Assert.assertThat;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** IT tests covering {@link AfterMatchSkipStrategy}. */
-public class AfterMatchSkipITCase extends TestLogger {
+class AfterMatchSkipITCase {
 
     @Test
-    public void testNoSkip() throws Exception {
+    void testNoSkip() throws Exception {
         List<StreamRecord<Event>> streamEvents = new ArrayList<>();
 
         Event a1 = new Event(1, "a", 0.0);
@@ -66,14 +65,7 @@ public class AfterMatchSkipITCase extends TestLogger {
 
         Pattern<Event, ?> pattern =
                 Pattern.<Event>begin("start", AfterMatchSkipStrategy.noSkip())
-                        .where(
-                                new SimpleCondition<Event>() {
-
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getName().equals("a");
-                                    }
-                                })
+                        .where(SimpleCondition.of(value -> value.getName().equals("a")))
                         .times(3);
 
         NFATestHarness nfaTestHarness = NFATestHarness.forPattern(pattern).build();
@@ -90,7 +82,7 @@ public class AfterMatchSkipITCase extends TestLogger {
     }
 
     @Test
-    public void testNoSkipWithFollowedByAny() throws Exception {
+    void testNoSkipWithFollowedByAny() throws Exception {
         List<List<Event>> resultingPatterns =
                 TwoVariablesFollowedByAny.compute(AfterMatchSkipStrategy.noSkip());
 
@@ -106,7 +98,7 @@ public class AfterMatchSkipITCase extends TestLogger {
     }
 
     @Test
-    public void testSkipToNextWithFollowedByAny() throws Exception {
+    void testSkipToNextWithFollowedByAny() throws Exception {
         List<List<Event>> resultingPatterns =
                 TwoVariablesFollowedByAny.compute(AfterMatchSkipStrategy.skipToNext());
 
@@ -137,23 +129,9 @@ public class AfterMatchSkipITCase extends TestLogger {
 
             Pattern<Event, ?> pattern =
                     Pattern.<Event>begin("start")
-                            .where(
-                                    new SimpleCondition<Event>() {
-
-                                        @Override
-                                        public boolean filter(Event value) throws Exception {
-                                            return value.getName().equals("a");
-                                        }
-                                    })
+                            .where(SimpleCondition.of(value -> value.getName().equals("a")))
                             .followedByAny("end")
-                            .where(
-                                    new SimpleCondition<Event>() {
-
-                                        @Override
-                                        public boolean filter(Event value) throws Exception {
-                                            return value.getName().equals("b");
-                                        }
-                                    });
+                            .where(SimpleCondition.of(value -> value.getName().equals("b")));
 
             NFATestHarness nfaTestHarness =
                     NFATestHarness.forPattern(pattern)
@@ -165,7 +143,7 @@ public class AfterMatchSkipITCase extends TestLogger {
     }
 
     @Test
-    public void testNoSkipWithQuantifierAtTheEnd() throws Exception {
+    void testNoSkipWithQuantifierAtTheEnd() throws Exception {
         List<List<Event>> resultingPatterns =
                 QuantifierAtEndOfPattern.compute(AfterMatchSkipStrategy.noSkip());
 
@@ -186,7 +164,7 @@ public class AfterMatchSkipITCase extends TestLogger {
     }
 
     @Test
-    public void testSkipToNextWithQuantifierAtTheEnd() throws Exception {
+    void testSkipToNextWithQuantifierAtTheEnd() throws Exception {
         List<List<Event>> resultingPatterns =
                 QuantifierAtEndOfPattern.compute(AfterMatchSkipStrategy.skipToNext());
 
@@ -215,23 +193,9 @@ public class AfterMatchSkipITCase extends TestLogger {
 
             Pattern<Event, ?> pattern =
                     Pattern.<Event>begin("start")
-                            .where(
-                                    new SimpleCondition<Event>() {
-
-                                        @Override
-                                        public boolean filter(Event value) throws Exception {
-                                            return value.getName().equals("a");
-                                        }
-                                    })
+                            .where(SimpleCondition.of(value -> value.getName().equals("a")))
                             .next("end")
-                            .where(
-                                    new SimpleCondition<Event>() {
-
-                                        @Override
-                                        public boolean filter(Event value) throws Exception {
-                                            return value.getName().equals("b");
-                                        }
-                                    })
+                            .where(SimpleCondition.of(value -> value.getName().equals("b")))
                             .oneOrMore();
 
             NFATestHarness nfaTestHarness =
@@ -244,7 +208,7 @@ public class AfterMatchSkipITCase extends TestLogger {
     }
 
     @Test
-    public void testSkipPastLast() throws Exception {
+    void testSkipPastLast() throws Exception {
         List<StreamRecord<Event>> streamEvents = new ArrayList<>();
 
         Event a1 = new Event(1, "a", 0.0);
@@ -263,14 +227,7 @@ public class AfterMatchSkipITCase extends TestLogger {
 
         Pattern<Event, ?> pattern =
                 Pattern.<Event>begin("start", AfterMatchSkipStrategy.skipPastLastEvent())
-                        .where(
-                                new SimpleCondition<Event>() {
-
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getName().equals("a");
-                                    }
-                                })
+                        .where(SimpleCondition.of(value -> value.getName().equals("a")))
                         .times(3);
 
         NFATestHarness nfaTestHarness = NFATestHarness.forPattern(pattern).build();
@@ -283,7 +240,7 @@ public class AfterMatchSkipITCase extends TestLogger {
     }
 
     @Test
-    public void testSkipToFirst() throws Exception {
+    void testSkipToFirst() throws Exception {
         List<StreamRecord<Event>> streamEvents = new ArrayList<>();
 
         Event ab1 = new Event(1, "ab", 0.0);
@@ -302,24 +259,10 @@ public class AfterMatchSkipITCase extends TestLogger {
 
         Pattern<Event, ?> pattern =
                 Pattern.<Event>begin("start", AfterMatchSkipStrategy.skipToFirst("end"))
-                        .where(
-                                new SimpleCondition<Event>() {
-
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getName().contains("a");
-                                    }
-                                })
+                        .where(SimpleCondition.of(value -> value.getName().contains("a")))
                         .times(2)
                         .next("end")
-                        .where(
-                                new SimpleCondition<Event>() {
-
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getName().contains("b");
-                                    }
-                                })
+                        .where(SimpleCondition.of(value -> value.getName().contains("b")))
                         .times(2);
 
         NFATestHarness nfaTestHarness = NFATestHarness.forPattern(pattern).build();
@@ -334,7 +277,7 @@ public class AfterMatchSkipITCase extends TestLogger {
     }
 
     @Test
-    public void testSkipToLast() throws Exception {
+    void testSkipToLast() throws Exception {
         List<StreamRecord<Event>> streamEvents = new ArrayList<>();
 
         Event ab1 = new Event(1, "ab", 0.0);
@@ -355,24 +298,10 @@ public class AfterMatchSkipITCase extends TestLogger {
 
         Pattern<Event, ?> pattern =
                 Pattern.<Event>begin("start", AfterMatchSkipStrategy.skipToLast("end"))
-                        .where(
-                                new SimpleCondition<Event>() {
-
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getName().contains("a");
-                                    }
-                                })
+                        .where(SimpleCondition.of(value -> value.getName().contains("a")))
                         .times(2)
                         .next("end")
-                        .where(
-                                new SimpleCondition<Event>() {
-
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getName().contains("b");
-                                    }
-                                })
+                        .where(SimpleCondition.of(value -> value.getName().contains("b")))
                         .times(2);
         NFATestHarness nfaTestHarness = NFATestHarness.forPattern(pattern).build();
 
@@ -386,7 +315,7 @@ public class AfterMatchSkipITCase extends TestLogger {
     }
 
     @Test
-    public void testSkipPastLast2() throws Exception {
+    void testSkipPastLast2() throws Exception {
         List<StreamRecord<Event>> streamEvents = new ArrayList<>();
 
         Event a1 = new Event(1, "a1", 0.0);
@@ -409,40 +338,13 @@ public class AfterMatchSkipITCase extends TestLogger {
 
         Pattern<Event, ?> pattern =
                 Pattern.<Event>begin("a", AfterMatchSkipStrategy.skipPastLastEvent())
-                        .where(
-                                new SimpleCondition<Event>() {
-
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getName().contains("a");
-                                    }
-                                })
+                        .where(SimpleCondition.of(value -> value.getName().contains("a")))
                         .followedByAny("b")
-                        .where(
-                                new SimpleCondition<Event>() {
-
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getName().contains("b");
-                                    }
-                                })
+                        .where(SimpleCondition.of(value -> value.getName().contains("b")))
                         .followedByAny("c")
-                        .where(
-                                new SimpleCondition<Event>() {
-
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getName().contains("c");
-                                    }
-                                })
+                        .where(SimpleCondition.of(value -> value.getName().contains("c")))
                         .followedBy("d")
-                        .where(
-                                new SimpleCondition<Event>() {
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getName().contains("d");
-                                    }
-                                });
+                        .where(SimpleCondition.of(value -> value.getName().contains("d")));
         NFATestHarness nfaTestHarness = NFATestHarness.forPattern(pattern).build();
 
         List<List<Event>> resultingPatterns = nfaTestHarness.feedRecords(streamEvents);
@@ -452,7 +354,7 @@ public class AfterMatchSkipITCase extends TestLogger {
     }
 
     @Test
-    public void testSkipPastLast3() throws Exception {
+    void testSkipPastLast3() throws Exception {
         List<StreamRecord<Event>> streamEvents = new ArrayList<>();
 
         Event a1 = new Event(1, "a1", 0.0);
@@ -467,23 +369,9 @@ public class AfterMatchSkipITCase extends TestLogger {
 
         Pattern<Event, ?> pattern =
                 Pattern.<Event>begin("a", AfterMatchSkipStrategy.skipPastLastEvent())
-                        .where(
-                                new SimpleCondition<Event>() {
-
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getName().contains("a");
-                                    }
-                                })
+                        .where(SimpleCondition.of(value -> value.getName().contains("a")))
                         .next("b")
-                        .where(
-                                new SimpleCondition<Event>() {
-
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getName().contains("b");
-                                    }
-                                });
+                        .where(SimpleCondition.of(value -> value.getName().contains("b")));
         NFATestHarness nfaTestHarness = NFATestHarness.forPattern(pattern).build();
 
         List<List<Event>> resultingPatterns = nfaTestHarness.feedRecords(streamEvents);
@@ -493,7 +381,7 @@ public class AfterMatchSkipITCase extends TestLogger {
     }
 
     @Test
-    public void testSkipToFirstWithOptionalMatch() throws Exception {
+    void testSkipToFirstWithOptionalMatch() throws Exception {
         List<StreamRecord<Event>> streamEvents = new ArrayList<>();
 
         Event ab1 = new Event(1, "ab1", 0.0);
@@ -508,33 +396,13 @@ public class AfterMatchSkipITCase extends TestLogger {
 
         Pattern<Event, ?> pattern =
                 Pattern.<Event>begin("x", AfterMatchSkipStrategy.skipToFirst("b"))
-                        .where(
-                                new SimpleCondition<Event>() {
-
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getName().contains("x");
-                                    }
-                                })
+                        .where(SimpleCondition.of(value -> value.getName().contains("x")))
                         .oneOrMore()
                         .optional()
                         .next("b")
-                        .where(
-                                new SimpleCondition<Event>() {
-
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getName().contains("b");
-                                    }
-                                })
+                        .where(SimpleCondition.of(value -> value.getName().contains("b")))
                         .next("c")
-                        .where(
-                                new SimpleCondition<Event>() {
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getName().contains("c");
-                                    }
-                                });
+                        .where(SimpleCondition.of(value -> value.getName().contains("c")));
         NFATestHarness nfaTestHarness = NFATestHarness.forPattern(pattern).build();
 
         List<List<Event>> resultingPatterns = nfaTestHarness.feedRecords(streamEvents);
@@ -545,7 +413,7 @@ public class AfterMatchSkipITCase extends TestLogger {
     }
 
     @Test
-    public void testSkipToFirstAtStartPosition() throws Exception {
+    void testSkipToFirstAtStartPosition() throws Exception {
         List<StreamRecord<Event>> streamEvents = new ArrayList<>();
 
         Event ab1 = new Event(1, "ab1", 0.0);
@@ -560,22 +428,9 @@ public class AfterMatchSkipITCase extends TestLogger {
 
         Pattern<Event, ?> pattern =
                 Pattern.<Event>begin("b", AfterMatchSkipStrategy.skipToFirst("b"))
-                        .where(
-                                new SimpleCondition<Event>() {
-
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getName().contains("b");
-                                    }
-                                })
+                        .where(SimpleCondition.of(value -> value.getName().contains("b")))
                         .next("c")
-                        .where(
-                                new SimpleCondition<Event>() {
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getName().contains("c");
-                                    }
-                                });
+                        .where(SimpleCondition.of(value -> value.getName().contains("c")));
         NFATestHarness nfaTestHarness = NFATestHarness.forPattern(pattern).build();
 
         List<List<Event>> resultingPatterns = nfaTestHarness.feedRecords(streamEvents);
@@ -586,7 +441,7 @@ public class AfterMatchSkipITCase extends TestLogger {
     }
 
     @Test
-    public void testSkipToFirstWithOneOrMore() throws Exception {
+    void testSkipToFirstWithOneOrMore() throws Exception {
         List<StreamRecord<Event>> streamEvents = new ArrayList<>();
 
         Event a1 = new Event(1, "a1", 0.0);
@@ -607,22 +462,9 @@ public class AfterMatchSkipITCase extends TestLogger {
 
         Pattern<Event, ?> pattern =
                 Pattern.<Event>begin("a", AfterMatchSkipStrategy.skipToFirst("b"))
-                        .where(
-                                new SimpleCondition<Event>() {
-
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getName().contains("a");
-                                    }
-                                })
+                        .where(SimpleCondition.of(value -> value.getName().contains("a")))
                         .next("b")
-                        .where(
-                                new SimpleCondition<Event>() {
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getName().contains("b");
-                                    }
-                                })
+                        .where(SimpleCondition.of(value -> value.getName().contains("b")))
                         .oneOrMore()
                         .consecutive();
         NFATestHarness nfaTestHarness = NFATestHarness.forPattern(pattern).build();
@@ -637,8 +479,8 @@ public class AfterMatchSkipITCase extends TestLogger {
                         Lists.newArrayList(a3, b4)));
     }
 
-    @Test(expected = FlinkRuntimeException.class)
-    public void testSkipToFirstElementOfMatch() throws Exception {
+    @Test
+    void testSkipToFirstElementOfMatch() {
         List<StreamRecord<Event>> streamEvents = new ArrayList<>();
 
         Event a1 = new Event(1, "a1", 0.0);
@@ -648,34 +490,31 @@ public class AfterMatchSkipITCase extends TestLogger {
         Pattern<Event, ?> pattern =
                 Pattern.<Event>begin(
                                 "a", AfterMatchSkipStrategy.skipToFirst("a").throwExceptionOnMiss())
-                        .where(
-                                new SimpleCondition<Event>() {
-
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getName().contains("a");
-                                    }
-                                });
+                        .where(SimpleCondition.of(value -> value.getName().contains("a")));
         NFATestHarness nfaTestHarness = NFATestHarness.forPattern(pattern).build();
-
-        List<List<Event>> resultingPatterns = nfaTestHarness.feedRecords(streamEvents);
 
         // skip to first element of a match should throw exception if they are enabled,
         // this mode is used in MATCH RECOGNIZE which assumes that skipping to first element
         // would result in infinite loop. In CEP by default(with exceptions disabled), we use no
         // skip
         // strategy in this case.
-    }
-
-    @Test(expected = FlinkRuntimeException.class)
-    public void testSkipToFirstNonExistentPosition() throws Exception {
-        MissedSkipTo.compute(AfterMatchSkipStrategy.skipToFirst("b").throwExceptionOnMiss());
-
-        // exception should be thrown
+        assertThatThrownBy(() -> nfaTestHarness.feedRecords(streamEvents))
+                .isInstanceOf(FlinkRuntimeException.class);
     }
 
     @Test
-    public void testSkipToFirstNonExistentPositionWithoutException() throws Exception {
+    void testSkipToFirstNonExistentPosition() {
+        // exception should be thrown
+        assertThatThrownBy(
+                        () ->
+                                MissedSkipTo.compute(
+                                        AfterMatchSkipStrategy.skipToFirst("b")
+                                                .throwExceptionOnMiss()))
+                .isInstanceOf(FlinkRuntimeException.class);
+    }
+
+    @Test
+    void testSkipToFirstNonExistentPositionWithoutException() throws Exception {
         List<List<Event>> resultingPatterns =
                 MissedSkipTo.compute(AfterMatchSkipStrategy.skipToFirst("b"));
 
@@ -684,15 +523,19 @@ public class AfterMatchSkipITCase extends TestLogger {
                 Collections.singletonList(Lists.newArrayList(MissedSkipTo.a, MissedSkipTo.c)));
     }
 
-    @Test(expected = FlinkRuntimeException.class)
-    public void testSkipToLastNonExistentPosition() throws Exception {
-        MissedSkipTo.compute(AfterMatchSkipStrategy.skipToLast("b").throwExceptionOnMiss());
-
+    @Test
+    void testSkipToLastNonExistentPosition() {
         // exception should be thrown
+        assertThatThrownBy(
+                        () ->
+                                MissedSkipTo.compute(
+                                        AfterMatchSkipStrategy.skipToLast("b")
+                                                .throwExceptionOnMiss()))
+                .isInstanceOf(FlinkRuntimeException.class);
     }
 
     @Test
-    public void testSkipToLastNonExistentPositionWithoutException() throws Exception {
+    void testSkipToLastNonExistentPositionWithoutException() throws Exception {
         List<List<Event>> resultingPatterns =
                 MissedSkipTo.compute(AfterMatchSkipStrategy.skipToFirst("b"));
 
@@ -713,33 +556,14 @@ public class AfterMatchSkipITCase extends TestLogger {
 
             Pattern<Event, ?> pattern =
                     Pattern.<Event>begin("a")
-                            .where(
-                                    new SimpleCondition<Event>() {
-
-                                        @Override
-                                        public boolean filter(Event value) throws Exception {
-                                            return value.getName().contains("a");
-                                        }
-                                    })
+                            .where(SimpleCondition.of(value -> value.getName().contains("a")))
                             .next("b")
-                            .where(
-                                    new SimpleCondition<Event>() {
-                                        @Override
-                                        public boolean filter(Event value) throws Exception {
-                                            return value.getName().contains("b");
-                                        }
-                                    })
+                            .where(SimpleCondition.of(value -> value.getName().contains("b")))
                             .oneOrMore()
                             .optional()
                             .consecutive()
                             .next("c")
-                            .where(
-                                    new SimpleCondition<Event>() {
-                                        @Override
-                                        public boolean filter(Event value) throws Exception {
-                                            return value.getName().contains("c");
-                                        }
-                                    });
+                            .where(SimpleCondition.of(value -> value.getName().contains("c")));
             NFATestHarness nfaTestHarness =
                     NFATestHarness.forPattern(pattern)
                             .withAfterMatchSkipStrategy(skipStrategy)
@@ -750,7 +574,7 @@ public class AfterMatchSkipITCase extends TestLogger {
     }
 
     @Test
-    public void testSkipToLastWithOneOrMore() throws Exception {
+    void testSkipToLastWithOneOrMore() throws Exception {
         List<StreamRecord<Event>> streamEvents = new ArrayList<>();
 
         Event a1 = new Event(1, "a1", 0.0);
@@ -771,22 +595,9 @@ public class AfterMatchSkipITCase extends TestLogger {
 
         Pattern<Event, ?> pattern =
                 Pattern.<Event>begin("a", AfterMatchSkipStrategy.skipToLast("b"))
-                        .where(
-                                new SimpleCondition<Event>() {
-
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getName().contains("a");
-                                    }
-                                })
+                        .where(SimpleCondition.of(value -> value.getName().contains("a")))
                         .next("b")
-                        .where(
-                                new SimpleCondition<Event>() {
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getName().contains("b");
-                                    }
-                                })
+                        .where(SimpleCondition.of(value -> value.getName().contains("b")))
                         .oneOrMore()
                         .consecutive();
         NFATestHarness nfaTestHarness = NFATestHarness.forPattern(pattern).build();
@@ -803,7 +614,7 @@ public class AfterMatchSkipITCase extends TestLogger {
 
     /** Example from docs. */
     @Test
-    public void testSkipPastLastWithOneOrMoreAtBeginning() throws Exception {
+    void testSkipPastLastWithOneOrMoreAtBeginning() throws Exception {
         List<StreamRecord<Event>> streamEvents = new ArrayList<>();
 
         Event a1 = new Event(1, "a1", 0.0);
@@ -818,25 +629,12 @@ public class AfterMatchSkipITCase extends TestLogger {
 
         Pattern<Event, ?> pattern =
                 Pattern.<Event>begin("a", AfterMatchSkipStrategy.skipPastLastEvent())
-                        .where(
-                                new SimpleCondition<Event>() {
-
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getName().contains("a");
-                                    }
-                                })
+                        .where(SimpleCondition.of(value -> value.getName().contains("a")))
                         .oneOrMore()
                         .consecutive()
                         .greedy()
                         .next("b")
-                        .where(
-                                new SimpleCondition<Event>() {
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getName().contains("b");
-                                    }
-                                });
+                        .where(SimpleCondition.of(value -> value.getName().contains("b")));
         NFATestHarness nfaTestHarness = NFATestHarness.forPattern(pattern).build();
 
         List<List<Event>> resultingPatterns = nfaTestHarness.feedRecords(streamEvents);
@@ -847,7 +645,7 @@ public class AfterMatchSkipITCase extends TestLogger {
 
     /** Example from docs. */
     @Test
-    public void testSkipToLastWithOneOrMoreAtBeginning() throws Exception {
+    void testSkipToLastWithOneOrMoreAtBeginning() throws Exception {
         List<StreamRecord<Event>> streamEvents = new ArrayList<>();
 
         Event a1 = new Event(1, "a1", 0.0);
@@ -862,25 +660,12 @@ public class AfterMatchSkipITCase extends TestLogger {
 
         Pattern<Event, ?> pattern =
                 Pattern.<Event>begin("a", AfterMatchSkipStrategy.skipToLast("a"))
-                        .where(
-                                new SimpleCondition<Event>() {
-
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getName().contains("a");
-                                    }
-                                })
+                        .where(SimpleCondition.of(value -> value.getName().contains("a")))
                         .oneOrMore()
                         .consecutive()
                         .greedy()
                         .next("b")
-                        .where(
-                                new SimpleCondition<Event>() {
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getName().contains("b");
-                                    }
-                                });
+                        .where(SimpleCondition.of(value -> value.getName().contains("b")));
         NFATestHarness nfaTestHarness = NFATestHarness.forPattern(pattern).build();
 
         List<List<Event>> resultingPatterns = nfaTestHarness.feedRecords(streamEvents);
@@ -892,7 +677,7 @@ public class AfterMatchSkipITCase extends TestLogger {
 
     /** Example from docs. */
     @Test
-    public void testSkipToFirstWithOneOrMoreAtBeginning() throws Exception {
+    void testSkipToFirstWithOneOrMoreAtBeginning() throws Exception {
         List<StreamRecord<Event>> streamEvents = new ArrayList<>();
 
         Event a1 = new Event(1, "a1", 0.0);
@@ -907,25 +692,12 @@ public class AfterMatchSkipITCase extends TestLogger {
 
         Pattern<Event, ?> pattern =
                 Pattern.<Event>begin("a", AfterMatchSkipStrategy.skipToFirst("a"))
-                        .where(
-                                new SimpleCondition<Event>() {
-
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getName().contains("a");
-                                    }
-                                })
+                        .where(SimpleCondition.of(value -> value.getName().contains("a")))
                         .oneOrMore()
                         .consecutive()
                         .greedy()
                         .next("b")
-                        .where(
-                                new SimpleCondition<Event>() {
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getName().contains("b");
-                                    }
-                                });
+                        .where(SimpleCondition.of(value -> value.getName().contains("b")));
         NFATestHarness nfaTestHarness = NFATestHarness.forPattern(pattern).build();
 
         List<List<Event>> resultingPatterns = nfaTestHarness.feedRecords(streamEvents);
@@ -940,7 +712,7 @@ public class AfterMatchSkipITCase extends TestLogger {
 
     /** Example from docs. */
     @Test
-    public void testNoSkipWithOneOrMoreAtBeginning() throws Exception {
+    void testNoSkipWithOneOrMoreAtBeginning() throws Exception {
         List<StreamRecord<Event>> streamEvents = new ArrayList<>();
 
         Event a1 = new Event(1, "a1", 0.0);
@@ -955,25 +727,12 @@ public class AfterMatchSkipITCase extends TestLogger {
 
         Pattern<Event, ?> pattern =
                 Pattern.<Event>begin("a", AfterMatchSkipStrategy.noSkip())
-                        .where(
-                                new SimpleCondition<Event>() {
-
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getName().contains("a");
-                                    }
-                                })
+                        .where(SimpleCondition.of(value -> value.getName().contains("a")))
                         .oneOrMore()
                         .consecutive()
                         .greedy()
                         .next("b")
-                        .where(
-                                new SimpleCondition<Event>() {
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getName().contains("b");
-                                    }
-                                });
+                        .where(SimpleCondition.of(value -> value.getName().contains("b")));
         NFATestHarness nfaTestHarness = NFATestHarness.forPattern(pattern).build();
 
         List<List<Event>> resultingPatterns = nfaTestHarness.feedRecords(streamEvents);
@@ -988,7 +747,7 @@ public class AfterMatchSkipITCase extends TestLogger {
 
     /** Example from docs. */
     @Test
-    public void testSkipToFirstDiscarding() throws Exception {
+    void testSkipToFirstDiscarding() throws Exception {
         List<StreamRecord<Event>> streamEvents = new ArrayList<>();
 
         Event a = new Event(1, "a", 0.0);
@@ -1008,43 +767,22 @@ public class AfterMatchSkipITCase extends TestLogger {
         Pattern<Event, ?> pattern =
                 Pattern.<Event>begin("a or c", AfterMatchSkipStrategy.skipToFirst("c*"))
                         .where(
-                                new SimpleCondition<Event>() {
-
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getName().contains("a")
-                                                || value.getName().contains("c");
-                                    }
-                                })
+                                SimpleCondition.of(
+                                        value ->
+                                                value.getName().contains("a")
+                                                        || value.getName().contains("c")))
                         .followedBy("b or c")
                         .where(
-                                new SimpleCondition<Event>() {
-
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getName().contains("b")
-                                                || value.getName().contains("c");
-                                    }
-                                })
+                                SimpleCondition.of(
+                                        value ->
+                                                value.getName().contains("b")
+                                                        || value.getName().contains("c")))
                         .followedBy("c*")
-                        .where(
-                                new SimpleCondition<Event>() {
-
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getName().contains("c");
-                                    }
-                                })
+                        .where(SimpleCondition.of(value -> value.getName().contains("c")))
                         .oneOrMore()
                         .greedy()
                         .followedBy("d")
-                        .where(
-                                new SimpleCondition<Event>() {
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getName().contains("d");
-                                    }
-                                });
+                        .where(SimpleCondition.of(value -> value.getName().contains("d")));
         NFATestHarness nfaTestHarness = NFATestHarness.forPattern(pattern).build();
 
         List<List<Event>> resultingPatterns = nfaTestHarness.feedRecords(streamEvents);
@@ -1057,7 +795,7 @@ public class AfterMatchSkipITCase extends TestLogger {
     }
 
     @Test
-    public void testSkipBeforeOtherAlreadyCompleted() throws Exception {
+    void testSkipBeforeOtherAlreadyCompleted() throws Exception {
         List<StreamRecord<Event>> streamEvents = new ArrayList<>();
 
         Event a1 = new Event(1, "a1", 0.0);
@@ -1076,22 +814,9 @@ public class AfterMatchSkipITCase extends TestLogger {
 
         Pattern<Event, ?> pattern =
                 Pattern.<Event>begin("a", AfterMatchSkipStrategy.skipToFirst("c"))
-                        .where(
-                                new SimpleCondition<Event>() {
-
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getName().contains("a");
-                                    }
-                                })
+                        .where(SimpleCondition.of(value -> value.getName().contains("a")))
                         .followedBy("c")
-                        .where(
-                                new SimpleCondition<Event>() {
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getName().contains("c");
-                                    }
-                                })
+                        .where(SimpleCondition.of(value -> value.getName().contains("c")))
                         .followedBy("b")
                         .where(
                                 new IterativeCondition<Event>() {
@@ -1116,7 +841,7 @@ public class AfterMatchSkipITCase extends TestLogger {
     }
 
     @Test
-    public void testSharedBufferIsProperlyCleared() throws Exception {
+    void testSharedBufferIsProperlyCleared() throws Exception {
         List<StreamRecord<Event>> inputEvents = new ArrayList<>();
 
         for (int i = 0; i < 4; i++) {
@@ -1126,16 +851,7 @@ public class AfterMatchSkipITCase extends TestLogger {
         SkipPastLastStrategy matchSkipStrategy = AfterMatchSkipStrategy.skipPastLastEvent();
         Pattern<Event, ?> pattern =
                 Pattern.<Event>begin("start", matchSkipStrategy)
-                        .where(
-                                new SimpleCondition<Event>() {
-                                    private static final long serialVersionUID =
-                                            5726188262756267490L;
-
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return true;
-                                    }
-                                })
+                        .where(SimpleCondition.of(value -> true))
                         .times(2);
 
         SharedBuffer<Event> sharedBuffer =
@@ -1145,6 +861,6 @@ public class AfterMatchSkipITCase extends TestLogger {
 
         nfaTestHarness.feedRecords(inputEvents);
 
-        assertThat(sharedBuffer.isEmpty(), Matchers.is(true));
+        assertThat(sharedBuffer.isEmpty()).isTrue();
     }
 }

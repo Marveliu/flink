@@ -18,6 +18,8 @@
 
 package org.apache.flink.table.client.cli;
 
+import org.apache.flink.runtime.rest.util.RestClientException;
+import org.apache.flink.table.api.SqlParserException;
 import org.apache.flink.util.ExceptionUtils;
 import org.apache.flink.util.Preconditions;
 
@@ -26,11 +28,36 @@ import org.jline.utils.AttributedString;
 import org.jline.utils.AttributedStringBuilder;
 import org.jline.utils.AttributedStyle;
 
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /** Utility class that contains all strings for CLI commands and messages. */
 public final class CliStrings {
+
+    /**
+     * A cause caption at the start of a line; a caption inside a message does not count, and only a
+     * line feed starts a line, since a message may carry other separators in echoed SQL.
+     */
+    private static final Pattern CAUSED_BY =
+            Pattern.compile("^Caused by: ", Pattern.MULTILINE | Pattern.UNIX_LINES);
+
+    /**
+     * The end of the exception line of a stack trace segment: its first frame line, "\tat ..." or
+     * "\t... n more", or the end of the server trace if it has no frames.
+     */
+    private static final Pattern HEADLINE_END =
+            Pattern.compile("\\R(\\tat |\\t\\.\\.\\. \\d+ more|End of exception on server side>)");
+
+    /** By name, since Calcite is not on the client's runtime classpath. */
+    private static final String CALCITE_PARSE_EXCEPTION =
+            "org.apache.calcite.sql.parser.SqlParseException";
 
     private CliStrings() {
         // private
@@ -197,26 +224,6 @@ public final class CliStrings {
 
     public static final String MESSAGE_SQL_EXECUTION_ERROR = "Could not execute SQL statement.";
 
-    public static final String MESSAGE_STATEMENT_SET_SQL_EXECUTION_ERROR =
-            "Only INSERT statement is allowed in Statement Set.";
-
-    public static final String MESSAGE_STATEMENT_SET_END_CALL_ERROR =
-            "No Statement Set to submit, \"END;\" command should be used after \"BEGIN STATEMENT SET;\".";
-
-    public static final String MESSAGE_RESET =
-            "All session properties have been set to their default values.";
-
-    public static final String MESSAGE_RESET_KEY = "Session property has been reset.";
-
-    public static final String MESSAGE_SET_KEY = "Session property has been set.";
-
-    public static final String MESSAGE_REMOVED_KEY = "The specified key is not supported anymore.";
-
-    public static final String MESSAGE_DEPRECATED_KEY =
-            "The specified key '%s' is deprecated. Please use '%s' instead.";
-
-    public static final String MESSAGE_EMPTY = "Result was empty.";
-
     public static final String MESSAGE_RESULT_QUIT = "Result retrieval cancelled.";
 
     public static final String MESSAGE_SUBMITTING_STATEMENT =
@@ -228,26 +235,11 @@ public final class CliStrings {
     public static final String MESSAGE_STATEMENT_SUBMITTED =
             "SQL update statement has been successfully submitted to the cluster:";
 
-    public static final String MESSAGE_BEGIN_STATEMENT_SET = "Begin a statement set.";
-
-    public static final String MESSAGE_NO_STATEMENT_IN_STATEMENT_SET =
-            "No statement in the statement set, skip submit.";
-
-    public static final String MESSAGE_ADD_STATEMENT_TO_STATEMENT_SET =
-            "Add SQL update statement to the statement set.";
-
     public static final String MESSAGE_EXECUTE_FILE = "Executing SQL from file.";
 
-    public static final String MESSAGE_WAIT_EXECUTE =
-            "Execute statement in sync mode. Please wait for the execution finish...";
+    public static final String MESSAGE_EXECUTE_STATEMENT = "Execute statement succeeded.";
 
-    public static final String MESSAGE_EXECUTE_STATEMENT = "Execute statement succeed.";
-
-    public static final String MESSAGE_ADD_JAR_STATEMENT =
-            "The specified jar is added into session classloader.";
-
-    public static final String MESSAGE_REMOVE_JAR_STATEMENT =
-            "The specified jar is removed from session classloader.";
+    public static final String MESSAGE_DEPLOY_SCRIPT = "Deploy script in application mode: ";
 
     // --------------------------------------------------------------------------------------------
 
@@ -347,16 +339,99 @@ public final class CliStrings {
     }
 
     public static AttributedString messageError(String message, Throwable t, boolean isVerbose) {
-        while (t.getCause() != null
-                && t.getCause().getMessage() != null
-                && !t.getCause().getMessage().isEmpty()) {
-            t = t.getCause();
-        }
+        final Throwable reason = findReason(t);
         if (isVerbose) {
-            return messageError(message, ExceptionUtils.stringifyException(t));
+            return messageError(message, ExceptionUtils.stringifyException(reason));
+        } else if (reason instanceof RestClientException) {
+            // TODO: Remove this after RestClientException supports to get RootCause.
+            return messageError(message, findReasonInStackTrace(reason.getMessage()));
         } else {
-            return messageError(message, t.getClass().getName() + ": " + t.getMessage());
+            return messageError(message, reason.getClass().getName() + ": " + reason.getMessage());
         }
+    }
+
+    /**
+     * The root cause, or the outermost exception whose message ends with the root message and adds
+     * context in front of it, as Calcite does with the position of a validation error. A planning
+     * rejection, where the plan follows the reason, does not qualify. The planner's parse exception
+     * is picked by type, since it echoes the line inside the Calcite text. The search starts at a
+     * {@link RestClientException}, whose message is the whole server trace.
+     */
+    private static Throwable findReason(Throwable t) {
+        final List<Throwable> chain = new ArrayList<>();
+        final Set<Throwable> seen = Collections.newSetFromMap(new IdentityHashMap<>());
+        int outermost = 0;
+        for (Throwable current = t;
+                current != null && seen.add(current);
+                current = current.getCause()) {
+            chain.add(current);
+            if (current instanceof RestClientException) {
+                outermost = chain.size() - 1;
+            }
+            final Throwable cause = current.getCause();
+            if (cause == null || cause.getMessage() == null || cause.getMessage().isEmpty()) {
+                break;
+            }
+        }
+        final Throwable root = chain.get(chain.size() - 1);
+        for (int i = outermost; i < chain.size() - 1; i++) {
+            final Throwable candidate = chain.get(i);
+            final Throwable cause = chain.get(i + 1);
+            final boolean parseError = isParseError(candidate, cause);
+            final boolean quotesRootCause = addsContext(candidate.getMessage(), root.getMessage());
+            final boolean repeatsCause = cause.toString().equals(candidate.getMessage());
+            if (parseError || (quotesRootCause && !repeatsCause)) {
+                return candidate;
+            }
+        }
+        return root;
+    }
+
+    /** Applies the rule of {@link #findReason} to a stringified stack trace. */
+    private static String findReasonInStackTrace(String stackTrace) {
+        final String[] segments = CAUSED_BY.split(stackTrace);
+        final String root = headline(segments[segments.length - 1]);
+        // The first segment is the response preamble, never a cause worth showing on its own.
+        for (int i = 1; i < segments.length - 1; i++) {
+            final String candidate = headline(segments[i]);
+            final String cause = headline(segments[i + 1]);
+            final boolean parseError = isParseError(candidate, cause);
+            final boolean quotesRootCause = addsContext(messageOf(candidate), messageOf(root));
+            final boolean repeatsCause = messageOf(candidate).equals(cause);
+            if (parseError || (quotesRootCause && !repeatsCause)) {
+                return candidate;
+            }
+        }
+        return root;
+    }
+
+    private static boolean isParseError(Throwable candidate, Throwable cause) {
+        return candidate instanceof SqlParserException
+                && cause.getClass().getName().equals(CALCITE_PARSE_EXCEPTION);
+    }
+
+    private static boolean isParseError(String headline, String causeHeadline) {
+        return headline.startsWith(SqlParserException.class.getName() + ": ")
+                && causeHeadline.startsWith(CALCITE_PARSE_EXCEPTION + ": ");
+    }
+
+    private static boolean addsContext(String outer, String inner) {
+        return outer != null
+                && inner != null
+                && !inner.isEmpty()
+                && outer.length() > inner.length()
+                && outer.endsWith(inner);
+    }
+
+    /** The exception line of a stack trace segment, without its frames. */
+    private static String headline(String segment) {
+        final Matcher end = HEADLINE_END.matcher(segment);
+        return (end.find() ? segment.substring(0, end.start()) : segment).trim();
+    }
+
+    private static String messageOf(String headline) {
+        final int separator = headline.indexOf(": ");
+        return separator < 0 ? "" : headline.substring(separator + 2);
     }
 
     public static AttributedString messageError(String message) {

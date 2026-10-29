@@ -15,22 +15,21 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.planner.runtime.batch.table
 
-import org.apache.flink.api.scala._
+import org.apache.flink.core.testutils.EachCallbackWrapper
 import org.apache.flink.table.api._
 import org.apache.flink.table.planner.JBigDecimal
 import org.apache.flink.table.planner.runtime.batch.sql.join.JoinITCaseHelper.disableOtherJoinOpForJoin
 import org.apache.flink.table.planner.runtime.batch.sql.join.JoinType
 import org.apache.flink.table.planner.runtime.batch.sql.join.JoinType.JoinType
 import org.apache.flink.table.planner.runtime.utils.{BatchTableEnvUtil, BatchTestBase, CollectionBatchExecTable}
-import org.apache.flink.table.utils.LegacyRowResource
+import org.apache.flink.table.utils.LegacyRowExtension
 import org.apache.flink.test.util.TestBaseUtils
 
-import org.hamcrest.CoreMatchers.equalTo
-import org.junit.Assert.assertThat
-import org.junit._
+import org.assertj.core.api.Assertions.assertThat
+import org.junit.jupiter.api.{BeforeEach, Test}
+import org.junit.jupiter.api.extension.RegisterExtension
 
 import scala.collection.JavaConverters._
 import scala.collection.mutable
@@ -38,12 +37,12 @@ import scala.util.Random
 
 class SetOperatorsITCase extends BatchTestBase {
 
-  @Rule
-  def usesLegacyRows: LegacyRowResource = LegacyRowResource.INSTANCE
+  @RegisterExtension private val _: EachCallbackWrapper[LegacyRowExtension] =
+    new EachCallbackWrapper[LegacyRowExtension](new LegacyRowExtension)
 
   val expectedJoinType: JoinType = JoinType.SortMergeJoin
 
-  @Before
+  @BeforeEach
   override def before(): Unit = {
     super.before()
     disableOtherJoinOpForJoin(tEnv, expectedJoinType)
@@ -69,10 +68,8 @@ class SetOperatorsITCase extends BatchTestBase {
     val unionTable = table1.unionAll(table2)
 
     val schema = unionTable.getResolvedSchema.getColumnDataTypes
-    assertThat(
-      schema.get(0),
-      equalTo(DataTypes.DECIMAL(13, 3).notNull()))
-    assertThat(schema.get(1), equalTo(DataTypes.VARCHAR(3).notNull()))
+    assertThat(schema.get(0)).isEqualTo(DataTypes.DECIMAL(13, 3).notNull())
+    assertThat(schema.get(1)).isEqualTo(DataTypes.VARCHAR(3).notNull())
 
     val results = executeQuery(unionTable)
     val expected = "12.000,\n" + "1234.123,ABC\n"
@@ -124,8 +121,11 @@ class SetOperatorsITCase extends BatchTestBase {
     val ds1 = CollectionBatchExecTable.getSmall3TupleDataSet(tEnv)
     val ds2 = BatchTableEnvUtil.fromElements(tEnv, (1, 1L, "Hi"))
 
-    val minusDs = ds1.unionAll(ds1).unionAll(ds1)
-      .minusAll(ds2.unionAll(ds2)).select('_3)
+    val minusDs = ds1
+      .unionAll(ds1)
+      .unionAll(ds1)
+      .minusAll(ds2.unionAll(ds2))
+      .select('_3)
 
     val results = executeQuery(minusDs)
     val expected = "Hi\n" +
@@ -140,8 +140,11 @@ class SetOperatorsITCase extends BatchTestBase {
     val ds1 = CollectionBatchExecTable.getSmall3TupleDataSet(tEnv, "a, b, c")
     val ds2 = BatchTableEnvUtil.fromElements(tEnv, (1, 1L, "Hi"))
 
-    val minusDs = ds1.unionAll(ds1).unionAll(ds1)
-      .minus(ds2.unionAll(ds2)).select('c)
+    val minusDs = ds1
+      .unionAll(ds1)
+      .unionAll(ds1)
+      .minus(ds2.unionAll(ds2))
+      .select('c)
 
     val results = executeQuery(minusDs)
     val expected = "Hello\n" + "Hello world\n"
@@ -153,8 +156,11 @@ class SetOperatorsITCase extends BatchTestBase {
     val ds1 = CollectionBatchExecTable.getSmall3TupleDataSet(tEnv, "a, b, c")
     val ds2 = BatchTableEnvUtil.fromElements(tEnv, (1, 1L, "Hi"))
 
-    val minusDs = ds1.unionAll(ds1).unionAll(ds1)
-      .minus(ds2.unionAll(ds2)).select('c)
+    val minusDs = ds1
+      .unionAll(ds1)
+      .unionAll(ds1)
+      .minus(ds2.unionAll(ds2))
+      .select('c)
 
     val results = executeQuery(minusDs)
     val expected = "Hello\n" + "Hello world\n"
@@ -164,7 +170,7 @@ class SetOperatorsITCase extends BatchTestBase {
   @Test
   def testIntersect(): Unit = {
     val ds1 = CollectionBatchExecTable.getSmall3TupleDataSet(tEnv, "a, b, c")
-    val data = new mutable.MutableList[(Int, Long, String)]
+    val data = new mutable.ListBuffer[(Int, Long, String)]
     data.+=((1, 1L, "Hi"))
     data.+=((2, 2L, "Hello"))
     data.+=((2, 2L, "Hello"))
@@ -181,9 +187,9 @@ class SetOperatorsITCase extends BatchTestBase {
 
   @Test
   def testIntersectAll(): Unit = {
-    val data1 = new mutable.MutableList[Int]
+    val data1 = new mutable.ListBuffer[Int]
     data1 += (1, 1, 1, 2, 2)
-    val data2 = new mutable.MutableList[Int]
+    val data2 = new mutable.ListBuffer[Int]
     data2 += (1, 2, 2, 2, 3)
     val ds1 = BatchTableEnvUtil.fromCollection(tEnv, data1, "c")
     val ds2 = BatchTableEnvUtil.fromCollection(tEnv, data2, "c")
@@ -209,9 +215,11 @@ class SetOperatorsITCase extends BatchTestBase {
 
   @Test
   def testIntersectWithScalarExpression(): Unit = {
-    val ds1 = CollectionBatchExecTable.getSmall3TupleDataSet(tEnv, "a, b, c")
+    val ds1 = CollectionBatchExecTable
+      .getSmall3TupleDataSet(tEnv, "a, b, c")
       .select('a + 1, 'b, 'c)
-    val ds2 = CollectionBatchExecTable.get3TupleDataSet(tEnv, "a, b, c")
+    val ds2 = CollectionBatchExecTable
+      .get3TupleDataSet(tEnv, "a, b, c")
       .select('a + 1, 'b, 'c)
 
     val intersectDs = ds1.intersect(ds2)

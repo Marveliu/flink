@@ -18,6 +18,7 @@
 
 package org.apache.flink.state.api.input;
 
+import org.apache.flink.api.common.ExecutionConfig;
 import org.apache.flink.api.common.functions.FlatMapFunction;
 import org.apache.flink.api.common.state.ListState;
 import org.apache.flink.api.common.state.ListStateDescriptor;
@@ -36,21 +37,20 @@ import org.apache.flink.streaming.util.MockStreamingRuntimeContext;
 import org.apache.flink.streaming.util.OneInputStreamOperatorTestHarness;
 import org.apache.flink.util.Collector;
 
-import org.junit.Assert;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Comparator;
 import java.util.List;
 
+import static org.assertj.core.api.Assertions.assertThat;
+
 /** Test for operator union state input format. */
-public class UnionStateInputFormatTest {
+class UnionStateInputFormatTest {
     private static ListStateDescriptor<Integer> descriptor =
             new ListStateDescriptor<>("state", Types.INT);
 
     @Test
-    public void testReadUnionOperatorState() throws Exception {
+    void testReadUnionOperatorState() throws Exception {
         try (OneInputStreamOperatorTestHarness<Integer, Void> testHarness = getTestHarness()) {
             testHarness.open();
 
@@ -59,16 +59,18 @@ public class UnionStateInputFormatTest {
             testHarness.processElement(3, 0);
 
             OperatorSubtaskState subtaskState = testHarness.snapshot(0, 0);
-            OperatorState state = new OperatorState(OperatorIDGenerator.fromUid("uid"), 1, 4);
+            OperatorState state =
+                    new OperatorState(null, null, OperatorIDGenerator.fromUid("uid"), 1, 4);
             state.putState(0, subtaskState);
 
             OperatorStateInputSplit split =
                     new OperatorStateInputSplit(subtaskState.getManagedOperatorState(), 0);
 
             UnionStateInputFormat<Integer> format =
-                    new UnionStateInputFormat<>(state, new Configuration(), null, descriptor);
+                    new UnionStateInputFormat<>(
+                            state, new Configuration(), null, descriptor, new ExecutionConfig());
 
-            format.setRuntimeContext(new MockStreamingRuntimeContext(false, 1, 0));
+            format.setRuntimeContext(new MockStreamingRuntimeContext(1, 0));
             format.open(split);
 
             List<Integer> results = new ArrayList<>();
@@ -77,12 +79,9 @@ public class UnionStateInputFormatTest {
                 results.add(format.nextRecord(0));
             }
 
-            results.sort(Comparator.naturalOrder());
-
-            Assert.assertEquals(
-                    "Failed to read correct list state from state backend",
-                    Arrays.asList(1, 2, 3),
-                    results);
+            assertThat(results)
+                    .as("Failed to read correct list state from state backend")
+                    .containsExactlyInAnyOrder(1, 2, 3);
         }
     }
 

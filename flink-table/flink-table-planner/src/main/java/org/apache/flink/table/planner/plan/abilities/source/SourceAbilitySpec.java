@@ -26,6 +26,8 @@ import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.annotation.JsonIgn
 import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.annotation.JsonSubTypes;
 import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.annotation.JsonTypeInfo;
 
+import org.apache.calcite.rex.RexNode;
+
 import java.util.Optional;
 
 /**
@@ -36,6 +38,7 @@ import java.util.Optional;
 @JsonSubTypes({
     @JsonSubTypes.Type(value = FilterPushDownSpec.class),
     @JsonSubTypes.Type(value = LimitPushDownSpec.class),
+    @JsonSubTypes.Type(value = MetadataFilterPushDownSpec.class),
     @JsonSubTypes.Type(value = PartitionPushDownSpec.class),
     @JsonSubTypes.Type(value = ProjectPushDownSpec.class),
     @JsonSubTypes.Type(value = ReadingMetadataSpec.class),
@@ -57,6 +60,15 @@ public interface SourceAbilitySpec {
      */
     @JsonIgnore
     Optional<RowType> getProducedType();
+
+    /**
+     * Does this spec needs adjust field reference after projection. If the spec contains {@link
+     * RexNode} or references fields in scan table, the referenced field indices maybe changed after
+     * projection pushdown with scan reuse. Under such case, this method need to return true to
+     * notify planner doesn't reuse the scan.
+     */
+    @JsonIgnore
+    boolean needAdjustFieldReferenceAfterProjection();
 
     /**
      * Additional digests to generate when this spec is applied to the source.

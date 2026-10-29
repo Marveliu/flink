@@ -29,24 +29,15 @@ under the License.
 Flink allows reporting metrics to external systems.
 For more information about Flink's metric system go to the [metric system documentation]({{< ref "docs/ops/metrics" >}}).
 
-
-## Reporter
-
-Metrics can be exposed to an external system by configuring one or several reporters in `conf/flink-conf.yaml`. These
+Metrics can be exposed to an external system by configuring one or several reporters in [Flink configuration file]({{< ref "docs/deployment/config#flink-configuration-file" >}}). These
 reporters will be instantiated on each job and task manager when they are started.
 
-- `metrics.reporter.<name>.<config>`: Generic setting `<config>` for the reporter named `<name>`.
-- `metrics.reporter.<name>.class`: The reporter class to use for the reporter named `<name>`.
-- `metrics.reporter.<name>.factory.class`: The reporter factory class to use for the reporter named `<name>`.
-- `metrics.reporter.<name>.interval`: The reporter interval to use for the reporter named `<name>`.
-- `metrics.reporter.<name>.scope.delimiter`: The delimiter to use for the identifier (default value use `metrics.scope.delimiter`) for the reporter named `<name>`.
-- `metrics.reporter.<name>.scope.variables.excludes`: (optional) A semi-colon (;) separate list of variables that should be ignored by tag-based reporters (e.g., Prometheus, InfluxDB). 
-- `metrics.reporter.<name>.scope.variables.additional`: (optional) A comma separated map of variables and their values, which are separated by a colon (:). These mappings are added to the variable map by tag-based reporters (e.g. Prometheux, InfluxDB). 
-- `metrics.reporters`: (optional) A comma-separated include list of reporter names. By default all configured reporters will be used.
+Below is a list of parameters that are generally applicable to all reporters. All properties are configured by setting `metrics.reporter.<reporter_name>.<property>` in the configuration. Reporters may additionally offer implementation-specific parameters, which are documented in the respective reporter's section. 
 
-All reporters must at least have either the `class` or `factory.class` property. Which property may/should be used depends on the reporter implementation. See the individual reporter configuration sections for more information.
+{{< include_reporter_config "layouts/shortcodes/generated/metric_reporters_section.html" >}}
+
+All reporter configurations must contain the `factory.class` property.
 Some reporters (referred to as `Scheduled`) allow specifying a reporting `interval`.
-Below more settings specific to each reporter will be listed.
 
 Example reporter configuration that specifies multiple reporters:
 
@@ -58,27 +49,46 @@ metrics.reporter.my_jmx_reporter.port: 9020-9040
 metrics.reporter.my_jmx_reporter.scope.variables.excludes: job_id;task_attempt_num
 metrics.reporter.my_jmx_reporter.scope.variables.additional: cluster_name:my_test_cluster,tag_name:tag_value
 
-metrics.reporter.my_other_reporter.class: org.apache.flink.metrics.graphite.GraphiteReporter
+metrics.reporter.my_other_reporter.factory.class: org.apache.flink.metrics.graphite.GraphiteReporterFactory
 metrics.reporter.my_other_reporter.host: 192.168.1.1
 metrics.reporter.my_other_reporter.port: 10000
 ```
 
-**Important:** The jar containing the reporter must be accessible when Flink is started. Reporters that support the
- `factory.class` property can be loaded as [plugins]({{< ref "docs/deployment/filesystems/plugins" >}}). Otherwise the jar must be placed
- in the /lib folder. Reporters that are shipped with Flink (i.e., all reporters documented on this page) are available
- by default.
+**Important:** The jar containing the reporter must be accessible when Flink is started.
+ Reporters are loaded as [plugins]({{< ref "docs/deployment/filesystems/plugins" >}}).
+ All reporters documented on this page are available by default.
 
 You can write your own `Reporter` by implementing the `org.apache.flink.metrics.reporter.MetricReporter` interface.
-If the Reporter should send out reports regularly you have to implement the `Scheduled` interface as well.
+If the Reporter should send out reports regularly you have to implement the `Scheduled` interface as well. 
+Be careful that `report()` method must not block for a significant amount of time, and any reporter needing more time should instead run the operation asynchronously.
 By additionally implementing a `MetricReporterFactory` your reporter can also be loaded as a plugin.
+
+## Identifiers vs. tags
+
+There are generally 2 formats for how reporters export metrics.
+
+Identifier-based reporters assemble a flat string containing all scope information and the metric name.
+An example could be `job.MyJobName.numRestarts`.
+
+Tag-based reporters on the other hand define a generic class of metrics consisting of a logical scope and metric name (e.g., `job.numRestarts`),
+and report a particular instance of said metric as a set of `key-value` pairs, so called "tags" or "variables" (e.g., "jobName=MyJobName").
+
+## Push vs. Pull
+
+Metrics are exported either via pushes or pulls.
+
+Push-based reporters usually implement the `Scheduled` interface and periodically send a summary of current metrics to an external system.
+
+Pull-based reporters are queried from an external system instead.
+
+## Reporters
 
 The following sections list the supported reporters.
 
 ### JMX 
 #### (org.apache.flink.metrics.jmx.JMXReporter)
 
-You don't have to include an additional dependency since the JMX reporter is available by default
-but not activated.
+Type: pull/tags
 
 Parameters:
 
@@ -110,6 +120,8 @@ The domain thus identifies a metric class, while the key-property list identifie
 ### Graphite
 #### (org.apache.flink.metrics.graphite.GraphiteReporter)
 
+Type: push/identifier
+
 Parameters:
 
 - `host` - the Graphite server host
@@ -129,12 +141,11 @@ metrics.reporter.grph.interval: 60 SECONDS
 ### InfluxDB
 #### (org.apache.flink.metrics.influxdb.InfluxdbReporter)
 
-In order to use this reporter you must copy `/opt/flink-metrics-influxdb-{{< version >}}.jar` into the `plugins/influxdb` folder
-of your Flink distribution.
+Type: push/tags
 
 Parameters:
 
-{{< generated/influxdb_reporter_configuration >}}
+{{< include_reporter_config "layouts/shortcodes/generated/influxdb_reporter_configuration.html" >}}
 
 Example configuration:
 
@@ -159,6 +170,8 @@ All Flink metrics variables (see [List of all Variables]({{< ref "docs/ops/metri
 ### Prometheus
 #### (org.apache.flink.metrics.prometheus.PrometheusReporter)
 
+Type: pull/tags
+
 Parameters:
 
 - `port` - (optional) the port the Prometheus exporter listens on, defaults to [9249](https://github.com/prometheus/prometheus/wiki/Default-port-allocations). In order to be able to run several instances of the reporter on one host (e.g. when one TaskManager is colocated with the JobManager) it is advisable to use a port range like `9250-9260`.
@@ -167,7 +180,7 @@ Parameters:
 Example configuration:
 
 ```yaml
-metrics.reporter.prom.class: org.apache.flink.metrics.prometheus.PrometheusReporter
+metrics.reporter.prom.factory.class: org.apache.flink.metrics.prometheus.PrometheusReporterFactory
 ```
 
 Flink metric types are mapped to Prometheus metric types as follows: 
@@ -176,7 +189,7 @@ Flink metric types are mapped to Prometheus metric types as follows:
 | --------- |------------|------------------------------------------|
 | Counter   | Gauge      |Prometheus counters cannot be decremented.|
 | Gauge     | Gauge      |Only numbers and booleans are supported.  |
-| Histogram | Summary    |Quantiles .5, .75, .95, .98, .99 and .999 |
+| Histogram | Summary    |Quantiles 0.0, .5, .75, .95, .98, .99, .999 and 1.0 |
 | Meter     | Gauge      |The gauge exports the meter's rate.       |
 
 All Flink metrics variables (see [List of all Variables]({{< ref "docs/ops/metrics" >}}#list-of-all-variables)) are exported to Prometheus as labels. 
@@ -184,28 +197,48 @@ All Flink metrics variables (see [List of all Variables]({{< ref "docs/ops/metri
 ### PrometheusPushGateway 
 #### (org.apache.flink.metrics.prometheus.PrometheusPushGatewayReporter)
 
+Type: push/tags
+
 Parameters:
 
-{{< generated/prometheus_push_gateway_reporter_configuration >}}
+{{< include_reporter_config "layouts/shortcodes/generated/prometheus_push_gateway_reporter_configuration.html" >}}
 
 Example configuration:
 
 ```yaml
-metrics.reporter.promgateway.class: org.apache.flink.metrics.prometheus.PrometheusPushGatewayReporter
+metrics.reporter.promgateway.factory.class: org.apache.flink.metrics.prometheus.PrometheusPushGatewayReporterFactory
 metrics.reporter.promgateway.hostUrl: http://localhost:9091
 metrics.reporter.promgateway.jobName: myJob
 metrics.reporter.promgateway.randomJobNameSuffix: true
 metrics.reporter.promgateway.deleteOnShutdown: false
 metrics.reporter.promgateway.groupingKey: k1=v1;k2=v2
 metrics.reporter.promgateway.interval: 60 SECONDS
+metrics.reporter.promgateway.allowList: metricA,metricB
 ```
 
 The PrometheusPushGatewayReporter pushes metrics to a [Pushgateway](https://github.com/prometheus/pushgateway), which can be scraped by Prometheus.
 
 Please see the [Prometheus documentation](https://prometheus.io/docs/practices/pushing/) for use-cases.
 
+#### HTTP Basic Authentication
+
+The reporter supports HTTP Basic Authentication for connecting to secured PushGateway instances. To enable authentication, configure both `username` and `password`:
+
+```yaml
+metrics.reporter.promgateway.factory.class: org.apache.flink.metrics.prometheus.PrometheusPushGatewayReporterFactory
+metrics.reporter.promgateway.hostUrl: https://pushgateway.example.com:9091
+metrics.reporter.promgateway.jobName: myJob
+metrics.reporter.promgateway.username: flink-reporter
+metrics.reporter.promgateway.password: ${PUSHGATEWAY_PASSWORD}
+metrics.reporter.promgateway.interval: 60 SECONDS
+```
+
+<span class="label label-info">Note</span> Basic authentication is enabled only when both `username` and `password` are configured. It is recommended to use HTTPS when authentication is enabled to protect credentials in transit.
+
 ### StatsD
 #### (org.apache.flink.metrics.statsd.StatsDReporter)
+
+Type: push/identifier
 
 Parameters:
 
@@ -224,8 +257,12 @@ metrics.reporter.stsd.interval: 60 SECONDS
 ### Datadog
 #### (org.apache.flink.metrics.datadog.DatadogHttpReporter)
 
+Type: push/tags
+
 Note any variables in Flink metrics, such as `<host>`, `<job_name>`, `<tm_id>`, `<subtask_index>`, `<task_name>`, and `<operator_name>`,
 will be sent to Datadog as tags. Tags will look like `host:localhost` and `job_name:myjobname`.
+
+<span class="label label-danger">Note</span> For legacy reasons the reporter uses _both_ the metric identifier _and_ tags. This redundancy can be avoided by enabling `useLogicalIdentifier`.
 
 <span class="label label-info">Note</span> Histograms are exposed as a series of gauges following the naming convention of Datadog histograms (`<metric_name>.<aggregation>`).
 The `min` aggregation is reported by default, whereas `sum` is not available.
@@ -234,28 +271,59 @@ In contrast to Datadog-provided Histograms the reported aggregations are not com
 Parameters:
 
 - `apikey` - the Datadog API key
-- `tags` - (optional) the global tags that will be applied to metrics when sending to Datadog. Tags should be separated by comma only
 - `proxyHost` - (optional) The proxy host to use when sending to Datadog.
 - `proxyPort` - (optional) The proxy port to use when sending to Datadog, defaults to 8080.
 - `dataCenter` - (optional) The data center (`EU`/`US`) to connect to, defaults to `US`.
 - `maxMetricsPerRequest` - (optional) The maximum number of metrics to include in each request, defaults to 2000.
+- `useLogicalIdentifier` -> (optional) Whether the reporter uses a logical metric identifier, defaults to `false`.
 
 Example configuration:
 
 ```yaml
 metrics.reporter.dghttp.factory.class: org.apache.flink.metrics.datadog.DatadogHttpReporterFactory
 metrics.reporter.dghttp.apikey: xxx
-metrics.reporter.dghttp.tags: myflinkapp,prod
 metrics.reporter.dghttp.proxyHost: my.web.proxy.com
 metrics.reporter.dghttp.proxyPort: 8080
 metrics.reporter.dghttp.dataCenter: US
 metrics.reporter.dghttp.maxMetricsPerRequest: 2000
 metrics.reporter.dghttp.interval: 60 SECONDS
+metrics.reporter.dghttp.useLogicalIdentifier: true
 ```
 
+### OpenTelemetry
+#### (org.apache.flink.metrics.otel.OpenTelemetryMetricReporterFactory)
+
+Parameters:
+
+{{< include_reporter_config "layouts/shortcodes/generated/open_telemetry_reporter_configuration.html" >}}
+
+Example configurations:
+
+```yaml
+metrics.reporter.otel.factory.class: org.apache.flink.metrics.otel.OpenTelemetryMetricReporterFactory
+metrics.reporter.otel.exporter.endpoint: http://127.0.0.1:1337
+metrics.reporter.otel.exporter.protocol: gRPC
+```
+
+```yaml
+metrics.reporter.otel.factory.class: org.apache.flink.metrics.otel.OpenTelemetryMetricReporterFactory
+metrics.reporter.otel.exporter.endpoint: http://127.0.0.1:9090
+metrics.reporter.otel.exporter.protocol: HTTP
+```
+
+```yaml
+# With batching enabled (500 metrics per export request)
+metrics.reporter.otel.factory.class: org.apache.flink.metrics.otel.OpenTelemetryMetricReporterFactory
+metrics.reporter.otel.exporter.endpoint: http://127.0.0.1:1337
+metrics.reporter.otel.exporter.protocol: gRPC
+metrics.reporter.otel.batch.size: 1500
+metrics.reporter.otel.export-completion-timeout-millis: 60000
+```
 
 ### Slf4j
 #### (org.apache.flink.metrics.slf4j.Slf4jReporter)
+
+Type: push/identifier
 
 Example configuration:
 

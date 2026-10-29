@@ -1,0 +1,1133 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.apache.flink.table.planner.functions;
+
+import org.apache.flink.table.api.DataTypes;
+import org.apache.flink.table.functions.BuiltInFunctionDefinitions;
+import org.apache.flink.table.types.DataType;
+import org.apache.flink.types.Row;
+import org.apache.flink.util.CollectionUtil;
+
+import java.math.BigDecimal;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.LocalTime;
+import java.time.Period;
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.stream.Stream;
+
+import static org.apache.flink.table.api.DataTypes.BIGINT;
+import static org.apache.flink.table.api.DataTypes.BOOLEAN;
+import static org.apache.flink.table.api.DataTypes.BYTES;
+import static org.apache.flink.table.api.DataTypes.DATE;
+import static org.apache.flink.table.api.DataTypes.DECIMAL;
+import static org.apache.flink.table.api.DataTypes.DOUBLE;
+import static org.apache.flink.table.api.DataTypes.FLOAT;
+import static org.apache.flink.table.api.DataTypes.INT;
+import static org.apache.flink.table.api.DataTypes.INTERVAL;
+import static org.apache.flink.table.api.DataTypes.MAP;
+import static org.apache.flink.table.api.DataTypes.MONTH;
+import static org.apache.flink.table.api.DataTypes.STRING;
+import static org.apache.flink.table.api.DataTypes.TIME;
+import static org.apache.flink.table.api.DataTypes.TIMESTAMP;
+import static org.apache.flink.table.api.Expressions.$;
+import static org.apache.flink.table.api.Expressions.array;
+import static org.apache.flink.table.api.Expressions.call;
+import static org.apache.flink.table.api.Expressions.lit;
+import static org.apache.flink.table.api.Expressions.map;
+import static org.apache.flink.table.api.Expressions.mapFromArrays;
+import static org.apache.flink.table.api.Expressions.nullOf;
+import static org.apache.flink.table.api.Expressions.row;
+import static org.apache.flink.util.CollectionUtil.entry;
+
+/** Test {@link BuiltInFunctionDefinitions#MAP} and its return type. */
+public class MapFunctionITCase extends BuiltInFunctionTestBase {
+    private static final LocalDate TEST_DATE_1 = LocalDate.of(1985, 11, 4);
+    private static final LocalDate TEST_DATE_2 = LocalDate.of(2018, 7, 26);
+    private static final LocalTime TEST_TIME_1 = LocalTime.of(17, 18, 19);
+    private static final LocalTime TEST_TIME_2 = LocalTime.of(14, 15, 16);
+    private static final LocalDateTime TEST_DATE_TIME_1 = LocalDateTime.of(1985, 11, 4, 17, 18, 19);
+    private static final LocalDateTime TEST_DATE_TIME_2 = LocalDateTime.of(2018, 7, 26, 14, 15, 16);
+    private static final String A = "a";
+    private static final String B = "b";
+    private static final int INTERVAL_1 = -123;
+    private static final Integer INTERVAL_NULL = null;
+
+    @Override
+    Stream<TestSetSpec> getTestSetSpecs() {
+        return Stream.of(
+                        mapTestCases(),
+                        mapKeysTestCases(),
+                        mapValuesTestCases(),
+                        mapEntriesTestCases(),
+                        mapFromArraysTestCases(),
+                        mapContainsKeyTestCases(),
+                        mapFromEntriesTestCases(),
+                        mapUnionTestCases(),
+                        mapEqualsTestCases())
+                .flatMap(s -> s);
+    }
+
+    private Stream<TestSetSpec> mapTestCases() {
+        return Stream.of(
+                TestSetSpec.forFunction(BuiltInFunctionDefinitions.MAP)
+                        .onFieldsWithData(
+                                1,
+                                2,
+                                3,
+                                4,
+                                new BigDecimal("1.2345"),
+                                new BigDecimal("1.2346"),
+                                true)
+                        .andDataTypes(
+                                INT().notNull(),
+                                INT().notNull(),
+                                INT().notNull(),
+                                INT().notNull(),
+                                DECIMAL(10, 4).notNull(),
+                                DECIMAL(10, 4).notNull(),
+                                BOOLEAN().notNull())
+                        .testResult(
+                                resultSpec(
+                                        map(
+                                                1, 1, 1, 2, 1, 9, 1, 3, 2, 24, 2, 29, 1, 0, 2, 22,
+                                                1, 8, 2, 25, 2, 20),
+                                        "MAP[1, 1, 1, 2, 1, 9, 1, 3, 2, 24, 2, 29, 1, 0, 2, 22, 1, 8, 2, 25, 2, 20]",
+                                        Map.ofEntries(Map.entry(1, 8), Map.entry(2, 20)),
+                                        DataTypes.MAP(INT().notNull(), INT().notNull()).notNull()),
+                                resultSpec(
+                                        map($("f0"), $("f0"), $("f0"), $("f1")),
+                                        "MAP[f0, f0, f0, f1]",
+                                        Collections.singletonMap(1, 2),
+                                        DataTypes.MAP(INT().notNull(), INT().notNull()).notNull()),
+                                resultSpec(
+                                        map($("f4"), $("f5")),
+                                        "MAP[f4, f5]",
+                                        Collections.singletonMap(
+                                                new BigDecimal("1.2345"), new BigDecimal("1.2346")),
+                                        DataTypes.MAP(
+                                                        DECIMAL(10, 4).notNull(),
+                                                        DECIMAL(10, 4).notNull())
+                                                .notNull()),
+                                resultSpec(
+                                        map(
+                                                $("f0").plus($("f1")),
+                                                $("f2").times($("f2")),
+                                                $("f2").minus($("f1")),
+                                                $("f3").minus($("f0"))),
+                                        "MAP[f0 + f1, f2 * f2, f2 - f1, f3 - f0]",
+                                        CollectionUtil.map(
+                                                entry(1 + 2, 3 * 3), entry(3 - 2, 4 - 1)),
+                                        DataTypes.MAP(INT().notNull(), INT().notNull()).notNull()),
+                                resultSpec(
+                                        map(
+                                                $("f0"),
+                                                $("f1").cast(BIGINT().notNull()),
+                                                $("f2"),
+                                                $("f3").cast(BIGINT().notNull())),
+                                        "MAP[f0, CAST(f1 AS BIGINT), f2, CAST(f3 AS BIGINT)]",
+                                        CollectionUtil.map(entry(1, 2L), entry(3, 4L)),
+                                        DataTypes.MAP(INT().notNull(), BIGINT().notNull())
+                                                .notNull()),
+                                resultSpec(
+                                        map($("f6"), $("f6")),
+                                        "MAP[f6, f6]",
+                                        Collections.singletonMap(true, true),
+                                        DataTypes.MAP(BOOLEAN().notNull(), BOOLEAN().notNull())
+                                                .notNull()),
+                                resultSpec(
+                                        map(
+                                                $("f0"),
+                                                $("f1").cast(DOUBLE().notNull()),
+                                                $("f2"),
+                                                $("f3").cast(FLOAT().notNull())),
+                                        "MAP[f0, CAST(f1 AS DOUBLE), f2, CAST(f3 AS FLOAT)]",
+                                        CollectionUtil.map(entry(1, 2d), entry(3, 4.0)),
+                                        DataTypes.MAP(INT().notNull(), DOUBLE().notNull())
+                                                .notNull()),
+                                resultSpec(
+                                        map($("f4"), $("f5")),
+                                        "MAP[f4, f5]",
+                                        Collections.singletonMap(
+                                                new BigDecimal("1.2345"), new BigDecimal("1.2346")),
+                                        DataTypes.MAP(
+                                                        DECIMAL(10, 4).notNull(),
+                                                        DECIMAL(10, 4).notNull())
+                                                .notNull()),
+                                resultSpec(
+                                        map(map($("f0"), $("f1")), map($("f2"), $("f3"))),
+                                        "MAP[MAP[f0, f1], MAP[f2, f3]]",
+                                        Collections.singletonMap(
+                                                Collections.singletonMap(1, 2),
+                                                Collections.singletonMap(3, 4)),
+                                        DataTypes.MAP(
+                                                        MAP(
+                                                                        DataTypes.INT().notNull(),
+                                                                        DataTypes.INT().notNull())
+                                                                .notNull(),
+                                                        MAP(
+                                                                        DataTypes.INT().notNull(),
+                                                                        DataTypes.INT().notNull())
+                                                                .notNull())
+                                                .notNull())),
+                TestSetSpec.forFunction(BuiltInFunctionDefinitions.MAP)
+                        .onFieldsWithData(
+                                TEST_DATE_1,
+                                TEST_DATE_2,
+                                TEST_TIME_1,
+                                TEST_TIME_2,
+                                TEST_DATE_TIME_1,
+                                TEST_DATE_TIME_2)
+                        .andDataTypes(
+                                DATE().notNull(),
+                                DATE().notNull(),
+                                TIME().notNull(),
+                                TIME().notNull(),
+                                TIMESTAMP().notNull(),
+                                TIMESTAMP().notNull())
+                        .testResult(
+                                resultSpec(
+                                        map($("f0"), $("f2"), $("f1"), $("f3")),
+                                        "MAP[f0, f2, f1, f3]",
+                                        CollectionUtil.map(
+                                                entry(TEST_DATE_1, TEST_TIME_1),
+                                                entry(TEST_DATE_2, TEST_TIME_2)),
+                                        DataTypes.MAP(DATE().notNull(), TIME().notNull())
+                                                .notNull()),
+                                resultSpec(
+                                        map($("f2"), $("f4"), $("f3"), $("f5")),
+                                        "MAP[f2, f4, f3, f5]",
+                                        CollectionUtil.map(
+                                                entry(TEST_TIME_1, TEST_DATE_TIME_1),
+                                                entry(TEST_TIME_2, TEST_DATE_TIME_2)),
+                                        DataTypes.MAP(TIME().notNull(), TIMESTAMP().notNull())
+                                                .notNull())),
+                TestSetSpec.forFunction(BuiltInFunctionDefinitions.MAP)
+                        .onFieldsWithData(A, B, INTERVAL_1, INTERVAL_NULL)
+                        .andDataTypes(
+                                STRING().notNull(),
+                                STRING().notNull(),
+                                INTERVAL(MONTH()),
+                                INTERVAL(MONTH()).nullable())
+                        .testResult(
+                                resultSpec(
+                                        map($("f0"), $("f2"), $("f1"), $("f3")),
+                                        "MAP[f0, f2, f1, f3]",
+                                        CollectionUtil.map(
+                                                entry(A, Period.ofMonths(INTERVAL_1)),
+                                                entry(B, INTERVAL_NULL)),
+                                        DataTypes.MAP(
+                                                        STRING().notNull(),
+                                                        INTERVAL(MONTH()).nullable())
+                                                .notNull())));
+    }
+
+    private Stream<TestSetSpec> mapKeysTestCases() {
+        return Stream.of(
+                TestSetSpec.forFunction(BuiltInFunctionDefinitions.MAP_KEYS)
+                        .onFieldsWithData(
+                                null,
+                                "item",
+                                Collections.singletonMap(1, "value"),
+                                Collections.singletonMap(new Integer[] {1, 2}, "value"))
+                        .andDataTypes(
+                                DataTypes.BOOLEAN().nullable(),
+                                DataTypes.STRING(),
+                                DataTypes.MAP(DataTypes.INT(), DataTypes.STRING()),
+                                DataTypes.MAP(DataTypes.ARRAY(DataTypes.INT()), DataTypes.STRING()))
+                        .testTableApiValidationError(
+                                call("MAP_KEYS", $("f0"), $("f1")),
+                                "Invalid function call:\nMAP_KEYS(BOOLEAN, STRING)")
+                        .testResult(
+                                map(
+                                                $("f0").cast(DataTypes.BOOLEAN()),
+                                                $("f1").cast(DataTypes.STRING()))
+                                        .mapKeys(),
+                                "MAP_KEYS(MAP[CAST(f0 AS BOOLEAN), CAST(f1 AS STRING)])",
+                                new Boolean[] {null},
+                                DataTypes.ARRAY(DataTypes.BOOLEAN()).notNull())
+                        .testResult(
+                                $("f2").mapKeys(),
+                                "MAP_KEYS(f2)",
+                                new Integer[] {1},
+                                DataTypes.ARRAY(DataTypes.INT()))
+                        .testResult(
+                                $("f3").mapKeys(),
+                                "MAP_KEYS(f3)",
+                                new Integer[][] {new Integer[] {1, 2}},
+                                DataTypes.ARRAY(DataTypes.ARRAY(DataTypes.INT()))));
+    }
+
+    private Stream<TestSetSpec> mapValuesTestCases() {
+        return Stream.of(
+                TestSetSpec.forFunction(BuiltInFunctionDefinitions.MAP_VALUES)
+                        .onFieldsWithData(
+                                null,
+                                "item",
+                                Collections.singletonMap(1, "value1"),
+                                Collections.singletonMap(
+                                        3, Collections.singletonMap(true, "value2")))
+                        .andDataTypes(
+                                DataTypes.BOOLEAN().nullable(),
+                                DataTypes.STRING(),
+                                DataTypes.MAP(DataTypes.INT(), DataTypes.STRING()),
+                                DataTypes.MAP(
+                                        DataTypes.INT(),
+                                        DataTypes.MAP(DataTypes.BOOLEAN(), DataTypes.STRING())))
+                        .testTableApiValidationError(
+                                call("MAP_VALUES", $("f0"), $("f1")),
+                                "Invalid function call:\nMAP_VALUES(BOOLEAN, STRING)")
+                        .testResult(
+                                map(
+                                                $("f1").cast(DataTypes.STRING()),
+                                                $("f0").cast(DataTypes.BOOLEAN()))
+                                        .mapValues(),
+                                "MAP_VALUES(MAP[CAST(f1 AS STRING), CAST(f0 AS BOOLEAN)])",
+                                new Boolean[] {null},
+                                DataTypes.ARRAY(DataTypes.BOOLEAN()).notNull())
+                        .testResult(
+                                $("f2").mapValues(),
+                                "MAP_VALUES(f2)",
+                                new String[] {"value1"},
+                                DataTypes.ARRAY(DataTypes.STRING()))
+                        .testResult(
+                                $("f3").mapValues(),
+                                "MAP_VALUES(f3)",
+                                new Map[] {Collections.singletonMap(true, "value2")},
+                                DataTypes.ARRAY(
+                                        DataTypes.MAP(DataTypes.BOOLEAN(), DataTypes.STRING()))));
+    }
+
+    private Stream<TestSetSpec> mapEntriesTestCases() {
+        return Stream.of(
+                TestSetSpec.forFunction(BuiltInFunctionDefinitions.MAP_ENTRIES)
+                        .onFieldsWithData(
+                                null,
+                                "item",
+                                Collections.singletonMap(1, "value1"),
+                                Collections.singletonMap(
+                                        3, Collections.singletonMap(true, "value2")))
+                        .andDataTypes(
+                                DataTypes.BOOLEAN().nullable(),
+                                DataTypes.STRING(),
+                                DataTypes.MAP(DataTypes.INT(), DataTypes.STRING()),
+                                DataTypes.MAP(
+                                        DataTypes.INT(),
+                                        DataTypes.MAP(DataTypes.BOOLEAN(), DataTypes.STRING())))
+                        .testTableApiValidationError(
+                                call("MAP_ENTRIES", $("f0"), $("f1")),
+                                "Invalid function call:\nMAP_ENTRIES(BOOLEAN, STRING)")
+                        .testResult(
+                                map(
+                                                $("f0").cast(DataTypes.BOOLEAN()),
+                                                $("f1").cast(DataTypes.STRING()))
+                                        .mapEntries(),
+                                "MAP_ENTRIES(MAP[CAST(f0 AS BOOLEAN), CAST(f1 AS STRING)])",
+                                new Row[] {Row.of(null, "item")},
+                                DataTypes.ARRAY(
+                                                DataTypes.ROW(
+                                                        DataTypes.FIELD("key", DataTypes.BOOLEAN()),
+                                                        DataTypes.FIELD(
+                                                                "value", DataTypes.STRING())))
+                                        .notNull())
+                        .testResult(
+                                $("f2").mapEntries(),
+                                "MAP_ENTRIES(f2)",
+                                new Row[] {Row.of(1, "value1")},
+                                DataTypes.ARRAY(
+                                        DataTypes.ROW(
+                                                DataTypes.FIELD("key", DataTypes.INT()),
+                                                DataTypes.FIELD("value", DataTypes.STRING()))))
+                        .testResult(
+                                $("f3").mapEntries(),
+                                "MAP_ENTRIES(f3)",
+                                new Row[] {Row.of(3, Collections.singletonMap(true, "value2"))},
+                                DataTypes.ARRAY(
+                                        DataTypes.ROW(
+                                                DataTypes.FIELD("key", DataTypes.INT()),
+                                                DataTypes.FIELD(
+                                                        "value",
+                                                        DataTypes.MAP(
+                                                                DataTypes.BOOLEAN(),
+                                                                DataTypes.STRING()))))));
+    }
+
+    private Stream<TestSetSpec> mapFromArraysTestCases() {
+        return Stream.of(
+                TestSetSpec.forFunction(BuiltInFunctionDefinitions.MAP_FROM_ARRAYS, "Invalid input")
+                        .onFieldsWithData(null, null, new Integer[] {1}, new Integer[] {1, 2})
+                        .andDataTypes(
+                                DataTypes.ARRAY(DataTypes.BOOLEAN()),
+                                DataTypes.ARRAY(DataTypes.STRING()),
+                                DataTypes.ARRAY(DataTypes.INT()),
+                                DataTypes.ARRAY(DataTypes.INT()))
+                        .testTableApiRuntimeError(
+                                mapFromArrays($("f2"), $("f3")),
+                                "Invalid function MAP_FROM_ARRAYS call:\n"
+                                        + "The length of the keys array 1 is not equal to the length of the values array 2")
+                        .testSqlRuntimeError(
+                                "MAP_FROM_ARRAYS(array[1, 2, 3], array[1, 2])",
+                                "Invalid function MAP_FROM_ARRAYS call:\n"
+                                        + "The length of the keys array 3 is not equal to the length of the values array 2")
+                        .testResult(
+                                mapFromArrays($("f0"), $("f1")),
+                                "MAP_FROM_ARRAYS(f0, f1)",
+                                null,
+                                DataTypes.MAP(DataTypes.BOOLEAN(), DataTypes.STRING())),
+                TestSetSpec.forFunction(BuiltInFunctionDefinitions.MAP_FROM_ARRAYS)
+                        .onFieldsWithData(
+                                new Integer[] {1, 2},
+                                new String[] {"one", "two"},
+                                new Integer[][] {new Integer[] {1, 2}, new Integer[] {3, 4}})
+                        .andDataTypes(
+                                DataTypes.ARRAY(DataTypes.INT()),
+                                DataTypes.ARRAY(DataTypes.STRING()),
+                                DataTypes.ARRAY(DataTypes.ARRAY(DataTypes.INT())))
+                        .testResult(
+                                mapFromArrays($("f0"), $("f1")),
+                                "MAP_FROM_ARRAYS(f0, f1)",
+                                CollectionUtil.map(entry(1, "one"), entry(2, "two")),
+                                DataTypes.MAP(DataTypes.INT(), DataTypes.STRING()))
+                        .testTableApiResult(
+                                mapFromArrays($("f1"), $("f2")),
+                                CollectionUtil.map(
+                                        entry("one", new Integer[] {1, 2}),
+                                        entry("two", new Integer[] {3, 4})),
+                                DataTypes.MAP(
+                                        DataTypes.STRING(), DataTypes.ARRAY(DataTypes.INT()))));
+    }
+
+    private Stream<TestSetSpec> mapFromEntriesTestCases() {
+        final DataType entryType =
+                DataTypes.ROW(
+                        DataTypes.FIELD("key", DataTypes.INT()),
+                        DataTypes.FIELD("value", DataTypes.STRING()));
+        final DataType nestedEntryType =
+                DataTypes.ROW(
+                        DataTypes.FIELD("key", DataTypes.STRING()),
+                        DataTypes.FIELD("value", DataTypes.ARRAY(DataTypes.INT())));
+        final DataType rowKeyType =
+                DataTypes.ROW(
+                        DataTypes.FIELD("a", DataTypes.INT()),
+                        DataTypes.FIELD("b", DataTypes.STRING()));
+        return Stream.of(
+                TestSetSpec.forFunction(
+                                BuiltInFunctionDefinitions.MAP_FROM_ENTRIES, "Invalid input")
+                        .onFieldsWithData("item", new Integer[] {1, 2})
+                        .andDataTypes(DataTypes.STRING(), DataTypes.ARRAY(DataTypes.INT()))
+                        .testTableApiValidationError(
+                                $("f0").mapFromEntries(),
+                                "The 'input' argument must be ARRAY<ROW<key, value>>")
+                        .testSqlValidationError(
+                                "MAP_FROM_ENTRIES(ARRAY[ROW(1, 'a', true)])",
+                                "The element must be a ROW with exactly two fields."),
+                TestSetSpec.forFunction(BuiltInFunctionDefinitions.MAP_FROM_ENTRIES)
+                        .onFieldsWithData(
+                                new Row[] {Row.of(1, "one"), Row.of(2, "two")},
+                                new Row[] {Row.of(1, "one"), Row.of(1, "uno")},
+                                null,
+                                new Row[] {
+                                    Row.of("one", new Integer[] {1, 2}),
+                                    Row.of("two", new Integer[] {3, 4})
+                                },
+                                new Row[] {Row.of(null, "a"), Row.of(null, "b")})
+                        .andDataTypes(
+                                DataTypes.ARRAY(entryType),
+                                DataTypes.ARRAY(entryType),
+                                DataTypes.ARRAY(entryType),
+                                DataTypes.ARRAY(nestedEntryType),
+                                DataTypes.ARRAY(entryType))
+                        // duplicate keys: the last value wins
+                        .testResult(
+                                $("f1").mapFromEntries(),
+                                "MAP_FROM_ENTRIES(f1)",
+                                CollectionUtil.map(entry(1, "uno")),
+                                DataTypes.MAP(DataTypes.INT(), DataTypes.STRING()))
+                        // an empty array yields an empty map
+                        .testResult(
+                                $("f0").arraySlice(20, 30).mapFromEntries(),
+                                "MAP_FROM_ENTRIES(ARRAY_SLICE(f0, 20, 30))",
+                                Collections.emptyMap(),
+                                DataTypes.MAP(DataTypes.INT(), DataTypes.STRING()))
+                        // NULL array yields NULL
+                        .testResult(
+                                $("f2").mapFromEntries(),
+                                "MAP_FROM_ENTRIES(f2)",
+                                null,
+                                DataTypes.MAP(DataTypes.INT(), DataTypes.STRING()))
+                        // nested value type
+                        .testTableApiResult(
+                                $("f3").mapFromEntries(),
+                                CollectionUtil.map(
+                                        entry("one", new Integer[] {1, 2}),
+                                        entry("two", new Integer[] {3, 4})),
+                                DataTypes.MAP(DataTypes.STRING(), DataTypes.ARRAY(DataTypes.INT())))
+                        // duplicate NULL keys are deduplicated as well
+                        .testResult(
+                                $("f4").mapFromEntries(),
+                                "MAP_FROM_ENTRIES(f4)",
+                                Collections.singletonMap(null, "b"),
+                                DataTypes.MAP(DataTypes.INT(), DataTypes.STRING()))
+                        // duplicate STRING keys use the generated equality; a NULL value is kept
+                        .testResult(
+                                array(
+                                                row("k", "a"),
+                                                row("k", "b"),
+                                                row("x", nullOf(DataTypes.STRING())))
+                                        .mapFromEntries(),
+                                "MAP_FROM_ENTRIES(ARRAY[ROW('k', 'a'), ROW('k', 'b'), ROW('x', CAST(NULL AS STRING))])",
+                                CollectionUtil.map(entry("k", "b"), entry("x", null)),
+                                DataTypes.MAP(DataTypes.CHAR(1).notNull(), DataTypes.STRING())
+                                        .notNull())
+                        // duplicate ROW keys use the generated equality; a NULL value is kept
+                        .testResult(
+                                array(
+                                                row(row(1, "a").cast(rowKeyType), "x"),
+                                                row(row(1, "a").cast(rowKeyType), "y"),
+                                                row(
+                                                        row(2, "b").cast(rowKeyType),
+                                                        nullOf(DataTypes.STRING())))
+                                        .mapFromEntries(),
+                                "MAP_FROM_ENTRIES(ARRAY["
+                                        + "ROW(CAST(ROW(1, 'a') AS ROW(a INT, b STRING)), 'x'), "
+                                        + "ROW(CAST(ROW(1, 'a') AS ROW(a INT, b STRING)), 'y'), "
+                                        + "ROW(CAST(ROW(2, 'b') AS ROW(a INT, b STRING)), CAST(NULL AS STRING))])",
+                                CollectionUtil.map(
+                                        entry(Row.of(1, "a"), "y"), entry(Row.of(2, "b"), null)),
+                                DataTypes.MAP(rowKeyType.notNull(), DataTypes.STRING()).notNull())
+                        // duplicate ARRAY keys collapse through the generated equality and the
+                        // last entry wins, keeping its NULL value; asserted via CARDINALITY and
+                        // MAP_VALUES because Map#equals cannot compare array-keyed maps
+                        .testResult(
+                                array(
+                                                row(array(1, 2), "x"),
+                                                row(array(1, 2), nullOf(DataTypes.STRING())))
+                                        .mapFromEntries()
+                                        .cardinality(),
+                                "CARDINALITY(MAP_FROM_ENTRIES("
+                                        + "ARRAY[ROW(ARRAY[1, 2], 'x'), ROW(ARRAY[1, 2], CAST(NULL AS STRING))]))",
+                                1,
+                                DataTypes.INT().notNull())
+                        .testResult(
+                                array(
+                                                row(array(1, 2), "x"),
+                                                row(array(1, 2), nullOf(DataTypes.STRING())))
+                                        .mapFromEntries()
+                                        .mapValues(),
+                                "MAP_VALUES(MAP_FROM_ENTRIES("
+                                        + "ARRAY[ROW(ARRAY[1, 2], 'x'), ROW(ARRAY[1, 2], CAST(NULL AS STRING))]))",
+                                new String[] {null},
+                                DataTypes.ARRAY(DataTypes.STRING()).notNull())
+                        // round trip with the inverse function
+                        .testResult(
+                                $("f0").mapFromEntries().mapEntries(),
+                                "MAP_ENTRIES(MAP_FROM_ENTRIES(f0))",
+                                new Row[] {Row.of(1, "one"), Row.of(2, "two")},
+                                DataTypes.ARRAY(entryType)),
+                TestSetSpec.forFunction(
+                                BuiltInFunctionDefinitions.MAP_FROM_ENTRIES, "Documented examples")
+                        .onFieldsWithData(1)
+                        .andDataTypes(DataTypes.INT().notNull())
+                        .testResult(
+                                array(row(1, "one"), row(2, "two")).mapFromEntries(),
+                                "MAP_FROM_ENTRIES(ARRAY[ROW(1, 'one'), ROW(2, 'two')])",
+                                CollectionUtil.map(entry(1, "one"), entry(2, "two")),
+                                DataTypes.MAP(
+                                                DataTypes.INT().notNull(),
+                                                DataTypes.CHAR(3).notNull())
+                                        .notNull())
+                        .testResult(
+                                array(row(1, "one"), row(2, "two"), row(1, "uno")).mapFromEntries(),
+                                "MAP_FROM_ENTRIES(ARRAY[ROW(1, 'one'), ROW(2, 'two'), ROW(1, 'uno')])",
+                                CollectionUtil.map(entry(1, "uno"), entry(2, "two")),
+                                DataTypes.MAP(
+                                                DataTypes.INT().notNull(),
+                                                DataTypes.CHAR(3).notNull())
+                                        .notNull())
+                        .testResult(
+                                array(
+                                                row(nullOf(DataTypes.INT()), "a"),
+                                                row(nullOf(DataTypes.INT()), "b"))
+                                        .mapFromEntries(),
+                                "MAP_FROM_ENTRIES(ARRAY[ROW(CAST(NULL AS INT), 'a'), ROW(CAST(NULL AS INT), 'b')])",
+                                Collections.singletonMap(null, "b"),
+                                DataTypes.MAP(DataTypes.INT(), DataTypes.CHAR(1).notNull())
+                                        .notNull())
+                        .testResult(
+                                array(
+                                                row(1, "one"),
+                                                nullOf(
+                                                        DataTypes.ROW(
+                                                                DataTypes.FIELD(
+                                                                        "k", DataTypes.INT()),
+                                                                DataTypes.FIELD(
+                                                                        "v", DataTypes.STRING()))))
+                                        .mapFromEntries(),
+                                "MAP_FROM_ENTRIES(ARRAY[ROW(1, 'one'), CAST(NULL AS ROW(k INT, v STRING))])",
+                                null,
+                                DataTypes.MAP(DataTypes.INT(), DataTypes.STRING()))
+                        // a NOT NULL array of NOT NULL entries yields a NOT NULL map
+                        .testResult(
+                                array(row($("f0"), "a")).mapFromEntries(),
+                                "MAP_FROM_ENTRIES(ARRAY[ROW(f0, 'a')])",
+                                Collections.singletonMap(1, "a"),
+                                DataTypes.MAP(
+                                                DataTypes.INT().notNull(),
+                                                DataTypes.CHAR(1).notNull())
+                                        .notNull()));
+    }
+
+    private Stream<TestSetSpec> mapContainsKeyTestCases() {
+        return Stream.of(
+                TestSetSpec.forFunction(
+                                BuiltInFunctionDefinitions.MAP_CONTAINS_KEY, "Invalid input")
+                        .onFieldsWithData(CollectionUtil.map(entry("a", 1)))
+                        .andDataTypes(DataTypes.MAP(DataTypes.STRING(), DataTypes.INT()))
+                        .testTableApiValidationError(
+                                $("f0").mapContainsKey(true),
+                                "Unsupported argument type. Expected type 'STRING' "
+                                        + "but actual type was 'BOOLEAN NOT NULL'.")
+                        .testSqlValidationError(
+                                "MAP_CONTAINS_KEY(f0, TRUE)",
+                                "Unsupported argument type. Expected type 'STRING' "
+                                        + "but actual type was 'BOOLEAN NOT NULL'."),
+                TestSetSpec.forFunction(BuiltInFunctionDefinitions.MAP_CONTAINS_KEY)
+                        .onFieldsWithData(
+                                CollectionUtil.map(entry("a", 1), entry("b", 2)),
+                                CollectionUtil.map(entry(1, 2), entry(null, 3)),
+                                null,
+                                CollectionUtil.map(entry(new Integer[] {1, 2}, "x")))
+                        .andDataTypes(
+                                DataTypes.MAP(DataTypes.STRING(), DataTypes.INT()),
+                                DataTypes.MAP(DataTypes.INT(), DataTypes.INT()),
+                                DataTypes.MAP(DataTypes.STRING(), DataTypes.INT()),
+                                DataTypes.MAP(DataTypes.ARRAY(DataTypes.INT()), DataTypes.STRING()))
+                        .testResult(
+                                $("f0").mapContainsKey("a"),
+                                "MAP_CONTAINS_KEY(f0, 'a')",
+                                true,
+                                DataTypes.BOOLEAN())
+                        // a miss is FALSE, not NULL
+                        .testResult(
+                                $("f0").mapContainsKey("z"),
+                                "MAP_CONTAINS_KEY(f0, 'z')",
+                                false,
+                                DataTypes.BOOLEAN())
+                        // only a NULL map yields NULL
+                        .testResult(
+                                $("f2").mapContainsKey("a"),
+                                "MAP_CONTAINS_KEY(f2, 'a')",
+                                null,
+                                DataTypes.BOOLEAN())
+                        // a NULL probe finds a NULL key
+                        .testResult(
+                                $("f1").mapContainsKey(nullOf(DataTypes.INT())),
+                                "MAP_CONTAINS_KEY(f1, CAST(NULL AS INT))",
+                                true,
+                                DataTypes.BOOLEAN())
+                        // an absent NULL key is FALSE
+                        .testResult(
+                                $("f0").mapContainsKey(nullOf(DataTypes.STRING())),
+                                "MAP_CONTAINS_KEY(f0, CAST(NULL AS STRING))",
+                                false,
+                                DataTypes.BOOLEAN())
+                        // a miss past a NULL key is FALSE
+                        .testResult(
+                                $("f1").mapContainsKey(9),
+                                "MAP_CONTAINS_KEY(f1, 9)",
+                                false,
+                                DataTypes.BOOLEAN())
+                        // complex keys compare structurally
+                        .testResult(
+                                $("f3").mapContainsKey(array(1, 2)),
+                                "MAP_CONTAINS_KEY(f3, ARRAY[1, 2])",
+                                true,
+                                DataTypes.BOOLEAN()),
+                TestSetSpec.forFunction(
+                                BuiltInFunctionDefinitions.MAP_CONTAINS_KEY, "Documented examples")
+                        .onFieldsWithData(1)
+                        .andDataTypes(DataTypes.INT().notNull())
+                        // a NOT NULL map yields a NOT NULL result
+                        .testResult(
+                                map(lit("a"), lit(1), lit("b"), lit(2)).mapContainsKey("a"),
+                                "MAP_CONTAINS_KEY(MAP['a', 1, 'b', 2], 'a')",
+                                true,
+                                DataTypes.BOOLEAN().notNull())
+                        .testResult(
+                                map(lit("a"), lit(1), lit("b"), lit(2)).mapContainsKey("z"),
+                                "MAP_CONTAINS_KEY(MAP['a', 1, 'b', 2], 'z')",
+                                false,
+                                DataTypes.BOOLEAN().notNull())
+                        .testResult(
+                                map(nullOf(DataTypes.STRING()), lit(1))
+                                        .mapContainsKey(nullOf(DataTypes.STRING())),
+                                "MAP_CONTAINS_KEY(MAP[CAST(NULL AS STRING), 1], CAST(NULL AS STRING))",
+                                true,
+                                DataTypes.BOOLEAN().notNull())
+                        .testResult(
+                                map(lit(1), lit("a"))
+                                        .mapContainsKey(lit(1).cast(DataTypes.TINYINT())),
+                                "MAP_CONTAINS_KEY(MAP[1, 'a'], CAST(1 AS TINYINT))",
+                                true,
+                                DataTypes.BOOLEAN().notNull()));
+    }
+
+    private Stream<TestSetSpec> mapUnionTestCases() {
+        return Stream.of(
+                TestSetSpec.forFunction(BuiltInFunctionDefinitions.MAP_UNION)
+                        .onFieldsWithData(
+                                null,
+                                "item",
+                                CollectionUtil.map(
+                                        entry("one", new Integer[] {1, 2}),
+                                        entry("two", new Integer[] {3, 4})),
+                                CollectionUtil.map(
+                                        entry("one", new Integer[] {2, 2}),
+                                        entry("two", new Integer[] {8, 4})),
+                                CollectionUtil.map(
+                                        entry(2, new Integer[] {1, 2}),
+                                        entry(7, new Integer[] {3, 4})),
+                                CollectionUtil.map(entry("one", 2), entry("two", 5)),
+                                new Integer[] {1, 2, 3, 4, 5, null},
+                                new String[] {"1", "3", "5", "7", "9", null},
+                                null,
+                                CollectionUtil.map(entry(1, 2)),
+                                CollectionUtil.map(
+                                        entry(1, 3),
+                                        entry(2, 4),
+                                        entry(lit(null, DataTypes.INT()), 3)),
+                                lit(null, DataTypes.MAP(DataTypes.INT(), DataTypes.INT())))
+                        .andDataTypes(
+                                DataTypes.BOOLEAN().nullable(),
+                                DataTypes.STRING(),
+                                DataTypes.MAP(DataTypes.STRING(), DataTypes.ARRAY(DataTypes.INT())),
+                                DataTypes.MAP(DataTypes.STRING(), DataTypes.ARRAY(DataTypes.INT())),
+                                DataTypes.MAP(DataTypes.INT(), DataTypes.ARRAY(DataTypes.INT())),
+                                DataTypes.MAP(DataTypes.STRING(), DataTypes.INT()),
+                                DataTypes.ARRAY(DataTypes.INT()),
+                                DataTypes.ARRAY(DataTypes.STRING()),
+                                DataTypes.MAP(DataTypes.INT(), DataTypes.INT()),
+                                DataTypes.MAP(DataTypes.INT(), DataTypes.INT()),
+                                DataTypes.MAP(DataTypes.INT(), DataTypes.INT()),
+                                DataTypes.MAP(DataTypes.INT(), DataTypes.INT()))
+                        .testResult(
+                                $("f10").mapUnion(
+                                                CollectionUtil.map(
+                                                        entry(lit(null, DataTypes.INT()), 8))),
+                                "MAP_UNION(f10, MAP[CAST(NULL AS INT), 8])",
+                                CollectionUtil.map(entry(1, 3), entry(2, 4), entry(null, 8)),
+                                DataTypes.MAP(DataTypes.INT(), DataTypes.INT()))
+                        .testResult(
+                                $("f9").mapUnion(
+                                                CollectionUtil.map(
+                                                        entry(lit(null, DataTypes.INT()), 3))),
+                                "MAP_UNION(f9, MAP[CAST(NULL AS INT), 3])",
+                                CollectionUtil.map(entry(null, 3), entry(1, 2)),
+                                DataTypes.MAP(DataTypes.INT(), DataTypes.INT()))
+                        .testResult(
+                                $("f8").mapUnion(
+                                                lit(
+                                                        null,
+                                                        DataTypes.MAP(
+                                                                DataTypes.INT(), DataTypes.INT()))),
+                                "MAP_UNION(f8, CAST(NULL AS MAP<INT, INT>))",
+                                null,
+                                DataTypes.MAP(DataTypes.INT(), DataTypes.INT()))
+                        .testResult(
+                                $("f9").mapUnion(
+                                                lit(
+                                                        null,
+                                                        DataTypes.MAP(
+                                                                DataTypes.INT(), DataTypes.INT()))),
+                                "MAP_UNION(f9, CAST(NULL AS MAP<INT, INT>))",
+                                null,
+                                DataTypes.MAP(DataTypes.INT(), DataTypes.INT()))
+                        .testResult(
+                                $("f11").mapUnion(CollectionUtil.map(entry(1, 2))),
+                                "MAP_UNION(f11, MAP[1, 2])",
+                                null,
+                                DataTypes.MAP(DataTypes.INT(), DataTypes.INT()))
+                        .testResult(
+                                $("f2").mapUnion(
+                                                CollectionUtil.map(
+                                                        entry("one", new Integer[] {2, 2}),
+                                                        entry("two", new Integer[] {8, 4}),
+                                                        entry("three", new Integer[] {1, 2}))),
+                                "MAP_UNION(f2, MAP['one', ARRAY[2,2], 'two', ARRAY[8, 4], 'three', ARRAY[1, 2]])",
+                                CollectionUtil.map(
+                                        entry("one", new Integer[] {2, 2}),
+                                        entry("two", new Integer[] {8, 4}),
+                                        entry("three", new Integer[] {1, 2})),
+                                DataTypes.MAP(DataTypes.STRING(), DataTypes.ARRAY(DataTypes.INT())))
+                        .testResult(
+                                $("f2").mapUnion(
+                                                CollectionUtil.map(
+                                                        entry("one", new Integer[] {2, 2}),
+                                                        entry("two", new Integer[] {8, 4}),
+                                                        entry("three", new Integer[] {1, 2})),
+                                                CollectionUtil.map(
+                                                        entry("one", new Integer[] {2, 9}),
+                                                        entry("four", new Integer[] {8, 4}),
+                                                        entry("five", new Integer[] {1, 2}))),
+                                "MAP_UNION(f2, MAP['one', ARRAY[2,2], 'two', ARRAY[8, 4], 'three', ARRAY[1, 2]], MAP['one', ARRAY[2,9], 'four', ARRAY[8, 4], 'five', ARRAY[1, 2]])",
+                                CollectionUtil.map(
+                                        entry("one", new Integer[] {2, 9}),
+                                        entry("two", new Integer[] {8, 4}),
+                                        entry("three", new Integer[] {1, 2}),
+                                        entry("four", new Integer[] {8, 4}),
+                                        entry("five", new Integer[] {1, 2})),
+                                DataTypes.MAP(DataTypes.STRING(), DataTypes.ARRAY(DataTypes.INT())))
+                        .testResult(
+                                $("f4").mapUnion(
+                                                CollectionUtil.map(
+                                                        entry(1, new Integer[] {2, 2}),
+                                                        entry(2, new Integer[] {8, 4}),
+                                                        entry(3, new Integer[] {1, 2}))),
+                                "MAP_UNION(f4, MAP[1, ARRAY[2,2], 2, ARRAY[8, 4], 3, ARRAY[1, 2]])",
+                                CollectionUtil.map(
+                                        entry(1, new Integer[] {2, 2}),
+                                        entry(2, new Integer[] {8, 4}),
+                                        entry(3, new Integer[] {1, 2}),
+                                        entry(7, new Integer[] {3, 4})),
+                                DataTypes.MAP(DataTypes.INT(), DataTypes.ARRAY(DataTypes.INT())))
+                        .testTableApiValidationError(
+                                $("f2").mapUnion(
+                                                CollectionUtil.map(
+                                                        entry(1, new Integer[] {2, 2}),
+                                                        entry(2, new Integer[] {8, 4}),
+                                                        entry(3, new Integer[] {1, 2}))),
+                                "Invalid function call:\n"
+                                        + "MAP_UNION(MAP<STRING, ARRAY<INT>>, MAP<INT NOT NULL, ARRAY<INT NOT NULL> NOT NULL> NOT NULL)")
+                        .testSqlValidationError(
+                                "MAP_UNION(f2, MAP[1, ARRAY[2,2], 2, ARRAY[8, 4], 3, ARRAY[1, 2]])",
+                                "SQL validation failed. Invalid function call:\n"
+                                        + "MAP_UNION(MAP<STRING, ARRAY<INT>>, MAP<INT NOT NULL, ARRAY<INT NOT NULL> NOT NULL> NOT NULL)")
+                        .testTableApiValidationError(
+                                $("f0").mapUnion(
+                                                CollectionUtil.map(
+                                                        entry(1, new Integer[] {2, 2}),
+                                                        entry(2, new Integer[] {8, 4}),
+                                                        entry(3, new Integer[] {1, 2}))),
+                                "Invalid function call:\n"
+                                        + "MAP_UNION(BOOLEAN, MAP<INT NOT NULL, ARRAY<INT NOT NULL> NOT NULL> NOT NULL)")
+                        .testSqlValidationError(
+                                "MAP_UNION(f0, MAP[1, ARRAY[2,2], 2, ARRAY[8, 4], 3, ARRAY[1, 2]])",
+                                "SQL validation failed. Invalid function call:\n"
+                                        + "MAP_UNION(BOOLEAN, MAP<INT NOT NULL, ARRAY<INT NOT NULL> NOT NULL> NOT NULL)")
+                        .testTableApiValidationError(
+                                $("f1").mapUnion(
+                                                CollectionUtil.map(
+                                                        entry(1, new Integer[] {2, 2}),
+                                                        entry(2, new Integer[] {8, 4}),
+                                                        entry(3, new Integer[] {1, 2}))),
+                                "Invalid function call:\n"
+                                        + "MAP_UNION(STRING, MAP<INT NOT NULL, ARRAY<INT NOT NULL> NOT NULL> NOT NULL)")
+                        .testSqlValidationError(
+                                "MAP_UNION(f1, MAP[1, ARRAY[2,2], 2, ARRAY[8, 4], 3, ARRAY[1, 2]])",
+                                "SQL validation failed. Invalid function call:\n"
+                                        + "MAP_UNION(STRING, MAP<INT NOT NULL, ARRAY<INT NOT NULL> NOT NULL> NOT NULL)")
+                        .testTableApiValidationError(
+                                $("f2").mapUnion(
+                                                CollectionUtil.map(
+                                                        entry("1", 1),
+                                                        entry("2", 2),
+                                                        entry("3", 3))),
+                                "Invalid input arguments. Expected signatures are:\n"
+                                        + "MAP_UNION(<COMMON>, <COMMON>...)")
+                        .testSqlValidationError(
+                                "MAP_UNION(f2, MAP['1', 1, '2', 2, '3', 3])",
+                                "Invalid input arguments. Expected signatures are:\n"
+                                        + "MAP_UNION(<COMMON>, <COMMON>...)")
+                        .testTableApiValidationError(
+                                $("f5").mapUnion(new String[] {"123"}),
+                                "Invalid input arguments. Expected signatures are:\n"
+                                        + "MAP_UNION(<COMMON>, <COMMON>...)")
+                        .testSqlValidationError(
+                                "MAP_UNION(f5, ARRAY['123'])",
+                                "Invalid input arguments. Expected signatures are:\n"
+                                        + "MAP_UNION(<COMMON>, <COMMON>...)")
+                        .testTableApiValidationError(
+                                $("f6").mapUnion(
+                                                CollectionUtil.map(
+                                                        entry("1", 1),
+                                                        entry("2", 2),
+                                                        entry("3", 3))),
+                                "Invalid input arguments. Expected signatures are:\n"
+                                        + "MAP_UNION(<COMMON>, <COMMON>...)")
+                        .testSqlValidationError(
+                                "MAP_UNION(f6, MAP['1', 1, '2', 2, '3', 3])",
+                                "Invalid input arguments. Expected signatures are:\n"
+                                        + "MAP_UNION(<COMMON>, <COMMON>...)")
+                        .testTableApiValidationError(
+                                $("f7").mapUnion(new Integer[] {1, 2, 3, 4}),
+                                "Invalid input arguments. Expected signatures are:\n"
+                                        + "MAP_UNION(<COMMON>, <COMMON>...)")
+                        .testSqlValidationError(
+                                "MAP_UNION(f7, ARRAY[1, 2, 3, 4])",
+                                "Invalid input arguments. Expected signatures are:\n"
+                                        + "MAP_UNION(<COMMON>, <COMMON>...)"));
+    }
+
+    private Stream<TestSetSpec> mapEqualsTestCases() {
+        return Stream.of(
+                // f0-f2 DOUBLE, f3-f5 INT, f6-f8 DATE, f9-f11 DECIMAL, f12-f14 MAP. In each group
+                // the second map reverses the first and the third differs in one value.
+                TestSetSpec.forFunction(BuiltInFunctionDefinitions.EQUALS, "MAP value types")
+                        .onFieldsWithData(
+                                orderedMap(A, 1.5, B, 2.5),
+                                orderedMap(B, 2.5, A, 1.5),
+                                orderedMap(A, 1.5, B, 1.5),
+                                orderedMap(A, 7, B, 5000),
+                                orderedMap(B, 5000, A, 7),
+                                orderedMap(A, 7, B, 6000),
+                                orderedMap(A, TEST_DATE_1, B, TEST_DATE_2),
+                                orderedMap(B, TEST_DATE_2, A, TEST_DATE_1),
+                                orderedMap(A, TEST_DATE_1, B, TEST_DATE_1),
+                                orderedMap(A, new BigDecimal("1.50"), B, new BigDecimal("2.50")),
+                                orderedMap(B, new BigDecimal("2.50"), A, new BigDecimal("1.50")),
+                                orderedMap(A, new BigDecimal("1.50"), B, new BigDecimal("1.50")),
+                                orderedMap(
+                                        A, orderedMap(A, 5000, B, 6000),
+                                        B, orderedMap(A, 7000, B, 8000)),
+                                orderedMap(
+                                        B, orderedMap(B, 8000, A, 7000),
+                                        A, orderedMap(B, 6000, A, 5000)),
+                                orderedMap(
+                                        A, orderedMap(A, 5000, B, 6000),
+                                        B, orderedMap(A, 7000, B, 9000)))
+                        .andDataTypes(
+                                MAP(STRING(), DOUBLE()),
+                                MAP(STRING(), DOUBLE()),
+                                MAP(STRING(), DOUBLE()),
+                                MAP(STRING(), INT()),
+                                MAP(STRING(), INT()),
+                                MAP(STRING(), INT()),
+                                MAP(STRING(), DATE()),
+                                MAP(STRING(), DATE()),
+                                MAP(STRING(), DATE()),
+                                MAP(STRING(), DECIMAL(10, 2)),
+                                MAP(STRING(), DECIMAL(10, 2)),
+                                MAP(STRING(), DECIMAL(10, 2)),
+                                MAP(STRING(), MAP(STRING(), INT())),
+                                MAP(STRING(), MAP(STRING(), INT())),
+                                MAP(STRING(), MAP(STRING(), INT())))
+                        .testResult(
+                                resultSpec($("f0").isEqual($("f1")), "f0 = f1", true, BOOLEAN()),
+                                resultSpec(
+                                        $("f0").isNotEqual($("f1")), "f0 <> f1", false, BOOLEAN()),
+                                resultSpec($("f0").isEqual($("f2")), "f0 = f2", false, BOOLEAN()),
+                                resultSpec(
+                                        $("f0").isNotEqual($("f2")), "f0 <> f2", true, BOOLEAN()),
+                                resultSpec($("f3").isEqual($("f4")), "f3 = f4", true, BOOLEAN()),
+                                resultSpec(
+                                        $("f3").isNotEqual($("f4")), "f3 <> f4", false, BOOLEAN()),
+                                resultSpec($("f3").isEqual($("f5")), "f3 = f5", false, BOOLEAN()),
+                                resultSpec(
+                                        $("f3").isNotEqual($("f5")), "f3 <> f5", true, BOOLEAN()),
+                                resultSpec($("f6").isEqual($("f7")), "f6 = f7", true, BOOLEAN()),
+                                resultSpec(
+                                        $("f6").isNotEqual($("f7")), "f6 <> f7", false, BOOLEAN()),
+                                resultSpec($("f6").isEqual($("f8")), "f6 = f8", false, BOOLEAN()),
+                                resultSpec(
+                                        $("f6").isNotEqual($("f8")), "f6 <> f8", true, BOOLEAN()),
+                                resultSpec($("f9").isEqual($("f10")), "f9 = f10", true, BOOLEAN()),
+                                resultSpec(
+                                        $("f9").isNotEqual($("f10")),
+                                        "f9 <> f10",
+                                        false,
+                                        BOOLEAN()),
+                                resultSpec($("f9").isEqual($("f11")), "f9 = f11", false, BOOLEAN()),
+                                resultSpec(
+                                        $("f9").isNotEqual($("f11")), "f9 <> f11", true, BOOLEAN()),
+                                resultSpec(
+                                        $("f12").isEqual($("f13")), "f12 = f13", true, BOOLEAN()),
+                                resultSpec(
+                                        $("f12").isNotEqual($("f13")),
+                                        "f12 <> f13",
+                                        false,
+                                        BOOLEAN()),
+                                resultSpec(
+                                        $("f12").isEqual($("f14")), "f12 = f14", false, BOOLEAN()),
+                                resultSpec(
+                                        $("f12").isNotEqual($("f14")),
+                                        "f12 <> f14",
+                                        true,
+                                        BOOLEAN())),
+                // f0-f2 differ in keys or size. f3-f5 hold a NULL value, which equals nothing.
+                // f6 and LOWER(f7) are both 'x' only at runtime, so the maps hold 'x' twice and the
+                // last entry counts. Keys compare like SQL '=', so the bytes of f8 and f9 match and
+                // f11 * -1E0 is -0.0, which equals 0.0.
+                TestSetSpec.forFunction(
+                                BuiltInFunctionDefinitions.EQUALS, "MAP keys and NULL values")
+                        .onFieldsWithData(
+                                orderedMap(A, 5000, B, 6000),
+                                orderedMap(A, 5000, "c", 6000),
+                                Collections.singletonMap(A, 5000),
+                                orderedMap(A, 1.5, B, lit(null, DOUBLE())),
+                                orderedMap(B, lit(null, DOUBLE()), A, 1.5),
+                                orderedMap(A, 1.5, B, 2.5),
+                                "x",
+                                "X",
+                                new byte[] {1, 2},
+                                new byte[] {1, 2},
+                                new byte[] {3},
+                                0.0)
+                        .andDataTypes(
+                                MAP(STRING(), INT()),
+                                MAP(STRING(), INT()),
+                                MAP(STRING(), INT()),
+                                MAP(STRING(), DOUBLE()),
+                                MAP(STRING(), DOUBLE()),
+                                MAP(STRING(), DOUBLE()),
+                                STRING(),
+                                STRING(),
+                                BYTES(),
+                                BYTES(),
+                                BYTES(),
+                                DOUBLE())
+                        .testResult(
+                                resultSpec($("f0").isEqual($("f1")), "f0 = f1", false, BOOLEAN()),
+                                resultSpec(
+                                        $("f0").isNotEqual($("f1")), "f0 <> f1", true, BOOLEAN()),
+                                resultSpec($("f0").isEqual($("f2")), "f0 = f2", false, BOOLEAN()),
+                                resultSpec(
+                                        $("f0").isNotEqual($("f2")), "f0 <> f2", true, BOOLEAN()),
+                                resultSpec($("f3").isEqual($("f4")), "f3 = f4", false, BOOLEAN()),
+                                resultSpec(
+                                        $("f3").isNotEqual($("f4")), "f3 <> f4", true, BOOLEAN()),
+                                resultSpec($("f3").isEqual($("f5")), "f3 = f5", false, BOOLEAN()),
+                                resultSpec(
+                                        $("f3").isNotEqual($("f5")), "f3 <> f5", true, BOOLEAN()),
+                                resultSpec(
+                                        map($("f6"), 1, $("f7").lowerCase(), 2).cardinality(),
+                                        "CARDINALITY(MAP[f6, 1, LOWER(f7), 2])",
+                                        2,
+                                        INT().notNull()),
+                                resultSpec(
+                                        map($("f6"), 1, $("f7").lowerCase(), 2)
+                                                .isEqual(map($("f7").lowerCase(), 1, $("f6"), 2)),
+                                        "MAP[f6, 1, LOWER(f7), 2] = MAP[LOWER(f7), 1, f6, 2]",
+                                        true,
+                                        BOOLEAN().notNull()),
+                                resultSpec(
+                                        map($("f6"), 1, $("f7").lowerCase(), 2)
+                                                .isEqual(map($("f7").lowerCase(), 2, $("f6"), 1)),
+                                        "MAP[f6, 1, LOWER(f7), 2] = MAP[LOWER(f7), 2, f6, 1]",
+                                        false,
+                                        BOOLEAN().notNull()),
+                                resultSpec(
+                                        map($("f6"), nullOf(INT()), $("f7").lowerCase(), 2)
+                                                .isEqual(map($("f7").lowerCase(), 1, $("f6"), 2)),
+                                        "MAP[f6, CAST(NULL AS INT), LOWER(f7), 2]"
+                                                + " = MAP[LOWER(f7), 1, f6, 2]",
+                                        true,
+                                        BOOLEAN().notNull()),
+                                resultSpec(
+                                        map($("f6"), 1, $("f7").lowerCase(), 1, "y", 2)
+                                                .isEqual(map("x", 1, "y", 2, "z", 3)),
+                                        "MAP[f6, 1, LOWER(f7), 1, 'y', 2] = MAP['x', 1, 'y', 2, 'z', 3]",
+                                        false,
+                                        BOOLEAN().notNull()),
+                                resultSpec(
+                                        map($("f6"), 1, $("f7").lowerCase(), 2)
+                                                .isEqual(map("x", 2)),
+                                        "MAP[f6, 1, LOWER(f7), 2] = MAP['x', 2]",
+                                        false,
+                                        BOOLEAN().notNull()),
+                                resultSpec(
+                                        map($("f8"), 1, $("f10"), 2)
+                                                .isEqual(map($("f10"), 2, $("f9"), 1)),
+                                        "MAP[f8, 1, f10, 2] = MAP[f10, 2, f9, 1]",
+                                        true,
+                                        BOOLEAN().notNull()),
+                                resultSpec(
+                                        map($("f8"), 1, $("f10"), 2)
+                                                .isEqual(map($("f10"), 1, $("f9"), 2)),
+                                        "MAP[f8, 1, f10, 2] = MAP[f10, 1, f9, 2]",
+                                        false,
+                                        BOOLEAN().notNull()),
+                                resultSpec(
+                                        map($("f11"), 1).isEqual(map($("f11").times(-1.0), 1)),
+                                        "MAP[f11, 1] = MAP[f11 * -1E0, 1]",
+                                        true,
+                                        BOOLEAN().notNull())),
+                // CreateMultiset turns f0-f2 into multisets. f3 and f4 are DOUBLE columns.
+                TestSetSpec.forFunction(
+                                BuiltInFunctionDefinitions.EQUALS, "MULTISET and MAP from columns")
+                        .withFunction(JsonFunctionsITCase.CreateMultiset.class)
+                        .onFieldsWithData(
+                                orderedMap(A, 200, B, 300),
+                                orderedMap(B, 300, A, 200),
+                                orderedMap(A, 200, B, 301),
+                                3.0,
+                                1.5)
+                        .andDataTypes(
+                                MAP(STRING(), INT()),
+                                MAP(STRING(), INT()),
+                                MAP(STRING(), INT()),
+                                DOUBLE(),
+                                DOUBLE())
+                        .testResult(
+                                resultSpec(
+                                        call("CreateMultiset", $("f0"))
+                                                .isEqual(call("CreateMultiset", $("f1"))),
+                                        "CreateMultiset(f0) = CreateMultiset(f1)",
+                                        true,
+                                        BOOLEAN()),
+                                resultSpec(
+                                        call("CreateMultiset", $("f0"))
+                                                .isNotEqual(call("CreateMultiset", $("f1"))),
+                                        "CreateMultiset(f0) <> CreateMultiset(f1)",
+                                        false,
+                                        BOOLEAN()),
+                                resultSpec(
+                                        call("CreateMultiset", $("f0"))
+                                                .isEqual(call("CreateMultiset", $("f2"))),
+                                        "CreateMultiset(f0) = CreateMultiset(f2)",
+                                        false,
+                                        BOOLEAN()),
+                                resultSpec(
+                                        call("CreateMultiset", $("f0"))
+                                                .isNotEqual(call("CreateMultiset", $("f2"))),
+                                        "CreateMultiset(f0) <> CreateMultiset(f2)",
+                                        true,
+                                        BOOLEAN()),
+                                resultSpec(
+                                        map(lit(A), $("f3").dividedBy(2))
+                                                .isEqual(map(lit(A), $("f4"))),
+                                        "MAP['a', f3 / 2] = MAP['a', f4]",
+                                        true,
+                                        BOOLEAN().notNull()),
+                                resultSpec(
+                                        map(lit(A), $("f3")).isEqual(map(lit(A), $("f4"))),
+                                        "MAP['a', f3] = MAP['a', f4]",
+                                        false,
+                                        BOOLEAN().notNull())));
+    }
+
+    private static Map<String, Object> orderedMap(
+            String key1, Object value1, String key2, Object value2) {
+        final Map<String, Object> map = new LinkedHashMap<>();
+        map.put(key1, value1);
+        map.put(key2, value2);
+        return map;
+    }
+}

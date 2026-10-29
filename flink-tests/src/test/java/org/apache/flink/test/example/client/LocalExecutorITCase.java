@@ -19,41 +19,46 @@
 
 package org.apache.flink.test.example.client;
 
-import org.apache.flink.api.common.ExecutionConfig;
-import org.apache.flink.api.common.Plan;
-import org.apache.flink.api.java.ExecutionEnvironment;
-import org.apache.flink.api.java.io.DiscardingOutputFormat;
 import org.apache.flink.client.deployment.executors.LocalExecutor;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.CoreOptions;
 import org.apache.flink.configuration.DeploymentOptions;
 import org.apache.flink.core.execution.JobClient;
+import org.apache.flink.core.fs.Path;
 import org.apache.flink.runtime.minicluster.MiniCluster;
+import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
+import org.apache.flink.streaming.api.functions.sink.legacy.OutputFormatSinkFunction;
+import org.apache.flink.streaming.api.functions.sink.v2.DiscardingSink;
+import org.apache.flink.streaming.api.graph.StreamGraph;
+import org.apache.flink.streaming.api.legacy.io.TextInputFormat;
+import org.apache.flink.streaming.api.legacy.io.TextOutputFormat;
 import org.apache.flink.test.testdata.WordCountData;
 import org.apache.flink.test.testfunctions.Tokenizer;
-import org.apache.flink.util.TestLogger;
+import org.apache.flink.util.TestLoggerExtension;
 
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.extension.ExtendWith;
 
 import java.io.File;
 import java.io.FileWriter;
+import java.util.concurrent.TimeUnit;
 
 import static org.apache.flink.core.testutils.CommonTestUtils.assertThrows;
-import static org.hamcrest.MatcherAssert.assertThat;
-import static org.hamcrest.Matchers.is;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /** Integration tests for {@link LocalExecutor}. */
-public class LocalExecutorITCase extends TestLogger {
+@ExtendWith(TestLoggerExtension.class)
+class LocalExecutorITCase {
 
     private static final int parallelism = 4;
 
     private MiniCluster miniCluster;
     private LocalExecutor executor;
 
-    @Before
-    public void before() {
+    @BeforeEach
+    void before() {
         executor =
                 LocalExecutor.createWithFactory(
                         new Configuration(),
@@ -63,43 +68,38 @@ public class LocalExecutorITCase extends TestLogger {
                         });
     }
 
-    @Test(timeout = 60_000)
-    public void testLocalExecutorWithWordCount() throws InterruptedException {
-        try {
-            // set up the files
-            File inFile = File.createTempFile("wctext", ".in");
-            File outFile = File.createTempFile("wctext", ".out");
-            inFile.deleteOnExit();
-            outFile.deleteOnExit();
+    @Test
+    @Timeout(value = 1, unit = TimeUnit.MINUTES)
+    void testLocalExecutorWithWordCount() throws Exception {
+        // set up the files
+        File inFile = File.createTempFile("wctext", ".in");
+        File outFile = File.createTempFile("wctext", ".out");
+        inFile.deleteOnExit();
+        outFile.deleteOnExit();
 
-            try (FileWriter fw = new FileWriter(inFile)) {
-                fw.write(WordCountData.TEXT);
-            }
-
-            final Configuration config = new Configuration();
-            config.setBoolean(CoreOptions.FILESYTEM_DEFAULT_OVERRIDE, true);
-            config.setBoolean(DeploymentOptions.ATTACHED, true);
-
-            Plan wcPlan = getWordCountPlan(inFile, outFile, parallelism);
-            wcPlan.setExecutionConfig(new ExecutionConfig());
-            JobClient jobClient =
-                    executor.execute(wcPlan, config, ClassLoader.getSystemClassLoader()).get();
-            jobClient.getJobExecutionResult().get();
-        } catch (Exception e) {
-            e.printStackTrace();
-            Assert.fail(e.getMessage());
+        try (FileWriter fw = new FileWriter(inFile)) {
+            fw.write(WordCountData.TEXT);
         }
 
-        assertThat(miniCluster.isRunning(), is(false));
+        final Configuration config = new Configuration();
+        config.set(CoreOptions.FILESYTEM_DEFAULT_OVERRIDE, true);
+        config.set(DeploymentOptions.ATTACHED, true);
+
+        StreamGraph wcStreamGraph = getWordCountStreamGraph(inFile, outFile, parallelism);
+        JobClient jobClient =
+                executor.execute(wcStreamGraph, config, ClassLoader.getSystemClassLoader()).get();
+        jobClient.getJobExecutionResult().get();
+
+        assertThat(miniCluster.isRunning()).isFalse();
     }
 
-    @Test(timeout = 60_000)
+    @Test
+    @Timeout(value = 1, unit = TimeUnit.MINUTES)
     public void testMiniClusterShutdownOnErrors() throws Exception {
-        Plan runtimeExceptionPlan = getRuntimeExceptionPlan();
-        runtimeExceptionPlan.setExecutionConfig(new ExecutionConfig());
+        StreamGraph runtimeExceptionPlan = getRuntimeExceptionPlan();
 
         Configuration config = new Configuration();
-        config.setBoolean(DeploymentOptions.ATTACHED, true);
+        config.set(DeploymentOptions.ATTACHED, true);
 
         JobClient jobClient =
                 executor.execute(runtimeExceptionPlan, config, ClassLoader.getSystemClassLoader())
@@ -110,23 +110,25 @@ public class LocalExecutorITCase extends TestLogger {
                 Exception.class,
                 () -> jobClient.getJobExecutionResult().get());
 
-        assertThat(miniCluster.isRunning(), is(false));
+        assertThat(miniCluster.isRunning()).isFalse();
     }
 
-    private Plan getWordCountPlan(File inFile, File outFile, int parallelism) {
-        ExecutionEnvironment env = ExecutionEnvironment.getExecutionEnvironment();
+    private StreamGraph getWordCountStreamGraph(File inFile, File outFile, int parallelism) {
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
         env.setParallelism(parallelism);
-        env.readTextFile(inFile.getAbsolutePath())
+        env.createInput(new TextInputFormat(new Path(inFile.getAbsolutePath())))
                 .flatMap(new Tokenizer())
-                .groupBy(0)
+                .keyBy(x -> x.f0)
                 .sum(1)
-                .writeAsCsv(outFile.getAbsolutePath());
-        return env.createProgramPlan();
+                .addSink(
+                        new OutputFormatSinkFunction<>(
+                                new TextOutputFormat<>(new Path(outFile.getAbsolutePath()))));
+        return env.getStreamGraph();
     }
 
-    private Plan getRuntimeExceptionPlan() {
-        ExecutionEnvironment env = ExecutionEnvironment.getExecutionEnvironment();
-        env.fromElements(1)
+    private StreamGraph getRuntimeExceptionPlan() {
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        env.fromData(1)
                 .map(
                         element -> {
                             if (element == 1) {
@@ -134,7 +136,7 @@ public class LocalExecutorITCase extends TestLogger {
                             }
                             return element;
                         })
-                .output(new DiscardingOutputFormat<>());
-        return env.createProgramPlan();
+                .sinkTo(new DiscardingSink<>());
+        return env.getStreamGraph();
     }
 }

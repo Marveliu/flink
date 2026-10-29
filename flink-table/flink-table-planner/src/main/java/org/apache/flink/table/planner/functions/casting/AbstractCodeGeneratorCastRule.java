@@ -18,17 +18,18 @@
 
 package org.apache.flink.table.planner.functions.casting;
 
-import org.apache.flink.api.common.typeutils.TypeSerializer;
-import org.apache.flink.table.api.TableException;
+import org.apache.flink.table.api.TableRuntimeException;
 import org.apache.flink.table.data.utils.CastExecutor;
 import org.apache.flink.table.planner.codegen.CodeGenUtils;
+import org.apache.flink.table.planner.codegen.CodeGeneratorContext;
 import org.apache.flink.table.runtime.generated.CompileUtils;
 import org.apache.flink.table.runtime.typeutils.InternalSerializers;
 import org.apache.flink.table.types.logical.LogicalType;
 import org.apache.flink.util.FlinkRuntimeException;
 
-import java.util.AbstractMap.SimpleImmutableEntry;
+import java.time.ZoneId;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -64,19 +65,22 @@ abstract class AbstractCodeGeneratorCastRule<IN, OUT> extends AbstractCastRule<I
             LogicalType targetLogicalType) {
         final String inputTerm = "_myInput";
         final String inputIsNullTerm = "_myInputIsNull";
-        final String castExecutorClassName = CodeGenUtils.newName("GeneratedCastExecutor");
         final String inputTypeTerm = CodeGenUtils.boxedTypeTermForType(inputLogicalType);
 
         final CastExecutorCodeGeneratorContext ctx =
                 new CastExecutorCodeGeneratorContext(castRuleContext);
+        CodeGeneratorContext codeGeneratorContext = castRuleContext.getCodeGeneratorContext();
+        final String castExecutorClassName =
+                CodeGenUtils.newName(codeGeneratorContext, "GeneratedCastExecutor");
         final CastCodeBlock codeBlock =
                 generateCodeBlock(
                         ctx, inputTerm, inputIsNullTerm, inputLogicalType, targetLogicalType);
 
-        // Class fields can contain type serializers
+        // Type serializers and reusable objects are passed to the constructor
+        final Map<String, Object> constructorFields = ctx.getConstructorFields();
         final String classFieldDecls =
                 Stream.concat(
-                                ctx.typeSerializers.values().stream()
+                                constructorFields.entrySet().stream()
                                         .map(
                                                 entry ->
                                                         "private final "
@@ -92,7 +96,7 @@ abstract class AbstractCodeGeneratorCastRule<IN, OUT> extends AbstractCastRule<I
                 "public "
                         + castExecutorClassName
                         + "("
-                        + ctx.typeSerializers.values().stream()
+                        + constructorFields.entrySet().stream()
                                 .map(
                                         entry ->
                                                 className(entry.getValue().getClass())
@@ -101,7 +105,7 @@ abstract class AbstractCodeGeneratorCastRule<IN, OUT> extends AbstractCastRule<I
                                 .collect(Collectors.joining(", "))
                         + ")";
         final String constructorBody =
-                ctx.getDeclaredTypeSerializers().stream()
+                constructorFields.keySet().stream()
                         .map(name -> "this." + name + " = " + name + ";\n")
                         .collect(Collectors.joining());
 
@@ -109,7 +113,7 @@ abstract class AbstractCodeGeneratorCastRule<IN, OUT> extends AbstractCastRule<I
         // the cast method
         final String functionSignature =
                 "@Override public Object cast(Object _myInputObj) throws "
-                        + className(TableException.class);
+                        + className(TableRuntimeException.class);
 
         // Write the function body
         final CastRuleUtils.CodeWriter bodyWriter = new CastRuleUtils.CodeWriter();
@@ -124,14 +128,15 @@ abstract class AbstractCodeGeneratorCastRule<IN, OUT> extends AbstractCastRule<I
                     (exceptionTerm, catchWriter) ->
                             catchWriter.throwStmt(
                                     constructorCall(
-                                            TableException.class,
+                                            TableRuntimeException.class,
                                             strLiteral(
                                                     "Error when casting "
                                                             + inputLogicalType
                                                             + " to "
                                                             + targetLogicalType
                                                             + "."),
-                                            exceptionTerm)));
+                                            exceptionTerm)),
+                    codeGeneratorContext);
         } else {
             bodyWriter.append(codeBlock).stmt("return " + codeBlock.getReturnTerm());
         }
@@ -154,8 +159,7 @@ abstract class AbstractCodeGeneratorCastRule<IN, OUT> extends AbstractCastRule<I
                         + "}\n}";
 
         try {
-            Object[] constructorArgs =
-                    ctx.getTypeSerializersInstances().toArray(new TypeSerializer[0]);
+            final Object[] constructorArgs = constructorFields.values().toArray();
             return (CastExecutor<IN, OUT>)
                     CompileUtils.compile(
                                     castRuleContext.getClassLoader(),
@@ -176,14 +180,21 @@ abstract class AbstractCodeGeneratorCastRule<IN, OUT> extends AbstractCastRule<I
 
         private final CastRule.Context castRuleCtx;
 
-        private final Map<LogicalType, Map.Entry<String, TypeSerializer<?>>> typeSerializers =
-                new LinkedHashMap<>();
+        // The objects the generated constructor receives, by field name, in the order of its
+        // parameters.
+        private final Map<String, Object> constructorFields = new LinkedHashMap<>();
+        private final Map<LogicalType, String> typeSerializerFields = new HashMap<>();
         private final List<String> variableDeclarationStatements = new ArrayList<>();
         private final List<String> classFields = new ArrayList<>();
         private int variableIndex = 0;
 
         private CastExecutorCodeGeneratorContext(CastRule.Context castRuleCtx) {
             this.castRuleCtx = castRuleCtx;
+        }
+
+        @Override
+        public boolean isPrinting() {
+            return castRuleCtx.isPrinting();
         }
 
         @Override
@@ -199,6 +210,11 @@ abstract class AbstractCodeGeneratorCastRule<IN, OUT> extends AbstractCastRule<I
         }
 
         @Override
+        public ZoneId getSessionZoneId() {
+            return castRuleCtx.getSessionZoneId();
+        }
+
+        @Override
         public String declareVariable(String type, String variablePrefix) {
             String variableName = variablePrefix + "$" + variableIndex;
             variableDeclarationStatements.add(type + " " + variableName + ";");
@@ -208,18 +224,17 @@ abstract class AbstractCodeGeneratorCastRule<IN, OUT> extends AbstractCastRule<I
 
         @Override
         public String declareTypeSerializer(LogicalType type) {
-            return typeSerializers
-                    .computeIfAbsent(
-                            type,
-                            t -> {
-                                Map.Entry<String, TypeSerializer<?>> e =
-                                        new SimpleImmutableEntry<>(
-                                                "typeSerializer$" + variableIndex,
-                                                InternalSerializers.create(t));
-                                variableIndex++;
-                                return e;
-                            })
-                    .getKey();
+            return typeSerializerFields.computeIfAbsent(
+                    type,
+                    t -> declareReusableObject(InternalSerializers.create(t), "typeSerializer"));
+        }
+
+        @Override
+        public String declareReusableObject(Object object, String fieldPrefix) {
+            final String fieldName = fieldPrefix + "$" + variableIndex;
+            variableIndex++;
+            constructorFields.put(fieldName, object);
+            return fieldName;
         }
 
         @Override
@@ -228,16 +243,13 @@ abstract class AbstractCodeGeneratorCastRule<IN, OUT> extends AbstractCastRule<I
             return "this." + name;
         }
 
-        public List<String> getDeclaredTypeSerializers() {
-            return this.typeSerializers.values().stream()
-                    .map(Map.Entry::getKey)
-                    .collect(Collectors.toList());
+        @Override
+        public CodeGeneratorContext getCodeGeneratorContext() {
+            return castRuleCtx.getCodeGeneratorContext();
         }
 
-        public List<TypeSerializer<?>> getTypeSerializersInstances() {
-            return this.typeSerializers.values().stream()
-                    .map(Map.Entry::getValue)
-                    .collect(Collectors.toList());
+        public Map<String, Object> getConstructorFields() {
+            return constructorFields;
         }
 
         public List<String> getClassFields() {

@@ -30,15 +30,18 @@ import org.apache.flink.table.data.conversion.DataStructureConverter;
 import org.apache.flink.table.data.conversion.DataStructureConverters;
 import org.apache.flink.table.types.DataType;
 import org.apache.flink.types.Row;
+import org.apache.flink.types.variant.BinaryVariantInternalBuilder;
+import org.apache.flink.types.variant.Variant;
+import org.apache.flink.util.InstantiationUtil;
 import org.apache.flink.util.StringUtils;
 
-import org.junit.Test;
-import org.junit.runner.RunWith;
-import org.junit.runners.Parameterized;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 
@@ -56,116 +59,176 @@ import static org.apache.flink.table.api.DataTypes.SMALLINT;
 import static org.apache.flink.table.api.DataTypes.STRING;
 import static org.apache.flink.table.api.DataTypes.TINYINT;
 import static org.apache.flink.table.api.DataTypes.VARCHAR;
+import static org.apache.flink.table.api.DataTypes.VARIANT;
 import static org.apache.flink.util.StringUtils.hexStringToByte;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
 
 /** Tests for {@link RawFormatDeserializationSchema} {@link RawFormatSerializationSchema}. */
-@RunWith(Parameterized.class)
-public class RawFormatSerDeSchemaTest {
+class RawFormatSerDeSchemaTest {
 
-    @Parameterized.Parameters(name = "{index}: {0}")
-    public static List<TestSpec> testData() {
+    private static final String JSON_OBJECT =
+            "{\"a\":1,\"b\":\"x\",\"c\":[1,2,3],\"d\":null,\"e\":true}";
+
+    static List<TestSpec> testData() {
         return Arrays.asList(
-                TestSpec.type(TINYINT()).value(Byte.MAX_VALUE).binary(new byte[] {Byte.MAX_VALUE}),
-                TestSpec.type(SMALLINT()).value(Short.MAX_VALUE).binary(hexStringToByte("7fff")),
+                TestSpec.type(TINYINT()).values(Byte.MAX_VALUE).binary(new byte[] {Byte.MAX_VALUE}),
+                TestSpec.type(SMALLINT()).values(Short.MAX_VALUE).binary(hexStringToByte("7fff")),
                 TestSpec.type(SMALLINT())
-                        .value(Short.MAX_VALUE)
+                        .values(Short.MAX_VALUE)
                         .withLittleEndian()
                         .binary(hexStringToByte("ff7f")),
-                TestSpec.type(INT()).value(Integer.MAX_VALUE).binary(hexStringToByte("7fffffff")),
+                TestSpec.type(INT()).values(Integer.MAX_VALUE).binary(hexStringToByte("7fffffff")),
                 TestSpec.type(INT())
-                        .value(Integer.MAX_VALUE)
+                        .values(Integer.MAX_VALUE)
                         .withLittleEndian()
                         .binary(hexStringToByte("ffffff7f")),
                 TestSpec.type(BIGINT())
-                        .value(Long.MAX_VALUE)
+                        .values(Long.MAX_VALUE)
                         .binary(hexStringToByte("7fffffffffffffff")),
                 TestSpec.type(BIGINT())
-                        .value(Long.MAX_VALUE)
+                        .values(Long.MAX_VALUE)
                         .withLittleEndian()
                         .binary(hexStringToByte("ffffffffffffff7f")),
-                TestSpec.type(FLOAT()).value(Float.MAX_VALUE).binary(hexStringToByte("7f7fffff")),
+                TestSpec.type(FLOAT()).values(Float.MAX_VALUE).binary(hexStringToByte("7f7fffff")),
                 TestSpec.type(FLOAT())
-                        .value(Float.MAX_VALUE)
+                        .values(Float.MAX_VALUE)
                         .withLittleEndian()
                         .binary(hexStringToByte("ffff7f7f")),
                 TestSpec.type(DOUBLE())
-                        .value(Double.MAX_VALUE)
+                        .values(Double.MAX_VALUE)
                         .binary(hexStringToByte("7fefffffffffffff")),
                 TestSpec.type(DOUBLE())
-                        .value(Double.MAX_VALUE)
+                        .values(Double.MAX_VALUE)
                         .withLittleEndian()
                         .binary(hexStringToByte("ffffffffffffef7f")),
-                TestSpec.type(BOOLEAN()).value(true).binary(new byte[] {1}),
-                TestSpec.type(BOOLEAN()).value(false).binary(new byte[] {0}),
-                TestSpec.type(STRING()).value("Hello World").binary("Hello World".getBytes()),
+                TestSpec.type(BOOLEAN()).values(true).binary(new byte[] {1}),
+                TestSpec.type(BOOLEAN()).values(false).binary(new byte[] {0}),
+                TestSpec.type(STRING()).values("Hello World").binary("Hello World".getBytes()),
                 TestSpec.type(STRING())
-                        .value("你好世界，Hello World")
+                        .values("你好世界，Hello World")
                         .binary("你好世界，Hello World".getBytes()),
                 TestSpec.type(STRING())
-                        .value("Flink Awesome!")
+                        .values("Flink Awesome!")
                         .withCharset("UTF-16")
                         .binary("Flink Awesome!".getBytes(StandardCharsets.UTF_16)),
                 TestSpec.type(STRING())
-                        .value("Flink 帅哭!")
+                        .values("Flink 帅哭!")
                         .withCharset("UTF-16")
                         .binary("Flink 帅哭!".getBytes(StandardCharsets.UTF_16)),
-                TestSpec.type(STRING()).value("").binary("".getBytes()),
-                TestSpec.type(VARCHAR(5)).value("HELLO").binary("HELLO".getBytes()),
+                TestSpec.type(STRING()).values("").binary("".getBytes()),
+                TestSpec.type(VARCHAR(5)).values("HELLO").binary("HELLO".getBytes()),
+                TestSpec.type(STRING())
+                        .values("line 1", "line 2", "line 3")
+                        .binary("line 1".getBytes(), "line 2".getBytes(), "line 3".getBytes()),
                 TestSpec.type(BYTES())
-                        .value(new byte[] {1, 3, 5, 7, 9})
+                        .values(new byte[] {1, 3, 5, 7, 9})
                         .binary(new byte[] {1, 3, 5, 7, 9}),
-                TestSpec.type(BYTES()).value(new byte[] {}).binary(new byte[] {}),
-                TestSpec.type(BINARY(3)).value(new byte[] {1, 3, 5}).binary(new byte[] {1, 3, 5}),
+                TestSpec.type(BYTES()).values(new byte[] {}).binary(new byte[] {}),
+                TestSpec.type(BINARY(3)).values(new byte[] {1, 3, 5}).binary(new byte[] {1, 3, 5}),
                 TestSpec.type(RAW(LocalDateTime.class, new LocalDateTimeSerializer()))
-                        .value(LocalDateTime.parse("2020-11-11T18:08:01.123"))
+                        .values(LocalDateTime.parse("2020-11-11T18:08:01.123"))
                         .binary(
                                 serializeLocalDateTime(
                                         LocalDateTime.parse("2020-11-11T18:08:01.123"))),
 
+                // test variants, which are represented as JSON documents
+                TestSpec.type(VARIANT())
+                        .values(variant(JSON_OBJECT))
+                        .binary(JSON_OBJECT.getBytes(StandardCharsets.UTF_8)),
+                TestSpec.type(VARIANT()).values(variant("[1,2,3]")).binary("[1,2,3]".getBytes()),
+                TestSpec.type(VARIANT())
+                        .values(variant("\"hello\""))
+                        .binary("\"hello\"".getBytes()),
+                TestSpec.type(VARIANT()).values(variant("42")).binary("42".getBytes()),
+                TestSpec.type(VARIANT()).values(variant("3.5")).binary("3.5".getBytes()),
+                TestSpec.type(VARIANT()).values(variant("true")).binary("true".getBytes()),
+                TestSpec.type(VARIANT()).values(variant("null")).binary("null".getBytes()),
+                TestSpec.type(VARIANT())
+                        .values(variant("{\"id\":1}"), variant("{\"id\":2}"), variant("{\"id\":3}"))
+                        .binary(
+                                "{\"id\":1}".getBytes(),
+                                "{\"id\":2}".getBytes(),
+                                "{\"id\":3}".getBytes()),
+                TestSpec.type(VARIANT())
+                        .values(variant("{\"greeting\":\"你好世界\"}"))
+                        .withCharset("UTF-16")
+                        .binary("{\"greeting\":\"你好世界\"}".getBytes(StandardCharsets.UTF_16)),
+
                 // test nulls
-                TestSpec.type(TINYINT()).value(null).binary(null),
-                TestSpec.type(SMALLINT()).value(null).binary(null),
-                TestSpec.type(INT()).value(null).binary(null),
-                TestSpec.type(BIGINT()).value(null).binary(null),
-                TestSpec.type(FLOAT()).value(null).binary(null),
-                TestSpec.type(DOUBLE()).value(null).binary(null),
-                TestSpec.type(BOOLEAN()).value(null).binary(null),
-                TestSpec.type(STRING()).value(null).binary(null),
-                TestSpec.type(BYTES()).value(null).binary(null),
+                TestSpec.type(TINYINT()).values((Object) null).binary((byte[]) null),
+                TestSpec.type(SMALLINT()).values((Object) null).binary((byte[]) null),
+                TestSpec.type(INT()).values((Object) null).binary((byte[]) null),
+                TestSpec.type(BIGINT()).values((Object) null).binary((byte[]) null),
+                TestSpec.type(FLOAT()).values((Object) null).binary((byte[]) null),
+                TestSpec.type(DOUBLE()).values((Object) null).binary((byte[]) null),
+                TestSpec.type(BOOLEAN()).values((Object) null).binary((byte[]) null),
+                TestSpec.type(STRING()).values((Object) null).binary((byte[]) null),
+                TestSpec.type(BYTES()).values((Object) null).binary((byte[]) null),
                 TestSpec.type(RAW(LocalDateTime.class, new LocalDateTimeSerializer()))
-                        .value(null)
-                        .binary(null));
+                        .values((Object) null)
+                        .binary((byte[]) null),
+                TestSpec.type(VARIANT()).values((Object) null).binary((byte[]) null));
     }
 
-    @Parameterized.Parameter public TestSpec testSpec;
-
-    @Test
-    public void testSerializationAndDeserialization() throws Exception {
+    @ParameterizedTest
+    @MethodSource("testData")
+    void testSerializationAndDeserialization(final TestSpec testSpec) throws Exception {
+        // Clone through serialization, as Flink does when shipping the schema to a task manager.
+        // This also guards that the schema stays serializable for every supported type.
         RawFormatDeserializationSchema deserializationSchema =
-                new RawFormatDeserializationSchema(
-                        testSpec.type.getLogicalType(),
-                        TypeInformation.of(RowData.class),
-                        testSpec.charsetName,
-                        testSpec.isBigEndian);
+                InstantiationUtil.clone(
+                        new RawFormatDeserializationSchema(
+                                testSpec.type.getLogicalType(),
+                                TypeInformation.of(RowData.class),
+                                testSpec.charsetName,
+                                testSpec.isBigEndian));
         RawFormatSerializationSchema serializationSchema =
-                new RawFormatSerializationSchema(
-                        testSpec.type.getLogicalType(), testSpec.charsetName, testSpec.isBigEndian);
+                InstantiationUtil.clone(
+                        new RawFormatSerializationSchema(
+                                testSpec.type.getLogicalType(),
+                                testSpec.charsetName,
+                                testSpec.isBigEndian));
         deserializationSchema.open(mock(DeserializationSchema.InitializationContext.class));
         serializationSchema.open(mock(SerializationSchema.InitializationContext.class));
 
-        Row row = Row.of(testSpec.value);
         DataStructureConverter<Object, Object> converter =
                 DataStructureConverters.getConverter(ROW(FIELD("single", testSpec.type)));
-        RowData originalRowData = (RowData) converter.toInternal(row);
 
-        byte[] serializedBytes = serializationSchema.serialize(originalRowData);
-        assertThat(serializedBytes).isEqualTo(testSpec.binary);
+        byte[][] serializedBytesArr = new byte[testSpec.values.length][];
+        RowData[] deserializedRowDataArr = new RowData[testSpec.values.length];
 
-        RowData deserializeRowData = deserializationSchema.deserialize(serializedBytes);
-        Row actual = (Row) converter.toExternal(deserializeRowData);
-        assertThat(actual).isEqualTo(row);
+        // The following loops are partitioned to ensure the serialized/deserialized
+        // values are not copied by reference. (see FLINK-35097)
+
+        // Process serialization
+        for (int i = 0; i < testSpec.values.length; i++) {
+            Row row = Row.of(testSpec.values[i]);
+            RowData originalRowData = (RowData) converter.toInternal(row);
+            serializedBytesArr[i] = serializationSchema.serialize(originalRowData);
+        }
+
+        // Test serialization and process deserialization
+        for (int i = 0; i < testSpec.values.length; i++) {
+            assertThat(serializedBytesArr[i]).isEqualTo(testSpec.binary[i]);
+
+            deserializedRowDataArr[i] = deserializationSchema.deserialize(serializedBytesArr[i]);
+        }
+
+        // Test deserialization
+        for (int i = 0; i < testSpec.values.length; i++) {
+            Row row = Row.of(testSpec.values[i]);
+            Row actual = (Row) converter.toExternal(deserializedRowDataArr[i]);
+            assertThat(actual).isEqualTo(row);
+        }
+    }
+
+    private static Variant variant(String json) {
+        try {
+            return BinaryVariantInternalBuilder.parseJson(json, false);
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
     }
 
     private static byte[] serializeLocalDateTime(LocalDateTime localDateTime) {
@@ -183,9 +246,9 @@ public class RawFormatSerDeSchemaTest {
 
     private static class TestSpec {
 
-        private Object value;
-        private byte[] binary;
-        private DataType type;
+        private Object[] values;
+        private byte[][] binary;
+        private final DataType type;
         private String charsetName = "UTF-8";
         private boolean isBigEndian = true;
 
@@ -197,12 +260,12 @@ public class RawFormatSerDeSchemaTest {
             return new TestSpec(fieldType);
         }
 
-        public TestSpec value(Object value) {
-            this.value = value;
+        public TestSpec values(Object... values) {
+            this.values = values;
             return this;
         }
 
-        public TestSpec binary(byte[] bytes) {
+        public TestSpec binary(byte[]... bytes) {
             this.binary = bytes;
             return this;
         }
@@ -219,12 +282,16 @@ public class RawFormatSerDeSchemaTest {
 
         @Override
         public String toString() {
-            String hex = binary == null ? "null" : "0x" + StringUtils.byteToHexString(binary);
+            ArrayList<String> hexes = new ArrayList<>();
+            for (byte[] b : binary) {
+                hexes.add(b == null ? "" : "0x" + StringUtils.byteToHexString(b));
+            }
+
             return "TestSpec{"
-                    + "value="
-                    + value
+                    + "values="
+                    + Arrays.toString(values)
                     + ", binary="
-                    + hex
+                    + hexes
                     + ", type="
                     + type
                     + ", charsetName='"

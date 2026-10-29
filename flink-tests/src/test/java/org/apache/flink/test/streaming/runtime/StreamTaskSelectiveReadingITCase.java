@@ -18,28 +18,27 @@
 
 package org.apache.flink.test.streaming.runtime;
 
+import org.apache.flink.api.common.functions.OpenContext;
 import org.apache.flink.api.common.functions.RuntimeContext;
 import org.apache.flink.api.common.typeinfo.BasicTypeInfo;
-import org.apache.flink.configuration.Configuration;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
-import org.apache.flink.streaming.api.functions.source.RichParallelSourceFunction;
-import org.apache.flink.streaming.api.operators.ChainingStrategy;
+import org.apache.flink.streaming.api.functions.source.legacy.RichParallelSourceFunction;
 import org.apache.flink.streaming.util.TestSequentialReadingStreamOperator;
 import org.apache.flink.test.streaming.runtime.util.TestListResultSink;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 
-import static org.junit.Assert.assertEquals;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /** Tests for selective reading of {@code TwoInputStreamTask}. */
-public class StreamTaskSelectiveReadingITCase {
+class StreamTaskSelectiveReadingITCase {
     @Test
-    public void testSequentialReading() throws Exception {
+    void testSequentialReading() throws Exception {
 
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
         env.setParallelism(1);
@@ -58,7 +57,6 @@ public class StreamTaskSelectiveReadingITCase {
 
         TestSequentialReadingStreamOperator twoInputStreamOperator =
                 new TestSequentialReadingStreamOperator("Operator0");
-        twoInputStreamOperator.setChainingStrategy(ChainingStrategy.NEVER);
 
         source0.connect(source1)
                 .transform(
@@ -88,13 +86,13 @@ public class StreamTaskSelectiveReadingITCase {
                         "[Operator0-2]: 6");
         Collections.sort(expected2);
 
-        assertEquals(expected1.size() + expected2.size(), result.size());
-        assertEquals(expected1, result.subList(0, expected1.size()));
+        assertThat(result).hasSize(expected1.size() + expected2.size());
+        assertThat(result.subList(0, expected1.size())).isEqualTo(expected1);
 
         List<String> result2 =
                 result.subList(expected1.size(), expected1.size() + expected2.size());
         Collections.sort(result2);
-        assertEquals(expected2, result2);
+        assertThat(result2).isEqualTo(expected2);
     }
 
     private abstract static class TestSource<T> extends RichParallelSourceFunction<T> {
@@ -113,7 +111,7 @@ public class StreamTaskSelectiveReadingITCase {
         }
 
         @Override
-        public void open(Configuration parameters) throws Exception {
+        public void open(OpenContext openContext) throws Exception {
             this.context = getRuntimeContext();
         }
 
@@ -124,7 +122,9 @@ public class StreamTaskSelectiveReadingITCase {
                 if (elementIndex < elements.length) {
                     synchronized (ctx.getCheckpointLock()) {
                         ctx.collect(
-                                outValue(elements[elementIndex], context.getIndexOfThisSubtask()));
+                                outValue(
+                                        elements[elementIndex],
+                                        context.getTaskInfo().getIndexOfThisSubtask()));
                         elementIndex++;
                     }
                 } else {

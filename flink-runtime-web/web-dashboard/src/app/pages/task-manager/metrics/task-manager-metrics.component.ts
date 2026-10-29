@@ -16,51 +16,93 @@
  * limitations under the License.
  */
 
+import { DecimalPipe, NgForOf, NgIf, NgTemplateOutlet } from '@angular/common';
 import { ChangeDetectionStrategy, ChangeDetectorRef, Component, OnDestroy, OnInit } from '@angular/core';
-import { Subject } from 'rxjs';
-import { takeUntil } from 'rxjs/operators';
+import { ActivatedRoute } from '@angular/router';
+import { of, Subject } from 'rxjs';
+import { catchError, takeUntil } from 'rxjs/operators';
 
-import { TaskManagerDetail } from 'interfaces';
-import { TaskManagerService } from 'services';
+import { HumanizeBytesPipe } from '@flink-runtime-web/components/humanize-bytes.pipe';
+import { MetricMap, TaskManagerDetail } from '@flink-runtime-web/interfaces';
+import { StatusService, TaskManagerService } from '@flink-runtime-web/services';
+import { NzCardModule } from 'ng-zorro-antd/card';
+import { NzGridModule } from 'ng-zorro-antd/grid';
+import { NzIconModule } from 'ng-zorro-antd/icon';
+import { NzProgressModule } from 'ng-zorro-antd/progress';
+import { NzTableModule } from 'ng-zorro-antd/table';
+import { NzTooltipModule } from 'ng-zorro-antd/tooltip';
+
+import { pollTaskManagerDetail } from '../task-manager-detail-poll';
 
 @Component({
   selector: 'flink-task-manager-metrics',
   templateUrl: './task-manager-metrics.component.html',
   styleUrls: ['./task-manager-metrics.component.less'],
-  changeDetection: ChangeDetectionStrategy.OnPush
+  changeDetection: ChangeDetectionStrategy.OnPush,
+  imports: [
+    NzCardModule,
+    NzTableModule,
+    NzTooltipModule,
+    NzProgressModule,
+    DecimalPipe,
+    HumanizeBytesPipe,
+    NzIconModule,
+    NzGridModule,
+    NgForOf,
+    NgIf,
+    NgTemplateOutlet
+  ]
 })
 export class TaskManagerMetricsComponent implements OnInit, OnDestroy {
-  public taskManagerDetail: TaskManagerDetail;
+  public taskManagerDetail?: TaskManagerDetail;
   public metrics: { [id: string]: number } = {};
 
   private readonly destroy$ = new Subject<void>();
 
-  constructor(private readonly taskManagerService: TaskManagerService, private readonly cdr: ChangeDetectorRef) {}
+  constructor(
+    private readonly taskManagerService: TaskManagerService,
+    private readonly activatedRoute: ActivatedRoute,
+    private readonly statusService: StatusService,
+    private readonly cdr: ChangeDetectorRef
+  ) {}
 
   public ngOnInit(): void {
-    this.taskManagerService.taskManagerDetail$.pipe(takeUntil(this.destroy$)).subscribe(data => {
-      this.taskManagerDetail = data;
-      this.taskManagerService
-        .getMetrics(data.id, [
-          'Status.JVM.Memory.Heap.Used',
-          'Status.JVM.Memory.Heap.Max',
-          'Status.Shuffle.Netty.UsedMemory',
-          'Status.Shuffle.Netty.TotalMemory',
-          'Status.Flink.Memory.Managed.Used',
-          'Status.Flink.Memory.Managed.Total',
-          'Status.JVM.Memory.Metaspace.Used',
-          'Status.JVM.Memory.Metaspace.Max'
-        ])
-        .subscribe(metrics => {
-          this.metrics = metrics;
-          this.cdr.markForCheck();
-        });
-      this.cdr.markForCheck();
-    });
+    const taskManagerId = this.activatedRoute.parent!.snapshot.params.taskManagerId;
+    pollTaskManagerDetail(this.statusService.refresh$, () => this.taskManagerService.loadManager(taskManagerId))
+      .pipe(takeUntil(this.destroy$))
+      .subscribe(({ detail }) => {
+        if (detail) {
+          this.reload(detail.id);
+        }
+        this.taskManagerDetail = detail;
+        this.cdr.markForCheck();
+      });
   }
 
   public ngOnDestroy(): void {
     this.destroy$.next();
     this.destroy$.complete();
+  }
+
+  private reload(id: string): void {
+    this.taskManagerService
+      .loadMetrics(id, [
+        'Status.JVM.Memory.Heap.Used',
+        'Status.JVM.Memory.Heap.Max',
+        'Status.Shuffle.Netty.UsedMemory',
+        'Status.Shuffle.Netty.TotalMemory',
+        'Status.Flink.Memory.Managed.Used',
+        'Status.Flink.Memory.Managed.Total',
+        'Status.JVM.Memory.Metaspace.Used',
+        'Status.JVM.Memory.Metaspace.Max'
+      ])
+      .pipe(
+        catchError(() => of({} as MetricMap)),
+        takeUntil(this.destroy$)
+      )
+      .subscribe(metrics => {
+        this.metrics = metrics;
+        this.cdr.markForCheck();
+      });
   }
 }

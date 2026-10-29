@@ -18,7 +18,7 @@
 
 package org.apache.flink.cep.operator;
 
-import org.apache.flink.api.common.ExecutionConfig;
+import org.apache.flink.api.common.serialization.SerializerConfigImpl;
 import org.apache.flink.api.common.state.ValueState;
 import org.apache.flink.api.common.typeinfo.BasicTypeInfo;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
@@ -39,29 +39,27 @@ import org.apache.flink.cep.pattern.conditions.IterativeCondition;
 import org.apache.flink.cep.pattern.conditions.SimpleCondition;
 import org.apache.flink.cep.time.TimerService;
 import org.apache.flink.cep.utils.CepOperatorTestUtilities;
-import org.apache.flink.contrib.streaming.state.RocksDBStateBackend;
 import org.apache.flink.mock.Whitebox;
 import org.apache.flink.runtime.checkpoint.OperatorSubtaskState;
-import org.apache.flink.runtime.state.memory.MemoryStateBackend;
+import org.apache.flink.runtime.state.storage.JobManagerCheckpointStorage;
+import org.apache.flink.state.rocksdb.EmbeddedRocksDBStateBackend;
 import org.apache.flink.streaming.api.watermark.Watermark;
-import org.apache.flink.streaming.api.windowing.time.Time;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
 import org.apache.flink.streaming.util.KeyedOneInputStreamOperatorTestHarness;
 import org.apache.flink.streaming.util.OneInputStreamOperatorTestHarness;
 import org.apache.flink.util.Collector;
 import org.apache.flink.util.OutputTag;
 import org.apache.flink.util.TernaryBoolean;
-import org.apache.flink.util.TestLogger;
 
-import org.apache.flink.shaded.guava30.com.google.common.collect.Lists;
+import org.apache.flink.shaded.guava33.com.google.common.collect.Lists;
 
-import org.junit.After;
-import org.junit.Assert;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.TemporaryFolder;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.mockito.Mockito;
 
+import java.io.File;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
@@ -72,9 +70,7 @@ import java.util.Queue;
 
 import static org.apache.flink.cep.utils.CepOperatorBuilder.createOperatorForNFA;
 import static org.apache.flink.cep.utils.EventBuilder.event;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.spy;
@@ -82,17 +78,17 @@ import static org.mockito.Mockito.validateMockitoUsage;
 import static org.mockito.Mockito.verify;
 
 /** Tests for {@link CepOperator}. */
-public class CEPOperatorTest extends TestLogger {
+class CEPOperatorTest {
 
-    @Rule public TemporaryFolder tempFolder = new TemporaryFolder();
+    @TempDir File tempFolder;
 
-    @After
-    public void validate() {
+    @AfterEach
+    void validate() {
         validateMockitoUsage();
     }
 
     @Test
-    public void testKeyedCEPOperatorWatermarkForwarding() throws Exception {
+    void testKeyedCEPOperatorWatermarkForwarding() throws Exception {
 
         OneInputStreamOperatorTestHarness<Event, Map<String, List<Event>>> harness =
                 getCepTestHarness(false);
@@ -111,7 +107,7 @@ public class CEPOperatorTest extends TestLogger {
     }
 
     @Test
-    public void testProcessingTimestampisPassedToNFA() throws Exception {
+    void testProcessingTimestampisPassedToNFA() throws Exception {
 
         final NFA<Event> nfa =
                 NFACompiler.compileFactory(Pattern.<Event>begin("begin"), true).createNFA();
@@ -137,7 +133,7 @@ public class CEPOperatorTest extends TestLogger {
     }
 
     @Test
-    public void testKeyedCEPOperatorCheckpointing() throws Exception {
+    void testKeyedCEPOperatorCheckpointing() throws Exception {
 
         OneInputStreamOperatorTestHarness<Event, Map<String, List<Event>>> harness =
                 getCepTestHarness(false);
@@ -191,7 +187,7 @@ public class CEPOperatorTest extends TestLogger {
 
             Queue<Object> result = harness.getOutput();
 
-            assertEquals(2, result.size());
+            assertThat(result).hasSize(2);
 
             verifyPattern(result.poll(), startEvent, middleEvent, endEvent);
             verifyWatermark(result.poll(), Long.MAX_VALUE);
@@ -201,11 +197,11 @@ public class CEPOperatorTest extends TestLogger {
     }
 
     @Test
-    public void testKeyedCEPOperatorCheckpointingWithRocksDB() throws Exception {
+    void testKeyedCEPOperatorCheckpointingWithRocksDB() throws Exception {
 
-        String rocksDbPath = tempFolder.newFolder().getAbsolutePath();
-        RocksDBStateBackend rocksDBStateBackend =
-                new RocksDBStateBackend(new MemoryStateBackend(), TernaryBoolean.FALSE);
+        String rocksDbPath = tempFolder.getAbsolutePath();
+        EmbeddedRocksDBStateBackend rocksDBStateBackend =
+                new EmbeddedRocksDBStateBackend(TernaryBoolean.FALSE);
         rocksDBStateBackend.setDbStoragePath(rocksDbPath);
 
         OneInputStreamOperatorTestHarness<Event, Map<String, List<Event>>> harness =
@@ -213,6 +209,7 @@ public class CEPOperatorTest extends TestLogger {
 
         try {
             harness.setStateBackend(rocksDBStateBackend);
+            harness.setCheckpointStorage(new JobManagerCheckpointStorage());
 
             harness.open();
 
@@ -229,7 +226,7 @@ public class CEPOperatorTest extends TestLogger {
 
             harness = getCepTestHarness(false);
 
-            rocksDBStateBackend = new RocksDBStateBackend(new MemoryStateBackend());
+            rocksDBStateBackend = new EmbeddedRocksDBStateBackend();
             rocksDBStateBackend.setDbStoragePath(rocksDbPath);
             harness.setStateBackend(rocksDBStateBackend);
 
@@ -252,7 +249,7 @@ public class CEPOperatorTest extends TestLogger {
 
             harness = getCepTestHarness(false);
 
-            rocksDBStateBackend = new RocksDBStateBackend(new MemoryStateBackend());
+            rocksDBStateBackend = new EmbeddedRocksDBStateBackend();
             rocksDBStateBackend.setDbStoragePath(rocksDbPath);
             harness.setStateBackend(rocksDBStateBackend);
             harness.setup();
@@ -269,7 +266,7 @@ public class CEPOperatorTest extends TestLogger {
 
             Queue<Object> result = harness.getOutput();
 
-            assertEquals(2, result.size());
+            assertThat(result).hasSize(2);
 
             verifyPattern(result.poll(), startEvent, middleEvent, endEvent);
             verifyWatermark(result.poll(), Long.MAX_VALUE);
@@ -282,7 +279,7 @@ public class CEPOperatorTest extends TestLogger {
      * Tests that the internal time of a CEP operator advances only given watermarks. See FLINK-5033
      */
     @Test
-    public void testKeyedAdvancingTimeWithoutElements() throws Exception {
+    void testKeyedAdvancingTimeWithoutElements() throws Exception {
         final Event startEvent = new Event(42, "start", 1.0);
         final long watermarkTimestamp1 = 5L;
         final long watermarkTimestamp2 = 13L;
@@ -315,16 +312,16 @@ public class CEPOperatorTest extends TestLogger {
                                 BasicTypeInfo.INT_TYPE_INFO);
 
         try {
-            String rocksDbPath = tempFolder.newFolder().getAbsolutePath();
-            RocksDBStateBackend rocksDBStateBackend =
-                    new RocksDBStateBackend(new MemoryStateBackend());
+            String rocksDbPath = tempFolder.getAbsolutePath();
+            EmbeddedRocksDBStateBackend rocksDBStateBackend = new EmbeddedRocksDBStateBackend();
             rocksDBStateBackend.setDbStoragePath(rocksDbPath);
 
             harness.setStateBackend(rocksDBStateBackend);
+            harness.setCheckpointStorage(new JobManagerCheckpointStorage());
             harness.setup(
                     new KryoSerializer<>(
                             (Class<Map<String, List<Event>>>) (Object) Map.class,
-                            new ExecutionConfig()));
+                            new SerializerConfigImpl()));
             harness.open();
 
             harness.processElement(new StreamRecord<>(startEvent, 3L));
@@ -335,32 +332,32 @@ public class CEPOperatorTest extends TestLogger {
             Queue<StreamRecord<Tuple2<Map<String, List<Event>>, Long>>> sideOutput =
                     harness.getSideOutput(timedOut);
 
-            assertEquals(2L, result.size());
-            assertEquals(1L, sideOutput.size());
+            assertThat(result).hasSize(2);
+            assertThat(sideOutput).hasSize(1);
 
             Object watermark1 = result.poll();
 
-            assertTrue(watermark1 instanceof Watermark);
+            assertThat(watermark1).isInstanceOf(Watermark.class);
 
-            assertEquals(watermarkTimestamp1, ((Watermark) watermark1).getTimestamp());
+            assertThat(((Watermark) watermark1).getTimestamp()).isEqualTo(watermarkTimestamp1);
 
             Tuple2<Map<String, List<Event>>, Long> leftResult = sideOutput.poll().getValue();
 
-            assertEquals(watermarkTimestamp2, (long) leftResult.f1);
-            assertEquals(expectedSequence, leftResult.f0);
+            assertThat((long) leftResult.f1).isEqualTo(watermarkTimestamp2);
+            assertThat(leftResult.f0).isEqualTo(expectedSequence);
 
             Object watermark2 = result.poll();
 
-            assertTrue(watermark2 instanceof Watermark);
+            assertThat(watermark2).isInstanceOf(Watermark.class);
 
-            assertEquals(watermarkTimestamp2, ((Watermark) watermark2).getTimestamp());
+            assertThat(((Watermark) watermark2).getTimestamp()).isEqualTo(watermarkTimestamp2);
         } finally {
             harness.close();
         }
     }
 
     @Test
-    public void testKeyedCEPOperatorNFAUpdate() throws Exception {
+    void testKeyedCEPOperatorNFAUpdate() throws Exception {
 
         CepOperator<Event, Integer, Map<String, List<Event>>> operator =
                 CepOperatorTestUtilities.getKeyedCepOperator(true, new SimpleNFAFactory());
@@ -405,7 +402,7 @@ public class CEPOperatorTest extends TestLogger {
 
             Queue<Object> result = harness.getOutput();
 
-            assertEquals(1, result.size());
+            assertThat(result).hasSize(1);
 
             verifyPattern(result.poll(), startEvent, middleEvent, endEvent);
         } finally {
@@ -414,11 +411,11 @@ public class CEPOperatorTest extends TestLogger {
     }
 
     @Test
-    public void testKeyedCEPOperatorNFAUpdateWithRocksDB() throws Exception {
+    void testKeyedCEPOperatorNFAUpdateWithRocksDB() throws Exception {
 
-        String rocksDbPath = tempFolder.newFolder().getAbsolutePath();
-        RocksDBStateBackend rocksDBStateBackend =
-                new RocksDBStateBackend(new MemoryStateBackend(), TernaryBoolean.FALSE);
+        String rocksDbPath = tempFolder.getAbsolutePath();
+        EmbeddedRocksDBStateBackend rocksDBStateBackend =
+                new EmbeddedRocksDBStateBackend(TernaryBoolean.FALSE);
         rocksDBStateBackend.setDbStoragePath(rocksDbPath);
 
         CepOperator<Event, Integer, Map<String, List<Event>>> operator =
@@ -428,6 +425,7 @@ public class CEPOperatorTest extends TestLogger {
 
         try {
             harness.setStateBackend(rocksDBStateBackend);
+            harness.setCheckpointStorage(new JobManagerCheckpointStorage());
 
             harness.open();
 
@@ -444,7 +442,7 @@ public class CEPOperatorTest extends TestLogger {
             operator = CepOperatorTestUtilities.getKeyedCepOperator(true, new SimpleNFAFactory());
             harness = CepOperatorTestUtilities.getCepTestHarness(operator);
 
-            rocksDBStateBackend = new RocksDBStateBackend(new MemoryStateBackend());
+            rocksDBStateBackend = new EmbeddedRocksDBStateBackend();
             rocksDBStateBackend.setDbStoragePath(rocksDbPath);
             harness.setStateBackend(rocksDBStateBackend);
             harness.setup();
@@ -458,7 +456,7 @@ public class CEPOperatorTest extends TestLogger {
             operator = CepOperatorTestUtilities.getKeyedCepOperator(true, new SimpleNFAFactory());
             harness = CepOperatorTestUtilities.getCepTestHarness(operator);
 
-            rocksDBStateBackend = new RocksDBStateBackend(new MemoryStateBackend());
+            rocksDBStateBackend = new EmbeddedRocksDBStateBackend();
             rocksDBStateBackend.setDbStoragePath(rocksDbPath);
             harness.setStateBackend(rocksDBStateBackend);
             harness.setup();
@@ -472,7 +470,7 @@ public class CEPOperatorTest extends TestLogger {
 
             Queue<Object> result = harness.getOutput();
 
-            assertEquals(1, result.size());
+            assertThat(result).hasSize(1);
 
             verifyPattern(result.poll(), startEvent, middleEvent, endEvent);
         } finally {
@@ -481,7 +479,7 @@ public class CEPOperatorTest extends TestLogger {
     }
 
     @Test
-    public void testKeyedCEPOperatorNFAUpdateTimes() throws Exception {
+    void testKeyedCEPOperatorNFAUpdateTimes() throws Exception {
         CepOperator<Event, Integer, Map<String, List<Event>>> operator =
                 CepOperatorTestUtilities.getKeyedCepOperator(true, new SimpleNFAFactory());
         OneInputStreamOperatorTestHarness<Event, Map<String, List<Event>>> harness =
@@ -491,8 +489,7 @@ public class CEPOperatorTest extends TestLogger {
             harness.open();
 
             final ValueState nfaOperatorState =
-                    (ValueState)
-                            Whitebox.<ValueState>getInternalState(operator, "computationStates");
+                    Whitebox.getInternalState(operator, "computationStates");
             final ValueState nfaOperatorStateSpy = Mockito.spy(nfaOperatorState);
             Whitebox.setInternalState(operator, "computationStates", nfaOperatorStateSpy);
 
@@ -511,7 +508,7 @@ public class CEPOperatorTest extends TestLogger {
             // get and verify the output
             Queue<Object> result = harness.getOutput();
 
-            assertEquals(1, result.size());
+            assertThat(result).hasSize(1);
 
             verifyPattern(result.poll(), startEvent, middleEvent, endEvent);
         } finally {
@@ -520,10 +517,10 @@ public class CEPOperatorTest extends TestLogger {
     }
 
     @Test
-    public void testKeyedCEPOperatorNFAUpdateTimesWithRocksDB() throws Exception {
+    void testKeyedCEPOperatorNFAUpdateTimesWithRocksDB() throws Exception {
 
-        String rocksDbPath = tempFolder.newFolder().getAbsolutePath();
-        RocksDBStateBackend rocksDBStateBackend = new RocksDBStateBackend(new MemoryStateBackend());
+        String rocksDbPath = tempFolder.getAbsolutePath();
+        EmbeddedRocksDBStateBackend rocksDBStateBackend = new EmbeddedRocksDBStateBackend();
         rocksDBStateBackend.setDbStoragePath(rocksDbPath);
 
         CepOperator<Event, Integer, Map<String, List<Event>>> operator =
@@ -533,12 +530,12 @@ public class CEPOperatorTest extends TestLogger {
 
         try {
             harness.setStateBackend(rocksDBStateBackend);
+            harness.setCheckpointStorage(new JobManagerCheckpointStorage());
 
             harness.open();
 
             final ValueState nfaOperatorState =
-                    (ValueState)
-                            Whitebox.<ValueState>getInternalState(operator, "computationStates");
+                    Whitebox.getInternalState(operator, "computationStates");
             final ValueState nfaOperatorStateSpy = Mockito.spy(nfaOperatorState);
             Whitebox.setInternalState(operator, "computationStates", nfaOperatorStateSpy);
 
@@ -557,7 +554,7 @@ public class CEPOperatorTest extends TestLogger {
             // get and verify the output
             Queue<Object> result = harness.getOutput();
 
-            assertEquals(1, result.size());
+            assertThat(result).hasSize(1);
 
             verifyPattern(result.poll(), startEvent, middleEvent, endEvent);
         } finally {
@@ -566,7 +563,7 @@ public class CEPOperatorTest extends TestLogger {
     }
 
     @Test
-    public void testCEPOperatorCleanupEventTime() throws Exception {
+    void testCEPOperatorCleanupEventTime() throws Exception {
 
         Event startEvent1 = new Event(42, "start", 1.0);
         Event startEvent2 = new Event(42, "start", 2.0);
@@ -597,11 +594,11 @@ public class CEPOperatorTest extends TestLogger {
             // there must be 2 keys 42, 43 registered for the watermark callback
             // all the seen elements must be in the priority queues but no NFA yet.
 
-            assertEquals(2L, harness.numEventTimeTimers());
-            assertEquals(4L, operator.getPQSize(42));
-            assertEquals(1L, operator.getPQSize(43));
-            assertTrue(!operator.hasNonEmptySharedBuffer(42));
-            assertTrue(!operator.hasNonEmptySharedBuffer(43));
+            assertThat(harness.numEventTimeTimers()).isEqualTo(4L);
+            assertThat(operator.getPQSize(42)).isEqualTo(4L);
+            assertThat(operator.getPQSize(43)).isOne();
+            assertThat(operator.hasNonEmptySharedBuffer(42)).isFalse();
+            assertThat(operator.hasNonEmptySharedBuffer(43)).isFalse();
 
             harness.processWatermark(new Watermark(2L));
 
@@ -612,11 +609,11 @@ public class CEPOperatorTest extends TestLogger {
             // one element in PQ for 42 (the barfoo) as it arrived early
             // for 43 the element entered the NFA and the PQ is empty
 
-            assertEquals(2L, harness.numEventTimeTimers());
-            assertTrue(operator.hasNonEmptySharedBuffer(42));
-            assertEquals(1L, operator.getPQSize(42));
-            assertTrue(operator.hasNonEmptySharedBuffer(43));
-            assertTrue(!operator.hasNonEmptyPQ(43));
+            assertThat(harness.numEventTimeTimers()).isEqualTo(4L);
+            assertThat(operator.hasNonEmptySharedBuffer(42)).isTrue();
+            assertThat(operator.getPQSize(42)).isOne();
+            assertThat(operator.hasNonEmptySharedBuffer(43)).isTrue();
+            assertThat(operator.hasNonEmptyPQ(43)).isFalse();
 
             harness.processElement(new StreamRecord<>(startEvent2, 4L));
             harness.processElement(new StreamRecord<Event>(middleEvent2, 5L));
@@ -637,11 +634,11 @@ public class CEPOperatorTest extends TestLogger {
 
             // now we have 1 key because the 43 expired and was removed.
             // 42 is still there due to startEvent2
-            assertEquals(1L, harness.numEventTimeTimers());
-            assertTrue(operator2.hasNonEmptySharedBuffer(42));
-            assertTrue(!operator2.hasNonEmptyPQ(42));
-            assertTrue(!operator2.hasNonEmptySharedBuffer(43));
-            assertTrue(!operator2.hasNonEmptyPQ(43));
+            assertThat(harness.numEventTimeTimers()).isEqualTo(3L);
+            assertThat(operator2.hasNonEmptySharedBuffer(42)).isTrue();
+            assertThat(operator2.hasNonEmptyPQ(42)).isFalse();
+            assertThat(operator2.hasNonEmptySharedBuffer(43)).isFalse();
+            assertThat(operator2.hasNonEmptyPQ(43)).isFalse();
 
             verifyPattern(harness.getOutput().poll(), startEvent1, middleEvent1, endEvent1);
             verifyPattern(harness.getOutput().poll(), startEvent1, middleEvent2, endEvent1);
@@ -655,11 +652,11 @@ public class CEPOperatorTest extends TestLogger {
             harness.processWatermark(20L);
             harness.processWatermark(21L);
 
-            assertTrue(!operator2.hasNonEmptySharedBuffer(42));
-            assertTrue(!operator2.hasNonEmptyPQ(42));
-            assertEquals(0L, harness.numEventTimeTimers());
+            assertThat(operator2.hasNonEmptySharedBuffer(42)).isFalse();
+            assertThat(operator2.hasNonEmptyPQ(42)).isFalse();
+            assertThat(harness.numEventTimeTimers()).isZero();
 
-            assertEquals(3, harness.getOutput().size());
+            assertThat(harness.getOutput()).hasSize(3);
             verifyPattern(harness.getOutput().poll(), startEvent2, middleEvent2, endEvent2);
 
             verifyWatermark(harness.getOutput().poll(), 20L);
@@ -670,7 +667,7 @@ public class CEPOperatorTest extends TestLogger {
     }
 
     @Test
-    public void testCEPOperatorCleanupEventTimeWithSameElements() throws Exception {
+    void testCEPOperatorCleanupEventTimeWithSameElements() throws Exception {
 
         Event startEvent = new Event(41, "c", 1.0);
         Event middle1Event1 = new Event(41, "a", 2.0);
@@ -696,18 +693,19 @@ public class CEPOperatorTest extends TestLogger {
             harness.processElement(new StreamRecord<>(middle1Event1, 3));
             harness.processElement(new StreamRecord<>(new Event(41, "d", 6.0), 5));
 
-            assertEquals(1L, harness.numEventTimeTimers());
-            assertEquals(7L, operator.getPQSize(41));
-            assertTrue(!operator.hasNonEmptySharedBuffer(41));
+            assertThat(harness.numEventTimeTimers()).isEqualTo(5L);
+            assertThat(operator.getPQSize(41)).isEqualTo(7L);
+            assertThat(operator.hasNonEmptySharedBuffer(41)).isFalse();
 
             harness.processWatermark(new Watermark(2L));
 
             verifyWatermark(harness.getOutput().poll(), Long.MIN_VALUE);
             verifyWatermark(harness.getOutput().poll(), 2L);
 
-            assertEquals(1L, harness.numEventTimeTimers());
-            assertEquals(6L, operator.getPQSize(41));
-            assertTrue(operator.hasNonEmptySharedBuffer(41)); // processed the first element
+            assertThat(harness.numEventTimeTimers()).isEqualTo(5L);
+            assertThat(operator.getPQSize(41)).isEqualTo(6L);
+            assertThat(operator.hasNonEmptySharedBuffer(41))
+                    .isTrue(); // processed the first element
 
             harness.processWatermark(new Watermark(8L));
 
@@ -757,23 +755,23 @@ public class CEPOperatorTest extends TestLogger {
                                     middle2Event1,
                                     middle1Event3)));
 
-            assertEquals(1L, harness.numEventTimeTimers());
-            assertEquals(0L, operator.getPQSize(41));
-            assertTrue(operator.hasNonEmptySharedBuffer(41));
+            assertThat(harness.numEventTimeTimers()).isOne();
+            assertThat(operator.getPQSize(41)).isZero();
+            assertThat(operator.hasNonEmptySharedBuffer(41)).isTrue();
 
             harness.processWatermark(new Watermark(17L));
             verifyWatermark(harness.getOutput().poll(), 17L);
 
-            assertTrue(!operator.hasNonEmptySharedBuffer(41));
-            assertTrue(!operator.hasNonEmptyPQ(41));
-            assertEquals(0L, harness.numEventTimeTimers());
+            assertThat(operator.hasNonEmptySharedBuffer(41)).isFalse();
+            assertThat(operator.hasNonEmptyPQ(41)).isFalse();
+            assertThat(harness.numEventTimeTimers()).isZero();
         } finally {
             harness.close();
         }
     }
 
     @Test
-    public void testCEPOperatorSideOutputLateElementsEventTime() throws Exception {
+    void testCEPOperatorSideOutputLateElementsEventTime() throws Exception {
 
         Event startEvent = new Event(41, "c", 1.0);
         Event middle1Event1 = new Event(41, "a", 2.0);
@@ -809,13 +807,12 @@ public class CEPOperatorTest extends TestLogger {
                 late.add(eventStreamRecord.getValue());
             }
 
-            List<Event> expected = Lists.newArrayList(middle1Event1, middle1Event2);
-            Assert.assertArrayEquals(expected.toArray(), late.toArray());
+            assertThat(late).containsExactly(middle1Event1, middle1Event2);
         }
     }
 
     @Test
-    public void testCEPOperatorLateRecordsMetric() throws Exception {
+    void testCEPOperatorLateRecordsMetric() throws Exception {
         Event startEvent = new Event(41, "c", 1.0);
         Event middle1Event1 = new Event(41, "a", 2.0);
         Event middle1Event2 = new Event(41, "a", 3.0);
@@ -834,14 +831,14 @@ public class CEPOperatorTest extends TestLogger {
             harness.processWatermark(4L);
             harness.processElement(middle1Event3, 3L);
 
-            assertEquals(2L, operator.getLateRecordsNumber());
+            assertThat(operator.getLateRecordsNumber()).isEqualTo(2L);
         } finally {
             harness.close();
         }
     }
 
     @Test
-    public void testCEPOperatorCleanupProcessingTime() throws Exception {
+    void testCEPOperatorCleanupProcessingTime() throws Exception {
 
         Event startEvent1 = new Event(42, "start", 1.0);
         Event startEvent2 = new Event(42, "start", 2.0);
@@ -869,10 +866,10 @@ public class CEPOperatorTest extends TestLogger {
             harness.processElement(
                     new StreamRecord<Event>(new SubEvent(42, "barfoo", 1.0, 5.0), 3L));
 
-            assertTrue(!operator.hasNonEmptyPQ(42));
-            assertTrue(!operator.hasNonEmptyPQ(43));
-            assertTrue(operator.hasNonEmptySharedBuffer(42));
-            assertTrue(operator.hasNonEmptySharedBuffer(43));
+            assertThat(operator.hasNonEmptyPQ(42)).isFalse();
+            assertThat(operator.hasNonEmptyPQ(43)).isFalse();
+            assertThat(operator.hasNonEmptySharedBuffer(42)).isTrue();
+            assertThat(operator.hasNonEmptySharedBuffer(43)).isTrue();
 
             harness.setProcessingTime(3L);
 
@@ -906,10 +903,10 @@ public class CEPOperatorTest extends TestLogger {
 
             harness.setProcessingTime(21L);
 
-            assertTrue(operator2.hasNonEmptySharedBuffer(42));
+            assertThat(operator2.hasNonEmptySharedBuffer(42)).isFalse();
 
             harness.processElement(new StreamRecord<>(startEvent1, 21L));
-            assertTrue(operator2.hasNonEmptySharedBuffer(42));
+            assertThat(operator2.hasNonEmptySharedBuffer(42)).isTrue();
 
             harness.setProcessingTime(49L);
 
@@ -917,20 +914,20 @@ public class CEPOperatorTest extends TestLogger {
             harness.processElement(new StreamRecord<>(new Event(42, "foobar", 1.0), 2L));
 
             // the pattern expired
-            assertTrue(!operator2.hasNonEmptySharedBuffer(42));
+            assertThat(operator2.hasNonEmptySharedBuffer(42)).isFalse();
 
-            assertEquals(0L, harness.numEventTimeTimers());
-            assertTrue(!operator2.hasNonEmptyPQ(42));
-            assertTrue(!operator2.hasNonEmptyPQ(43));
+            assertThat(harness.numEventTimeTimers()).isZero();
+            assertThat(operator2.hasNonEmptyPQ(42)).isFalse();
+            assertThat(operator2.hasNonEmptyPQ(43)).isFalse();
         } finally {
             harness.close();
         }
     }
 
     @Test
-    public void testCEPOperatorSerializationWRocksDB() throws Exception {
-        String rocksDbPath = tempFolder.newFolder().getAbsolutePath();
-        RocksDBStateBackend rocksDBStateBackend = new RocksDBStateBackend(new MemoryStateBackend());
+    void testCEPOperatorSerializationWRocksDB() throws Exception {
+        String rocksDbPath = tempFolder.getAbsolutePath();
+        EmbeddedRocksDBStateBackend rocksDBStateBackend = new EmbeddedRocksDBStateBackend();
         rocksDBStateBackend.setDbStoragePath(rocksDbPath);
 
         final Event startEvent1 = new Event(40, "start", 1.0);
@@ -944,16 +941,7 @@ public class CEPOperatorTest extends TestLogger {
 
         final Pattern<Event, ?> pattern =
                 Pattern.<Event>begin("start")
-                        .where(
-                                new SimpleCondition<Event>() {
-                                    private static final long serialVersionUID =
-                                            5726188262756267490L;
-
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getName().equals("start");
-                                    }
-                                })
+                        .where(SimpleCondition.of(value -> value.getName().equals("start")))
                         .followedBy("middle")
                         .subtype(SubEvent.class)
                         .where(
@@ -980,16 +968,7 @@ public class CEPOperatorTest extends TestLogger {
                         .oneOrMore()
                         .allowCombinations()
                         .followedBy("end")
-                        .where(
-                                new SimpleCondition<Event>() {
-                                    private static final long serialVersionUID =
-                                            7056763917392056548L;
-
-                                    @Override
-                                    public boolean filter(Event value) throws Exception {
-                                        return value.getName().equals("end");
-                                    }
-                                });
+                        .where(SimpleCondition.of(value -> value.getName().equals("end")));
 
         CepOperator<Event, Integer, Map<String, List<Event>>> operator =
                 CepOperatorTestUtilities.getKeyedCepOperator(
@@ -1008,6 +987,7 @@ public class CEPOperatorTest extends TestLogger {
 
         try {
             harness.setStateBackend(rocksDBStateBackend);
+            harness.setCheckpointStorage(new JobManagerCheckpointStorage());
             harness.open();
 
             harness.processWatermark(0L);
@@ -1058,7 +1038,7 @@ public class CEPOperatorTest extends TestLogger {
     }
 
     @Test
-    public void testCEPOperatorComparatorProcessTime() throws Exception {
+    void testCEPOperatorComparatorProcessTime() throws Exception {
         Event startEvent1 = new Event(42, "start", 1.0);
         Event startEvent2 = new Event(42, "start", 2.0);
         SubEvent middleEvent1 = new SubEvent(42, "foo1", 3.0, 10.0);
@@ -1082,12 +1062,12 @@ public class CEPOperatorTest extends TestLogger {
             harness.processElement(new StreamRecord<>(new Event(42, "foobar", 1.0), 0L));
             harness.processElement(new StreamRecord<>(new SubEvent(42, "barfoo", 1.0, 5.0), 0L));
 
-            assertTrue(!operator.hasNonEmptySharedBuffer(42));
-            assertTrue(!operator.hasNonEmptySharedBuffer(43));
+            assertThat(operator.hasNonEmptySharedBuffer(42)).isFalse();
+            assertThat(operator.hasNonEmptySharedBuffer(43)).isFalse();
 
             harness.setProcessingTime(3L);
-            assertTrue(operator.hasNonEmptySharedBuffer(42));
-            assertTrue(operator.hasNonEmptySharedBuffer(43));
+            assertThat(operator.hasNonEmptySharedBuffer(42)).isTrue();
+            assertThat(operator.hasNonEmptySharedBuffer(43)).isTrue();
 
             harness.processElement(new StreamRecord<>(middleEvent2, 3L));
             harness.processElement(new StreamRecord<>(middleEvent1, 3L));
@@ -1117,7 +1097,7 @@ public class CEPOperatorTest extends TestLogger {
     }
 
     @Test
-    public void testCEPOperatorComparatorEventTime() throws Exception {
+    void testCEPOperatorComparatorEventTime() throws Exception {
         Event startEvent1 = new Event(42, "start", 1.0);
         Event startEvent2 = new Event(42, "start", 2.0);
         SubEvent middleEvent1 = new SubEvent(42, "foo1", 1.0, 10.0);
@@ -1142,16 +1122,16 @@ public class CEPOperatorTest extends TestLogger {
             harness.processElement(
                     new StreamRecord<Event>(new SubEvent(42, "barfoo", 1.0, 5.0), 3L));
 
-            assertTrue(operator.hasNonEmptyPQ(42));
-            assertTrue(operator.hasNonEmptyPQ(43));
-            assertFalse(operator.hasNonEmptySharedBuffer(42));
-            assertFalse(operator.hasNonEmptySharedBuffer(43));
+            assertThat(operator.hasNonEmptyPQ(42)).isTrue();
+            assertThat(operator.hasNonEmptyPQ(43)).isTrue();
+            assertThat(operator.hasNonEmptySharedBuffer(42)).isFalse();
+            assertThat(operator.hasNonEmptySharedBuffer(43)).isFalse();
 
             harness.processWatermark(3L);
-            assertFalse(operator.hasNonEmptyPQ(42));
-            assertFalse(operator.hasNonEmptyPQ(43));
-            assertTrue(operator.hasNonEmptySharedBuffer(42));
-            assertTrue(operator.hasNonEmptySharedBuffer(43));
+            assertThat(operator.hasNonEmptyPQ(42)).isFalse();
+            assertThat(operator.hasNonEmptyPQ(43)).isFalse();
+            assertThat(operator.hasNonEmptySharedBuffer(42)).isTrue();
+            assertThat(operator.hasNonEmptySharedBuffer(43)).isTrue();
 
             harness.processElement(new StreamRecord<>(startEvent2, 4L));
             harness.processElement(new StreamRecord<Event>(middleEvent2, 5L));
@@ -1181,21 +1161,21 @@ public class CEPOperatorTest extends TestLogger {
     }
 
     private void verifyWatermark(Object outputObject, long timestamp) {
-        assertTrue(outputObject instanceof Watermark);
-        assertEquals(timestamp, ((Watermark) outputObject).getTimestamp());
+        assertThat(outputObject).isInstanceOf(Watermark.class);
+        assertThat(((Watermark) outputObject).getTimestamp()).isEqualTo(timestamp);
     }
 
     private void verifyPattern(Object outputObject, Event start, SubEvent middle, Event end) {
-        assertTrue(outputObject instanceof StreamRecord);
+        assertThat(outputObject).isInstanceOf(StreamRecord.class);
 
         StreamRecord<?> resultRecord = (StreamRecord<?>) outputObject;
-        assertTrue(resultRecord.getValue() instanceof Map);
+        assertThat(resultRecord.getValue()).isInstanceOf(Map.class);
 
         @SuppressWarnings("unchecked")
         Map<String, List<Event>> patternMap = (Map<String, List<Event>>) resultRecord.getValue();
-        assertEquals(start, patternMap.get("start").get(0));
-        assertEquals(middle, patternMap.get("middle").get(0));
-        assertEquals(end, patternMap.get("end").get(0));
+        assertThat(patternMap.get("start").get(0)).isEqualTo(start);
+        assertThat(patternMap.get("middle").get(0)).isEqualTo(middle);
+        assertThat(patternMap.get("end").get(0)).isEqualTo(end);
     }
 
     private CepOperator<Event, Integer, Map<String, List<Event>>> getKeyedCepOperator(
@@ -1218,39 +1198,17 @@ public class CEPOperatorTest extends TestLogger {
     }
 
     private void compareMaps(List<List<Event>> actual, List<List<Event>> expected) {
-        Assert.assertEquals(expected.size(), actual.size());
-
+        // the order of events within a single match is not deterministic, so normalize each match
+        // before comparing the matches themselves without regard to their order
         for (List<Event> p : actual) {
-            Collections.sort(p, new EventComparator());
+            p.sort(new EventComparator());
         }
 
         for (List<Event> p : expected) {
-            Collections.sort(p, new EventComparator());
+            p.sort(new EventComparator());
         }
 
-        Collections.sort(actual, new ListEventComparator());
-        Collections.sort(expected, new ListEventComparator());
-        Assert.assertArrayEquals(expected.toArray(), actual.toArray());
-    }
-
-    private class ListEventComparator implements Comparator<List<Event>> {
-
-        @Override
-        public int compare(List<Event> o1, List<Event> o2) {
-            int sizeComp = Integer.compare(o1.size(), o2.size());
-            if (sizeComp == 0) {
-                EventComparator comp = new EventComparator();
-                for (int i = 0; i < o1.size(); i++) {
-                    int eventComp = comp.compare(o1.get(i), o2.get(i));
-                    if (eventComp != 0) {
-                        return eventComp;
-                    }
-                }
-                return 0;
-            } else {
-                return sizeComp;
-            }
-        }
+        assertThat(actual).containsExactlyInAnyOrderElementsOf(expected);
     }
 
     private class EventComparator implements Comparator<Event> {
@@ -1302,42 +1260,15 @@ public class CEPOperatorTest extends TestLogger {
 
             Pattern<Event, ?> pattern =
                     Pattern.<Event>begin("start")
-                            .where(
-                                    new SimpleCondition<Event>() {
-                                        private static final long serialVersionUID =
-                                                5726188262756267490L;
-
-                                        @Override
-                                        public boolean filter(Event value) throws Exception {
-                                            return value.getName().equals("start");
-                                        }
-                                    })
+                            .where(SimpleCondition.of(value -> value.getName().equals("start")))
                             .followedByAny("middle")
                             .subtype(SubEvent.class)
-                            .where(
-                                    new SimpleCondition<SubEvent>() {
-                                        private static final long serialVersionUID =
-                                                6215754202506583964L;
-
-                                        @Override
-                                        public boolean filter(SubEvent value) throws Exception {
-                                            return value.getVolume() > 5.0;
-                                        }
-                                    })
+                            .where(SimpleCondition.of(value -> value.getVolume() > 5.0))
                             .followedByAny("end")
-                            .where(
-                                    new SimpleCondition<Event>() {
-                                        private static final long serialVersionUID =
-                                                7056763917392056548L;
-
-                                        @Override
-                                        public boolean filter(Event value) throws Exception {
-                                            return value.getName().equals("end");
-                                        }
-                                    })
+                            .where(SimpleCondition.of(value -> value.getName().equals("end")))
                             // add a window timeout to test whether timestamps of elements in the
                             // priority queue in CEP operator are correctly checkpointed/restored
-                            .within(Time.milliseconds(10L));
+                            .within(Duration.ofMillis(10L));
 
             return NFACompiler.compileFactory(pattern, handleTimeout).createNFA();
         }
@@ -1362,53 +1293,17 @@ public class CEPOperatorTest extends TestLogger {
 
             Pattern<Event, ?> pattern =
                     Pattern.<Event>begin("start")
-                            .where(
-                                    new SimpleCondition<Event>() {
-                                        private static final long serialVersionUID =
-                                                5726188262756267490L;
-
-                                        @Override
-                                        public boolean filter(Event value) throws Exception {
-                                            return value.getName().equals("c");
-                                        }
-                                    })
+                            .where(SimpleCondition.of(value -> value.getName().equals("c")))
                             .followedBy("middle1")
-                            .where(
-                                    new SimpleCondition<Event>() {
-                                        private static final long serialVersionUID =
-                                                5726188262756267490L;
-
-                                        @Override
-                                        public boolean filter(Event value) throws Exception {
-                                            return value.getName().equals("a");
-                                        }
-                                    })
+                            .where(SimpleCondition.of(value -> value.getName().equals("a")))
                             .oneOrMore()
                             .optional()
                             .followedBy("middle2")
-                            .where(
-                                    new SimpleCondition<Event>() {
-                                        private static final long serialVersionUID =
-                                                5726188262756267490L;
-
-                                        @Override
-                                        public boolean filter(Event value) throws Exception {
-                                            return value.getName().equals("b");
-                                        }
-                                    })
+                            .where(SimpleCondition.of(value -> value.getName().equals("b")))
                             .optional()
                             .followedBy("end")
-                            .where(
-                                    new SimpleCondition<Event>() {
-                                        private static final long serialVersionUID =
-                                                5726188262756267490L;
-
-                                        @Override
-                                        public boolean filter(Event value) throws Exception {
-                                            return value.getName().equals("a");
-                                        }
-                                    })
-                            .within(Time.milliseconds(10L));
+                            .where(SimpleCondition.of(value -> value.getName().equals("a")))
+                            .within(Duration.ofMillis(10L));
 
             return NFACompiler.compileFactory(pattern, handleTimeout).createNFA();
         }
@@ -1433,39 +1328,12 @@ public class CEPOperatorTest extends TestLogger {
 
             Pattern<Event, ?> pattern =
                     Pattern.<Event>begin("start")
-                            .where(
-                                    new SimpleCondition<Event>() {
-                                        private static final long serialVersionUID =
-                                                5726188262756267490L;
-
-                                        @Override
-                                        public boolean filter(Event value) throws Exception {
-                                            return value.getName().equals("c");
-                                        }
-                                    })
+                            .where(SimpleCondition.of(value -> value.getName().equals("c")))
                             .followedBy("middle")
-                            .where(
-                                    new SimpleCondition<Event>() {
-                                        private static final long serialVersionUID =
-                                                5726188262756267490L;
-
-                                        @Override
-                                        public boolean filter(Event value) throws Exception {
-                                            return value.getName().equals("a");
-                                        }
-                                    })
+                            .where(SimpleCondition.of(value -> value.getName().equals("a")))
                             .followedBy("end")
-                            .where(
-                                    new SimpleCondition<Event>() {
-                                        private static final long serialVersionUID =
-                                                5726188262756267490L;
-
-                                        @Override
-                                        public boolean filter(Event value) throws Exception {
-                                            return value.getName().equals("b");
-                                        }
-                                    })
-                            .within(Time.milliseconds(10L));
+                            .where(SimpleCondition.of(value -> value.getName().equals("b")))
+                            .within(Duration.ofMillis(10L));
 
             return NFACompiler.compileFactory(pattern, handleTimeout).createNFA();
         }

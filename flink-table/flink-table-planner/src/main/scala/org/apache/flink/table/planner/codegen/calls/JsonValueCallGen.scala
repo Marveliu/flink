@@ -15,14 +15,14 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.planner.codegen.calls
 
 import org.apache.flink.table.api.JsonValueOnEmptyOrError
-import org.apache.flink.table.planner.codegen.CodeGenUtils.{BINARY_STRING, qualifyEnum, qualifyMethod}
+import org.apache.flink.table.planner.codegen.{CodeGeneratorContext, CodeGenException, CodeGenUtils, GeneratedExpression}
+import org.apache.flink.table.planner.codegen.CodeGenUtils.{isPrimitiveNullable, primitiveDefaultValue, primitiveTypeTermForType, qualifyEnum, qualifyMethod, BINARY_STRING}
 import org.apache.flink.table.planner.codegen.GenerateUtils.generateCallWithStmtIfArgsNotNull
-import org.apache.flink.table.planner.codegen.{CodeGenException, CodeGenUtils, CodeGeneratorContext, GeneratedExpression}
-import org.apache.flink.table.types.logical.{LogicalType, LogicalTypeRoot}
+import org.apache.flink.table.runtime.functions.SqlJsonUtils
+import org.apache.flink.table.types.logical.{DecimalType, LogicalType, LogicalTypeRoot}
 
 import org.apache.calcite.sql.SqlJsonEmptyOrError
 
@@ -31,8 +31,33 @@ import org.apache.calcite.sql.SqlJsonEmptyOrError
  *
  * We cannot use [[MethodCallGen]] for a few different reasons. First, the return type of the
  * built-in Calcite function is [[Object]] and needs to be cast based on the inferred return type
- * instead as users can change this using the RETURNING keyword. Furthermore, we need to provide
- * the proper default values in case not all arguments were given.
+ * instead as users can change this using the RETURNING keyword. Furthermore, we need to provide the
+ * proper default values in case not all arguments were given.
+ *
+ * When multiple JSON function calls share the same input expression, the parsed JSON context is
+ * reused via a shared member variable. For example, a query like:
+ * {{{
+ * SELECT JSON_VALUE(json_data, '$.type'), JSON_VALUE(json_data, '$.age') FROM t
+ * }}}
+ * generates code similar to:
+ * {{{
+ * // members (declared once)
+ * SqlJsonUtils.JsonValueContext jsonParsed$0;
+ * BinaryStringData jsonParsedInput$1;
+ *
+ * // parses once per input value and reuses the result for the same input
+ * private SqlJsonUtils.JsonValueContext parseJson$2(BinaryStringData in) {
+ *   if (in != jsonParsedInput$1) {
+ *     jsonParsedInput$1 = in;
+ *     jsonParsed$0 = SqlJsonUtils.jsonParse(in.toString());
+ *   }
+ *   return jsonParsed$0;
+ * }
+ *
+ * // whichever call runs first parses, the other ones reuse the result
+ * Object rawResult$3 = SqlJsonUtils.jsonValue(parseJson$2(field$0), "$.type", ...);
+ * Object rawResult$4 = SqlJsonUtils.jsonValue(parseJson$2(field$0), "$.age", ...);
+ * }}}
  */
 class JsonValueCallGen extends CallGenerator {
   override def generate(
@@ -40,38 +65,83 @@ class JsonValueCallGen extends CallGenerator {
       operands: Seq[GeneratedExpression],
       returnType: LogicalType): GeneratedExpression = {
 
-    generateCallWithStmtIfArgsNotNull(ctx, returnType, operands, resultNullable = true) {
-      argTerms => {
-        val emptyBehavior = getBehavior(operands, SqlJsonEmptyOrError.EMPTY)
-        val errorBehavior = getBehavior(operands, SqlJsonEmptyOrError.ERROR)
-        val terms = Seq(
-          s"${argTerms.head}.toString()",
-          s"${argTerms(1)}.toString()",
-          qualifyEnum(emptyBehavior._1),
-          emptyBehavior._2,
-          qualifyEnum(errorBehavior._1),
-          errorBehavior._2
-        )
+    val parsed = JsonParseReuse.parseSharedInput(ctx, operands)
 
-        val rawResultTerm = CodeGenUtils.newName("rawResult")
-        val call = s"""
-           |Object $rawResultTerm =
-           |    ${qualifyMethod(BuiltInMethods.JSON_VALUE)}(${terms.mkString(", ")});
+    val generated =
+      generateCallWithStmtIfArgsNotNull(ctx, returnType, operands, resultNullable = true) {
+        argTerms =>
+          {
+            val emptyBehavior = getBehavior(operands, SqlJsonEmptyOrError.EMPTY)
+            val errorBehavior = getBehavior(operands, SqlJsonEmptyOrError.ERROR)
+
+            val terms = Seq(
+              parsed.resultTerm,
+              s"${argTerms(1)}.toString()",
+              qualifyEnum(emptyBehavior._1),
+              emptyBehavior._2,
+              qualifyEnum(errorBehavior._1),
+              errorBehavior._2
+            )
+
+            val rawResultTerm = CodeGenUtils.newName(ctx, "rawResult")
+            val baseCall = s"""
+                              |Object $rawResultTerm =
+                              |    ${qualifyMethod(BuiltInMethods.JSON_VALUE)}(${terms
+                               .mkString(", ")});
            """.stripMargin
 
-        val convertedResult = returnType.getTypeRoot match {
-          case LogicalTypeRoot.VARCHAR =>
-            s"$BINARY_STRING.fromString(java.lang.String.valueOf($rawResultTerm))"
-          case LogicalTypeRoot.BOOLEAN => s"(java.lang.Boolean) $rawResultTerm"
-          case LogicalTypeRoot.INTEGER => s"(java.lang.Integer) $rawResultTerm"
-          case LogicalTypeRoot.DOUBLE => s"(java.lang.Double) $rawResultTerm"
-          case _ => throw new CodeGenException(s"Unsupported type '$returnType' "
-            + "for RETURNING in JSON_VALUE().")
-        }
+            returnType.getTypeRoot match {
+              case LogicalTypeRoot.VARCHAR =>
+                val result =
+                  s"($rawResultTerm == null) ? null : " +
+                    s"($BINARY_STRING.fromString(java.lang.String.valueOf($rawResultTerm)))"
+                (baseCall, result)
+              case typeRoot if !SqlJsonUtils.isSupportedJsonReturningType(typeRoot) =>
+                throw new CodeGenException(
+                  s"Unsupported type '$returnType' for RETURNING in JSON_VALUE().")
+              case _ =>
+                val jsonUtils =
+                  classOf[SqlJsonUtils].getName
+                val typeRootEnum =
+                  s"${classOf[LogicalTypeRoot].getName}.${returnType.getTypeRoot.name()}"
+                val (precisionStr, scaleStr) = returnType.getTypeRoot match {
+                  case LogicalTypeRoot.DECIMAL =>
+                    val dt = returnType.asInstanceOf[DecimalType]
+                    (dt.getPrecision.toString, dt.getScale.toString)
+                  case _ => ("0", "0")
+                }
+                val errorBehaviorEnum =
+                  qualifyEnum(errorBehavior._1.asInstanceOf[JsonValueOnEmptyOrError])
+                val defaultExpr =
+                  if (errorBehavior._2 != null) errorBehavior._2 else "null"
 
-        val result = s"($rawResultTerm == null) ? null : ($convertedResult)"
-        (call, result)
+                val boxedType = CodeGenUtils.boxedTypeTermForType(returnType)
+                val convertedTerm = CodeGenUtils.newName(ctx, "converted")
+                val call = baseCall +
+                  s"""
+                     |$boxedType $convertedTerm = ($boxedType) $jsonUtils.convertJsonScalar(
+                     |    $rawResultTerm, $typeRootEnum,
+                     |    $precisionStr, $scaleStr,
+                     |    $errorBehaviorEnum, $defaultExpr);
+                 """.stripMargin
+                (call, s"$convertedTerm")
+            }
+          }
       }
+
+    if (isPrimitiveNullable(returnType)) {
+      generated
+    } else {
+      val unboxedTerm =
+        ctx.addReusableLocalVariable(primitiveTypeTermForType(returnType), "jsonValueUnboxed")
+      val unboxedCode =
+        s"""
+           |${generated.code}
+           |$unboxedTerm = ${generated.nullTerm}
+           |    ? ${primitiveDefaultValue(returnType)}
+           |    : ${generated.resultTerm};
+           |""".stripMargin
+      generated.copy(resultTerm = unboxedTerm, code = unboxedCode)
     }
   }
 
@@ -88,19 +158,22 @@ class JsonValueCallGen extends CallGenerator {
     operands.indexWhere(expr => expr.literalValue.contains(mode)) match {
       case -1 =>
         (JsonValueOnEmptyOrError.NULL, null)
-      case modeIndex => operands(modeIndex - 1).literalValue.get match {
-        // Case for [NULL | ERROR] ON [EMPTY | ERROR]
-        case behavior: JsonValueOnEmptyOrError =>
-          (behavior, null)
-        case _ => operands(modeIndex - 2).literalValue.get match {
-          // Case for DEFAULT <expr> ON [EMPTY | ERROR]
+      case modeIndex =>
+        operands(modeIndex - 1).literalValue.get match {
+          // Case for [NULL | ERROR] ON [EMPTY | ERROR]
           case behavior: JsonValueOnEmptyOrError =>
-            (behavior, operands(modeIndex - 1).resultTerm)
+            (behavior, null)
           case _ =>
-            throw new CodeGenException("Invalid combination of arguments for JSON_VALUE. "
-              + "This is a bug. Please consider filing an issue.")
+            operands(modeIndex - 2).literalValue.get match {
+              // Case for DEFAULT <expr> ON [EMPTY | ERROR]
+              case behavior: JsonValueOnEmptyOrError =>
+                (behavior, operands(modeIndex - 1).resultTerm)
+              case _ =>
+                throw new CodeGenException(
+                  "Invalid combination of arguments for JSON_VALUE. "
+                    + "This is a bug. Please consider filing an issue.")
+            }
         }
-      }
     }
   }
 }

@@ -15,36 +15,34 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.planner.plan.stream.sql.agg
 
-import org.apache.flink.api.scala._
 import org.apache.flink.table.api._
 import org.apache.flink.table.planner.plan.utils.FlinkRelOptUtil
 import org.apache.flink.table.planner.runtime.utils.JavaUserDefinedAggFunctions.OverAgg0
 import org.apache.flink.table.planner.utils.{TableTestBase, TableTestUtil}
 
-import org.junit.Assert.assertEquals
-import org.junit.Test
+import org.assertj.core.api.Assertions.{assertThat, assertThatExceptionOfType, assertThatThrownBy}
+import org.junit.jupiter.api.Test
+import org.junit.jupiter.params.ParameterizedTest
+import org.junit.jupiter.params.provider.ValueSource
 
 class OverAggregateTest extends TableTestBase {
 
   private val util = streamTestUtil()
-  util.addDataStream[(Int, String, Long)](
-    "MyTable", 'a, 'b, 'c, 'proctime.proctime, 'rowtime.rowtime)
+  util
+    .addDataStream[(Int, String, Long)]("MyTable", 'a, 'b, 'c, 'proctime.proctime, 'rowtime.rowtime)
 
   def verifyPlanIdentical(sql1: String, sql2: String): Unit = {
     val table1 = util.tableEnv.sqlQuery(sql1)
     val table2 = util.tableEnv.sqlQuery(sql2)
     val optimized1 = util.getPlanner.optimize(TableTestUtil.toRelNode(table1))
     val optimized2 = util.getPlanner.optimize(TableTestUtil.toRelNode(table2))
-    assertEquals(FlinkRelOptUtil.toString(optimized1), FlinkRelOptUtil.toString(optimized2))
+    assertThat(FlinkRelOptUtil.toString(optimized2)).isEqualTo(FlinkRelOptUtil.toString(optimized1))
   }
 
-  /**
-    * All aggregates must be computed on the same window.
-    */
-  @Test(expected = classOf[TableException])
+  /** All aggregates must be computed on the same window. */
+  @Test
   def testMultiWindow(): Unit = {
     val sqlQuery =
       """
@@ -54,25 +52,71 @@ class OverAggregateTest extends TableTestBase {
         |from MyTable
       """.stripMargin
 
-    util.verifyExecPlan(sqlQuery)
+    assertThatExceptionOfType(classOf[TableException])
+      .isThrownBy(() => util.verifyExecPlan(sqlQuery))
   }
 
-  /**
-    * OVER clause is necessary for [[OverAgg0]] window function.
-    */
-  @Test(expected = classOf[ValidationException])
+  @Test
+  def testExclusionGroupIsNotSupported(): Unit = {
+    val sqlQuery =
+      """
+        |SELECT a,
+        |    COUNT(*) OVER (PARTITION BY c ORDER BY proctime ROWS BETWEEN 2 PRECEDING AND CURRENT ROW EXCLUDE GROUP)
+        |from MyTable
+      """.stripMargin
+
+    assertThatThrownBy(() => util.verifyExecPlan(sqlQuery))
+      // thrown while applying a rule: the exception keeps its type instead of Calcite's wrapper
+      .isInstanceOf(classOf[ValidationException])
+      .hasMessageStartingWith("Cannot generate a valid execution plan for the given query: " +
+        "Frame exclusion 'EXCLUDE GROUP' is not supported in over windows.\n\nPlan:\n")
+      .hasRootCauseInstanceOf(classOf[ValidationException])
+      .hasRootCauseMessage("Frame exclusion 'EXCLUDE GROUP' is not supported in over windows.")
+  }
+
+  @Test
+  def testExclusionTiesIsNotSupported(): Unit = {
+    val sqlQuery =
+      """
+        |SELECT a,
+        |    COUNT(*) OVER (PARTITION BY c ORDER BY proctime ROWS BETWEEN 2 PRECEDING AND CURRENT ROW EXCLUDE TIES)
+        |from MyTable
+      """.stripMargin
+
+    assertThatThrownBy(() => util.verifyExecPlan(sqlQuery))
+      .hasRootCauseInstanceOf(classOf[ValidationException])
+      .hasRootCauseMessage("Frame exclusion 'EXCLUDE TIES' is not supported in over windows.")
+  }
+
+  @Test
+  def testExclusionCurrentRowIsNotSupported(): Unit = {
+    val sqlQuery =
+      """
+        |SELECT a,
+        |    COUNT(*) OVER (PARTITION BY c ORDER BY proctime ROWS BETWEEN 2 PRECEDING AND CURRENT ROW EXCLUDE CURRENT ROW)
+        |from MyTable
+      """.stripMargin
+
+    assertThatThrownBy(() => util.verifyExecPlan(sqlQuery))
+      .hasRootCauseInstanceOf(classOf[ValidationException])
+      .hasRootCauseMessage(
+        "Frame exclusion 'EXCLUDE CURRENT ROW' is not supported in over windows.")
+  }
+
+  /** OVER clause is necessary for [[OverAgg0]] window function. */
+  @Test
   def testInvalidOverAggregation(): Unit = {
-    util.addFunction("overAgg", new OverAgg0)
-    util.verifyExecPlan("SELECT overAgg(c, a) FROM MyTable")
+    util.addTemporarySystemFunction("overAgg", new OverAgg0)
+    assertThatExceptionOfType(classOf[ValidationException])
+      .isThrownBy(() => util.verifyExecPlan("SELECT overAgg(c, a) FROM MyTable"))
   }
 
-  /**
-    * OVER clause is necessary for [[OverAgg0]] window function.
-    */
-  @Test(expected = classOf[ValidationException])
+  /** OVER clause is necessary for [[OverAgg0]] window function. */
+  @Test
   def testInvalidOverAggregation2(): Unit = {
-    util.addFunction("overAgg", new OverAgg0)
-    util.verifyExecPlan("SELECT overAgg(c, a) FROM MyTable")
+    util.addTemporarySystemFunction("overAgg", new OverAgg0)
+    assertThatExceptionOfType(classOf[ValidationException])
+      .isThrownBy(() => util.verifyExecPlan("SELECT overAgg(c, a) FROM MyTable"))
   }
 
   @Test
@@ -406,7 +450,7 @@ class OverAggregateTest extends TableTestBase {
     util.verifyExecPlan(sql)
   }
 
-  @Test(expected = classOf[TableException])
+  @Test
   def testProcTimeBoundedPartitionedRowsOverDifferentWindows(): Unit = {
     val sql =
       """
@@ -426,8 +470,12 @@ class OverAggregateTest extends TableTestBase {
       "WINDOW w1 AS (PARTITION BY a ORDER BY proctime ROWS BETWEEN 3 PRECEDING AND CURRENT ROW)," +
       "w2 AS (PARTITION BY a ORDER BY proctime ROWS BETWEEN 2 PRECEDING AND CURRENT ROW)"
 
-    verifyPlanIdentical(sql, sql2)
-    util.verifyExecPlan(sql)
+    assertThatExceptionOfType(classOf[TableException])
+      .isThrownBy(
+        () => {
+          verifyPlanIdentical(sql, sql2)
+          util.verifyExecPlan(sql)
+        })
   }
 
   @Test
@@ -440,5 +488,213 @@ class OverAggregateTest extends TableTestBase {
       "FROM MyTable"
 
     util.verifyExecPlan(sqlQuery)
+  }
+
+  @Test
+  def testNestedOverAgg(): Unit = {
+    util.addTable(s"""
+                     |CREATE TEMPORARY TABLE src (
+                     |  a STRING,
+                     |  b STRING,
+                     |  ts TIMESTAMP_LTZ(3),
+                     |  watermark FOR ts as ts
+                     |) WITH (
+                     |  'connector' = 'values'
+                     |)
+                     |""".stripMargin)
+
+    util.verifyExecPlan(s"""
+                           |SELECT *
+                           |FROM (
+                           | SELECT
+                           |    *, count(*) OVER (PARTITION BY a ORDER BY ts) AS c2
+                           |  FROM (
+                           |    SELECT
+                           |      *, count(*) OVER (PARTITION BY a,b ORDER BY ts) AS c1
+                           |    FROM src
+                           |  )
+                           |)
+                           |""".stripMargin)
+  }
+
+  @Test
+  def testWithoutOrderByClause(): Unit = {
+    val sql =
+      """
+        |SELECT c,
+        |    COUNT(a) OVER (PARTITION BY c) AS cnt1
+        |FROM MyTable
+      """.stripMargin
+
+    util.verifyExecPlan(sql)
+  }
+
+  @Test
+  def testWindowBoundaryNotNumeric(): Unit = {
+    val sql =
+      """
+        |SELECT c,
+        |    COUNT(a) OVER (PARTITION BY b ORDER BY proctime
+        |        ROWS BETWEEN '2' PRECEDING AND CURRENT ROW) AS cnt1
+        |FROM MyTable
+      """.stripMargin
+
+    assertThatExceptionOfType(classOf[RuntimeException])
+      .isThrownBy(() => util.verifyExecPlan(sql))
+      .havingRootCause()
+      .withMessage("CHARACTER type is not allowed for window boundary")
+      .isExactlyInstanceOf(classOf[ValidationException])
+  }
+
+  @ParameterizedTest
+  @ValueSource(strings = Array[String]("2 + 3", "power(2, 4)"))
+  def testWindowBoundaryWithSimplifiableExpressions(expr: String): Unit = {
+    val sql =
+      s"""
+         |SELECT c,
+         |    COUNT(a) OVER (PARTITION BY b ORDER BY proctime
+         |        ROWS BETWEEN $expr PRECEDING AND CURRENT ROW) AS cnt1
+         |FROM MyTable
+      """.stripMargin
+
+    util.verifyExecPlan(sql)
+  }
+
+  @Test
+  def testTemporalJoinWithWatermarks(): Unit = {
+    util.addTable(s"""
+                     |CREATE TABLE orders (
+                     |  product_id STRING,
+                     |  amount BIGINT,
+                     |  order_ts TIMESTAMP(3),
+                     |  WATERMARK FOR order_ts AS order_ts - INTERVAL '5' SECONDS
+                     |) WITH (
+                     |  'connector' = 'values'
+                     |)
+                     |""".stripMargin)
+
+    util.addTable(s"""
+                     |CREATE TABLE products (
+                     |  product_id STRING,
+                     |  record_ts STRING,
+                     |  mod_record_ts AS TO_TIMESTAMP(record_ts),
+                     |  PRIMARY KEY (product_id) NOT ENFORCED,
+                     |  WATERMARK FOR mod_record_ts AS mod_record_ts - INTERVAL '60' SECONDS
+                     |) WITH (
+                     |  'connector' = 'values'
+                     |)
+                     |""".stripMargin)
+
+    util.verifyExecPlan(s"""
+                           |SELECT count(o.amount) OVER (PARTITION BY o.product_id) AS amount_count
+                           |FROM orders AS o
+                           |LEFT JOIN products FOR SYSTEM_TIME AS OF o.order_ts AS p
+                           |ON o.product_id = p.product_id
+                           |""".stripMargin)
+  }
+
+  @Test
+  def testTemporalJoinWithWatermarksSeveralFunctions(): Unit = {
+    util.addTable(s"""
+                     |CREATE TABLE orders (
+                     |  product_id STRING,
+                     |  amount BIGINT,
+                     |  order_ts TIMESTAMP(3),
+                     |  WATERMARK FOR order_ts AS order_ts - INTERVAL '5' SECONDS
+                     |) WITH (
+                     |  'connector' = 'values'
+                     |)
+                     |""".stripMargin)
+
+    util.addTable(s"""
+                     |CREATE TABLE products (
+                     |  product_id STRING,
+                     |  record_ts STRING,
+                     |  mod_record_ts AS TO_TIMESTAMP(record_ts),
+                     |  PRIMARY KEY (product_id) NOT ENFORCED,
+                     |  WATERMARK FOR mod_record_ts AS mod_record_ts - INTERVAL '60' SECONDS
+                     |) WITH (
+                     |  'connector' = 'values'
+                     |)
+                     |""".stripMargin)
+
+    util.verifyExecPlan(
+      s"""
+         |SELECT last_value(o.amount) OVER (PARTITION BY o.product_id ORDER BY o.order_ts) AS last_amount,
+         |       lag(o.amount) OVER (PARTITION BY o.product_id ORDER BY o.order_ts) AS prev_amount
+         |FROM orders AS o
+         |LEFT JOIN products FOR SYSTEM_TIME AS OF o.order_ts AS p
+         |ON o.product_id = p.product_id
+         |""".stripMargin)
+  }
+
+  @Test
+  def testTemporalJoinWithWatermarksWithMaterializedTimeArg(): Unit = {
+    util.addTable(s"""
+                     |CREATE TABLE orders (
+                     |  product_id STRING,
+                     |  amount BIGINT,
+                     |  order_ts TIMESTAMP(3),
+                     |  WATERMARK FOR order_ts AS order_ts - INTERVAL '5' SECONDS
+                     |) WITH (
+                     |  'connector' = 'values'
+                     |)
+                     |""".stripMargin)
+
+    util.addTable(s"""
+                     |CREATE TABLE products (
+                     |  product_id STRING,
+                     |  record_ts STRING,
+                     |  mod_record_ts AS TO_TIMESTAMP(record_ts),
+                     |  PRIMARY KEY (product_id) NOT ENFORCED,
+                     |  WATERMARK FOR mod_record_ts AS mod_record_ts - INTERVAL '60' SECONDS
+                     |) WITH (
+                     |  'connector' = 'values'
+                     |)
+                     |""".stripMargin)
+
+    util.verifyExecPlan(
+      s"""
+         |SELECT count(o.order_ts) OVER (PARTITION BY o.product_id) AS total_order_ts
+         |FROM orders AS o
+         |LEFT JOIN products FOR SYSTEM_TIME AS OF o.order_ts AS p
+         |ON o.product_id = p.product_id
+         |""".stripMargin)
+  }
+
+  @Test
+  def testTemporalJoinWithWatermarksMix(): Unit = {
+    util.addTable(s"""
+                     |CREATE TABLE orders (
+                     |  product_id STRING,
+                     |  amount BIGINT,
+                     |  order_ts TIMESTAMP(3),
+                     |  WATERMARK FOR order_ts AS order_ts - INTERVAL '5' SECONDS
+                     |) WITH (
+                     |  'connector' = 'values'
+                     |)
+                     |""".stripMargin)
+
+    util.addTable(s"""
+                     |CREATE TABLE products (
+                     |  product_id STRING,
+                     |  record_ts STRING,
+                     |  mod_record_ts AS TO_TIMESTAMP(record_ts),
+                     |  PRIMARY KEY (product_id) NOT ENFORCED,
+                     |  WATERMARK FOR mod_record_ts AS mod_record_ts - INTERVAL '60' SECONDS
+                     |) WITH (
+                     |  'connector' = 'values'
+                     |)
+                     |""".stripMargin)
+
+    util.verifyExecPlan(
+      s"""
+         |SELECT first_value(o.order_ts) OVER (PARTITION BY o.product_id) AS first_order_ts,
+         |       min(o.order_ts) OVER (PARTITION BY o.product_id) AS min_order_ts,
+         |       max(o.amount) OVER (PARTITION BY o.product_id) AS max_amount
+         |FROM orders AS o
+         |LEFT JOIN products FOR SYSTEM_TIME AS OF o.order_ts AS p
+         |ON o.product_id = p.product_id
+         |""".stripMargin)
   }
 }

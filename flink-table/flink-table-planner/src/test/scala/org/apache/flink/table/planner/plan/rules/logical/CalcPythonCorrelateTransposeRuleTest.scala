@@ -15,10 +15,8 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.planner.plan.rules.logical
 
-import org.apache.flink.api.scala._
 import org.apache.flink.table.api._
 import org.apache.flink.table.planner.plan.nodes.FlinkConventions
 import org.apache.flink.table.planner.plan.optimize.program._
@@ -27,13 +25,13 @@ import org.apache.flink.table.planner.runtime.utils.JavaUserDefinedScalarFunctio
 import org.apache.flink.table.planner.utils.{MockPythonTableFunction, TableTestBase}
 
 import org.apache.calcite.plan.hep.HepMatchOrder
-import org.junit.{Before, Test}
+import org.junit.jupiter.api.{BeforeEach, Test}
 
 class CalcPythonCorrelateTransposeRuleTest extends TableTestBase {
 
   private val util = streamTestUtil()
 
-  @Before
+  @BeforeEach
   def setup(): Unit = {
     val programs = new FlinkChainedProgram[StreamOptimizeContext]()
     // query decorrelation
@@ -43,19 +41,21 @@ class CalcPythonCorrelateTransposeRuleTest extends TableTestBase {
       FlinkVolcanoProgramBuilder.newBuilder
         .add(FlinkStreamRuleSets.LOGICAL_OPT_RULES)
         .setRequiredOutputTraits(Array(FlinkConventions.LOGICAL))
-        .build())
+        .build()
+    )
     programs.addLast(
       "logical_rewrite",
       FlinkHepRuleSetProgramBuilder.newBuilder
         .setHepRulesExecutionType(HEP_RULES_EXECUTION_TYPE.RULE_SEQUENCE)
         .setHepMatchOrder(HepMatchOrder.BOTTOM_UP)
         .add(FlinkStreamRuleSets.LOGICAL_REWRITE)
-        .build())
+        .build()
+    )
     util.replaceStreamProgram(programs)
 
     util.addTableSource[(Int, Int, Int)]("MyTable", 'a, 'b, 'c)
-    util.addFunction("func", new MockPythonTableFunction)
-    util.addFunction("pyFunc", new PythonScalarFunction("pyFunc"))
+    util.addTemporarySystemFunction("func", new MockPythonTableFunction)
+    util.addTemporarySystemFunction("pyFunc", new PythonScalarFunction("pyFunc"))
   }
 
   @Test

@@ -24,13 +24,17 @@ import org.apache.flink.core.memory.DataOutputView;
 import org.apache.flink.core.memory.MemorySegment;
 import org.apache.flink.table.data.ArrayData;
 import org.apache.flink.table.data.DecimalData;
+import org.apache.flink.table.data.DecimalDataInternalUtils;
 import org.apache.flink.table.data.MapData;
 import org.apache.flink.table.data.RawValueData;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.data.StringData;
 import org.apache.flink.table.data.TimestampData;
+import org.apache.flink.types.bitmap.Bitmap;
+import org.apache.flink.types.variant.BinaryVariant;
 
 import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 
 import static org.apache.flink.core.memory.MemoryUtils.UNSAFE;
@@ -1002,9 +1006,30 @@ public final class BinarySegmentUtils {
             int scale) {
         final int size = ((int) offsetAndSize);
         int subOffset = (int) (offsetAndSize >> 32);
+        // up to 8 bytes fit a long; size 0 keeps the old path
+        if (size > 0 && size <= 8) {
+            final int pos = baseOffset + subOffset;
+            final long unscaled =
+                    inFirstSegment(segments, pos, 8)
+                            // value is in the high bytes, the rest is shifted out
+                            ? segments[0].getLongBigEndian(pos) >> (64 - 8 * size)
+                            : readUnscaledLongMultiSegments(segments, pos, size);
+            // at most 19 digits, so it fits any non-compact precision
+            return DecimalDataInternalUtils.fromUnscaledLong(unscaled, precision, scale);
+        }
         byte[] bytes = new byte[size];
         copyToBytes(segments, baseOffset + subOffset, bytes, 0, size);
         return DecimalData.fromUnscaledBytes(bytes, precision, scale);
+    }
+
+    private static long readUnscaledLongMultiSegments(
+            MemorySegment[] segments, int offset, int size) {
+        // signed first byte sign-extends
+        long unscaled = getByte(segments, offset);
+        for (int i = 1; i < size; i++) {
+            unscaled = (unscaled << 8) | (getByte(segments, offset + i) & 0xFF);
+        }
+        return unscaled;
     }
 
     /**
@@ -1170,5 +1195,30 @@ public final class BinarySegmentUtils {
             }
         }
         return -1;
+    }
+
+    public static BinaryVariant readVariant(
+            MemorySegment[] segments, int baseOffset, long offsetAndSize) {
+        final int size = ((int) offsetAndSize);
+        int offset = (int) (offsetAndSize >> 32);
+        byte[] bytes = copyToBytes(segments, offset + baseOffset, size);
+        ByteBuffer buffer = ByteBuffer.wrap(bytes);
+        int metaLen = buffer.getInt();
+        int valueLen = bytes.length - 4 - metaLen;
+
+        byte[] meta = new byte[metaLen];
+        byte[] value = new byte[valueLen];
+        buffer.get(meta, 0, metaLen);
+        buffer.get(value, 0, valueLen);
+
+        return new BinaryVariant(value, meta);
+    }
+
+    /** Gets an instance of {@link Bitmap} from underlying {@link MemorySegment}. */
+    public static Bitmap readBitmap(MemorySegment[] segments, int baseOffset, long offsetAndSize) {
+        final int size = ((int) offsetAndSize);
+        int offset = (int) (offsetAndSize >> 32);
+        byte[] bytes = copyToBytes(segments, offset + baseOffset, size);
+        return Bitmap.fromBytes(bytes);
     }
 }

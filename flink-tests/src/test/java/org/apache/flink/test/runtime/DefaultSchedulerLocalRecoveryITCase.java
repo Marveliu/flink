@@ -18,16 +18,12 @@
 
 package org.apache.flink.test.runtime;
 
-import org.apache.flink.api.common.ExecutionConfig;
 import org.apache.flink.api.common.JobID;
-import org.apache.flink.api.common.restartstrategy.RestartStrategies;
-import org.apache.flink.api.common.time.Deadline;
 import org.apache.flink.client.program.MiniClusterClient;
-import org.apache.flink.configuration.CheckpointingOptions;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.JobManagerOptions;
 import org.apache.flink.configuration.MemorySize;
-import org.apache.flink.configuration.RestOptions;
+import org.apache.flink.configuration.StateRecoveryOptions;
 import org.apache.flink.configuration.TaskManagerOptions;
 import org.apache.flink.runtime.clusterframework.types.AllocationID;
 import org.apache.flink.runtime.executiongraph.ArchivedExecutionGraph;
@@ -40,43 +36,47 @@ import org.apache.flink.runtime.minicluster.MiniClusterConfiguration;
 import org.apache.flink.runtime.scheduler.DefaultScheduler;
 import org.apache.flink.runtime.testutils.CommonTestUtils;
 import org.apache.flink.runtime.testutils.WaitingCancelableInvokable;
-import org.apache.flink.testutils.junit.FailsWithAdaptiveScheduler;
-import org.apache.flink.util.TestLogger;
+import org.apache.flink.streaming.util.RestartStrategyUtils;
+import org.apache.flink.util.TestLoggerExtension;
 
-import org.junit.Test;
-import org.junit.experimental.categories.Category;
+import org.junit.jupiter.api.Tag;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 
-import java.io.IOException;
 import java.time.Duration;
-import java.util.Arrays;
+import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
 import static org.apache.flink.configuration.JobManagerOptions.EXECUTION_FAILOVER_STRATEGY;
-import static org.hamcrest.MatcherAssert.assertThat;
-import static org.hamcrest.Matchers.is;
-import static org.junit.Assert.assertNotNull;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /** IT case to test local recovery using {@link DefaultScheduler}. */
-public class DefaultSchedulerLocalRecoveryITCase extends TestLogger {
+@ExtendWith(TestLoggerExtension.class)
+class DefaultSchedulerLocalRecoveryITCase {
 
     private static final long TIMEOUT = 10_000L;
 
     @Test
-    @Category(FailsWithAdaptiveScheduler.class) // FLINK-21450
-    public void testLocalRecoveryFull() throws Exception {
+    // The AdaptiveScheduler doesn't update the ExecutionGraph but creates a new Execution during
+    // local recovery. Recovering can also lead to a change in parallelism which makes the
+    // executionHistory non-linear. The lack of a linear executionHistory prevents us from applying
+    // the same test for the AdaptiveScheduler.
+    @Tag("org.apache.flink.testutils.junit.FailsWithAdaptiveScheduler")
+    void testLocalRecoveryFull() throws Exception {
         testLocalRecoveryInternal("full");
     }
 
     @Test
-    @Category(FailsWithAdaptiveScheduler.class) // FLINK-21450
-    public void testLocalRecoveryRegion() throws Exception {
+    // see comment in #testLocalRecoveryFull
+    @Tag("org.apache.flink.testutils.junit.FailsWithAdaptiveScheduler")
+    void testLocalRecoveryRegion() throws Exception {
         testLocalRecoveryInternal("region");
     }
 
     private void testLocalRecoveryInternal(String failoverStrategyValue) throws Exception {
         final Configuration configuration = new Configuration();
-        configuration.setBoolean(CheckpointingOptions.LOCAL_RECOVERY, true);
+        configuration.set(StateRecoveryOptions.LOCAL_RECOVERY, true);
         configuration.setString(EXECUTION_FAILOVER_STRATEGY.key(), failoverStrategyValue);
 
         final int parallelism = 10;
@@ -93,26 +93,26 @@ public class DefaultSchedulerLocalRecoveryITCase extends TestLogger {
                 continue;
             }
             AllocationID priorAllocation =
-                    vertex.getPriorExecutionAttempt(currentAttemptNumber - 1)
+                    vertex.getExecutionHistory()
+                            .getHistoricalExecution(currentAttemptNumber - 1)
+                            .get()
                             .getAssignedAllocationID();
             AllocationID currentAllocation =
                     vertex.getCurrentExecutionAttempt().getAssignedAllocationID();
 
-            assertNotNull(priorAllocation);
-            assertNotNull(currentAllocation);
+            assertThat(priorAllocation).isNotNull();
+            assertThat(currentAllocation).isNotNull();
             if (!currentAllocation.equals(priorAllocation)) {
                 nonLocalRecoveredTasks++;
             }
         }
-        assertThat(nonLocalRecoveredTasks, is(expected));
+        assertThat(nonLocalRecoveredTasks).isEqualTo(expected);
     }
 
     private ArchivedExecutionGraph executeSchedulingTest(
             Configuration configuration, int parallelism) throws Exception {
-        configuration.setString(RestOptions.BIND_PORT, "0");
-
-        final long slotIdleTimeout = TIMEOUT;
-        configuration.setLong(JobManagerOptions.SLOT_IDLE_TIMEOUT, slotIdleTimeout);
+        final Duration slotIdleTimeout = Duration.ofMillis(TIMEOUT);
+        configuration.set(JobManagerOptions.SLOT_IDLE_TIMEOUT, slotIdleTimeout);
 
         configuration.set(TaskManagerOptions.TOTAL_FLINK_MEMORY, MemorySize.parse("64mb"));
         configuration.set(TaskManagerOptions.FRAMEWORK_HEAP_MEMORY, MemorySize.parse("16mb"));
@@ -120,6 +120,7 @@ public class DefaultSchedulerLocalRecoveryITCase extends TestLogger {
 
         final MiniClusterConfiguration miniClusterConfiguration =
                 new MiniClusterConfiguration.Builder()
+                        .withRandomPorts()
                         .setConfiguration(configuration)
                         .setNumTaskManagers(parallelism)
                         .setNumSlotsPerTaskManager(1)
@@ -160,22 +161,21 @@ public class DefaultSchedulerLocalRecoveryITCase extends TestLogger {
     private void waitUntilAllVerticesRunning(JobID jobId, MiniCluster miniCluster)
             throws Exception {
         CommonTestUtils.waitForAllTaskRunning(
-                () -> miniCluster.getExecutionGraph(jobId).get(TIMEOUT, TimeUnit.SECONDS),
-                Deadline.fromNow(Duration.ofMillis(TIMEOUT)),
-                false);
+                () -> miniCluster.getExecutionGraph(jobId).get(TIMEOUT, TimeUnit.SECONDS), false);
     }
 
-    private JobGraph createJobGraph(int parallelism) throws IOException {
+    private JobGraph createJobGraph(int parallelism) {
         final JobVertex source = new JobVertex("v1");
         source.setInvokableClass(WaitingCancelableInvokable.class);
         source.setParallelism(parallelism);
 
-        ExecutionConfig executionConfig = new ExecutionConfig();
-        executionConfig.setRestartStrategy(RestartStrategies.fixedDelayRestart(1, 10));
+        JobGraph jobGraph =
+                JobGraphBuilder.newStreamingJobGraphBuilder()
+                        .addJobVertices(List.of(source))
+                        .build();
 
-        return JobGraphBuilder.newStreamingJobGraphBuilder()
-                .addJobVertices(Arrays.asList(source))
-                .setExecutionConfig(executionConfig)
-                .build();
+        RestartStrategyUtils.configureFixedDelayRestartStrategy(jobGraph, 1, 10L);
+
+        return jobGraph;
     }
 }

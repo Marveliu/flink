@@ -27,13 +27,13 @@ import org.apache.flink.runtime.checkpoint.CheckpointException;
 import org.apache.flink.runtime.checkpoint.CheckpointMetaData;
 import org.apache.flink.runtime.checkpoint.CheckpointMetricsBuilder;
 import org.apache.flink.runtime.checkpoint.CheckpointOptions;
+import org.apache.flink.runtime.checkpoint.channel.ChannelStateWriteRequestExecutorFactory;
 import org.apache.flink.runtime.clusterframework.types.AllocationID;
 import org.apache.flink.runtime.deployment.InputGateDeploymentDescriptor;
 import org.apache.flink.runtime.deployment.ResultPartitionDeploymentDescriptor;
 import org.apache.flink.runtime.execution.Environment;
 import org.apache.flink.runtime.execution.ExecutionState;
 import org.apache.flink.runtime.execution.librarycache.TestingClassLoaderLease;
-import org.apache.flink.runtime.executiongraph.ExecutionAttemptID;
 import org.apache.flink.runtime.executiongraph.JobInformation;
 import org.apache.flink.runtime.executiongraph.TaskInformation;
 import org.apache.flink.runtime.externalresource.ExternalResourceInfoProvider;
@@ -41,12 +41,12 @@ import org.apache.flink.runtime.filecache.FileCache;
 import org.apache.flink.runtime.io.disk.iomanager.IOManager;
 import org.apache.flink.runtime.io.network.NettyShuffleEnvironmentBuilder;
 import org.apache.flink.runtime.io.network.TaskEventDispatcher;
-import org.apache.flink.runtime.io.network.partition.NoOpResultPartitionConsumableNotifier;
-import org.apache.flink.runtime.io.network.partition.ResultPartitionConsumableNotifier;
+import org.apache.flink.runtime.jobgraph.JobType;
 import org.apache.flink.runtime.jobgraph.JobVertexID;
 import org.apache.flink.runtime.jobgraph.tasks.AbstractInvokable;
 import org.apache.flink.runtime.jobgraph.tasks.InputSplitProvider;
 import org.apache.flink.runtime.memory.MemoryManager;
+import org.apache.flink.runtime.memory.SharedResources;
 import org.apache.flink.runtime.metrics.groups.TaskMetricGroup;
 import org.apache.flink.runtime.metrics.groups.UnregisteredMetricGroups;
 import org.apache.flink.runtime.query.KvStateRegistry;
@@ -58,24 +58,25 @@ import org.apache.flink.runtime.taskexecutor.TestGlobalAggregateManager;
 import org.apache.flink.runtime.util.TestingTaskManagerRuntimeInfo;
 import org.apache.flink.runtime.util.TestingUserCodeClassLoader;
 import org.apache.flink.util.SerializedValue;
-import org.apache.flink.util.TestLogger;
+import org.apache.flink.util.TestLoggerExtension;
 
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 
 import java.util.Collections;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Future;
 
-import static org.hamcrest.Matchers.isOneOf;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertThat;
+import static org.apache.flink.runtime.executiongraph.ExecutionGraphTestUtils.createExecutionAttemptId;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
 
 /** Testing asynchronous call of {@link Task}. */
-public class TaskAsyncCallTest extends TestLogger {
+@ExtendWith(TestLoggerExtension.class)
+class TaskAsyncCallTest {
 
     /** Number of expected checkpoints. */
     private static int numCalls;
@@ -91,8 +92,8 @@ public class TaskAsyncCallTest extends TestLogger {
 
     private ShuffleEnvironment<?, ?> shuffleEnvironment;
 
-    @Before
-    public void createQueuesAndActors() {
+    @BeforeEach
+    void createQueuesAndActors() {
         numCalls = 1000;
 
         awaitLatch = new OneShotLatch();
@@ -101,8 +102,8 @@ public class TaskAsyncCallTest extends TestLogger {
         shuffleEnvironment = new NettyShuffleEnvironmentBuilder().build();
     }
 
-    @After
-    public void teardown() throws Exception {
+    @AfterEach
+    void teardown() throws Exception {
         if (shuffleEnvironment != null) {
             shuffleEnvironment.close();
         }
@@ -113,7 +114,7 @@ public class TaskAsyncCallTest extends TestLogger {
     // ------------------------------------------------------------------------
 
     @Test
-    public void testCheckpointCallsInOrder() throws Exception {
+    void testCheckpointCallsInOrder() throws Exception {
 
         Task task = createTask(CheckpointsInOrderInvokable.class);
         try (TaskCleaner ignored = new TaskCleaner(task)) {
@@ -128,15 +129,15 @@ public class TaskAsyncCallTest extends TestLogger {
 
             triggerLatch.await();
 
-            assertFalse(task.isCanceledOrFailed());
+            assertThat(task.isCanceledOrFailed()).isFalse();
 
             ExecutionState currentState = task.getExecutionState();
-            assertThat(currentState, isOneOf(ExecutionState.RUNNING, ExecutionState.FINISHED));
+            assertThat(currentState).isIn(ExecutionState.RUNNING, ExecutionState.FINISHED);
         }
     }
 
     @Test
-    public void testMixedAsyncCallsInOrder() throws Exception {
+    void testMixedAsyncCallsInOrder() throws Exception {
 
         Task task = createTask(CheckpointsInOrderInvokable.class);
         try (TaskCleaner ignored = new TaskCleaner(task)) {
@@ -152,10 +153,10 @@ public class TaskAsyncCallTest extends TestLogger {
 
             triggerLatch.await();
 
-            assertFalse(task.isCanceledOrFailed());
+            assertThat(task.isCanceledOrFailed()).isFalse();
 
             ExecutionState currentState = task.getExecutionState();
-            assertThat(currentState, isOneOf(ExecutionState.RUNNING, ExecutionState.FINISHED));
+            assertThat(currentState).isIn(ExecutionState.RUNNING, ExecutionState.FINISHED);
         }
     }
 
@@ -169,8 +170,6 @@ public class TaskAsyncCallTest extends TestLogger {
                                                 .build())
                         .build();
 
-        ResultPartitionConsumableNotifier consumableNotifier =
-                new NoOpResultPartitionConsumableNotifier();
         PartitionProducerStateChecker partitionProducerStateChecker =
                 mock(PartitionProducerStateChecker.class);
         Executor executor = mock(Executor.class);
@@ -180,6 +179,7 @@ public class TaskAsyncCallTest extends TestLogger {
         JobInformation jobInformation =
                 new JobInformation(
                         new JobID(),
+                        JobType.STREAMING,
                         "Job Name",
                         new SerializedValue<>(new ExecutionConfig()),
                         new Configuration(),
@@ -198,13 +198,12 @@ public class TaskAsyncCallTest extends TestLogger {
         return new Task(
                 jobInformation,
                 taskInformation,
-                new ExecutionAttemptID(),
+                createExecutionAttemptId(taskInformation.getJobVertexId()),
                 new AllocationID(),
-                0,
-                0,
                 Collections.<ResultPartitionDeploymentDescriptor>emptyList(),
                 Collections.<InputGateDeploymentDescriptor>emptyList(),
                 mock(MemoryManager.class),
+                new SharedResources(),
                 mock(IOManager.class),
                 shuffleEnvironment,
                 new KvStateService(new KvStateRegistry(), null, null),
@@ -221,9 +220,9 @@ public class TaskAsyncCallTest extends TestLogger {
                 mock(FileCache.class),
                 new TestingTaskManagerRuntimeInfo(),
                 taskMetricGroup,
-                consumableNotifier,
                 partitionProducerStateChecker,
-                executor);
+                executor,
+                new ChannelStateWriteRequestExecutorFactory(jobInformation.getJobId()));
     }
 
     /** Invokable for testing checkpoints. */

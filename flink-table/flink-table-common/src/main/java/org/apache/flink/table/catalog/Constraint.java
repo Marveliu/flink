@@ -33,7 +33,7 @@ public interface Constraint {
      * Constraints can either be enforced or non-enforced. If a constraint is enforced it will be
      * checked whenever any SQL statement is executed that results in data or schema changes. If the
      * constraint is not enforced the owner of the data is responsible for ensuring data integrity.
-     * Flink will rely the information is valid and might use it for query optimisations.
+     * Flink will rely on the information as valid and might use it for query optimisations.
      */
     boolean isEnforced();
 
@@ -46,19 +46,23 @@ public interface Constraint {
     /**
      * Type of the constraint.
      *
-     * <p>Unique constraints:
-     *
      * <ul>
-     *   <li>UNIQUE - is satisfied if and only if there do not exist two rows that have same
-     *       non-null values in the unique columns
-     *   <li>PRIMARY KEY - additionally to UNIQUE constraint, it requires none of the values in
-     *       specified columns be a null value. Moreover there can be only a single PRIMARY KEY
-     *       defined for a Table.
+     *   <li>Unique constraints:
+     *       <ul>
+     *         <li>UNIQUE - is satisfied if and only if there do not exist two rows that have same
+     *             non-null values in the unique columns
+     *         <li>PRIMARY KEY - additionally to UNIQUE constraint, it requires none of the values
+     *             in specified columns be a null value. Moreover there can be only a single PRIMARY
+     *             KEY defined for a Table.
+     *       </ul>
+     *   <li>Immutable constraint - is satisfied iff these specific columns are not allowed to be
+     *       modified.
      * </ul>
      */
     @PublicEvolving
     enum ConstraintType {
         PRIMARY_KEY,
-        UNIQUE_KEY
+        UNIQUE_KEY,
+        IMMUTABLE_COLUMNS
     }
 }

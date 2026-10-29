@@ -21,6 +21,7 @@ package org.apache.flink.table.expressions;
 import org.apache.flink.annotation.PublicEvolving;
 import org.apache.flink.util.Preconditions;
 
+import java.io.Serializable;
 import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
@@ -28,11 +29,11 @@ import java.util.Objects;
 /**
  * An unresolved reference to a field, table, or local reference.
  *
- * <p>This is a purely API facing expression that will be resolved into {@link
+ * <p>This is a purely API-facing expression that will be resolved into {@link
  * FieldReferenceExpression}, {@link LocalReferenceExpression}, or {@link TableReferenceExpression}.
  */
 @PublicEvolving
-public final class UnresolvedReferenceExpression implements Expression {
+public final class UnresolvedReferenceExpression implements Expression, Serializable {
 
     private final String name;
 

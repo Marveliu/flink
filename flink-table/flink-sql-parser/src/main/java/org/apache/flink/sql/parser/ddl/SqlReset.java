@@ -19,6 +19,7 @@
 package org.apache.flink.sql.parser.ddl;
 
 import org.apache.flink.annotation.Internal;
+import org.apache.flink.sql.parser.SqlParseUtils;
 
 import org.apache.calcite.sql.SqlCall;
 import org.apache.calcite.sql.SqlKind;
@@ -29,7 +30,6 @@ import org.apache.calcite.sql.SqlSpecialOperator;
 import org.apache.calcite.sql.SqlWriter;
 import org.apache.calcite.sql.parser.SqlParserPos;
 import org.apache.calcite.util.ImmutableNullableList;
-import org.apache.calcite.util.NlsString;
 
 import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
@@ -41,7 +41,13 @@ import java.util.List;
 public class SqlReset extends SqlCall {
 
     public static final SqlSpecialOperator OPERATOR =
-            new SqlSpecialOperator("RESET", SqlKind.OTHER);
+            new SqlSpecialOperator("RESET", SqlKind.OTHER) {
+                @Override
+                public SqlCall createCall(
+                        SqlLiteral functionQualifier, SqlParserPos pos, SqlNode... operands) {
+                    return new SqlReset(pos, operands.length > 0 ? operands[0] : null);
+                }
+            };
 
     @Nullable private final SqlNode key;
 
@@ -67,11 +73,7 @@ public class SqlReset extends SqlCall {
     }
 
     public @Nullable String getKeyString() {
-        if (key == null) {
-            return null;
-        }
-
-        return ((NlsString) SqlLiteral.value(key)).getValue();
+        return SqlParseUtils.extractString(key);
     }
 
     @Override

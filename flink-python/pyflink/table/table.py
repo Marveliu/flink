@@ -16,8 +16,13 @@
 # limitations under the License.
 ################################################################################
 
+from datetime import tzinfo
+
 from py4j.java_gateway import get_method
-from typing import Union
+from typing import Optional, Union, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import pandas
 
 from pyflink.java_gateway import get_gateway
 from pyflink.table import ExplainDetail
@@ -25,13 +30,18 @@ from pyflink.table.expression import Expression, _get_java_expression
 from pyflink.table.expressions import col, with_columns, without_columns
 from pyflink.table.serializers import ArrowSerializer
 from pyflink.table.table_descriptor import TableDescriptor
+from pyflink.table.table_pipeline import TablePipeline
 from pyflink.table.table_result import TableResult
 from pyflink.table.table_schema import TableSchema
-from pyflink.table.types import create_arrow_schema
+from pyflink.table.catalog import ResolvedSchema
+from pyflink.table.types import LocalZonedTimestampType, create_arrow_schema
 from pyflink.table.udf import UserDefinedScalarFunctionWrapper, \
-    UserDefinedAggregateFunctionWrapper, UserDefinedTableFunctionWrapper
+    UserDefinedAggregateFunctionWrapper, UserDefinedTableFunctionWrapper, \
+    UserDefinedAsyncScalarFunctionWrapper
 from pyflink.table.utils import tz_convert_from_internal, to_expression_jarray
 from pyflink.table.window import OverWindow, GroupWindow
+
+from pyflink.util.api_stability_decorators import Deprecated, PublicEvolving
 
 from pyflink.util.java_utils import to_jarray
 from pyflink.util.java_utils import to_j_explain_detail_arr
@@ -39,33 +49,58 @@ from pyflink.util.java_utils import to_j_explain_detail_arr
 __all__ = ['Table', 'GroupedTable', 'GroupWindowedTable', 'OverWindowedTable', 'WindowGroupedTable']
 
 
+@PublicEvolving()
 class Table(object):
-
     """
-    A :class:`~pyflink.table.Table` is the core component of the Table API.
+    A :class:`~pyflink.table.Table` object is the core abstraction of the Table API.
     Similar to how the DataStream API has DataStream,
     the Table API is built around :class:`~pyflink.table.Table`.
 
-    Use the methods of :class:`~pyflink.table.Table` to transform data.
+    A :class:`~pyflink.table.Table` object describes a pipeline of data transformations. It does not
+    contain the data itself in any way. Instead, it describes how to read data from a table source,
+    and how to eventually write data to a table sink. The declared pipeline can be
+    printed, optimized, and eventually executed in a cluster. The pipeline can work with bounded or
+    unbounded streams which enables both streaming and batch scenarios.
+
+    By the definition above, a :class:`~pyflink.table.Table` object can actually be considered as
+    a view in SQL terms.
+
+    The initial :class:`~pyflink.table.Table` object is constructed by a
+    :class:`~pyflink.table.TableEnvironment`. For example,
+    :func:`~pyflink.table.TableEnvironment.from_path` obtains a table from a catalog.
+    Every :class:`~pyflink.table.Table` object has a schema that is available through
+    :func:`~pyflink.table.Table.get_schema`. A :class:`~pyflink.table.Table` object is
+    always associated with its original table environment during programming.
+
+    Every transformation (i.e. :func:`~pyflink.table.Table.select`} or
+    :func:`~pyflink.table.Table.filter` on a :class:`~pyflink.table.Table` object leads to a new
+    :class:`~pyflink.table.Table` object.
+
+    Use :func:`~pyflink.table.Table.execute` to execute the pipeline and retrieve the transformed
+    data locally during development. Otherwise, use :func:`~pyflink.table.Table.execute_insert` to
+    write the data into a table sink.
+
+    Many methods of this class take one or more :class:`~pyflink.table.Expression` as parameters.
+    For fluent definition of expressions and easier readability, we recommend to add a star import:
 
     Example:
     ::
 
-        >>> env = StreamExecutionEnvironment.get_execution_environment()
-        >>> env.set_parallelism(1)
-        >>> t_env = StreamTableEnvironment.create(env)
-        >>> ...
-        >>> t_env.register_table_source("source", ...)
-        >>> t = t_env.from_path("source")
-        >>> t.select(...)
-        >>> ...
-        >>> t_env.register_table_sink("result", ...)
-        >>> t.execute_insert("result")
+        >>> from pyflink.table.expressions import *
 
-    Operations such as :func:`~pyflink.table.Table.join`, :func:`~pyflink.table.Table.select`,
-    :func:`~pyflink.table.Table.where` and :func:`~pyflink.table.Table.group_by`
-    take arguments in an expression string. Please refer to the documentation for
-    the expression syntax.
+    Check the documentation for more programming language specific APIs.
+
+    The following example shows how to work with a :class:`~pyflink.table.Table` object.
+
+    Example:
+    ::
+
+        >>> from pyflink.table import EnvironmentSettings, TableEnvironment
+        >>> from pyflink.table.expressions import *
+        >>> env_settings = EnvironmentSettings.in_streaming_mode()
+        >>> t_env = TableEnvironment.create(env_settings)
+        >>> table = t_env.from_path("my_table").select(col("colA").trim(), col("colB") + 12)
+        >>> table.execute().print()
     """
 
     def __init__(self, j_table, t_env):
@@ -84,13 +119,14 @@ class Table(object):
 
             >>> tab.select(tab.a)
         """
-        if name not in self.get_schema().get_field_names():
+        column_names = self.get_resolved_schema().get_column_names()
+        if name not in column_names:
             raise AttributeError(
                 "The current table has no column named '%s', available columns: [%s]"
-                % (name, ', '.join(self.get_schema().get_field_names())))
+                % (name, ', '.join(column_names)))
         return col(name)
 
-    def select(self, *fields: Union[str, Expression]) -> 'Table':
+    def select(self, *fields: Expression) -> 'Table':
         """
         Performs a selection operation. Similar to a SQL SELECT statement. The field expressions
         can contain complex expressions.
@@ -98,20 +134,13 @@ class Table(object):
         Example:
         ::
 
-            >>> from pyflink.table import expressions as expr
-            >>> tab.select(tab.key, expr.concat(tab.value, 'hello'))
-            >>> tab.select(expr.col('key'), expr.concat(expr.col('value'), 'hello'))
-
-            >>> tab.select("key, value + 'hello'")
+            >>> from pyflink.table.expressions import col, concat
+            >>> tab.select(tab.key, concat(tab.value, 'hello'))
+            >>> tab.select(col('key'), concat(col('value'), 'hello'))
 
         :return: The result table.
         """
-        if all(isinstance(f, Expression) for f in fields):
-            return Table(self._j_table.select(to_expression_jarray(fields)), self._t_env)
-        else:
-            assert len(fields) == 1
-            assert isinstance(fields[0], str)
-            return Table(self._j_table.select(fields[0]), self._t_env)
+        return Table(self._j_table.select(to_expression_jarray(fields)), self._t_env)
 
     def alias(self, field: str, *fields: str) -> 'Table':
         """
@@ -122,7 +151,6 @@ class Table(object):
         ::
 
             >>> tab.alias("a", "b", "c")
-            >>> tab.alias("a, b, c")
 
         :param field: Field alias.
         :param fields: Additional field aliases.
@@ -132,7 +160,7 @@ class Table(object):
         extra_fields = to_jarray(gateway.jvm.String, fields)
         return Table(get_method(self._j_table, "as")(field, extra_fields), self._t_env)
 
-    def filter(self, predicate: Union[str, Expression[bool]]) -> 'Table':
+    def filter(self, predicate: Expression[bool]) -> 'Table':
         """
         Filters out elements that don't pass the filter predicate. Similar to a SQL WHERE
         clause.
@@ -140,15 +168,14 @@ class Table(object):
         Example:
         ::
 
-            >>> tab.filter(tab.name == 'Fred')
-            >>> tab.filter("name = 'Fred'")
+            >>> tab.filter(col('name') == 'Fred')
 
         :param predicate: Predicate expression string.
         :return: The result table.
         """
         return Table(self._j_table.filter(_get_java_expression(predicate)), self._t_env)
 
-    def where(self, predicate: Union[str, Expression[bool]]) -> 'Table':
+    def where(self, predicate: Expression[bool]) -> 'Table':
         """
         Filters out elements that don't pass the filter predicate. Similar to a SQL WHERE
         clause.
@@ -156,15 +183,14 @@ class Table(object):
         Example:
         ::
 
-            >>> tab.where(tab.name == 'Fred')
-            >>> tab.where("name = 'Fred'")
+            >>> tab.where(col('name') == 'Fred')
 
         :param predicate: Predicate expression string.
         :return: The result table.
         """
         return Table(self._j_table.where(_get_java_expression(predicate)), self._t_env)
 
-    def group_by(self, *fields: Union[str, Expression]) -> 'GroupedTable':
+    def group_by(self, *fields: Expression) -> 'GroupedTable':
         """
         Groups the elements on some grouping keys. Use this before a selection with aggregations
         to perform the aggregation on a per-group basis. Similar to a SQL GROUP BY statement.
@@ -172,18 +198,12 @@ class Table(object):
         Example:
         ::
 
-            >>> tab.group_by(tab.key).select(tab.key, tab.value.avg)
-            >>> tab.group_by("key").select("key, value.avg")
+            >>> tab.group_by(col('key')).select(col('key'), col('value').avg)
 
         :param fields: Group keys.
         :return: The grouped table.
         """
-        if all(isinstance(f, Expression) for f in fields):
-            return GroupedTable(self._j_table.groupBy(to_expression_jarray(fields)), self._t_env)
-        else:
-            assert len(fields) == 1
-            assert isinstance(fields[0], str)
-            return GroupedTable(self._j_table.groupBy(fields[0]), self._t_env)
+        return GroupedTable(self._j_table.groupBy(to_expression_jarray(fields)), self._t_env)
 
     def distinct(self) -> 'Table':
         """
@@ -192,13 +212,13 @@ class Table(object):
         Example:
         ::
 
-            >>> tab.select(tab.key, tab.value).distinct()
+            >>> tab.select(col('key'), col('value')).distinct()
 
         :return: The result table.
         """
         return Table(self._j_table.distinct(), self._t_env)
 
-    def join(self, right: 'Table', join_predicate: Union[str, Expression[bool]] = None):
+    def join(self, right: 'Table', join_predicate: Expression[bool] = None):
         """
         Joins two :class:`~pyflink.table.Table`. Similar to a SQL join. The fields of the two joined
         operations must not overlap, use :func:`~pyflink.table.Table.alias` to rename fields if
@@ -212,9 +232,8 @@ class Table(object):
         Example:
         ::
 
-            >>> left.join(right).where((left.a == right.b) && (left.c > 3))
-            >>> left.join(right).where("a = b && c > 3")
-            >>> left.join(right, left.a == right.b)
+            >>> left.join(right).where((col('a') == col('b')) && (col('c') > 3))
+            >>> left.join(right, col('a') == col('b'))
 
         :param right: Right table.
         :param join_predicate: Optional, the join predicate expression string.
@@ -228,7 +247,7 @@ class Table(object):
 
     def left_outer_join(self,
                         right: 'Table',
-                        join_predicate: Union[str, Expression[bool]] = None) -> 'Table':
+                        join_predicate: Expression[bool] = None) -> 'Table':
         """
         Joins two :class:`~pyflink.table.Table`. Similar to a SQL left outer join. The fields of
         the two joined operations must not overlap, use :func:`~pyflink.table.Table.alias` to
@@ -243,8 +262,7 @@ class Table(object):
         ::
 
             >>> left.left_outer_join(right)
-            >>> left.left_outer_join(right, left.a == right.b)
-            >>> left.left_outer_join(right, "a = b")
+            >>> left.left_outer_join(right, col('a') == col('b'))
 
         :param right: Right table.
         :param join_predicate: Optional, the join predicate expression string.
@@ -258,7 +276,7 @@ class Table(object):
 
     def right_outer_join(self,
                          right: 'Table',
-                         join_predicate: Union[str, Expression[bool]]) -> 'Table':
+                         join_predicate: Expression[bool]) -> 'Table':
         """
         Joins two :class:`~pyflink.table.Table`. Similar to a SQL right outer join. The fields of
         the two joined operations must not overlap, use :func:`~pyflink.table.Table.alias` to
@@ -272,8 +290,7 @@ class Table(object):
         Example:
         ::
 
-            >>> left.right_outer_join(right, left.a == right.b)
-            >>> left.right_outer_join(right, "a = b")
+            >>> left.right_outer_join(right, col('a') == col('b'))
 
         :param right: Right table.
         :param join_predicate: The join predicate expression string.
@@ -284,7 +301,7 @@ class Table(object):
 
     def full_outer_join(self,
                         right: 'Table',
-                        join_predicate: Union[str, Expression[bool]]) -> 'Table':
+                        join_predicate: Expression[bool]) -> 'Table':
         """
         Joins two :class:`~pyflink.table.Table`. Similar to a SQL full outer join. The fields of
         the two joined operations must not overlap, use :func:`~pyflink.table.Table.alias` to
@@ -298,8 +315,7 @@ class Table(object):
         Example:
         ::
 
-            >>> left.full_outer_join(right, left.a == right.b)
-            >>> left.full_outer_join(right, "a = b")
+            >>> left.full_outer_join(right, col('a') == col('b'))
 
         :param right: Right table.
         :param join_predicate: The join predicate expression string.
@@ -309,8 +325,8 @@ class Table(object):
             right._j_table, _get_java_expression(join_predicate)), self._t_env)
 
     def join_lateral(self,
-                     table_function_call: Union[str, Expression, UserDefinedTableFunctionWrapper],
-                     join_predicate: Union[str, Expression[bool]] = None) -> 'Table':
+                     table_function_call: Union[Expression, UserDefinedTableFunctionWrapper],
+                     join_predicate: Expression[bool] = None) -> 'Table':
         """
         Joins this Table with an user-defined TableFunction. This join is similar to a SQL inner
         join but works with a table function. Each row of the table is joined with the rows
@@ -319,12 +335,10 @@ class Table(object):
         Example:
         ::
 
+            >>> from pyflink.table.expressions import *
             >>> t_env.create_java_temporary_system_function("split",
-           ...     "java.table.function.class.name")
-            >>> tab.join_lateral("split(text, ' ') as (b)", "a = b")
-
-            >>> from pyflink.table import expressions as expr
-            >>> tab.join_lateral(expr.call('split', ' ').alias('b'), expr.col('a') == expr.col('b'))
+            ...     "java.table.function.class.name")
+            >>> tab.join_lateral(call('split', ' ').alias('b'), col('a') == col('b'))
             >>> # take all the columns as inputs
             >>> @udtf(result_types=[DataTypes.INT(), DataTypes.STRING()])
             ... def split_row(row: Row):
@@ -356,9 +370,9 @@ class Table(object):
                 self._t_env)
 
     def left_outer_join_lateral(self,
-                                table_function_call: Union[str, Expression,
+                                table_function_call: Union[Expression,
                                                            UserDefinedTableFunctionWrapper],
-                                join_predicate: Union[str, Expression[bool]] = None) -> 'Table':
+                                join_predicate: Expression[bool] = None) -> 'Table':
         """
         Joins this Table with an user-defined TableFunction. This join is similar to
         a SQL left outer join but works with a table function. Each row of the table is joined
@@ -370,9 +384,9 @@ class Table(object):
 
             >>> t_env.create_java_temporary_system_function("split",
             ...     "java.table.function.class.name")
-            >>> tab.left_outer_join_lateral("split(text, ' ') as (b)")
-            >>> from pyflink.table import expressions as expr
-            >>> tab.left_outer_join_lateral(expr.call('split', ' ').alias('b'))
+            >>> from pyflink.table.expressions import *
+            >>> tab.left_outer_join_lateral(call('split', ' ').alias('b'))
+
             >>> # take all the columns as inputs
             >>> @udtf(result_types=[DataTypes.INT(), DataTypes.STRING()])
             ... def split_row(row: Row):
@@ -528,7 +542,7 @@ class Table(object):
         """
         return Table(self._j_table.intersectAll(right._j_table), self._t_env)
 
-    def order_by(self, *fields: Union[str, Expression]) -> 'Table':
+    def order_by(self, *fields: Expression) -> 'Table':
         """
         Sorts the given :class:`~pyflink.table.Table`. Similar to SQL ORDER BY.
         The resulting Table is sorted globally sorted across all parallel partitions.
@@ -536,8 +550,7 @@ class Table(object):
         Example:
         ::
 
-            >>> tab.order_by(tab.name.desc)
-            >>> tab.order_by("name.desc")
+            >>> tab.order_by(col('name').desc)
 
         For unbounded tables, this operation requires a sorting on a time attribute or a subsequent
         fetch operation.
@@ -545,12 +558,7 @@ class Table(object):
         :param fields: Order fields expression string.
         :return: The result table.
         """
-        if all(isinstance(f, Expression) for f in fields):
-            return Table(self._j_table.orderBy(to_expression_jarray(fields)), self._t_env)
-        else:
-            assert len(fields) == 1
-            assert isinstance(fields[0], str)
-            return Table(self._j_table.orderBy(fields[0]), self._t_env)
+        return Table(self._j_table.orderBy(to_expression_jarray(fields)), self._t_env)
 
     def offset(self, offset: int) -> 'Table':
         """
@@ -564,10 +572,9 @@ class Table(object):
         ::
 
             # skips the first 3 rows and returns all following rows.
-            >>> tab.order_by(tab.name.desc).offset(3)
-            >>> tab.order_by("name.desc").offset(3)
+            >>> tab.order_by(col('name').desc).offset(3)
             # skips the first 10 rows and returns the next 5 rows.
-            >>> tab.order_by(tab.name.desc).offset(10).fetch(5)
+            >>> tab.order_by(col('name').desc).offset(10).fetch(5)
 
         For unbounded tables, this operation requires a subsequent fetch operation.
 
@@ -589,13 +596,12 @@ class Table(object):
         Returns the first 3 records.
         ::
 
-            >>> tab.order_by(tab.name.desc).fetch(3)
-            >>> tab.order_by("name.desc").fetch(3)
+            >>> tab.order_by(col('name').desc).fetch(3)
 
         Skips the first 10 rows and returns the next 5 rows.
         ::
 
-            >>> tab.order_by(tab.name.desc).offset(10).fetch(5)
+            >>> tab.order_by(col('name').desc).offset(10).fetch(5)
 
         :param fetch: The number of records to return. Fetch must be >= 0.
         :return: The result table.
@@ -651,10 +657,10 @@ class Table(object):
         Example:
         ::
 
-            >>> from pyflink.table import expressions as expr
-            >>> tab.window(Tumble.over(expr.lit(10).minutes).on(tab.rowtime).alias('w')) \\
+            >>> from pyflink.table.expressions import col, lit
+            >>> tab.window(Tumble.over(lit(10).minutes).on(col('rowtime')).alias('w')) \\
             ...     .group_by(col('w')) \\
-            ...     .select(tab.a.sum.alias('a'),
+            ...     .select(col('a').sum.alias('a'),
             ...             col('w').start.alias('b'),
             ...             col('w').end.alias('c'),
             ...             col('w').rowtime.alias('d'))
@@ -676,10 +682,10 @@ class Table(object):
         Example:
         ::
 
-            >>> from pyflink.table import expressions as expr
-            >>> tab.over_window(Over.partition_by(tab.c).order_by(tab.rowtime) \\
+            >>> from pyflink.table.expressions import col, lit
+            >>> tab.over_window(Over.partition_by(col('c')).order_by(col('rowtime')) \\
             ...     .preceding(lit(10).seconds).alias("ow")) \\
-            ...     .select(tab.c, tab.b.count.over(col('ow'), tab.e.sum.over(col('ow'))))
+            ...     .select(col('c'), col('b').count.over(col('ow'), col('e').sum.over(col('ow'))))
 
         .. note::
 
@@ -699,7 +705,7 @@ class Table(object):
                                  [item._java_over_window for item in over_windows])
         return OverWindowedTable(self._j_table.window(window_array), self._t_env)
 
-    def add_columns(self, *fields: Union[str, Expression]) -> 'Table':
+    def add_columns(self, *fields: Expression) -> 'Table':
         """
         Adds additional columns. Similar to a SQL SELECT statement. The field expressions
         can contain complex expressions, but can not contain aggregations. It will throw an
@@ -708,21 +714,15 @@ class Table(object):
         Example:
         ::
 
-            >>> from pyflink.table import expressions as expr
-            >>> tab.add_columns((tab.a + 1).alias('a1'), expr.concat(tab.b, 'sunny').alias('b1'))
-            >>> tab.add_columns("a + 1 as a1, concat(b, 'sunny') as b1")
+            >>> from pyflink.table.expressions import col, concat
+            >>> tab.add_columns((col('a') + 1).alias('a1'), concat(col('b'), 'sunny').alias('b1'))
 
         :param fields: Column list string.
         :return: The result table.
         """
-        if all(isinstance(f, Expression) for f in fields):
-            return Table(self._j_table.addColumns(to_expression_jarray(fields)), self._t_env)
-        else:
-            assert len(fields) == 1
-            assert isinstance(fields[0], str)
-            return Table(self._j_table.addColumns(fields[0]), self._t_env)
+        return Table(self._j_table.addColumns(to_expression_jarray(fields)), self._t_env)
 
-    def add_or_replace_columns(self, *fields: Union[str, Expression]) -> 'Table':
+    def add_or_replace_columns(self, *fields: Expression) -> 'Table':
         """
         Adds additional columns. Similar to a SQL SELECT statement. The field expressions
         can contain complex expressions, but can not contain aggregations. Existing fields will be
@@ -732,23 +732,17 @@ class Table(object):
         Example:
         ::
 
-            >>> from pyflink.table import expressions as expr
-            >>> tab.add_or_replace_columns((tab.a + 1).alias('a1'),
-            ...                            expr.concat(tab.b, 'sunny').alias('b1'))
-            >>> tab.add_or_replace_columns("a + 1 as a1, concat(b, 'sunny') as b1")
+            >>> from pyflink.table.expressions import col, concat
+            >>> tab.add_or_replace_columns((col('a') + 1).alias('a1'),
+            ...                            concat(col('b'), 'sunny').alias('b1'))
 
         :param fields: Column list string.
         :return: The result table.
         """
-        if all(isinstance(f, Expression) for f in fields):
-            return Table(self._j_table.addOrReplaceColumns(to_expression_jarray(fields)),
-                         self._t_env)
-        else:
-            assert len(fields) == 1
-            assert isinstance(fields[0], str)
-            return Table(self._j_table.addOrReplaceColumns(fields[0]), self._t_env)
+        return Table(self._j_table.addOrReplaceColumns(to_expression_jarray(fields)),
+                     self._t_env)
 
-    def rename_columns(self, *fields: Union[str, Expression]) -> 'Table':
+    def rename_columns(self, *fields: Expression) -> 'Table':
         """
         Renames existing columns. Similar to a field alias statement. The field expressions
         should be alias expressions, and only the existing fields can be renamed.
@@ -756,42 +750,34 @@ class Table(object):
         Example:
         ::
 
-            >>> tab.rename_columns(tab.a.alias('a1'), tab.b.alias('b1'))
-            >>> tab.rename_columns("a as a1, b as b1")
+            >>> tab.rename_columns(col('a').alias('a1'), col('b').alias('b1'))
 
         :param fields: Column list string.
         :return: The result table.
         """
-        if all(isinstance(f, Expression) for f in fields):
-            return Table(self._j_table.renameColumns(to_expression_jarray(fields)),
-                         self._t_env)
-        else:
-            assert len(fields) == 1
-            assert isinstance(fields[0], str)
-            return Table(self._j_table.renameColumns(fields[0]), self._t_env)
+        return Table(self._j_table.renameColumns(to_expression_jarray(fields)),
+                     self._t_env)
 
-    def drop_columns(self, *fields: Union[str, Expression]) -> 'Table':
+    def drop_columns(self, *fields: Expression) -> 'Table':
         """
         Drops existing columns. The field expressions should be field reference expressions.
 
         Example:
         ::
 
-            >>> tab.drop_columns(tab.a, tab.b)
-            >>> tab.drop_columns("a, b")
+            >>> tab.drop_columns(col('a'), col('b'))
 
         :param fields: Column list string.
         :return: The result table.
         """
-        if all(isinstance(f, Expression) for f in fields):
-            return Table(self._j_table.dropColumns(to_expression_jarray(fields)),
-                         self._t_env)
-        else:
-            assert len(fields) == 1
-            assert isinstance(fields[0], str)
-            return Table(self._j_table.dropColumns(fields[0]), self._t_env)
+        return Table(self._j_table.dropColumns(to_expression_jarray(fields)),
+                     self._t_env)
 
-    def map(self, func: Union[str, Expression, UserDefinedScalarFunctionWrapper]) -> 'Table':
+    def map(
+        self,
+        func: Union[Expression, UserDefinedScalarFunctionWrapper,
+                    UserDefinedAsyncScalarFunctionWrapper],
+    ) -> 'Table':
         """
         Performs a map operation with a user-defined scalar function.
 
@@ -800,7 +786,7 @@ class Table(object):
 
             >>> add = udf(lambda x: Row(x + 1, x * x), result_type=DataTypes.Row(
             ... [DataTypes.FIELD("a", DataTypes.INT()), DataTypes.FIELD("b", DataTypes.INT())]))
-            >>> tab.map(add(tab.a)).alias("a, b")
+            >>> tab.map(add(col('a'))).alias("a", "b")
             >>> # take all the columns as inputs
             >>> identity = udf(lambda row: row, result_type=DataTypes.Row(
             ... [DataTypes.FIELD("a", DataTypes.INT()), DataTypes.FIELD("b", DataTypes.INT())]))
@@ -811,15 +797,13 @@ class Table(object):
 
         .. versionadded:: 1.13.0
         """
-        if isinstance(func, str):
-            return Table(self._j_table.map(func), self._t_env)
-        elif isinstance(func, Expression):
+        if isinstance(func, Expression):
             return Table(self._j_table.map(func._j_expr), self._t_env)
         else:
             func._set_takes_row_as_input()
             return Table(self._j_table.map(func(with_columns(col("*")))._j_expr), self._t_env)
 
-    def flat_map(self, func: Union[str, Expression, UserDefinedTableFunctionWrapper]) -> 'Table':
+    def flat_map(self, func: Union[Expression, UserDefinedTableFunctionWrapper]) -> 'Table':
         """
         Performs a flatMap operation with a user-defined table function.
 
@@ -830,7 +814,7 @@ class Table(object):
             ... def split(x, string):
             ...     for s in string.split(","):
             ...         yield x, s
-            >>> tab.flat_map(split(tab.a, table.b))
+            >>> tab.flat_map(split(col('a'), col('b')))
             >>> # take all the columns as inputs
             >>> @udtf(result_types=[DataTypes.INT(), DataTypes.STRING()])
             ... def split_row(row: Row):
@@ -843,15 +827,13 @@ class Table(object):
 
         .. versionadded:: 1.13.0
         """
-        if isinstance(func, str):
-            return Table(self._j_table.flatMap(func), self._t_env)
-        elif isinstance(func, Expression):
+        if isinstance(func, Expression):
             return Table(self._j_table.flatMap(func._j_expr), self._t_env)
         else:
             func._set_takes_row_as_input()
             return Table(self._j_table.flatMap(func(with_columns(col("*")))._j_expr), self._t_env)
 
-    def aggregate(self, func: Union[str, Expression, UserDefinedAggregateFunctionWrapper]) \
+    def aggregate(self, func: Union[Expression, UserDefinedAggregateFunctionWrapper]) \
             -> 'AggregatedTable':
         """
         Performs a global aggregate operation with an aggregate function. You have to close the
@@ -865,7 +847,7 @@ class Table(object):
             ...                   [DataTypes.FIELD("a", DataTypes.FLOAT()),
             ...                    DataTypes.FIELD("b", DataTypes.INT())]),
             ...               func_type="pandas")
-            >>> tab.aggregate(agg(tab.a).alias("a", "b")).select("a, b")
+            >>> tab.aggregate(agg(col('a')).alias("a", "b")).select(col('a'), col('b'))
             >>> # take all the columns as inputs
             >>> # pd is a Pandas.DataFrame
             >>> agg_row = udaf(lambda pd: (pd.a.mean(), pd.a.max()),
@@ -873,16 +855,14 @@ class Table(object):
             ...                   [DataTypes.FIELD("a", DataTypes.FLOAT()),
             ...                    DataTypes.FIELD("b", DataTypes.INT())]),
             ...               func_type="pandas")
-            >>> tab.aggregate(agg.alias("a, b")).select("a, b")
+            >>> tab.aggregate(agg.alias("a", "b")).select(col('a'), col('b'))
 
         :param func: user-defined aggregate function.
         :return: The result table.
 
         .. versionadded:: 1.13.0
         """
-        if isinstance(func, str):
-            return AggregatedTable(self._j_table.aggregate(func), self._t_env)
-        elif isinstance(func, Expression):
+        if isinstance(func, Expression):
             return AggregatedTable(self._j_table.aggregate(func._j_expr), self._t_env)
         else:
             func._set_takes_row_as_input()
@@ -893,7 +873,7 @@ class Table(object):
                 func = func(with_columns(col("*")))
             return AggregatedTable(self._j_table.aggregate(func._j_expr), self._t_env)
 
-    def flat_aggregate(self, func: Union[str, Expression, UserDefinedAggregateFunctionWrapper]) \
+    def flat_aggregate(self, func: Union[Expression, UserDefinedAggregateFunctionWrapper]) \
             -> 'FlatAggregateTable':
         """
         Perform a global flat_aggregate without group_by. flat_aggregate takes a
@@ -904,7 +884,7 @@ class Table(object):
         ::
 
             >>> table_agg = udtaf(MyTableAggregateFunction())
-            >>> tab.flat_aggregate(table_agg(tab.a).alias("a", "b")).select("a, b")
+            >>> tab.flat_aggregate(table_agg(col('a')).alias("a", "b")).select(col('a'), col('b'))
             >>> # take all the columns as inputs
             >>> class Top2(TableAggregateFunction):
             ...     def emit_value(self, accumulator):
@@ -930,16 +910,14 @@ class Table(object):
             ...         return DataTypes.ROW(
             ...             [DataTypes.FIELD("a", DataTypes.BIGINT())])
             >>> top2 = udtaf(Top2())
-            >>> tab.flat_aggregate(top2.alias("a", "b")).select("a, b")
+            >>> tab.flat_aggregate(top2.alias("a", "b")).select(col('a'), col('b'))
 
         :param func: user-defined table aggregate function.
         :return: The result table.
 
         .. versionadded:: 1.13.0
         """
-        if isinstance(func, str):
-            return FlatAggregateTable(self._j_table.flatAggregate(func), self._t_env)
-        elif isinstance(func, Expression):
+        if isinstance(func, Expression):
             return FlatAggregateTable(self._j_table.flatAggregate(func._j_expr), self._t_env)
         else:
             func._set_takes_row_as_input()
@@ -950,7 +928,7 @@ class Table(object):
                 func = func(with_columns(col("*")))
             return FlatAggregateTable(self._j_table.flatAggregate(func._j_expr), self._t_env)
 
-    def to_pandas(self):
+    def to_pandas(self) -> 'pandas.DataFrame':
         """
         Converts the table to a pandas DataFrame. It will collect the content of the table to
         the client side and so please make sure that the content of the table could fit in memory
@@ -961,7 +939,7 @@ class Table(object):
 
             >>> pdf = pd.DataFrame(np.random.rand(1000, 2))
             >>> table = table_env.from_pandas(pdf, ["a", "b"])
-            >>> table.filter(table.a > 0.5).to_pandas()
+            >>> table.filter(col('a') > 0.5).to_pandas()
 
         :return: the result pandas DataFrame.
 
@@ -969,32 +947,38 @@ class Table(object):
         """
         self._t_env._before_execute()
         gateway = get_gateway()
-        max_arrow_batch_size = self._j_table.getTableEnvironment().getConfig().getConfiguration()\
-            .getInteger(gateway.jvm.org.apache.flink.python.PythonOptions.MAX_ARROW_BATCH_SIZE)
+        max_arrow_batch_size = self._j_table.getTableEnvironment().getConfig()\
+            .get(gateway.jvm.org.apache.flink.python.PythonOptions.MAX_ARROW_BATCH_SIZE)
         batches_iterator = gateway.jvm.org.apache.flink.table.runtime.arrow.ArrowUtils\
             .collectAsPandasDataFrame(self._j_table, max_arrow_batch_size)
-        if batches_iterator.hasNext():
+        schema = self.get_schema()
+        field_types = schema.get_field_data_types()
+        has_rows = batches_iterator.hasNext()
+        arrow_schema = create_arrow_schema(
+            schema.get_field_names(), field_types, allow_nested=not has_rows)
+        timezone: Optional[tzinfo] = None
+        if any(isinstance(field_type, LocalZonedTimestampType) for field_type in field_types):
             import pytz
-            timezone = pytz.timezone(
-                self._j_table.getTableEnvironment().getConfig().getLocalTimeZone().getId())
-            serializer = ArrowSerializer(
-                create_arrow_schema(self.get_schema().get_field_names(),
-                                    self.get_schema().get_field_data_types()),
-                self.get_schema().to_row_data_type(),
-                timezone)
+            j_timezone = self._j_table.getTableEnvironment().getConfig().getLocalTimeZone()
+            timezone_id = j_timezone.getId()
+            if timezone_id.startswith(('GMT+', 'GMT-')):
+                timezone = pytz.FixedOffset(j_timezone.normalized().getTotalSeconds() // 60)
+            else:
+                timezone = pytz.timezone(timezone_id)
+        if has_rows:
+            serializer = ArrowSerializer(arrow_schema, schema.to_row_data_type(), timezone)
             import pyarrow as pa
             table = pa.Table.from_batches(serializer.load_from_iterator(batches_iterator))
-            pdf = table.to_pandas()
-
-            schema = self.get_schema()
-            for field_name in schema.get_field_names():
-                pdf[field_name] = tz_convert_from_internal(
-                    pdf[field_name], schema.get_field_data_type(field_name), timezone)
-            return pdf
         else:
-            import pandas as pd
-            return pd.DataFrame.from_records([], columns=self.get_schema().get_field_names())
+            table = arrow_schema.empty_table()
+        pdf = table.to_pandas()
 
+        for field_name in schema.get_field_names():
+            pdf[field_name] = tz_convert_from_internal(
+                pdf[field_name], schema.get_field_data_type(field_name), timezone)
+        return pdf
+
+    @Deprecated(since="2.1.0", detail="Use :func:`Table.get_resolved_schema` instead.")
     def get_schema(self) -> TableSchema:
         """
         Returns the :class:`~pyflink.table.TableSchema` of this table.
@@ -1002,6 +986,14 @@ class Table(object):
         :return: The schema of this table.
         """
         return TableSchema(j_table_schema=self._j_table.getSchema())
+
+    def get_resolved_schema(self) -> ResolvedSchema:
+        """
+        Returns the :class:`~pyflink.table.catalog.ResolvedSchema` of this table.
+
+        :return: the resolved schema of this table.
+        """
+        return ResolvedSchema(j_resolved_schema=self._j_table.getResolvedSchema())
 
     def print_schema(self):
         """
@@ -1013,7 +1005,7 @@ class Table(object):
                        table_path_or_descriptor: Union[str, TableDescriptor],
                        overwrite: bool = False) -> TableResult:
         """
-        1. When target_path_or_descriptor is a tale path:
+        1. When target_path_or_descriptor is a table path:
 
             Writes the :class:`~pyflink.table.Table` to a :class:`~pyflink.table.TableSink` that was
             registered under the specified name, and then execute the insert operation. For the path
@@ -1111,10 +1103,203 @@ class Table(object):
 
         .. versionadded:: 1.11.0
         """
+        TEXT = get_gateway().jvm.org.apache.flink.table.api.ExplainFormat.TEXT
         j_extra_details = to_j_explain_detail_arr(extra_details)
-        return self._j_table.explain(j_extra_details)
+        return self._j_table.explain(TEXT, j_extra_details)
+
+    def print_explain(self, *extra_details: ExplainDetail):
+        """
+        Like :func:`~pyflink.table.Table.explain`, but prints the result to the client
+        console.
+
+        .. versionadded:: 2.1.0
+        """
+        print(self.explain(*extra_details))
+
+    def insert_into(
+        self, table_path_or_descriptor: Union[str, TableDescriptor], overwrite: bool = False
+    ) -> TablePipeline:
+        """
+        When ``target_path_or_descriptor`` is a table path:
+
+            Declares that the pipeline defined by the given :class:`Table` should be written to a
+            table (backed by a DynamicTableSink) that was registered under the specified path.
+
+            See the documentation of
+            :func:`pyflink.table.table_environment.TableEnvironment.use_database` or
+            :func:`pyflink.table.table_environment.TableEnvironment.use_catalog` for the rules on
+            the path resolution.
+
+            Example:
+            ::
+
+                >>> table = table_env.sql_query("SELECT * FROM MyTable")
+                >>> table_pipeline = table.insert_into("MySinkTable", True)
+                >>> table_result = table_pipeline.execute().wait()
+
+        When ``target_path_or_descriptor`` is a  :class:`~pyflink.table.TableDescriptor` :
+
+            Declares that the pipeline defined by the given :class:`Table` object should be written
+            to a table (backed by a DynamicTableSink) expressed via the given
+            :class:`~pyflink.table.TableDescriptor`.
+
+            The descriptor won't be registered in the catalog, but it will be propagated directly
+            in the operation tree. Note that calling this method multiple times, even with the same
+            descriptor, results in multiple sink tables instances.
+
+            A :class:`~pyflink.table.Schema` can be associated with the sink descriptor, which
+            asserts a structure on the described table, and can be used to:
+
+            - overwrite automatically derived columns with a custom
+              :class:`~pyflink.table.types.DataType`
+            - add metadata columns next to the physical columns
+            - declare a primary key
+
+            It is possible to declare a schema without physical/regular columns. In this case, those
+            columns will be automatically derived and implicitly put at the beginning of the schema
+            declaration.
+
+            Examples:
+            ::
+
+                >>> schema = Schema.new_builder()
+                ...      .column("f0", DataTypes.STRING())
+                ...      .build()
+                >>> table = table_env.from_descriptor(TableDescriptor.for_connector("datagen")
+                ...      .schema(schema)
+                ...      .build())
+                >>> table.insert_into(TableDescriptor.for_connector("blackhole")
+                ...      .schema(schema)
+                ...      .build(), True)
+
+        One can execute the returned :class:`~pyflink.table.TablePipeline` using
+        :func:`~pyflink.table.TablePipeline.execute`.
+
+        If multiple pipelines should insert data into one or more sink tables as part of a single
+        execution, use a :class:`~pyflink.table.StatementSet` (see
+        :func:`~pyflink.table.TableEnvironment.create_statement_set()`).
+
+        :param table_path_or_descriptor: The path of the registered
+            :class:`~pyflink.table.TableSink` or the descriptor describing the sink table into which
+            data should be inserted.
+        :param overwrite: Indicates whether existing data should be overwritten.
+        :return: The complete pipeline from one or more source tables to a sink table.
+
+        .. versionadded:: 2.1.0
+        """
+        if isinstance(table_path_or_descriptor, str):
+            return TablePipeline(
+                j_table_pipeline=self._j_table.insertInto(table_path_or_descriptor, overwrite),
+                t_env=self._t_env,
+            )
+        else:
+            return TablePipeline(
+                j_table_pipeline=self._j_table.insertInto(
+                    table_path_or_descriptor._j_table_descriptor, overwrite
+                ),
+                t_env=self._t_env,
+            )
+
+    def to_changelog(self, *arguments: Expression) -> 'Table':
+        """
+        Converts this table into an append-only table with an explicit operation code
+        column using the built-in ``TO_CHANGELOG`` process table function.
+
+        Each input row - regardless of its original change operation - is emitted as an
+        INSERT-only row with a string ``op`` column indicating the original operation
+        (INSERT, UPDATE_BEFORE, UPDATE_AFTER, DELETE).
+
+        The optional ``produces_full_deletes`` boolean controls how DELETE rows are
+        emitted. When ``True`` (default), the planner inserts a ``ChangelogNormalize``
+        operator for upsert sources that emit key-only deletes so the function emits
+        fully populated DELETE rows downstream. When ``False``, the function emits
+        partial DELETE rows: row semantics preserves the planner-derived upsert key
+        columns and nulls the rest, set semantics (``PARTITION BY``) preserves the
+        partition key and nulls the rest. Requires an upsert key or ``PARTITION BY``;
+        otherwise the call is rejected.
+
+        Example:
+        ::
+
+            >>> from pyflink.table.expressions import descriptor, map_, lit, col
+            >>> # Default: adds 'op' column with standard change operation names
+            >>> result = table.to_changelog()
+            >>> # Custom op column name and mapping
+            >>> result = table.to_changelog(
+            ...     descriptor("op_code").as_argument("op"),
+            ...     map_("INSERT", "I", "UPDATE_AFTER", "U").as_argument("op_mapping")
+            ... )
+            >>> # Deletion flag pattern
+            >>> result = table.to_changelog(
+            ...     descriptor("deleted").as_argument("op"),
+            ...     map_("INSERT, UPDATE_AFTER", "false",
+            ...          "DELETE", "true").as_argument("op_mapping")
+            ... )
+            >>> # Opt out of full-delete semantics to emit partial DELETE rows.
+            >>> # Requires an upsert key or PARTITION BY; otherwise rejected.
+            >>> result = table.to_changelog(
+            ...     lit(False).as_argument("produces_full_deletes")
+            ... )
+
+        :param arguments: Optional named arguments for ``op``, ``op_mapping``, and
+                          ``produces_full_deletes``.
+        :return: An append-only :class:`~pyflink.table.Table` with an ``op`` column prepended
+                 to the input columns.
+        """
+        return Table(self._j_table.toChangelog(to_expression_jarray(arguments)), self._t_env)
+
+    def from_changelog(self, *arguments: Expression) -> 'Table':
+        """
+        Converts this append-only table with an explicit operation code column into a
+        (potentially updating) dynamic table. Each input row is expected to have a string
+        column that indicates the change operation. The operation column is interpreted by
+        the engine and removed from the output.
+
+        The operation code column defaults to ``op``. By default, the codes ``INSERT``,
+        ``UPDATE_BEFORE``, ``UPDATE_AFTER``, and ``DELETE`` are recognized; pass
+        ``op_mapping`` to use custom codes. By default, the job fails at runtime with a
+        ``TableRuntimeException`` when an input row's op code is ``NULL`` or not present
+        in the mapping; pass ``error_handling => 'SKIP'`` to silently drop those
+        rows instead.
+
+        The output is a retract changelog. To emit an upsert changelog instead, combine
+        ``PARTITION BY`` (set semantics on the table argument) with an ``op_mapping`` that
+        maps to ``UPDATE_AFTER`` without ``UPDATE_BEFORE``. The partition key becomes the
+        upsert key. An upsert mapping without ``PARTITION BY`` is rejected at validation
+        time, since upsert mode requires a key.
+
+        Example:
+        ::
+
+            >>> from pyflink.table.expressions import descriptor, lit, map_
+            >>> # Default: reads 'op' column with standard change operation names
+            >>> result = cdc_stream.from_changelog()
+            >>> # With custom op column name
+            >>> result = cdc_stream.from_changelog(
+            ...     descriptor("operation").as_argument("op")
+            ... )
+            >>> # With custom op_mapping
+            >>> result = cdc_stream.from_changelog(
+            ...     descriptor("op").as_argument("op"),
+            ...     map_("c, r", "INSERT",
+            ...          "ub", "UPDATE_BEFORE",
+            ...          "ua", "UPDATE_AFTER",
+            ...          "d", "DELETE").as_argument("op_mapping")
+            ... )
+            >>> # Silently skip rows with NULL or unmapped op codes instead of failing
+            >>> result = cdc_stream.from_changelog(
+            ...     lit("SKIP").as_argument("error_handling")
+            ... )
+
+        :param arguments: Optional named arguments for ``op``, ``op_mapping``, and
+                          ``error_handling``.
+        :return: A dynamic :class:`~pyflink.table.Table` with the ``op`` column removed and
+                 proper change operation semantics.
+        """
+        return Table(self._j_table.fromChangelog(to_expression_jarray(arguments)), self._t_env)
 
 
+@PublicEvolving()
 class GroupedTable(object):
     """
     A table that has been grouped on a set of grouping keys.
@@ -1124,7 +1309,7 @@ class GroupedTable(object):
         self._j_table = java_table
         self._t_env = t_env
 
-    def select(self, *fields: Union[str, Expression]) -> 'Table':
+    def select(self, *fields: Expression) -> 'Table':
         """
         Performs a selection operation on a grouped table. Similar to an SQL SELECT statement.
         The field expressions can contain complex expressions and aggregations.
@@ -1132,21 +1317,14 @@ class GroupedTable(object):
         Example:
         ::
 
-            >>> tab.group_by(tab.key).select(tab.key, tab.value.avg.alias('average'))
-            >>> tab.group_by("key").select("key, value.avg as average")
-
+            >>> tab.group_by(col('key')).select(col('key'), col('value').avg.alias('average'))
 
         :param fields: Expression string that contains group keys and aggregate function calls.
         :return: The result table.
         """
-        if all(isinstance(f, Expression) for f in fields):
-            return Table(self._j_table.select(to_expression_jarray(fields)), self._t_env)
-        else:
-            assert len(fields) == 1
-            assert isinstance(fields[0], str)
-            return Table(self._j_table.select(fields[0]), self._t_env)
+        return Table(self._j_table.select(to_expression_jarray(fields)), self._t_env)
 
-    def aggregate(self, func: Union[str, Expression, UserDefinedAggregateFunctionWrapper]) \
+    def aggregate(self, func: Union[Expression, UserDefinedAggregateFunctionWrapper]) \
             -> 'AggregatedTable':
         """
         Performs a aggregate operation with an aggregate function. You have to close the
@@ -1160,7 +1338,8 @@ class GroupedTable(object):
             ...                   [DataTypes.FIELD("a", DataTypes.FLOAT()),
             ...                    DataTypes.FIELD("b", DataTypes.INT())]),
             ...               func_type="pandas")
-            >>> tab.group_by(tab.a).aggregate(agg(tab.b).alias("c", "d")).select("a, c, d")
+            >>> tab.group_by(col('a')).aggregate(agg(col('b')).alias("c", "d")).select(
+            ...     col('a'), col('c'), col('d'))
             >>> # take all the columns as inputs
             >>> # pd is a Pandas.DataFrame
             >>> agg_row = udaf(lambda pd: (pd.a.mean(), pd.b.max()),
@@ -1168,16 +1347,14 @@ class GroupedTable(object):
             ...                   [DataTypes.FIELD("a", DataTypes.FLOAT()),
             ...                    DataTypes.FIELD("b", DataTypes.INT())]),
             ...               func_type="pandas")
-            >>> tab.group_by(tab.a).aggregate(agg.alias("a, b")).select("a, b")
+            >>> tab.group_by(col('a')).aggregate(agg.alias("a", "b")).select(col('a'), col('b'))
 
         :param func: user-defined aggregate function.
         :return: The result table.
 
         .. versionadded:: 1.13.0
         """
-        if isinstance(func, str):
-            return AggregatedTable(self._j_table.aggregate(func), self._t_env)
-        elif isinstance(func, Expression):
+        if isinstance(func, Expression):
             return AggregatedTable(self._j_table.aggregate(func._j_expr), self._t_env)
         else:
             func._set_takes_row_as_input()
@@ -1188,7 +1365,7 @@ class GroupedTable(object):
                 func = func(with_columns(col("*")))
             return AggregatedTable(self._j_table.aggregate(func._j_expr), self._t_env)
 
-    def flat_aggregate(self, func: Union[str, Expression, UserDefinedAggregateFunctionWrapper]) \
+    def flat_aggregate(self, func: Union[Expression, UserDefinedAggregateFunctionWrapper]) \
             -> 'FlatAggregateTable':
         """
         Performs a flat_aggregate operation on a grouped table. flat_aggregate takes a
@@ -1199,7 +1376,8 @@ class GroupedTable(object):
         ::
 
             >>> table_agg = udtaf(MyTableAggregateFunction())
-            >>> tab.group_by(tab.c).flat_aggregate(table_agg(tab.a).alias("a")).select("c, a")
+            >>> tab.group_by(col('c')).flat_aggregate(table_agg(col('a')).alias("a")).select(
+            ...     col('c'), col('a'))
             >>> # take all the columns as inputs
             >>> class Top2(TableAggregateFunction):
             ...     def emit_value(self, accumulator):
@@ -1225,16 +1403,16 @@ class GroupedTable(object):
             ...         return DataTypes.ROW(
             ...             [DataTypes.FIELD("a", DataTypes.BIGINT())])
             >>> top2 = udtaf(Top2())
-            >>> tab.group_by(tab.c).flat_aggregate(top2.alias("a", "b")).select("a, b")
+            >>> tab.group_by(col('c')) \\
+            ...    .flat_aggregate(top2.alias("a", "b")) \\
+            ...    .select(col('a'), col('b'))
 
         :param func: user-defined table aggregate function.
         :return: The result table.
 
         .. versionadded:: 1.13.0
         """
-        if isinstance(func, str):
-            return FlatAggregateTable(self._j_table.flatAggregate(func), self._t_env)
-        elif isinstance(func, Expression):
+        if isinstance(func, Expression):
             return FlatAggregateTable(self._j_table.flatAggregate(func._j_expr), self._t_env)
         else:
             func._set_takes_row_as_input()
@@ -1246,6 +1424,7 @@ class GroupedTable(object):
             return FlatAggregateTable(self._j_table.flatAggregate(func._j_expr), self._t_env)
 
 
+@PublicEvolving()
 class GroupWindowedTable(object):
     """
     A table that has been windowed for :class:`~pyflink.table.GroupWindow`.
@@ -1255,7 +1434,7 @@ class GroupWindowedTable(object):
         self._j_table = java_group_windowed_table
         self._t_env = t_env
 
-    def group_by(self, *fields: Union[str, Expression]) -> 'WindowGroupedTable':
+    def group_by(self, *fields: Expression) -> 'WindowGroupedTable':
         """
         Groups the elements by a mandatory window and one or more optional grouping attributes.
         The window is specified by referring to its alias.
@@ -1270,10 +1449,10 @@ class GroupWindowedTable(object):
         Example:
         ::
 
-            >>> from pyflink.table import expressions as expr
-            >>> tab.window(Tumble.over(expr.lit(10).minutes).on(tab.rowtime).alias('w')) \\
+            >>> from pyflink.table.expressions import col, lit
+            >>> tab.window(Tumble.over(lit(10).minutes).on(col('rowtime')).alias('w')) \\
             ...     .group_by(col('w')) \\
-            ...     .select(tab.a.sum.alias('a'),
+            ...     .select(col('a').sum.alias('a'),
             ...             col('w').start.alias('b'),
             ...             col('w').end.alias('c'),
             ...             col('w').rowtime.alias('d'))
@@ -1281,15 +1460,11 @@ class GroupWindowedTable(object):
         :param fields: Group keys.
         :return: A window grouped table.
         """
-        if all(isinstance(f, Expression) for f in fields):
-            return WindowGroupedTable(
-                self._j_table.groupBy(to_expression_jarray(fields)), self._t_env)
-        else:
-            assert len(fields) == 1
-            assert isinstance(fields[0], str)
-            return WindowGroupedTable(self._j_table.groupBy(fields[0]), self._t_env)
+        return WindowGroupedTable(
+            self._j_table.groupBy(to_expression_jarray(fields)), self._t_env)
 
 
+@PublicEvolving()
 class WindowGroupedTable(object):
     """
     A table that has been windowed and grouped for :class:`~pyflink.table.window.GroupWindow`.
@@ -1299,7 +1474,7 @@ class WindowGroupedTable(object):
         self._j_table = java_window_grouped_table
         self._t_env = t_env
 
-    def select(self, *fields: Union[str, Expression]) -> 'Table':
+    def select(self, *fields: Expression) -> 'Table':
         """
         Performs a selection operation on a window grouped table. Similar to an SQL SELECT
         statement.
@@ -1311,7 +1486,6 @@ class WindowGroupedTable(object):
             >>> window_grouped_table.select(col('key'),
             ...                             col('window').start,
             ...                             col('value').avg.alias('valavg'))
-            >>> window_grouped_table.select("key, window.start, value.avg as valavg")
 
         :param fields: Expression string.
         :return: The result table.
@@ -1323,7 +1497,7 @@ class WindowGroupedTable(object):
             assert isinstance(fields[0], str)
             return Table(self._j_table.select(fields[0]), self._t_env)
 
-    def aggregate(self, func: Union[str, Expression, UserDefinedAggregateFunctionWrapper]) \
+    def aggregate(self, func: Union[Expression, UserDefinedAggregateFunctionWrapper]) \
             -> 'AggregatedTable':
         """
         Performs an aggregate operation on a window grouped table. You have to close the
@@ -1337,10 +1511,10 @@ class WindowGroupedTable(object):
             ...                   [DataTypes.FIELD("a", DataTypes.FLOAT()),
             ...                    DataTypes.FIELD("b", DataTypes.INT())]),
             ...               func_type="pandas")
-            >>> window_grouped_table.group_by("w") \
-            ...     .aggregate(agg(window_grouped_table.b) \
-            ...     .alias("c", "d")) \
-            ...     .select("c, d")
+            >>> window_grouped_table.group_by(col("w")) \
+            ...     .aggregate(agg(col('b'))) \
+            ...     .alias("c", "d") \
+            ...     .select(col('c'), col('d'))
             >>> # take all the columns as inputs
             >>> # pd is a Pandas.DataFrame
             >>> agg_row = udaf(lambda pd: (pd.a.mean(), pd.b.max()),
@@ -1348,16 +1522,14 @@ class WindowGroupedTable(object):
             ...                   [DataTypes.FIELD("a", DataTypes.FLOAT()),
             ...                    DataTypes.FIELD("b", DataTypes.INT())]),
             ...               func_type="pandas")
-            >>> window_grouped_table.group_by("w, a").aggregate(agg_row)
+            >>> window_grouped_table.group_by(col("w"), col("a")).aggregate(agg_row)
 
         :param func: user-defined aggregate function.
         :return: The result table.
 
         .. versionadded:: 1.13.0
         """
-        if isinstance(func, str):
-            return AggregatedTable(self._j_table.aggregate(func), self._t_env)
-        elif isinstance(func, Expression):
+        if isinstance(func, Expression):
             return AggregatedTable(self._j_table.aggregate(func._j_expr), self._t_env)
         else:
             func._set_takes_row_as_input()
@@ -1378,6 +1550,7 @@ class WindowGroupedTable(object):
         return func_expression
 
 
+@PublicEvolving()
 class OverWindowedTable(object):
     """
     A table that has been windowed for :class:`~pyflink.table.window.OverWindow`.
@@ -1391,7 +1564,7 @@ class OverWindowedTable(object):
         self._j_table = java_over_windowed_table
         self._t_env = t_env
 
-    def select(self, *fields: Union[str, Expression]) -> 'Table':
+    def select(self, *fields: Expression) -> 'Table':
         """
         Performs a selection operation on a over windowed table. Similar to an SQL SELECT
         statement.
@@ -1403,19 +1576,14 @@ class OverWindowedTable(object):
             >>> over_windowed_table.select(col('c'),
             ...                            col('b').count.over(col('ow')),
             ...                            col('e').sum.over(col('ow')))
-            >>> over_windowed_table.select("c, b.count over ow, e.sum over ow")
 
         :param fields: Expression string.
         :return: The result table.
         """
-        if all(isinstance(f, Expression) for f in fields):
-            return Table(self._j_table.select(to_expression_jarray(fields)), self._t_env)
-        else:
-            assert len(fields) == 1
-            assert isinstance(fields[0], str)
-            return Table(self._j_table.select(fields[0]), self._t_env)
+        return Table(self._j_table.select(to_expression_jarray(fields)), self._t_env)
 
 
+@PublicEvolving()
 class AggregatedTable(object):
     """
     A table that has been performed on the aggregate function.
@@ -1425,7 +1593,7 @@ class AggregatedTable(object):
         self._j_table = java_table
         self._t_env = t_env
 
-    def select(self, *fields: Union[str, Expression]) -> 'Table':
+    def select(self, *fields: Expression) -> 'Table':
         """
         Performs a selection operation after an aggregate operation. The field expressions
         cannot contain table functions and aggregations.
@@ -1438,7 +1606,7 @@ class AggregatedTable(object):
             ...                   [DataTypes.FIELD("a", DataTypes.FLOAT()),
             ...                    DataTypes.FIELD("b", DataTypes.INT())]),
             ...               func_type="pandas")
-            >>> tab.aggregate(agg(tab.a).alias("a", "b")).select("a, b")
+            >>> tab.aggregate(agg(col('a')).alias("a", "b")).select(col('a'), col('b'))
             >>> # take all the columns as inputs
             >>> # pd is a Pandas.DataFrame
             >>> agg_row = udaf(lambda pd: (pd.a.mean(), pd.b.max()),
@@ -1446,19 +1614,15 @@ class AggregatedTable(object):
             ...                   [DataTypes.FIELD("a", DataTypes.FLOAT()),
             ...                    DataTypes.FIELD("b", DataTypes.INT())]),
             ...               func_type="pandas")
-            >>> tab.group_by(tab.a).aggregate(agg.alias("a, b")).select("a, b")
+            >>> tab.group_by(col('a')).aggregate(agg.alias("a", "b")).select(col('a'), col('b'))
 
         :param fields: Expression string.
         :return: The result table.
         """
-        if all(isinstance(f, Expression) for f in fields):
-            return Table(self._j_table.select(to_expression_jarray(fields)), self._t_env)
-        else:
-            assert len(fields) == 1
-            assert isinstance(fields[0], str)
-            return Table(self._j_table.select(fields[0]), self._t_env)
+        return Table(self._j_table.select(to_expression_jarray(fields)), self._t_env)
 
 
+@PublicEvolving()
 class FlatAggregateTable(object):
     """
     A table that performs flatAggregate on a :class:`~pyflink.table.Table`, a
@@ -1469,7 +1633,7 @@ class FlatAggregateTable(object):
         self._j_table = java_table
         self._t_env = t_env
 
-    def select(self, *fields: Union[str, Expression]) -> 'Table':
+    def select(self, *fields: Expression) -> 'Table':
         """
         Performs a selection operation on a FlatAggregateTable. Similar to a SQL SELECT statement.
         The field expressions can contain complex expressions.
@@ -1478,7 +1642,7 @@ class FlatAggregateTable(object):
         ::
 
             >>> table_agg = udtaf(MyTableAggregateFunction())
-            >>> tab.flat_aggregate(table_agg(tab.a).alias("a", "b")).select("a, b")
+            >>> tab.flat_aggregate(table_agg(col('a')).alias("a", "b")).select(col('a'), col('b'))
             >>> # take all the columns as inputs
             >>> class Top2(TableAggregateFunction):
             ...     def emit_value(self, accumulator):
@@ -1504,14 +1668,11 @@ class FlatAggregateTable(object):
             ...         return DataTypes.ROW(
             ...             [DataTypes.FIELD("a", DataTypes.BIGINT())])
             >>> top2 = udtaf(Top2())
-            >>> tab.group_by(tab.c).flat_aggregate(top2.alias("a", "b")).select("a, b")
+            >>> tab.group_by(col('c')) \\
+            ...    .flat_aggregate(top2.alias("a", "b")) \\
+            ...    .select(col('a'), col('b'))
 
         :param fields: Expression string.
         :return: The result table.
         """
-        if all(isinstance(f, Expression) for f in fields):
-            return Table(self._j_table.select(to_expression_jarray(fields)), self._t_env)
-        else:
-            assert len(fields) == 1
-            assert isinstance(fields[0], str)
-            return Table(self._j_table.select(fields[0]), self._t_env)
+        return Table(self._j_table.select(to_expression_jarray(fields)), self._t_env)

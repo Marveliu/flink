@@ -24,6 +24,7 @@ import org.apache.flink.runtime.instance.HardwareDescription;
 import org.apache.flink.runtime.metrics.dump.MetricDump;
 import org.apache.flink.runtime.metrics.dump.QueryScopeInfo;
 import org.apache.flink.runtime.resourcemanager.TaskManagerInfoWithSlots;
+import org.apache.flink.runtime.resourcemanager.exceptions.UnknownTaskExecutorException;
 import org.apache.flink.runtime.resourcemanager.utils.TestingResourceManagerGateway;
 import org.apache.flink.runtime.rest.handler.HandlerRequest;
 import org.apache.flink.runtime.rest.handler.HandlerRequestException;
@@ -39,13 +40,15 @@ import org.apache.flink.runtime.rest.messages.taskmanager.TaskManagerInfo;
 import org.apache.flink.runtime.rest.messages.taskmanager.TaskManagerMetricsInfo;
 import org.apache.flink.runtime.taskexecutor.TaskExecutorMemoryConfiguration;
 import org.apache.flink.testutils.TestingUtils;
-import org.apache.flink.util.TestLogger;
+import org.apache.flink.util.concurrent.FutureUtils;
+import org.apache.flink.util.jackson.JacksonMapperFactory;
 
 import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.core.JsonProcessingException;
 import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.databind.ObjectMapper;
+import org.apache.flink.shaded.netty4.io.netty.handler.codec.http.HttpResponseStatus;
 
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 import java.util.Collections;
 import java.util.HashMap;
@@ -54,11 +57,11 @@ import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 
-import static org.hamcrest.CoreMatchers.is;
-import static org.hamcrest.MatcherAssert.assertThat;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** Tests the {@link TaskManagerDetailsHandler} implementation. */
-public class TaskManagerDetailsHandlerTest extends TestLogger {
+class TaskManagerDetailsHandlerTest {
 
     private static final ResourceID TASK_MANAGER_ID = ResourceID.generate();
 
@@ -67,8 +70,8 @@ public class TaskManagerDetailsHandlerTest extends TestLogger {
 
     private TaskManagerDetailsHandler testInstance;
 
-    @Before
-    public void setup() throws HandlerRequestException {
+    @BeforeEach
+    void setup() throws HandlerRequestException {
         resourceManagerGateway = new TestingResourceManagerGateway();
         metricFetcher = new TestingMetricFetcher();
 
@@ -83,9 +86,12 @@ public class TaskManagerDetailsHandlerTest extends TestLogger {
     }
 
     @Test
-    public void testTaskManagerMetricsInfoExtraction()
-            throws RestHandlerException, ExecutionException, InterruptedException,
-                    JsonProcessingException, HandlerRequestException {
+    void testTaskManagerMetricsInfoExtraction()
+            throws RestHandlerException,
+                    ExecutionException,
+                    InterruptedException,
+                    JsonProcessingException,
+                    HandlerRequestException {
         initializeMetricStore(metricFetcher.getMetricStore());
         resourceManagerGateway.setRequestTaskManagerDetailsInfoFunction(
                 taskManagerId ->
@@ -120,11 +126,34 @@ public class TaskManagerDetailsHandlerTest extends TestLogger {
                         20L,
                         Collections.emptyList());
 
-        ObjectMapper objectMapper = new ObjectMapper();
+        ObjectMapper objectMapper = JacksonMapperFactory.createObjectMapper();
         String actualJson = objectMapper.writeValueAsString(actual);
         String expectedJson = objectMapper.writeValueAsString(expected);
 
-        assertThat(actualJson, is(expectedJson));
+        assertThat(actualJson).isEqualTo(expectedJson);
+    }
+
+    @Test
+    void testUnknownTaskExecutorLeadsToNotFound() {
+        resourceManagerGateway.setRequestTaskManagerDetailsInfoFunction(
+                taskManagerId ->
+                        FutureUtils.completedExceptionally(
+                                new UnknownTaskExecutorException(taskManagerId)));
+
+        assertThatThrownBy(
+                        () ->
+                                testInstance
+                                        .handleRequest(createRequest(), resourceManagerGateway)
+                                        .get())
+                .cause()
+                .isInstanceOfSatisfying(
+                        RestHandlerException.class,
+                        restHandlerException -> {
+                            assertThat(restHandlerException.getHttpResponseStatus())
+                                    .isEqualTo(HttpResponseStatus.NOT_FOUND);
+                            assertThat(restHandlerException.getMessage())
+                                    .contains("Could not find TaskExecutor " + TASK_MANAGER_ID);
+                        });
     }
 
     private static void initializeMetricStore(MetricStore metricStore) {
@@ -171,10 +200,12 @@ public class TaskManagerDetailsHandlerTest extends TestLogger {
                 0L,
                 0,
                 0,
+                0,
                 ResourceProfile.ZERO,
                 ResourceProfile.ZERO,
                 new HardwareDescription(0, 0L, 0L, 0L),
-                new TaskExecutorMemoryConfiguration(0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L));
+                new TaskExecutorMemoryConfiguration(0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L),
+                false);
     }
 
     private static HandlerRequest<EmptyRequestBody> createRequest() throws HandlerRequestException {

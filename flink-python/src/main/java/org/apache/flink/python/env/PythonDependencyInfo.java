@@ -20,8 +20,8 @@ package org.apache.flink.python.env;
 
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.api.common.cache.DistributedCache;
-import org.apache.flink.python.PythonConfig;
-import org.apache.flink.python.PythonOptions;
+import org.apache.flink.configuration.ReadableConfig;
+import org.apache.flink.python.util.PythonDependencyUtils;
 
 import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
@@ -32,6 +32,14 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+
+import static org.apache.flink.python.PythonOptions.PYTHON_ARCHIVES_DISTRIBUTED_CACHE_INFO;
+import static org.apache.flink.python.PythonOptions.PYTHON_EXECUTABLE;
+import static org.apache.flink.python.PythonOptions.PYTHON_EXECUTION_MODE;
+import static org.apache.flink.python.PythonOptions.PYTHON_FILES_DISTRIBUTED_CACHE_INFO;
+import static org.apache.flink.python.PythonOptions.PYTHON_PATH;
+import static org.apache.flink.python.PythonOptions.PYTHON_REQUIREMENTS_FILE_DISTRIBUTED_CACHE_INFO;
+import static org.apache.flink.python.util.PythonDependencyUtils.getArchiveTargetDirName;
 
 /** PythonDependencyInfo contains the information of third-party dependencies. */
 @Internal
@@ -56,6 +64,8 @@ public final class PythonDependencyInfo {
      * support installing python packages offline.
      */
     @Nullable private final String requirementsCacheDir;
+
+    @Nullable private final String pythonPath;
 
     /**
      * The python archives uploaded by TableEnvironment#add_python_archive() or command line option
@@ -85,7 +95,8 @@ public final class PythonDependencyInfo {
                 requirementsCacheDir,
                 archives,
                 pythonExec,
-                PythonOptions.PYTHON_EXECUTION_MODE.defaultValue());
+                PYTHON_EXECUTION_MODE.defaultValue(),
+                PYTHON_PATH.defaultValue());
     }
 
     public PythonDependencyInfo(
@@ -94,13 +105,15 @@ public final class PythonDependencyInfo {
             @Nullable String requirementsCacheDir,
             @Nonnull Map<String, String> archives,
             @Nonnull String pythonExec,
-            @Nonnull String executionMode) {
+            @Nonnull String executionMode,
+            @Nullable String pythonPath) {
         this.pythonFiles = Objects.requireNonNull(pythonFiles);
         this.requirementsFilePath = requirementsFilePath;
         this.requirementsCacheDir = requirementsCacheDir;
         this.pythonExec = Objects.requireNonNull(pythonExec);
         this.archives = Objects.requireNonNull(archives);
         this.executionMode = Objects.requireNonNull(executionMode);
+        this.pythonPath = pythonPath;
     }
 
     public Map<String, String> getPythonFiles() {
@@ -127,18 +140,25 @@ public final class PythonDependencyInfo {
         return executionMode;
     }
 
+    public Optional<String> getPythonPath() {
+        return Optional.ofNullable(pythonPath);
+    }
+
     /**
      * Creates PythonDependencyInfo from GlobalJobParameters and DistributedCache.
      *
-     * @param pythonConfig The python config.
+     * @param config The config.
      * @param distributedCache The DistributedCache object of current task.
      * @return The PythonDependencyInfo object that contains whole information of python dependency.
      */
     public static PythonDependencyInfo create(
-            PythonConfig pythonConfig, DistributedCache distributedCache) {
+            ReadableConfig config, DistributedCache distributedCache) {
 
         Map<String, String> pythonFiles = new LinkedHashMap<>();
-        for (Map.Entry<String, String> entry : pythonConfig.getPythonFilesInfo().entrySet()) {
+        for (Map.Entry<String, String> entry :
+                config.getOptional(PYTHON_FILES_DISTRIBUTED_CACHE_INFO)
+                        .orElse(new HashMap<>())
+                        .entrySet()) {
             File pythonFile = distributedCache.getFile(entry.getKey());
             String filePath = pythonFile.getAbsolutePath();
             pythonFiles.put(filePath, entry.getValue());
@@ -146,27 +166,34 @@ public final class PythonDependencyInfo {
 
         String requirementsFilePath = null;
         String requirementsCacheDir = null;
-        if (pythonConfig.getPythonRequirementsFileInfo().isPresent()) {
-            requirementsFilePath =
-                    distributedCache
-                            .getFile(pythonConfig.getPythonRequirementsFileInfo().get())
-                            .getAbsolutePath();
-            if (pythonConfig.getPythonRequirementsCacheDirInfo().isPresent()) {
+
+        String requirementsFileName =
+                config.getOptional(PYTHON_REQUIREMENTS_FILE_DISTRIBUTED_CACHE_INFO)
+                        .orElse(new HashMap<>())
+                        .get(PythonDependencyUtils.FILE);
+        if (requirementsFileName != null) {
+            requirementsFilePath = distributedCache.getFile(requirementsFileName).getAbsolutePath();
+            String requirementsFileCacheDir =
+                    config.getOptional(PYTHON_REQUIREMENTS_FILE_DISTRIBUTED_CACHE_INFO)
+                            .orElse(new HashMap<>())
+                            .get(PythonDependencyUtils.CACHE);
+            if (requirementsFileCacheDir != null) {
                 requirementsCacheDir =
-                        distributedCache
-                                .getFile(pythonConfig.getPythonRequirementsCacheDirInfo().get())
-                                .getAbsolutePath();
+                        distributedCache.getFile(requirementsFileCacheDir).getAbsolutePath();
             }
         }
 
         Map<String, String> archives = new HashMap<>();
-        for (Map.Entry<String, String> entry : pythonConfig.getPythonArchivesInfo().entrySet()) {
+        for (Map.Entry<String, String> entry :
+                config.getOptional(PYTHON_ARCHIVES_DISTRIBUTED_CACHE_INFO)
+                        .orElse(new HashMap<>())
+                        .entrySet()) {
             String archiveFilePath = distributedCache.getFile(entry.getKey()).getAbsolutePath();
             String targetPath = entry.getValue();
             archives.put(archiveFilePath, targetPath);
         }
 
-        String pythonExec = pythonConfig.getPythonExec();
+        String pythonExec = config.get(PYTHON_EXECUTABLE);
 
         return new PythonDependencyInfo(
                 pythonFiles,
@@ -174,6 +201,35 @@ public final class PythonDependencyInfo {
                 requirementsCacheDir,
                 archives,
                 pythonExec,
-                pythonConfig.getExecutionMode());
+                config.get(PYTHON_EXECUTION_MODE),
+                config.get(PYTHON_PATH));
+    }
+
+    /**
+     * Checks whether the configured python executable path is located within one of the shipped
+     * archives.
+     *
+     * <p>This is determined by comparing the first path component of the python executable (the
+     * base directory) against the target directory names of all registered archives.
+     *
+     * @return {@code true} if the python executable's base directory matches an archive target
+     *     directory
+     */
+    public boolean isPythonExecFromArchives() {
+        if (archives.isEmpty()) {
+            return false;
+        }
+        int index = pythonExec.indexOf(File.separator);
+        if (index == -1) {
+            index = pythonExec.length();
+        }
+        String pythonExecBaseDir = pythonExec.substring(0, index);
+        for (Map.Entry<String, String> entry : archives.entrySet()) {
+            String targetDirName = getArchiveTargetDirName(entry.getValue());
+            if (targetDirName.equals(pythonExecBaseDir)) {
+                return true;
+            }
+        }
+        return false;
     }
 }

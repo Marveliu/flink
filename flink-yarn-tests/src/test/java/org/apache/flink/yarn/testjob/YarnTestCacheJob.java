@@ -18,16 +18,14 @@
 
 package org.apache.flink.yarn.testjob;
 
+import org.apache.flink.api.common.functions.OpenContext;
 import org.apache.flink.api.common.functions.RichMapFunction;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
-import org.apache.flink.api.java.typeutils.ResultTypeQueryable;
-import org.apache.flink.configuration.Configuration;
 import org.apache.flink.runtime.jobgraph.JobGraph;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
-import org.apache.flink.streaming.api.functions.sink.DiscardingSink;
-import org.apache.flink.streaming.api.functions.source.SourceFunction;
+import org.apache.flink.streaming.api.functions.sink.v2.DiscardingSink;
 
-import org.apache.flink.shaded.guava30.com.google.common.collect.ImmutableList;
+import org.apache.flink.shaded.guava33.com.google.common.collect.ImmutableList;
 
 import java.io.File;
 import java.io.FileInputStream;
@@ -54,11 +52,11 @@ public class YarnTestCacheJob {
         env.registerCachedFile(testDirectory.getAbsolutePath(), TEST_DIRECTORY_NAME);
         env.registerCachedFile(cacheFilePath, "cacheFile", false);
 
-        env.addSource(new GenericSourceFunction(LIST, TypeInformation.of(String.class)))
+        env.fromData(LIST)
                 .setParallelism(1)
                 .map(new MapperFunction(), TypeInformation.of(String.class))
                 .setParallelism(1)
-                .addSink(new DiscardingSink<String>())
+                .sinkTo(new DiscardingSink<String>())
                 .setParallelism(1);
 
         return env.getStreamGraph().getJobGraph();
@@ -69,7 +67,7 @@ public class YarnTestCacheJob {
         private static final long serialVersionUID = -1238033916372648233L;
 
         @Override
-        public void open(Configuration config) throws IOException {
+        public void open(OpenContext openContext) throws IOException {
             // access cached file via RuntimeContext and DistributedCache
             final File cacheFile = getRuntimeContext().getDistributedCache().getFile("cacheFile");
             final FileInputStream inputStream = new FileInputStream(cacheFile);
@@ -92,33 +90,6 @@ public class YarnTestCacheJob {
             final String property = (String) properties.getOrDefault(value, "null");
             checkState(property.equals(value + "_property"));
             return value;
-        }
-    }
-
-    private static class GenericSourceFunction<T>
-            implements SourceFunction<T>, ResultTypeQueryable<T> {
-        private List<T> inputDataset;
-        private TypeInformation returnType;
-
-        GenericSourceFunction(List<T> inputDataset, TypeInformation returnType) {
-            this.inputDataset = inputDataset;
-            this.returnType = returnType;
-        }
-
-        @Override
-        public void run(SourceContext<T> ctx) throws Exception {
-
-            for (T t : inputDataset) {
-                ctx.collect(t);
-            }
-        }
-
-        @Override
-        public void cancel() {}
-
-        @Override
-        public TypeInformation getProducedType() {
-            return this.returnType;
         }
     }
 }

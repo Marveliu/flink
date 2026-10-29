@@ -18,10 +18,15 @@
 package org.apache.flink.test.checkpointing;
 
 import org.apache.flink.api.common.JobStatus;
+import org.apache.flink.api.common.eventtime.WatermarkStrategy;
 import org.apache.flink.api.common.functions.MapFunction;
+import org.apache.flink.api.connector.source.ReaderOutput;
+import org.apache.flink.api.connector.source.SourceReader;
+import org.apache.flink.api.connector.source.SourceReaderContext;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.HighAvailabilityOptions;
 import org.apache.flink.core.execution.JobClient;
+import org.apache.flink.core.io.InputStatus;
 import org.apache.flink.runtime.checkpoint.CheckpointRecoveryFactory;
 import org.apache.flink.runtime.checkpoint.PerJobCheckpointRecoveryFactory;
 import org.apache.flink.runtime.checkpoint.StandaloneCompletedCheckpointStore;
@@ -30,29 +35,32 @@ import org.apache.flink.runtime.highavailability.HighAvailabilityServicesFactory
 import org.apache.flink.runtime.highavailability.nonha.embedded.EmbeddedHaServicesWithLeadershipControl;
 import org.apache.flink.runtime.testutils.MiniClusterResourceConfiguration;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
-import org.apache.flink.streaming.api.functions.sink.DiscardingSink;
-import org.apache.flink.streaming.api.functions.source.SourceFunction;
-import org.apache.flink.test.util.MiniClusterWithClientResource;
+import org.apache.flink.streaming.api.functions.sink.v2.DiscardingSink;
+import org.apache.flink.streaming.util.RestartStrategyUtils;
+import org.apache.flink.test.junit5.MiniClusterExtension;
+import org.apache.flink.test.util.source.AbstractTestSource;
+import org.apache.flink.test.util.source.TestSourceReader;
+import org.apache.flink.test.util.source.TestSplit;
 import org.apache.flink.util.ExceptionUtils;
-import org.apache.flink.util.TestLogger;
+import org.apache.flink.util.TestLoggerExtension;
 import org.apache.flink.util.function.SerializableSupplier;
 
-import org.junit.Before;
-import org.junit.ClassRule;
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.api.extension.RegisterExtension;
 
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executor;
 
-import static org.apache.flink.api.common.restartstrategy.RestartStrategies.fixedDelayRestart;
-import static org.apache.flink.util.Preconditions.checkState;
-import static org.junit.Assert.assertEquals;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Test that failure on recovery leads to job restart if configured, so that transient recovery
  * failures can are mitigated.
  */
-public class CheckpointStoreITCase extends TestLogger {
+@ExtendWith(TestLoggerExtension.class)
+class CheckpointStoreITCase {
 
     private static final Configuration CONFIGURATION =
             new Configuration()
@@ -60,41 +68,44 @@ public class CheckpointStoreITCase extends TestLogger {
                             HighAvailabilityOptions.HA_MODE,
                             BlockingHighAvailabilityServiceFactory.class.getName());
 
-    @ClassRule
-    public static final MiniClusterWithClientResource CLUSTER =
-            new MiniClusterWithClientResource(
+    @RegisterExtension
+    private static final MiniClusterExtension MINI_CLUSTER_EXTENSION =
+            new MiniClusterExtension(
                     new MiniClusterResourceConfiguration.Builder()
                             .setConfiguration(CONFIGURATION)
                             .build());
 
-    @Before
-    public void setUp() {
+    @BeforeEach
+    void setUp() {
         BlockingHighAvailabilityServiceFactory.reset();
         FailingMapper.reset();
     }
 
     @Test
-    public void testJobClientRemainsResponsiveDuringCompletedCheckpointStoreRecovery()
-            throws Exception {
+    void testJobClientRemainsResponsiveDuringCompletedCheckpointStoreRecovery() throws Exception {
         final StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
         env.enableCheckpointing(10);
-        env.setRestartStrategy(fixedDelayRestart(2 /* failure on processing + on recovery */, 0));
-        env.addSource(emitUntil(() -> FailingMapper.failedAndProcessed))
+        RestartStrategyUtils.configureFixedDelayRestartStrategy(
+                env, 2 /* failure on processing + on recovery */, 0L);
+        env.fromSource(
+                        new EmitUntilSource(() -> FailingMapper.failedAndProcessed),
+                        WatermarkStrategy.noWatermarks(),
+                        "EmitUntilSourceV2")
                 .map(new FailingMapper())
-                .addSink(new DiscardingSink<>());
+                .sinkTo(new DiscardingSink<>());
         final JobClient jobClient = env.executeAsync();
 
         BlockingHighAvailabilityServiceFactory.fetchRemoteCheckpointsStart.await();
         for (int i = 0; i < 10; i++) {
             final JobStatus jobStatus = jobClient.getJobStatus().get();
-            assertEquals(JobStatus.INITIALIZING, jobStatus);
+            assertThat(jobStatus).isEqualTo(JobStatus.INITIALIZING);
         }
         BlockingHighAvailabilityServiceFactory.fetchRemoteCheckpointsFinished.countDown();
 
         // Await for job to finish.
         jobClient.getJobExecutionResult().get();
 
-        checkState(FailingMapper.failedAndProcessed);
+        assertThat(FailingMapper.failedAndProcessed).isTrue();
     }
 
     private static class FailingMapper implements MapFunction<Integer, Integer> {
@@ -153,29 +164,30 @@ public class CheckpointStoreITCase extends TestLogger {
         }
     }
 
-    private SourceFunction<Integer> emitUntil(SerializableSupplier<Boolean> until) {
-        return new SourceFunction<Integer>() {
+    private static final class EmitUntilSource extends AbstractTestSource<Integer> {
+        private final SerializableSupplier<Boolean> until;
 
-            private volatile boolean running = true;
+        EmitUntilSource(SerializableSupplier<Boolean> until) {
+            this.until = until;
+        }
 
-            @Override
-            public void run(SourceContext<Integer> ctx) {
-                while (running && !until.get()) {
-                    synchronized (ctx.getCheckpointLock()) {
-                        ctx.collect(0);
-                        try {
-                            Thread.sleep(100);
-                        } catch (InterruptedException e) {
-                            ExceptionUtils.rethrow(e);
-                        }
+        @Override
+        public SourceReader<Integer, TestSplit> createReader(SourceReaderContext ctx) {
+            return new TestSourceReader<>(ctx) {
+                @Override
+                public InputStatus pollNext(ReaderOutput<Integer> out) {
+                    if (until.get()) {
+                        return InputStatus.END_OF_INPUT;
                     }
+                    out.collect(0);
+                    try {
+                        Thread.sleep(100);
+                    } catch (InterruptedException e) {
+                        ExceptionUtils.rethrow(e);
+                    }
+                    return InputStatus.MORE_AVAILABLE;
                 }
-            }
-
-            @Override
-            public void cancel() {
-                running = false;
-            }
-        };
+            };
+        }
     }
 }

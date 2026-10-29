@@ -19,12 +19,15 @@
 
 package org.apache.flink.test.example.java;
 
-import org.apache.flink.examples.java.wordcount.WordCount;
+import org.apache.flink.api.common.JobExecutionResult;
+import org.apache.flink.streaming.examples.wordcount.WordCount;
 import org.apache.flink.test.testdata.WordCountData;
 import org.apache.flink.test.util.JavaProgramTestBase;
 
+import static org.apache.flink.test.util.TestBaseUtils.compareResultsByLinesInMemory;
+
 /** Test {@link WordCount}. */
-public class WordCountITCase extends JavaProgramTestBase {
+class WordCountITCase extends JavaProgramTestBase {
 
     protected String textPath;
     protected String resultPath;
@@ -37,15 +40,18 @@ public class WordCountITCase extends JavaProgramTestBase {
 
     @Override
     protected void postSubmit() throws Exception {
-        compareResultsByLinesInMemory(WordCountData.COUNTS, resultPath);
+        compareResultsByLinesInMemory(WordCountData.COUNTS_AS_TUPLES, resultPath);
     }
 
     @Override
-    protected void testProgram() throws Exception {
+    protected JobExecutionResult testProgram() throws Exception {
         WordCount.main(
                 new String[] {
                     "--input", textPath,
-                    "--output", resultPath
+                    "--output", resultPath,
+                    "--execution-mode", "BATCH"
                 });
+
+        return MINI_CLUSTER_EXTENSION.getTestStreamEnvironment().getLastJobExecutionResult();
     }
 }

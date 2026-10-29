@@ -20,7 +20,6 @@ package org.apache.flink.runtime.scheduler.stopwithsavepoint;
 
 import org.apache.flink.api.common.JobID;
 import org.apache.flink.core.execution.SavepointFormatType;
-import org.apache.flink.core.testutils.FlinkMatchers;
 import org.apache.flink.runtime.checkpoint.CheckpointProperties;
 import org.apache.flink.runtime.checkpoint.CompletedCheckpoint;
 import org.apache.flink.runtime.checkpoint.TestingCheckpointScheduling;
@@ -30,30 +29,29 @@ import org.apache.flink.runtime.scheduler.TestingSchedulerNG;
 import org.apache.flink.runtime.state.StreamStateHandle;
 import org.apache.flink.runtime.state.testutils.EmptyStreamStateHandle;
 import org.apache.flink.runtime.state.testutils.TestCompletedCheckpointStorageLocation;
-import org.apache.flink.util.ExceptionUtils;
-import org.apache.flink.util.FlinkException;
-import org.apache.flink.util.TestLogger;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.Collections;
 import java.util.HashMap;
-import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.function.Consumer;
 
-import static org.hamcrest.CoreMatchers.is;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertThat;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
+import static org.apache.flink.core.testutils.FlinkAssertions.assertThatFuture;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * {@code StopWithSavepointTerminationHandlerImplTest} tests {@link
  * StopWithSavepointTerminationHandlerImpl}.
  */
-public class StopWithSavepointTerminationHandlerImplTest extends TestLogger {
+class StopWithSavepointTerminationHandlerImplTest {
+
+    private static final Logger log =
+            LoggerFactory.getLogger(StopWithSavepointTerminationHandlerImplTest.class);
 
     private static final JobID JOB_ID = new JobID();
 
@@ -62,7 +60,9 @@ public class StopWithSavepointTerminationHandlerImplTest extends TestLogger {
 
     private StopWithSavepointTerminationHandlerImpl createTestInstanceFailingOnGlobalFailOver() {
         return createTestInstance(
-                throwableCausingGlobalFailOver -> fail("No global failover should be triggered."));
+                throwableCausingGlobalFailOver -> {
+                    throw new AssertionError("No global failover should be triggered.");
+                });
     }
 
     private StopWithSavepointTerminationHandlerImpl createTestInstance(
@@ -79,7 +79,7 @@ public class StopWithSavepointTerminationHandlerImplTest extends TestLogger {
     }
 
     @Test
-    public void testHappyPath() throws ExecutionException, InterruptedException {
+    void testHappyPath() throws ExecutionException, InterruptedException {
         final StopWithSavepointTerminationHandlerImpl testInstance =
                 createTestInstanceFailingOnGlobalFailOver();
 
@@ -88,22 +88,25 @@ public class StopWithSavepointTerminationHandlerImplTest extends TestLogger {
         testInstance.handleSavepointCreation(completedSavepoint, null);
         testInstance.handleExecutionsTermination(Collections.singleton(ExecutionState.FINISHED));
 
-        assertThat(
-                testInstance.getSavepointPath().get(), is(completedSavepoint.getExternalPointer()));
+        assertThatFuture(testInstance.getSavepointPath())
+                .isCompletedWithValue(completedSavepoint.getExternalPointer());
 
-        assertFalse(
-                "The savepoint should not have been discarded.", streamStateHandle.isDisposed());
-        assertFalse("Checkpoint scheduling should be disabled.", checkpointScheduling.isEnabled());
+        assertThat(streamStateHandle.isDisposed())
+                .withFailMessage("The savepoint should not have been discarded.")
+                .isFalse();
+        assertThat(checkpointScheduling.isEnabled())
+                .withFailMessage("Checkpoint scheduling should be disabled.")
+                .isFalse();
     }
 
     @Test
-    public void testSavepointCreationFailureWithoutExecutionTermination() {
+    void testSavepointCreationFailureWithoutExecutionTermination() {
         // savepoint creation failure is handled as expected if no execution termination happens
         assertSavepointCreationFailure(testInstance -> {});
     }
 
     @Test
-    public void testSavepointCreationFailureWithFailingExecutions() {
+    void testSavepointCreationFailureWithFailingExecutions() {
         // no global fail-over is expected to be triggered by the stop-with-savepoint despite the
         // execution failure
         assertSavepointCreationFailure(
@@ -113,7 +116,7 @@ public class StopWithSavepointTerminationHandlerImplTest extends TestLogger {
     }
 
     @Test
-    public void testSavepointCreationFailureWithFinishingExecutions() {
+    void testSavepointCreationFailureWithFinishingExecutions() {
         // checkpoint scheduling should be still enabled despite the finished executions
         assertSavepointCreationFailure(
                 testInstance ->
@@ -130,32 +133,24 @@ public class StopWithSavepointTerminationHandlerImplTest extends TestLogger {
         testInstance.handleSavepointCreation(null, new Exception(expectedErrorMessage));
         handleExecutionsTermination.accept(testInstance);
 
-        try {
-            testInstance.getSavepointPath().get();
-            fail("An ExecutionException is expected.");
-        } catch (Throwable e) {
-            final Optional<Throwable> actualException =
-                    ExceptionUtils.findThrowableWithMessage(e, expectedErrorMessage);
-            assertTrue(
-                    "An exception with the expected error message should have been thrown.",
-                    actualException.isPresent());
-        }
+        assertThatThrownBy(() -> testInstance.getSavepointPath().get())
+                .withFailMessage("An ExecutionException is expected.")
+                .isInstanceOf(Throwable.class)
+                .hasMessageContaining(expectedErrorMessage);
 
         // the checkpoint scheduling should be enabled in case of failure
-        assertTrue("Checkpoint scheduling should be enabled.", checkpointScheduling.isEnabled());
+        assertThat(checkpointScheduling.isEnabled())
+                .withFailMessage("Checkpoint scheduling should be enabled.")
+                .isTrue();
     }
 
     @Test
-    public void testFailedTerminationHandling() throws ExecutionException, InterruptedException {
+    void testFailedTerminationHandling() {
         final CompletableFuture<Throwable> globalFailOverTriggered = new CompletableFuture<>();
         final StopWithSavepointTerminationHandlerImpl testInstance =
                 createTestInstance(globalFailOverTriggered::complete);
 
         final ExecutionState expectedNonFinishedState = ExecutionState.FAILED;
-        final String expectedErrorMessage =
-                String.format(
-                        "Inconsistent execution state after stopping with savepoint. At least one execution is still in one of the following states: %s. A global fail-over is triggered to recover the job %s.",
-                        expectedNonFinishedState, JOB_ID);
 
         final EmptyStreamStateHandle streamStateHandle = new EmptyStreamStateHandle();
         final CompletedCheckpoint completedSavepoint = createCompletedSavepoint(streamStateHandle);
@@ -164,53 +159,58 @@ public class StopWithSavepointTerminationHandlerImplTest extends TestLogger {
         testInstance.handleExecutionsTermination(
                 Collections.singletonList(expectedNonFinishedState));
 
-        try {
-            testInstance.getSavepointPath().get();
-            fail("An ExecutionException is expected.");
-        } catch (Throwable e) {
-            final Optional<FlinkException> actualFlinkException =
-                    ExceptionUtils.findThrowable(e, FlinkException.class);
-            assertTrue(
-                    "A FlinkException should have been thrown.", actualFlinkException.isPresent());
-            assertThat(
-                    actualFlinkException.get(),
-                    FlinkMatchers.containsMessage(expectedErrorMessage));
-        }
+        assertThatThrownBy(() -> testInstance.getSavepointPath().get())
+                .withFailMessage("An ExecutionException is expected.")
+                .isInstanceOf(Throwable.class)
+                .hasCauseInstanceOf(StopWithSavepointStoppingException.class);
 
-        assertTrue("Global fail-over was not triggered.", globalFailOverTriggered.isDone());
-        assertThat(
-                globalFailOverTriggered.get(), FlinkMatchers.containsMessage(expectedErrorMessage));
-
-        assertFalse("Savepoint should not be discarded.", streamStateHandle.isDisposed());
-
-        assertFalse(
-                "Checkpoint scheduling should not be enabled in case of failure.",
-                checkpointScheduling.isEnabled());
+        assertThatFuture(globalFailOverTriggered)
+                .withFailMessage("Global fail-over was not triggered.")
+                .isDone();
+        assertThat(streamStateHandle.isDisposed())
+                .withFailMessage("Savepoint should not be discarded.")
+                .isFalse();
     }
 
-    @Test(expected = UnsupportedOperationException.class)
-    public void testInvalidExecutionTerminationCall() {
-        createTestInstanceFailingOnGlobalFailOver()
-                .handleExecutionsTermination(Collections.singletonList(ExecutionState.FINISHED));
+    @Test
+    void testInvalidExecutionTerminationCall() {
+        assertThatThrownBy(
+                        () ->
+                                createTestInstanceFailingOnGlobalFailOver()
+                                        .handleExecutionsTermination(
+                                                Collections.singletonList(ExecutionState.FINISHED)))
+                .isInstanceOf(UnsupportedOperationException.class);
     }
 
-    @Test(expected = NullPointerException.class)
-    public void testSavepointCreationParameterBothNull() {
-        createTestInstanceFailingOnGlobalFailOver().handleSavepointCreation(null, null);
+    @Test
+    void testSavepointCreationParameterBothNull() {
+        assertThatThrownBy(
+                        () ->
+                                createTestInstanceFailingOnGlobalFailOver()
+                                        .handleSavepointCreation(null, null))
+                .isInstanceOf(NullPointerException.class);
     }
 
-    @Test(expected = IllegalArgumentException.class)
-    public void testSavepointCreationParameterBothSet() {
-        createTestInstanceFailingOnGlobalFailOver()
-                .handleSavepointCreation(
-                        createCompletedSavepoint(new EmptyStreamStateHandle()),
-                        new Exception(
-                                "No exception should be passed if a savepoint is available."));
+    @Test
+    void testSavepointCreationParameterBothSet() {
+        assertThatThrownBy(
+                        () ->
+                                createTestInstanceFailingOnGlobalFailOver()
+                                        .handleSavepointCreation(
+                                                createCompletedSavepoint(
+                                                        new EmptyStreamStateHandle()),
+                                                new Exception(
+                                                        "No exception should be passed if a savepoint is available.")))
+                .isInstanceOf(IllegalArgumentException.class);
     }
 
-    @Test(expected = NullPointerException.class)
-    public void testExecutionTerminationWithNull() {
-        createTestInstanceFailingOnGlobalFailOver().handleExecutionsTermination(null);
+    @Test
+    void testExecutionTerminationWithNull() {
+        assertThatThrownBy(
+                        () ->
+                                createTestInstanceFailingOnGlobalFailOver()
+                                        .handleExecutionsTermination(null))
+                .isInstanceOf(NullPointerException.class);
     }
 
     private static CompletedCheckpoint createCompletedSavepoint(

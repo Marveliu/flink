@@ -20,7 +20,9 @@ package org.apache.flink.table.planner.plan.nodes.exec.serde;
 
 import org.apache.flink.api.common.typeutils.base.VoidSerializer;
 import org.apache.flink.table.planner.calcite.FlinkTypeFactory;
+import org.apache.flink.table.planner.calcite.FlinkTypeSystem;
 import org.apache.flink.table.planner.typeutils.LogicalRelDataTypeConverterTest.PojoClass;
+import org.apache.flink.table.types.logical.BitmapType;
 import org.apache.flink.table.types.logical.DayTimeIntervalType;
 import org.apache.flink.table.types.logical.RawType;
 
@@ -50,7 +52,9 @@ import static org.junit.jupiter.api.parallel.ExecutionMode.CONCURRENT;
 @Execution(CONCURRENT)
 public class RelDataTypeJsonSerdeTest {
 
-    private static final FlinkTypeFactory FACTORY = FlinkTypeFactory.INSTANCE();
+    private static final FlinkTypeFactory FACTORY =
+            new FlinkTypeFactory(
+                    RelDataTypeJsonSerdeTest.class.getClassLoader(), FlinkTypeSystem.INSTANCE);
 
     @ParameterizedTest
     @MethodSource("testRelDataTypeSerde")
@@ -163,6 +167,11 @@ public class RelDataTypeJsonSerdeTest {
                         FACTORY.createSqlType(SqlTypeName.VARBINARY, 1000),
                         FACTORY.createSqlType(SqlTypeName.NULL),
                         FACTORY.createSqlType(SqlTypeName.SYMBOL),
+                        FACTORY.createSqlType(SqlTypeName.VARIANT),
+                        FACTORY.createArrayType(FACTORY.createSqlType(SqlTypeName.VARIANT), -1),
+                        FACTORY.createMapType(
+                                FACTORY.createSqlType(SqlTypeName.VARCHAR, 5),
+                                FACTORY.createSqlType(SqlTypeName.VARIANT)),
                         FACTORY.createMultisetType(FACTORY.createSqlType(SqlTypeName.VARCHAR), -1),
                         FACTORY.createArrayType(FACTORY.createSqlType(SqlTypeName.VARCHAR, 16), -1),
                         FACTORY.createArrayType(
@@ -239,6 +248,13 @@ public class RelDataTypeJsonSerdeTest {
                         FACTORY.createFieldTypeFromLogicalType(
                                 new RawType<>(true, Void.class, VoidSerializer.INSTANCE)),
                         false));
+
+        mutableTypes.add(
+                FACTORY.createTypeWithNullability(
+                        FACTORY.createFieldTypeFromLogicalType(new BitmapType()), false));
+        mutableTypes.add(
+                FACTORY.createTypeWithNullability(
+                        FACTORY.createFieldTypeFromLogicalType(new BitmapType()), true));
 
         return mutableTypes;
     }

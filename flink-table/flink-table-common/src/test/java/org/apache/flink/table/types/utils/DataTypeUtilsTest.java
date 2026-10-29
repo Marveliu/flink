@@ -19,7 +19,9 @@
 package org.apache.flink.table.types.utils;
 
 import org.apache.flink.api.common.typeinfo.Types;
+import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.api.java.typeutils.TupleTypeInfo;
+import org.apache.flink.table.annotation.DataTypeHint;
 import org.apache.flink.table.api.DataTypes;
 import org.apache.flink.table.api.ValidationException;
 import org.apache.flink.table.catalog.Column;
@@ -33,7 +35,7 @@ import org.apache.flink.table.types.logical.DistinctType;
 import org.apache.flink.table.types.logical.LogicalType;
 import org.apache.flink.table.types.logical.StructuredType;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.sql.Timestamp;
 import java.time.LocalDateTime;
@@ -55,10 +57,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** Tests for {@link DataTypeUtils}. */
-public class DataTypeUtilsTest {
+class DataTypeUtilsTest {
 
     @Test
-    public void testAppendRowFields() {
+    void testAppendRowFields() {
         assertThat(
                         DataTypeUtils.appendRowFields(
                                 ROW(
@@ -81,7 +83,7 @@ public class DataTypeUtilsTest {
     }
 
     @Test
-    public void testIsInternalClass() {
+    void testIsInternalClass() {
         assertThat(DataTypes.INT()).is(DataTypeConditions.INTERNAL);
         assertThat(DataTypes.INT().notNull().bridgedTo(int.class)).is(DataTypeConditions.INTERNAL);
         assertThat(DataTypes.ROW().bridgedTo(RowData.class)).is(DataTypeConditions.INTERNAL);
@@ -89,7 +91,7 @@ public class DataTypeUtilsTest {
     }
 
     @Test
-    public void testFlattenToDataTypes() {
+    void testFlattenToDataTypes() {
         assertThat(DataTypeUtils.flattenToDataTypes(INT())).containsOnly(INT());
 
         assertThat(DataTypeUtils.flattenToDataTypes(ROW(FIELD("a", INT()), FIELD("b", BOOLEAN()))))
@@ -97,7 +99,7 @@ public class DataTypeUtilsTest {
     }
 
     @Test
-    public void testFlattenToNames() {
+    void testFlattenToNames() {
         assertThat(DataTypeUtils.flattenToNames(INT(), Collections.emptyList())).containsOnly("f0");
 
         assertThat(DataTypeUtils.flattenToNames(INT(), Collections.singletonList("f0")))
@@ -111,7 +113,7 @@ public class DataTypeUtilsTest {
     }
 
     @Test
-    public void testExpandRowType() {
+    void testExpandRowType() {
         DataType dataType =
                 ROW(
                         FIELD("f0", INT()),
@@ -131,7 +133,7 @@ public class DataTypeUtilsTest {
     }
 
     @Test
-    public void testExpandLegacyCompositeType() {
+    void testExpandLegacyCompositeType() {
         DataType dataType =
                 TypeConversions.fromLegacyInfoToDataType(
                         new TupleTypeInfo<>(Types.STRING, Types.INT, Types.SQL_TIMESTAMP));
@@ -146,7 +148,7 @@ public class DataTypeUtilsTest {
     }
 
     @Test
-    public void testExpandStructuredType() {
+    void testExpandStructuredType() {
         StructuredType logicalType =
                 StructuredType.newBuilder(ObjectIdentifier.of("catalog", "database", "type"))
                         .attributes(
@@ -182,7 +184,7 @@ public class DataTypeUtilsTest {
     }
 
     @Test
-    public void testExpandDistinctType() {
+    void testExpandDistinctType() {
         FieldsDataType dataType =
                 (FieldsDataType)
                         ROW(
@@ -211,13 +213,14 @@ public class DataTypeUtilsTest {
                                         "f3", TIMESTAMP(3).bridgedTo(LocalDateTime.class))));
     }
 
-    @Test(expected = IllegalArgumentException.class)
-    public void testExpandThrowExceptionOnAtomicType() {
-        DataTypeUtils.expandCompositeTypeToSchema(DataTypes.TIMESTAMP());
+    @Test
+    void testExpandThrowExceptionOnAtomicType() {
+        assertThatThrownBy(() -> DataTypeUtils.expandCompositeTypeToSchema(DataTypes.TIMESTAMP()))
+                .isInstanceOf(IllegalArgumentException.class);
     }
 
     @Test
-    public void testDataTypeValidation() {
+    void testDataTypeValidation() {
         final DataType validDataType = DataTypes.MAP(DataTypes.INT(), DataTypes.STRING());
 
         DataTypeUtils.validateInputDataType(validDataType);
@@ -232,5 +235,41 @@ public class DataTypeUtilsTest {
                         "Data type 'MAP<INT, STRING>' does not support an output conversion to class '"
                                 + java.util.HashMap.class.getName()
                                 + "'.");
+    }
+
+    @Test
+    void testStructuredTypeAlignment() {
+        final DataTypeFactoryMock factoryMock = new DataTypeFactoryMock();
+
+        final DataType expectedDataType = DataTypes.of(NestedPojo.class).toDataType(factoryMock);
+
+        // Erases conversion classes and uses default conversion classes
+        final DataType defaultDataType = DataTypes.of(expectedDataType.getLogicalType());
+
+        final DataType dataType =
+                DataTypeUtils.alignStructuredTypes(
+                        factoryMock, DataTypes.ROW(DataTypes.INT(), defaultDataType));
+        assertThat(dataType).isEqualTo(DataTypes.ROW(DataTypes.INT(), expectedDataType));
+    }
+
+    /** POJO that does not use default conversions for certain data types. */
+    public static class Pojo {
+        // Primitive instead of boxed class
+        public int i;
+
+        // List instead of array and java.sql.Timestamp instead of java.time.LocalDateTime
+        public List<Timestamp> timestamps;
+
+        // byte[] as annotated STRING data type
+        @DataTypeHint("STRING")
+        public byte[] string;
+    }
+
+    /** Nested POJO that does not use default conversions for certain data types. */
+    public static class NestedPojo {
+
+        public Tuple2<Boolean, Double> tuple;
+
+        public List<Pojo> pojoList;
     }
 }

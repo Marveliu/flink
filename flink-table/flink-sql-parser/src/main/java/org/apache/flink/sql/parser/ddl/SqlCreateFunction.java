@@ -18,12 +18,15 @@
 
 package org.apache.flink.sql.parser.ddl;
 
+import org.apache.flink.sql.parser.SqlUnparseUtils;
+
+import org.apache.calcite.sql.SqlCall;
 import org.apache.calcite.sql.SqlCharStringLiteral;
-import org.apache.calcite.sql.SqlCreate;
 import org.apache.calcite.sql.SqlIdentifier;
 import org.apache.calcite.sql.SqlKind;
+import org.apache.calcite.sql.SqlLiteral;
 import org.apache.calcite.sql.SqlNode;
-import org.apache.calcite.sql.SqlOperator;
+import org.apache.calcite.sql.SqlNodeList;
 import org.apache.calcite.sql.SqlSpecialOperator;
 import org.apache.calcite.sql.SqlWriter;
 import org.apache.calcite.sql.parser.SqlParserPos;
@@ -36,20 +39,34 @@ import java.util.List;
 import static java.util.Objects.requireNonNull;
 
 /** CREATE FUNCTION DDL sql call. */
-public class SqlCreateFunction extends SqlCreate {
+public class SqlCreateFunction extends SqlCreateObject {
 
-    public static final SqlSpecialOperator OPERATOR =
-            new SqlSpecialOperator("CREATE FUNCTION", SqlKind.CREATE_FUNCTION);
-
-    private final SqlIdentifier functionIdentifier;
+    private static final SqlSpecialOperator OPERATOR =
+            new SqlSpecialOperator("CREATE FUNCTION", SqlKind.CREATE_FUNCTION) {
+                @Override
+                public SqlCall createCall(
+                        SqlLiteral functionQualifier, SqlParserPos pos, SqlNode... operands) {
+                    String language =
+                            operands[4] instanceof SqlCharStringLiteral
+                                    ? ((SqlCharStringLiteral) operands[4]).getValueAs(String.class)
+                                    : null;
+                    return new SqlCreateFunction(
+                            pos,
+                            (SqlIdentifier) operands[0],
+                            (SqlCharStringLiteral) operands[1],
+                            language,
+                            ((SqlLiteral) operands[5]).booleanValue(),
+                            ((SqlLiteral) operands[6]).booleanValue(),
+                            ((SqlLiteral) operands[7]).booleanValue(),
+                            (SqlNodeList) operands[2],
+                            (SqlNodeList) operands[3]);
+                }
+            };
 
     private final SqlCharStringLiteral functionClassName;
-
     private final String functionLanguage;
-
-    private final boolean isTemporary;
-
     private final boolean isSystemFunction;
+    private final SqlNodeList resourceInfos;
 
     public SqlCreateFunction(
             SqlParserPos pos,
@@ -58,58 +75,43 @@ public class SqlCreateFunction extends SqlCreate {
             String functionLanguage,
             boolean ifNotExists,
             boolean isTemporary,
-            boolean isSystemFunction) {
-        super(OPERATOR, pos, false, ifNotExists);
-        this.functionIdentifier = requireNonNull(functionIdentifier);
+            boolean isSystemFunction,
+            SqlNodeList resourceInfos,
+            SqlNodeList propertyList) {
+        super(
+                OPERATOR,
+                pos,
+                functionIdentifier,
+                isTemporary,
+                false,
+                ifNotExists,
+                propertyList,
+                null);
         this.functionClassName = requireNonNull(functionClassName);
         this.isSystemFunction = isSystemFunction;
-        this.isTemporary = isTemporary;
         this.functionLanguage = functionLanguage;
-    }
-
-    @Override
-    public SqlOperator getOperator() {
-        return OPERATOR;
+        this.resourceInfos = resourceInfos;
+        requireNonNull(propertyList);
     }
 
     @Nonnull
     @Override
     public List<SqlNode> getOperandList() {
-        return ImmutableNullableList.of(functionIdentifier, functionClassName);
-    }
-
-    @Override
-    public void unparse(SqlWriter writer, int leftPrec, int rightPrec) {
-        writer.keyword("CREATE");
-        if (isTemporary) {
-            writer.keyword("TEMPORARY");
-        }
-        if (isSystemFunction) {
-            writer.keyword("SYSTEM");
-        }
-        writer.keyword("FUNCTION");
-        if (ifNotExists) {
-            writer.keyword("IF NOT EXISTS");
-        }
-        functionIdentifier.unparse(writer, leftPrec, rightPrec);
-        writer.keyword("AS");
-        functionClassName.unparse(writer, leftPrec, rightPrec);
-        if (functionLanguage != null) {
-            writer.keyword("LANGUAGE");
-            writer.keyword(functionLanguage);
-        }
-    }
-
-    public boolean isIfNotExists() {
-        return ifNotExists;
+        return ImmutableNullableList.of(
+                name,
+                functionClassName,
+                resourceInfos,
+                properties,
+                functionLanguage == null
+                        ? SqlLiteral.createNull(SqlParserPos.ZERO)
+                        : SqlLiteral.createCharString(functionLanguage, SqlParserPos.ZERO),
+                SqlLiteral.createBoolean(isIfNotExists(), SqlParserPos.ZERO),
+                SqlLiteral.createBoolean(isTemporary(), SqlParserPos.ZERO),
+                SqlLiteral.createBoolean(isSystemFunction, SqlParserPos.ZERO));
     }
 
     public boolean isSystemFunction() {
         return isSystemFunction;
-    }
-
-    public boolean isTemporary() {
-        return isTemporary;
     }
 
     public SqlCharStringLiteral getFunctionClassName() {
@@ -120,7 +122,58 @@ public class SqlCreateFunction extends SqlCreate {
         return this.functionLanguage;
     }
 
-    public String[] getFunctionIdentifier() {
-        return functionIdentifier.names.toArray(new String[0]);
+    public List<SqlNode> getResourceInfos() {
+        return resourceInfos.getList();
+    }
+
+    @Override
+    protected String getScope() {
+        return "FUNCTION";
+    }
+
+    @Override
+    public void unparse(SqlWriter writer, int leftPrec, int rightPrec) {
+        unparseCreateIfNotExists(writer, leftPrec, rightPrec);
+
+        unparseFunctionLanguage(writer, leftPrec, rightPrec);
+        unparseResourceInfo(writer, leftPrec, rightPrec);
+        SqlUnparseUtils.unparseProperties(properties, writer, leftPrec, rightPrec);
+    }
+
+    @Override
+    protected void unparseCreateIfNotExists(SqlWriter writer, int leftPrec, int rightPrec) {
+        writer.keyword("CREATE");
+        if (isTemporary()) {
+            writer.keyword("TEMPORARY");
+        }
+        if (isSystemFunction) {
+            writer.keyword("SYSTEM");
+        }
+        writer.keyword(getScope());
+        if (ifNotExists) {
+            writer.keyword("IF NOT EXISTS");
+        }
+        name.unparse(writer, leftPrec, rightPrec);
+        writer.keyword("AS");
+        functionClassName.unparse(writer, leftPrec, rightPrec);
+    }
+
+    private void unparseFunctionLanguage(SqlWriter writer, int leftPrec, int rightPrec) {
+        if (functionLanguage != null) {
+            writer.keyword("LANGUAGE");
+            writer.keyword(functionLanguage);
+        }
+    }
+
+    private void unparseResourceInfo(SqlWriter writer, int leftPrec, int rightPrec) {
+        if (!resourceInfos.isEmpty()) {
+            writer.keyword("USING");
+            SqlWriter.Frame withFrame = writer.startList("", "");
+            for (SqlNode resourcePath : resourceInfos) {
+                writer.sep(",");
+                resourcePath.unparse(writer, leftPrec, rightPrec);
+            }
+            writer.endList(withFrame);
+        }
     }
 }

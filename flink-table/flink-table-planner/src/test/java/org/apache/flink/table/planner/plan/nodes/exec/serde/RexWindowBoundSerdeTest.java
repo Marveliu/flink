@@ -18,45 +18,26 @@
 
 package org.apache.flink.table.planner.plan.nodes.exec.serde;
 
-import org.apache.flink.table.api.TableConfig;
-import org.apache.flink.table.module.ModuleManager;
-import org.apache.flink.table.planner.calcite.FlinkContextImpl;
-import org.apache.flink.table.planner.calcite.FlinkTypeFactory;
-import org.apache.flink.table.planner.functions.sql.FlinkSqlOperatorTable;
-import org.apache.flink.table.utils.CatalogManagerMocks;
-
 import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.databind.ObjectReader;
 import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.databind.ObjectWriter;
 
 import org.apache.calcite.rex.RexBuilder;
 import org.apache.calcite.rex.RexWindowBound;
 import org.apache.calcite.rex.RexWindowBounds;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /** Test json serialization/deserialization for {@link RexWindowBound}. */
-public class RexWindowBoundSerdeTest {
+class RexWindowBoundSerdeTest {
 
     @Test
-    public void testSerde() throws IOException {
-        SerdeContext serdeCtx =
-                new SerdeContext(
-                        null,
-                        new FlinkContextImpl(
-                                false,
-                                TableConfig.getDefault(),
-                                new ModuleManager(),
-                                null,
-                                CatalogManagerMocks.createEmptyCatalogManager(),
-                                null),
-                        Thread.currentThread().getContextClassLoader(),
-                        FlinkTypeFactory.INSTANCE(),
-                        FlinkSqlOperatorTable.instance());
-        ObjectReader objectReader = JsonSerdeUtil.createObjectReader(serdeCtx);
-        ObjectWriter objectWriter = JsonSerdeUtil.createObjectWriter(serdeCtx);
+    void testSerde() throws IOException {
+        SerdeContext serdeCtx = JsonSerdeTestUtil.configuredSerdeContext();
+        ObjectReader objectReader = CompiledPlanSerdeUtil.createJsonObjectReader(serdeCtx);
+        ObjectWriter objectWriter = CompiledPlanSerdeUtil.createJsonObjectWriter(serdeCtx);
 
         assertThat(
                         objectReader.readValue(
@@ -78,7 +59,7 @@ public class RexWindowBoundSerdeTest {
                                 RexWindowBound.class))
                 .isEqualTo(RexWindowBounds.UNBOUNDED_PRECEDING);
 
-        RexBuilder builder = new RexBuilder(FlinkTypeFactory.INSTANCE());
+        RexBuilder builder = new RexBuilder(serdeCtx.getTypeFactory());
         RexWindowBound windowBound = RexWindowBounds.following(builder.makeLiteral("test"));
         assertThat(
                         objectReader.readValue(

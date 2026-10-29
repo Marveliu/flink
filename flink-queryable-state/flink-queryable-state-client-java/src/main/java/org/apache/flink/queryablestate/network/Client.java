@@ -26,14 +26,15 @@ import org.apache.flink.queryablestate.network.stats.KvStateRequestStats;
 import org.apache.flink.util.Preconditions;
 import org.apache.flink.util.concurrent.FutureUtils;
 
-import org.apache.flink.shaded.guava30.com.google.common.util.concurrent.ThreadFactoryBuilder;
+import org.apache.flink.shaded.guava33.com.google.common.util.concurrent.ThreadFactoryBuilder;
 import org.apache.flink.shaded.netty4.io.netty.bootstrap.Bootstrap;
 import org.apache.flink.shaded.netty4.io.netty.buffer.ByteBufAllocator;
 import org.apache.flink.shaded.netty4.io.netty.channel.ChannelFutureListener;
 import org.apache.flink.shaded.netty4.io.netty.channel.ChannelInitializer;
 import org.apache.flink.shaded.netty4.io.netty.channel.ChannelOption;
 import org.apache.flink.shaded.netty4.io.netty.channel.EventLoopGroup;
-import org.apache.flink.shaded.netty4.io.netty.channel.nio.NioEventLoopGroup;
+import org.apache.flink.shaded.netty4.io.netty.channel.MultiThreadIoEventLoopGroup;
+import org.apache.flink.shaded.netty4.io.netty.channel.nio.NioIoHandler;
 import org.apache.flink.shaded.netty4.io.netty.channel.socket.SocketChannel;
 import org.apache.flink.shaded.netty4.io.netty.channel.socket.nio.NioSocketChannel;
 import org.apache.flink.shaded.netty4.io.netty.handler.codec.LengthFieldBasedFrameDecoder;
@@ -110,7 +111,10 @@ public class Client<REQ extends MessageBody, RESP extends MessageBody> {
                         .setNameFormat("Flink " + clientName + " Event Loop Thread %d")
                         .build();
 
-        final EventLoopGroup nioGroup = new NioEventLoopGroup(numEventLoopThreads, threadFactory);
+        final MultiThreadIoEventLoopGroup nioGroup =
+                new MultiThreadIoEventLoopGroup(
+                        numEventLoopThreads, threadFactory, NioIoHandler.newFactory());
+
         final ByteBufAllocator bufferPool = new NettyBufferPool(numEventLoopThreads);
 
         this.bootstrap =
@@ -201,7 +205,7 @@ public class Client<REQ extends MessageBody, RESP extends MessageBody> {
                                 }
 
                                 if (bootstrap != null) {
-                                    EventLoopGroup group = bootstrap.group();
+                                    EventLoopGroup group = bootstrap.config().group();
                                     if (group != null && !group.isShutdown()) {
                                         group.shutdownGracefully(0L, 0L, TimeUnit.MILLISECONDS)
                                                 .addListener(
@@ -229,6 +233,6 @@ public class Client<REQ extends MessageBody, RESP extends MessageBody> {
 
     @VisibleForTesting
     public boolean isEventGroupShutdown() {
-        return bootstrap == null || bootstrap.group().isTerminated();
+        return bootstrap == null || bootstrap.config().group().isTerminated();
     }
 }

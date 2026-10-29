@@ -18,7 +18,9 @@
 
 package org.apache.flink.metrics.prometheus;
 
+import org.apache.flink.annotation.PublicEvolving;
 import org.apache.flink.annotation.docs.Documentation;
+import org.apache.flink.configuration.ConfigConstants;
 import org.apache.flink.configuration.ConfigOption;
 import org.apache.flink.configuration.ConfigOptions;
 import org.apache.flink.configuration.description.Description;
@@ -26,22 +28,9 @@ import org.apache.flink.configuration.description.LinkElement;
 import org.apache.flink.configuration.description.TextElement;
 
 /** Config options for the {@link PrometheusPushGatewayReporter}. */
-@Documentation.SuffixOption
+@PublicEvolving
+@Documentation.SuffixOption(ConfigConstants.METRICS_REPORTER_PREFIX + "prometheus")
 public class PrometheusPushGatewayReporterOptions {
-
-    @Deprecated
-    public static final ConfigOption<String> HOST =
-            ConfigOptions.key("host")
-                    .stringType()
-                    .noDefaultValue()
-                    .withDescription("(deprecated) The PushGateway server host.");
-
-    @Deprecated
-    public static final ConfigOption<Integer> PORT =
-            ConfigOptions.key("port")
-                    .intType()
-                    .defaultValue(-1)
-                    .withDescription("(deprecated) The PushGateway server port.");
 
     public static final ConfigOption<String> HOST_URL =
             ConfigOptions.key("hostUrl")
@@ -109,4 +98,25 @@ public class PrometheusPushGatewayReporterOptions {
                                                     "https://prometheus.io/docs/concepts/data_model/#metric-names-and-labels",
                                                     "Prometheus requirements"))
                                     .build());
+
+    public static final ConfigOption<String> USERNAME =
+            ConfigOptions.key("username")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "(Optional) The username for HTTP Basic Authentication with the PushGateway.");
+
+    public static final ConfigOption<String> PASSWORD =
+            ConfigOptions.key("password")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "(Optional) The password for HTTP Basic Authentication with the PushGateway.");
+
+    public static final ConfigOption<String> ALLOW_LIST =
+            ConfigOptions.key("allowList")
+                    .stringType()
+                    .defaultValue("")
+                    .withDescription(
+                            "The allow-list of metric name. The default is to report all metrics");
 }

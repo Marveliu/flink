@@ -51,26 +51,26 @@ abstract class CheckpointIDCounterTestBase {
      * checkpoint), a negative ID is passed.
      */
     @Test
-    public void testCounterIsNeverNegative() throws Exception {
+    void testCounterIsNeverNegative() throws Exception {
         final CheckpointIDCounter counter = createCheckpointIdCounter();
 
         try {
             counter.start();
             assertThat(counter.get()).isGreaterThanOrEqualTo(0L);
         } finally {
-            counter.shutdown(JobStatus.FINISHED);
+            counter.shutdown(JobStatus.FINISHED).join();
         }
     }
 
     /** Tests serial increment and get calls. */
     @Test
-    public void testSerialIncrementAndGet() throws Exception {
+    void testSerialIncrementAndGet() throws Exception {
         final CheckpointIDCounter counter = createCheckpointIdCounter();
 
         try {
             counter.start();
 
-            assertThat(counter.getAndIncrement()).isEqualTo(1);
+            assertThat(counter.getAndIncrement()).isOne();
             assertThat(counter.get()).isEqualTo(2);
             assertThat(counter.getAndIncrement()).isEqualTo(2);
             assertThat(counter.get()).isEqualTo(3);
@@ -78,7 +78,7 @@ abstract class CheckpointIDCounterTestBase {
             assertThat(counter.get()).isEqualTo(4);
             assertThat(counter.getAndIncrement()).isEqualTo(4);
         } finally {
-            counter.shutdown(JobStatus.FINISHED);
+            counter.shutdown(JobStatus.FINISHED).join();
         }
     }
 
@@ -87,7 +87,7 @@ abstract class CheckpointIDCounterTestBase {
      * counts strictly increasing.
      */
     @Test
-    public void testConcurrentGetAndIncrement() throws Exception {
+    void testConcurrentGetAndIncrement() throws Exception {
         // Config
         final int numThreads = 8;
 
@@ -136,7 +136,7 @@ abstract class CheckpointIDCounterTestBase {
                 executor.shutdown();
             }
 
-            counter.shutdown(JobStatus.FINISHED);
+            counter.shutdown(JobStatus.FINISHED).join();
         }
     }
 
@@ -150,7 +150,7 @@ abstract class CheckpointIDCounterTestBase {
 
     /** Tests a simple {@link CheckpointIDCounter#setCount(long)} operation. */
     @Test
-    public void testSetCount() throws Exception {
+    void testSetCount() throws Exception {
         final CheckpointIDCounter counter = createCheckpointIdCounter();
         counter.start();
 
@@ -161,7 +161,7 @@ abstract class CheckpointIDCounterTestBase {
         assertThat(counter.get()).isEqualTo(1338);
         assertThat(counter.getAndIncrement()).isEqualTo(1338);
 
-        counter.shutdown(JobStatus.FINISHED);
+        counter.shutdown(JobStatus.FINISHED).join();
     }
 
     /** Task repeatedly incrementing the {@link CheckpointIDCounter}. */

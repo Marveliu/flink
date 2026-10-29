@@ -19,6 +19,7 @@
 package org.apache.flink.table.planner.plan.nodes.exec.common;
 
 import org.apache.flink.api.dag.Transformation;
+import org.apache.flink.configuration.ReadableConfig;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.planner.delegation.PlannerBase;
 import org.apache.flink.table.planner.plan.logical.TimeAttributeWindowingStrategy;
@@ -31,12 +32,15 @@ import org.apache.flink.table.planner.plan.nodes.exec.InputProperty;
 import org.apache.flink.table.planner.plan.nodes.exec.SingleTransformationTranslator;
 import org.apache.flink.table.planner.plan.nodes.exec.batch.BatchExecNode;
 import org.apache.flink.table.planner.plan.nodes.exec.utils.ExecNodeUtil;
+import org.apache.flink.table.planner.utils.TableConfigUtils;
 import org.apache.flink.table.runtime.operators.window.TimeWindow;
-import org.apache.flink.table.runtime.operators.window.WindowTableFunctionOperator;
-import org.apache.flink.table.runtime.operators.window.assigners.WindowAssigner;
+import org.apache.flink.table.runtime.operators.window.groupwindow.assigners.GroupWindowAssigner;
+import org.apache.flink.table.runtime.operators.window.tvf.operator.AlignedWindowTableFunctionOperator;
+import org.apache.flink.table.runtime.operators.window.tvf.operator.WindowTableFunctionOperatorBase;
 import org.apache.flink.table.runtime.typeutils.InternalTypeInfo;
 import org.apache.flink.table.runtime.util.TimeWindowUtil;
 import org.apache.flink.table.types.logical.RowType;
+import org.apache.flink.table.types.logical.utils.LogicalTypeChecks;
 
 import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.annotation.JsonProperty;
 
@@ -61,11 +65,12 @@ public abstract class CommonExecWindowTableFunction extends ExecNodeBase<RowData
     protected CommonExecWindowTableFunction(
             int id,
             ExecNodeContext context,
+            ReadableConfig persistedConfig,
             TimeAttributeWindowingStrategy windowingStrategy,
             List<InputProperty> inputProperties,
             RowType outputType,
             String description) {
-        super(id, context, inputProperties, outputType, description);
+        super(id, context, persistedConfig, inputProperties, outputType, description);
         checkArgument(inputProperties.size() == 1);
         this.windowingStrategy = checkNotNull(windowingStrategy);
     }
@@ -77,18 +82,47 @@ public abstract class CommonExecWindowTableFunction extends ExecNodeBase<RowData
         final ExecEdge inputEdge = getInputEdges().get(0);
         final Transformation<RowData> inputTransform =
                 (Transformation<RowData>) inputEdge.translateToPlan(planner);
-        WindowAssigner<TimeWindow> windowAssigner = createWindowAssigner(windowingStrategy);
-        final ZoneId shiftTimeZone =
-                TimeWindowUtil.getShiftTimeZone(
-                        windowingStrategy.getTimeAttributeType(), config.getLocalTimeZone());
-        WindowTableFunctionOperator windowTableFunctionOperator =
-                new WindowTableFunctionOperator(
-                        windowAssigner, windowingStrategy.getTimeAttributeIndex(), shiftTimeZone);
+        final boolean isAlignedWindow = windowingStrategy.getWindow().isAlignedWindow();
+        if (isAlignedWindow) {
+            return translateWithAlignedWindow(config, inputTransform);
+        } else {
+            return translateWithUnalignedWindow(
+                    planner, config, (RowType) inputEdge.getOutputType(), inputTransform);
+        }
+    }
+
+    private Transformation<RowData> translateWithAlignedWindow(
+            ExecNodeConfig config, Transformation<RowData> inputTransform) {
+        final WindowTableFunctionOperatorBase windowTableFunctionOperator =
+                createAlignedWindowTableFunctionOperator(config);
         return ExecNodeUtil.createOneInputTransformation(
                 inputTransform,
                 createTransformationMeta(WINDOW_TRANSFORMATION, config),
                 windowTableFunctionOperator,
                 InternalTypeInfo.of(getOutputType()),
-                inputTransform.getParallelism());
+                inputTransform.getParallelism(),
+                false);
     }
+
+    private WindowTableFunctionOperatorBase createAlignedWindowTableFunctionOperator(
+            ExecNodeConfig config) {
+        GroupWindowAssigner<TimeWindow> windowAssigner = createWindowAssigner(windowingStrategy);
+        final ZoneId shiftTimeZone =
+                TimeWindowUtil.getShiftTimeZone(
+                        windowingStrategy.getTimeAttributeType(),
+                        TableConfigUtils.getLocalTimeZone(config));
+        final int timestampPrecision =
+                LogicalTypeChecks.getPrecision(windowingStrategy.getTimeAttributeType());
+        return new AlignedWindowTableFunctionOperator(
+                windowAssigner,
+                windowingStrategy.getTimeAttributeIndex(),
+                timestampPrecision,
+                shiftTimeZone);
+    }
+
+    protected abstract Transformation<RowData> translateWithUnalignedWindow(
+            PlannerBase planner,
+            ExecNodeConfig config,
+            RowType inputRowType,
+            Transformation<RowData> inputTransform);
 }

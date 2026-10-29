@@ -24,6 +24,7 @@ import org.apache.flink.client.deployment.application.ApplicationConfiguration;
 import org.apache.flink.client.program.ClusterClient;
 import org.apache.flink.client.program.ClusterClientProvider;
 import org.apache.flink.configuration.BlobServerOptions;
+import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.DeploymentOptions;
 import org.apache.flink.configuration.HighAvailabilityOptions;
 import org.apache.flink.configuration.JobManagerOptions;
@@ -32,6 +33,9 @@ import org.apache.flink.configuration.RestOptions;
 import org.apache.flink.configuration.TaskManagerOptions;
 import org.apache.flink.kubernetes.configuration.KubernetesConfigOptions;
 import org.apache.flink.kubernetes.configuration.KubernetesDeploymentTarget;
+import org.apache.flink.kubernetes.kubeclient.Fabric8FlinkKubeClient;
+import org.apache.flink.kubernetes.kubeclient.FlinkKubeClient;
+import org.apache.flink.kubernetes.kubeclient.FlinkKubeClientFactory;
 import org.apache.flink.kubernetes.kubeclient.decorators.InternalServiceDecorator;
 import org.apache.flink.kubernetes.utils.Constants;
 import org.apache.flink.runtime.jobmanager.HighAvailabilityMode;
@@ -40,21 +44,19 @@ import io.fabric8.kubernetes.api.model.Container;
 import io.fabric8.kubernetes.api.model.EnvVar;
 import io.fabric8.kubernetes.api.model.Service;
 import io.fabric8.kubernetes.api.model.apps.Deployment;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.Arrays;
 import java.util.Collections;
-import java.util.stream.Collectors;
+import java.util.concurrent.Executors;
 
-import static org.apache.flink.core.testutils.CommonTestUtils.assertThrows;
 import static org.apache.flink.kubernetes.utils.Constants.ENV_FLINK_POD_IP_ADDRESS;
-import static org.hamcrest.MatcherAssert.assertThat;
-import static org.hamcrest.Matchers.is;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatNoException;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** Tests for the {@link KubernetesClusterDescriptor}. */
-public class KubernetesClusterDescriptorTest extends KubernetesClientTestBase {
+class KubernetesClusterDescriptorTest extends KubernetesClientTestBase {
     private static final String MOCK_SERVICE_HOST_NAME = "mock-host-name-of-service";
     private static final String MOCK_SERVICE_IP = "192.168.0.1";
 
@@ -73,11 +75,24 @@ public class KubernetesClusterDescriptorTest extends KubernetesClientTestBase {
     protected void onSetup() throws Exception {
         super.onSetup();
 
-        descriptor = new KubernetesClusterDescriptor(flinkConfig, flinkKubeClient);
+        descriptor =
+                new KubernetesClusterDescriptor(
+                        flinkConfig,
+                        new FlinkKubeClientFactory() {
+                            @Override
+                            public FlinkKubeClient fromConfiguration(
+                                    Configuration flinkConfig, String useCase) {
+                                return new Fabric8FlinkKubeClient(
+                                        flinkConfig,
+                                        server.createClient().inNamespace(NAMESPACE),
+                                        Executors.newSingleThreadScheduledExecutor());
+                            }
+                        },
+                        config -> {});
     }
 
     @Test
-    public void testDeploySessionCluster() throws Exception {
+    void testDeploySessionCluster() throws Exception {
         flinkConfig.set(DeploymentOptions.TARGET, KubernetesDeploymentTarget.SESSION.getName());
         final ClusterClient<String> clusterClient = deploySessionCluster().getClusterClient();
         checkClusterClient(clusterClient);
@@ -86,10 +101,9 @@ public class KubernetesClusterDescriptorTest extends KubernetesClientTestBase {
     }
 
     @Test
-    public void testDeployHighAvailabilitySessionCluster() throws ClusterDeploymentException {
+    void testDeployHighAvailabilitySessionCluster() throws ClusterDeploymentException {
         flinkConfig.set(DeploymentOptions.TARGET, KubernetesDeploymentTarget.SESSION.getName());
-        flinkConfig.setString(
-                HighAvailabilityOptions.HA_MODE, HighAvailabilityMode.ZOOKEEPER.toString());
+        flinkConfig.set(HighAvailabilityOptions.HA_MODE, HighAvailabilityMode.ZOOKEEPER.toString());
         final ClusterClient<String> clusterClient = deploySessionCluster().getClusterClient();
         checkClusterClient(clusterClient);
 
@@ -105,33 +119,30 @@ public class KubernetesClusterDescriptorTest extends KubernetesClientTestBase {
                         .getSpec()
                         .getContainers()
                         .get(0);
-        assertTrue(
-                "Environment " + ENV_FLINK_POD_IP_ADDRESS + " should be set.",
-                jmContainer.getEnv().stream()
-                        .map(EnvVar::getName)
-                        .collect(Collectors.toList())
-                        .contains(ENV_FLINK_POD_IP_ADDRESS));
+        assertThat(jmContainer.getEnv().stream().map(EnvVar::getName))
+                .withFailMessage("Environment " + ENV_FLINK_POD_IP_ADDRESS + " should be set.")
+                .contains(ENV_FLINK_POD_IP_ADDRESS);
 
         clusterClient.close();
     }
 
     @Test
-    public void testKillCluster() throws Exception {
+    void testKillCluster() throws Exception {
         flinkConfig.set(DeploymentOptions.TARGET, KubernetesDeploymentTarget.SESSION.getName());
         deploySessionCluster();
 
-        assertEquals(2, kubeClient.services().list().getItems().size());
+        assertThat(kubeClient.services().list().getItems()).hasSize(2);
 
         descriptor.killCluster(CLUSTER_ID);
 
         // Mock kubernetes server do not delete the accompanying resources by gc.
-        assertTrue(kubeClient.apps().deployments().list().getItems().isEmpty());
-        assertEquals(2, kubeClient.services().list().getItems().size());
-        assertEquals(1, kubeClient.configMaps().list().getItems().size());
+        assertThat(kubeClient.apps().deployments().list().getItems()).isEmpty();
+        assertThat(kubeClient.services().list().getItems()).hasSize(2);
+        assertThat(kubeClient.configMaps().list().getItems()).hasSize(1);
     }
 
     @Test
-    public void testDeployApplicationCluster() {
+    void testDeployApplicationCluster() {
         flinkConfig.set(
                 PipelineOptions.JARS, Collections.singletonList("local:///path/of/user.jar"));
         flinkConfig.set(DeploymentOptions.TARGET, KubernetesDeploymentTarget.APPLICATION.getName());
@@ -148,53 +159,78 @@ public class KubernetesClusterDescriptorTest extends KubernetesClientTestBase {
     }
 
     @Test
-    public void testDeployApplicationClusterWithNonLocalSchema() {
-        flinkConfig.set(
-                PipelineOptions.JARS, Collections.singletonList("file:///path/of/user.jar"));
+    void testDeployApplicationClusterWithoutJar() {
         flinkConfig.set(DeploymentOptions.TARGET, KubernetesDeploymentTarget.APPLICATION.getName());
-        assertThrows(
-                "Only \"local\" is supported as schema for application mode.",
-                IllegalArgumentException.class,
-                () -> descriptor.deployApplicationCluster(clusterSpecification, appConfig));
+        try {
+            descriptor.deployApplicationCluster(clusterSpecification, appConfig);
+        } catch (Exception ignored) {
+        }
+
+        mockExpectedServiceFromServerSide(loadBalancerSvc);
+        final ClusterClient<String> clusterClient =
+                descriptor.retrieve(CLUSTER_ID).getClusterClient();
+        checkClusterClient(clusterClient);
+        checkUpdatedConfigAndResourceSetting();
     }
 
     @Test
-    public void testDeployApplicationClusterWithClusterAlreadyExists() {
+    void testDeployApplicationClusterWithClusterAlreadyExists() {
         flinkConfig.set(
                 PipelineOptions.JARS, Collections.singletonList("local:///path/of/user.jar"));
         flinkConfig.set(DeploymentOptions.TARGET, KubernetesDeploymentTarget.APPLICATION.getName());
         mockExpectedServiceFromServerSide(loadBalancerSvc);
-        assertThrows(
-                "The Flink cluster " + CLUSTER_ID + " already exists.",
-                ClusterDeploymentException.class,
-                () -> descriptor.deployApplicationCluster(clusterSpecification, appConfig));
+        assertThatThrownBy(
+                        () -> descriptor.deployApplicationCluster(clusterSpecification, appConfig))
+                .satisfies(
+                        cause ->
+                                assertThat(cause)
+                                        .isInstanceOf(ClusterDeploymentException.class)
+                                        .hasMessageContaining(
+                                                "The Flink cluster "
+                                                        + CLUSTER_ID
+                                                        + " already exists."));
     }
 
     @Test
-    public void testDeployApplicationClusterWithDeploymentTargetNotCorrectlySet() {
+    void testDeployApplicationClusterWithDeploymentTargetNotCorrectlySet() {
         flinkConfig.set(
                 PipelineOptions.JARS, Collections.singletonList("local:///path/of/user.jar"));
         flinkConfig.set(DeploymentOptions.TARGET, KubernetesDeploymentTarget.SESSION.getName());
-        assertThrows(
-                "Expected deployment.target=kubernetes-application",
-                ClusterDeploymentException.class,
-                () -> descriptor.deployApplicationCluster(clusterSpecification, appConfig));
+        assertThatThrownBy(
+                        () -> descriptor.deployApplicationCluster(clusterSpecification, appConfig))
+                .satisfies(
+                        cause ->
+                                assertThat(cause)
+                                        .isInstanceOf(ClusterDeploymentException.class)
+                                        .hasMessageContaining(
+                                                "Expected deployment.target=kubernetes-application"));
     }
 
     @Test
-    public void testDeployApplicationClusterWithMultipleJarsSet() {
+    void testDeployApplicationClusterWithMultipleJarsSet() {
         flinkConfig.set(
                 PipelineOptions.JARS,
                 Arrays.asList("local:///path/of/user.jar", "local:///user2.jar"));
         flinkConfig.set(DeploymentOptions.TARGET, KubernetesDeploymentTarget.APPLICATION.getName());
-        assertThrows(
-                "Should only have one jar",
-                IllegalArgumentException.class,
-                () -> descriptor.deployApplicationCluster(clusterSpecification, appConfig));
+        assertThatThrownBy(
+                        () -> descriptor.deployApplicationCluster(clusterSpecification, appConfig))
+                .satisfies(
+                        cause ->
+                                assertThat(cause)
+                                        .isInstanceOf(IllegalArgumentException.class)
+                                        .hasMessageContaining("Should only have at most one jar"));
     }
 
     @Test
-    public void testDeployApplicationClusterWithClusterIP() throws Exception {
+    void testDeployApplicationClusterWithNoJar() {
+        flinkConfig.set(DeploymentOptions.TARGET, KubernetesDeploymentTarget.APPLICATION.getName());
+        assertThatNoException()
+                .isThrownBy(
+                        () -> descriptor.deployApplicationCluster(clusterSpecification, appConfig));
+    }
+
+    @Test
+    void testDeployApplicationClusterWithClusterIP() throws Exception {
         flinkConfig.set(
                 PipelineOptions.JARS, Collections.singletonList("local:///path/of/user.jar"));
         flinkConfig.set(DeploymentOptions.TARGET, KubernetesDeploymentTarget.APPLICATION.getName());
@@ -209,9 +245,8 @@ public class KubernetesClusterDescriptorTest extends KubernetesClientTestBase {
 
         final String address = CLUSTER_ID + Constants.FLINK_REST_SERVICE_SUFFIX + "." + NAMESPACE;
         final int port = flinkConfig.get(RestOptions.PORT);
-        assertThat(
-                clusterClient.getWebInterfaceURL(),
-                is(String.format("http://%s:%d", address, port)));
+        assertThat(clusterClient.getWebInterfaceURL())
+                .isEqualTo(String.format("http://%s:%d", address, port));
     }
 
     private ClusterClientProvider<String> deploySessionCluster() throws ClusterDeploymentException {
@@ -220,44 +255,42 @@ public class KubernetesClusterDescriptorTest extends KubernetesClientTestBase {
     }
 
     private void checkClusterClient(ClusterClient<String> clusterClient) {
-        assertEquals(CLUSTER_ID, clusterClient.getClusterId());
+        assertThat(clusterClient.getClusterId()).isEqualTo(CLUSTER_ID);
         // Both HA and non-HA mode, the web interface should always be the Kubernetes exposed
         // service address.
-        assertEquals(
-                String.format("http://%s:%d", MOCK_SERVICE_IP, REST_PORT),
-                clusterClient.getWebInterfaceURL());
+        assertThat(clusterClient.getWebInterfaceURL())
+                .isEqualTo(String.format("http://%s:%d", MOCK_SERVICE_IP, REST_PORT));
     }
 
     private void checkUpdatedConfigAndResourceSetting() {
         // Check updated flink config options
-        assertEquals(
-                String.valueOf(Constants.BLOB_SERVER_PORT),
-                flinkConfig.getString(BlobServerOptions.PORT));
-        assertEquals(
-                String.valueOf(Constants.TASK_MANAGER_RPC_PORT),
-                flinkConfig.getString(TaskManagerOptions.RPC_PORT));
-        assertEquals(
-                InternalServiceDecorator.getNamespacedInternalServiceName(CLUSTER_ID, NAMESPACE),
-                flinkConfig.getString(JobManagerOptions.ADDRESS));
+        assertThat(flinkConfig.get(BlobServerOptions.PORT))
+                .isEqualTo(String.valueOf(Constants.BLOB_SERVER_PORT));
+        assertThat(flinkConfig.get(TaskManagerOptions.RPC_PORT))
+                .isEqualTo(String.valueOf(Constants.TASK_MANAGER_RPC_PORT));
+        assertThat(flinkConfig.get(JobManagerOptions.ADDRESS))
+                .isEqualTo(
+                        InternalServiceDecorator.getNamespacedInternalServiceName(
+                                CLUSTER_ID, NAMESPACE));
 
         final Deployment jmDeployment = kubeClient.apps().deployments().list().getItems().get(0);
 
         final Container jmContainer =
                 jmDeployment.getSpec().getTemplate().getSpec().getContainers().get(0);
 
-        assertEquals(
-                String.valueOf(clusterSpecification.getMasterMemoryMB()),
-                jmContainer
-                        .getResources()
-                        .getRequests()
-                        .get(Constants.RESOURCE_NAME_MEMORY)
-                        .getAmount());
-        assertEquals(
-                String.valueOf(clusterSpecification.getMasterMemoryMB()),
-                jmContainer
-                        .getResources()
-                        .getLimits()
-                        .get(Constants.RESOURCE_NAME_MEMORY)
-                        .getAmount());
+        assertThat(
+                        jmContainer
+                                .getResources()
+                                .getRequests()
+                                .get(Constants.RESOURCE_NAME_MEMORY)
+                                .getAmount())
+                .isEqualTo(String.valueOf(clusterSpecification.getMasterMemoryMB()));
+        assertThat(
+                        jmContainer
+                                .getResources()
+                                .getLimits()
+                                .get(Constants.RESOURCE_NAME_MEMORY)
+                                .getAmount())
+                .isEqualTo(String.valueOf(clusterSpecification.getMasterMemoryMB()));
     }
 }

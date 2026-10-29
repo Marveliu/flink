@@ -26,6 +26,7 @@ import org.apache.flink.api.common.state.State;
 import org.apache.flink.api.common.state.StateDescriptor;
 import org.apache.flink.api.common.typeutils.TypeSerializer;
 import org.apache.flink.api.java.tuple.Tuple2;
+import org.apache.flink.api.java.tuple.Tuple3;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.metrics.MetricGroup;
 import org.apache.flink.runtime.state.internal.InternalListState;
@@ -50,9 +51,9 @@ import org.apache.flink.table.runtime.groupwindow.WindowStart;
 import org.apache.flink.table.runtime.operators.python.aggregate.arrow.AbstractArrowPythonAggregateFunctionOperator;
 import org.apache.flink.table.runtime.operators.window.TimeWindow;
 import org.apache.flink.table.runtime.operators.window.Window;
-import org.apache.flink.table.runtime.operators.window.assigners.WindowAssigner;
-import org.apache.flink.table.runtime.operators.window.internal.InternalWindowProcessFunction;
-import org.apache.flink.table.runtime.operators.window.triggers.Trigger;
+import org.apache.flink.table.runtime.operators.window.groupwindow.assigners.GroupWindowAssigner;
+import org.apache.flink.table.runtime.operators.window.groupwindow.internal.InternalWindowProcessFunction;
+import org.apache.flink.table.runtime.operators.window.groupwindow.triggers.Trigger;
 import org.apache.flink.table.runtime.typeutils.RowDataSerializer;
 import org.apache.flink.table.types.logical.RowType;
 import org.apache.flink.types.RowKind;
@@ -80,8 +81,8 @@ public class StreamArrowPythonGroupWindowAggregateFunctionOperator<K, W extends 
     /** The row time index of the input data. */
     private final int inputTimeFieldIndex;
 
-    /** A {@link WindowAssigner} assigns zero or more {@link Window Windows} to an element. */
-    private final WindowAssigner<W> windowAssigner;
+    /** A {@link GroupWindowAssigner} assigns zero or more {@link Window Windows} to an element. */
+    private final GroupWindowAssigner<W> windowAssigner;
 
     /**
      * A {@link Trigger} determines when a pane of a window should be evaluated to emit the results
@@ -147,7 +148,7 @@ public class StreamArrowPythonGroupWindowAggregateFunctionOperator<K, W extends 
             RowType udfInputType,
             RowType udfOutputType,
             int inputTimeFieldIndex,
-            WindowAssigner<W> windowAssigner,
+            GroupWindowAssigner<W> windowAssigner,
             Trigger<W> trigger,
             long allowedLateness,
             NamedWindowProperty[] namedProperties,
@@ -240,9 +241,9 @@ public class StreamArrowPythonGroupWindowAggregateFunctionOperator<K, W extends 
 
     @Override
     @SuppressWarnings("ConstantConditions")
-    public void emitResult(Tuple2<byte[], Integer> resultTuple) throws Exception {
-        byte[] udafResult = resultTuple.f0;
-        int length = resultTuple.f1;
+    public void emitResult(Tuple3<String, byte[], Integer> resultTuple) throws Exception {
+        byte[] udafResult = resultTuple.f1;
+        int length = resultTuple.f2;
         bais.setBuffer(udafResult, 0, length);
         int rowCount = arrowSerializer.load();
         for (int i = 0; i < rowCount; i++) {

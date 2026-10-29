@@ -20,8 +20,8 @@ package org.apache.flink.table.planner.functions.casting;
 
 import org.apache.flink.table.data.ArrayData;
 import org.apache.flink.table.data.GenericArrayData;
+import org.apache.flink.table.planner.codegen.CodeGenUtils;
 import org.apache.flink.table.types.logical.ArrayType;
-import org.apache.flink.table.types.logical.DistinctType;
 import org.apache.flink.table.types.logical.LogicalType;
 import org.apache.flink.table.types.logical.LogicalTypeRoot;
 
@@ -55,7 +55,6 @@ class ArrayToArrayCastRule extends AbstractNullAwareCodeGeneratorCastRule<ArrayD
         return CastRuleProvider.resolve(innerInputType, innerTargetType) != null;
     }
 
-    @SuppressWarnings("rawtypes")
     @Override
     protected String generateCodeBlockInternal(
             CodeGeneratorCastRule.Context context,
@@ -67,16 +66,17 @@ class ArrayToArrayCastRule extends AbstractNullAwareCodeGeneratorCastRule<ArrayD
         final LogicalType innerTargetType = ((ArrayType) targetLogicalType).getElementType();
 
         final String innerTargetTypeTerm = arrayElementType(innerTargetType);
-        final String arraySize = methodCall(inputTerm, "size");
-        final String objArrayTerm = newName("objArray");
+        final String arraySizeTerm = newName(context.getCodeGeneratorContext(), "arraySize");
+        final String objArrayTerm = newName(context.getCodeGeneratorContext(), "objArray");
 
         return new CastRuleUtils.CodeWriter()
+                .declStmt(int.class, arraySizeTerm, methodCall(inputTerm, "size"))
                 .declStmt(
                         innerTargetTypeTerm + "[]",
                         objArrayTerm,
-                        newArray(innerTargetTypeTerm, arraySize))
+                        newArray(innerTargetTypeTerm, arraySizeTerm))
                 .forStmt(
-                        arraySize,
+                        arraySizeTerm,
                         (index, loopWriter) -> {
                             CastCodeBlock codeBlock =
                                     // Null check is done at the array access level
@@ -97,42 +97,29 @@ class ArrayToArrayCastRule extends AbstractNullAwareCodeGeneratorCastRule<ArrayD
                                                                 index,
                                                                 codeBlock.getReturnTerm()));
                             } else {
-                                loopWriter
-                                        .append(codeBlock)
-                                        .assignArrayStmt(
-                                                objArrayTerm, index, codeBlock.getReturnTerm());
+                                loopWriter.ifStmt(
+                                        "!" + methodCall(inputTerm, "isNullAt", index),
+                                        thenWriter ->
+                                                thenWriter
+                                                        .append(codeBlock)
+                                                        .assignArrayStmt(
+                                                                objArrayTerm,
+                                                                index,
+                                                                codeBlock.getReturnTerm()),
+                                        elseWriter ->
+                                                elseWriter.throwStmt(
+                                                        "new org.apache.flink.table.api.TableRuntimeException(\"Target is not nullable but a NULL was found.\")"));
                             }
-                        })
+                        },
+                        context.getCodeGeneratorContext())
                 .assignStmt(returnVariable, constructorCall(GenericArrayData.class, objArrayTerm))
                 .toString();
     }
 
     private static String arrayElementType(LogicalType t) {
         if (t.isNullable()) {
-            return "Object";
+            return CodeGenUtils.boxedTypeTermForType(t);
         }
-        switch (t.getTypeRoot()) {
-            case BOOLEAN:
-                return "boolean";
-            case TINYINT:
-                return "byte";
-            case SMALLINT:
-                return "short";
-            case INTEGER:
-            case DATE:
-            case TIME_WITHOUT_TIME_ZONE:
-            case INTERVAL_YEAR_MONTH:
-                return "int";
-            case BIGINT:
-            case INTERVAL_DAY_TIME:
-                return "long";
-            case FLOAT:
-                return "float";
-            case DOUBLE:
-                return "double";
-            case DISTINCT_TYPE:
-                return arrayElementType(((DistinctType) t).getSourceType());
-        }
-        return "Object";
+        return CodeGenUtils.primitiveTypeTermForType(t);
     }
 }

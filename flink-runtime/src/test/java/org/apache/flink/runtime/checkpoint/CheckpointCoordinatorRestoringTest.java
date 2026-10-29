@@ -20,6 +20,7 @@ package org.apache.flink.runtime.checkpoint;
 
 import org.apache.flink.api.common.JobStatus;
 import org.apache.flink.api.java.tuple.Tuple2;
+import org.apache.flink.core.execution.RecoveryClaimMode;
 import org.apache.flink.core.execution.SavepointFormatType;
 import org.apache.flink.runtime.OperatorIDPair;
 import org.apache.flink.runtime.checkpoint.CheckpointCoordinatorTestingUtils.CheckpointCoordinatorBuilder;
@@ -39,18 +40,19 @@ import org.apache.flink.runtime.state.OperatorStateHandle;
 import org.apache.flink.runtime.state.SharedStateRegistry;
 import org.apache.flink.runtime.state.testutils.TestCompletedCheckpointStorageLocation;
 import org.apache.flink.runtime.testutils.CommonTestUtils;
+import org.apache.flink.testutils.TestingUtils;
+import org.apache.flink.testutils.executor.TestExecutorExtension;
+import org.apache.flink.testutils.junit.utils.TempDirUtils;
 import org.apache.flink.types.BooleanValue;
-import org.apache.flink.util.TestLogger;
 import org.apache.flink.util.concurrent.Executors;
 import org.apache.flink.util.concurrent.ManuallyTriggeredScheduledExecutor;
 
-import org.apache.flink.shaded.guava30.com.google.common.collect.Iterables;
+import org.apache.flink.shaded.guava33.com.google.common.collect.Iterables;
 
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.TemporaryFolder;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.RegisterExtension;
+import org.junit.jupiter.api.io.TempDir;
 
 import java.io.File;
 import java.util.ArrayList;
@@ -65,6 +67,7 @@ import java.util.Objects;
 import java.util.Random;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -79,10 +82,8 @@ import static org.apache.flink.runtime.checkpoint.CheckpointCoordinatorTestingUt
 import static org.apache.flink.runtime.checkpoint.CheckpointCoordinatorTestingUtils.verifyStateRestore;
 import static org.apache.flink.runtime.checkpoint.StateHandleDummyUtil.createNewInputChannelStateHandle;
 import static org.apache.flink.runtime.checkpoint.StateHandleDummyUtil.createNewResultSubpartitionStateHandle;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.times;
@@ -90,7 +91,11 @@ import static org.mockito.Mockito.verify;
 
 /** Tests for restoring checkpoint. */
 @SuppressWarnings("checkstyle:EmptyLineSeparator")
-public class CheckpointCoordinatorRestoringTest extends TestLogger {
+class CheckpointCoordinatorRestoringTest {
+
+    @RegisterExtension
+    static final TestExecutorExtension<ScheduledExecutorService> EXECUTOR_RESOURCE =
+            TestingUtils.defaultExecutorExtension();
 
     private static final String TASK_MANAGER_LOCATION_INFO = "Unknown location";
 
@@ -136,7 +141,7 @@ public class CheckpointCoordinatorRestoringTest extends TestLogger {
             builder.addJobVertex(
                     vertex.getId(), vertex.getParallelism(), vertex.getMaxParallelism());
         }
-        return builder.build();
+        return builder.build(EXECUTOR_RESOURCE.getExecutor());
     }
 
     private static class TestingVertex {
@@ -166,10 +171,10 @@ public class CheckpointCoordinatorRestoringTest extends TestLogger {
 
     private ManuallyTriggeredScheduledExecutor manuallyTriggeredScheduledExecutor;
 
-    @Rule public TemporaryFolder tmpFolder = new TemporaryFolder();
+    @TempDir private java.nio.file.Path tmpFolder;
 
-    @Before
-    public void setUp() throws Exception {
+    @BeforeEach
+    void setUp() throws Exception {
         manuallyTriggeredScheduledExecutor = new ManuallyTriggeredScheduledExecutor();
     }
 
@@ -178,7 +183,7 @@ public class CheckpointCoordinatorRestoringTest extends TestLogger {
      * {@link Execution} upon recovery.
      */
     @Test
-    public void testRestoreLatestCheckpointedState() throws Exception {
+    void testRestoreLatestCheckpointedState() throws Exception {
         final List<TestingVertex> vertices =
                 Arrays.asList(
                         new TestingVertex(new JobVertexID(), 3, 42),
@@ -197,17 +202,16 @@ public class CheckpointCoordinatorRestoringTest extends TestLogger {
         // set up the coordinator and validate the initial state
         final CheckpointCoordinator coordinator =
                 new CheckpointCoordinatorBuilder()
-                        .setExecutionGraph(executionGraph)
                         .setTimer(manuallyTriggeredScheduledExecutor)
                         .setCompletedCheckpointStore(store)
-                        .build();
+                        .build(executionGraph);
 
         // trigger the checkpoint
         coordinator.triggerCheckpoint(false);
         manuallyTriggeredScheduledExecutor.triggerAll();
 
         // we should have a single pending checkpoint
-        assertEquals(1, coordinator.getPendingCheckpoints().size());
+        assertThat(coordinator.getPendingCheckpoints().size()).isOne();
         final long checkpointId =
                 Iterables.getOnlyElement(coordinator.getPendingCheckpoints().keySet());
 
@@ -220,7 +224,7 @@ public class CheckpointCoordinatorRestoringTest extends TestLogger {
 
         final List<CompletedCheckpoint> completedCheckpoints =
                 coordinator.getSuccessfulCheckpoints();
-        assertEquals(1, completedCheckpoints.size());
+        assertThat(completedCheckpoints.size()).isOne();
 
         // shutdown the store
         store.shutdown(JobStatus.SUSPENDED, new CheckpointsCleaner());
@@ -234,22 +238,24 @@ public class CheckpointCoordinatorRestoringTest extends TestLogger {
         final ExecutionGraph executionGraph = createExecutionGraph(vertices);
         final EmbeddedCompletedCheckpointStore store =
                 new EmbeddedCompletedCheckpointStore(
-                        completedCheckpoints.size(), completedCheckpoints);
+                        completedCheckpoints.size(),
+                        completedCheckpoints,
+                        RecoveryClaimMode.DEFAULT);
 
         // set up the coordinator and validate the initial state
         final CheckpointCoordinator coordinator =
                 new CheckpointCoordinatorBuilder()
-                        .setExecutionGraph(executionGraph)
                         .setTimer(manuallyTriggeredScheduledExecutor)
                         .setCompletedCheckpointStore(store)
-                        .build();
+                        .build(executionGraph);
 
         final Set<ExecutionJobVertex> executionVertices =
                 vertices.stream()
                         .map(TestingVertex::getId)
                         .map(executionGraph::getJobVertex)
                         .collect(Collectors.toSet());
-        assertTrue(coordinator.restoreLatestCheckpointedStateToAll(executionVertices, false));
+        assertThat(coordinator.restoreLatestCheckpointedStateToAll(executionVertices, false))
+                .isTrue();
 
         // validate that all shared states are registered again after the recovery.
         for (CompletedCheckpoint completedCheckpoint : completedCheckpoints) {
@@ -270,12 +276,12 @@ public class CheckpointCoordinatorRestoringTest extends TestLogger {
     }
 
     @Test
-    public void testRestoreLatestCheckpointedStateScaleIn() throws Exception {
+    void testRestoreLatestCheckpointedStateScaleIn() throws Exception {
         testRestoreLatestCheckpointedStateWithChangingParallelism(false);
     }
 
     @Test
-    public void testRestoreLatestCheckpointedStateScaleOut() throws Exception {
+    void testRestoreLatestCheckpointedStateScaleOut() throws Exception {
         testRestoreLatestCheckpointedStateWithChangingParallelism(true);
     }
 
@@ -301,7 +307,7 @@ public class CheckpointCoordinatorRestoringTest extends TestLogger {
                 new CheckpointCoordinatorTestingUtils.CheckpointExecutionGraphBuilder()
                         .addJobVertex(jobVertexID1, parallelism1, maxParallelism1)
                         .addJobVertex(jobVertexID2, parallelism2, maxParallelism2)
-                        .build();
+                        .build(EXECUTOR_RESOURCE.getExecutor());
 
         final ExecutionJobVertex jobVertex1 = graph.getJobVertex(jobVertexID1);
         final ExecutionJobVertex jobVertex2 = graph.getJobVertex(jobVertexID2);
@@ -309,16 +315,15 @@ public class CheckpointCoordinatorRestoringTest extends TestLogger {
         // set up the coordinator and validate the initial state
         CheckpointCoordinator coord =
                 new CheckpointCoordinatorBuilder()
-                        .setExecutionGraph(graph)
                         .setCompletedCheckpointStore(completedCheckpointStore)
                         .setTimer(manuallyTriggeredScheduledExecutor)
-                        .build();
+                        .build(graph);
 
         // trigger the checkpoint
         coord.triggerCheckpoint(false);
         manuallyTriggeredScheduledExecutor.triggerAll();
 
-        assertEquals(1, coord.getPendingCheckpoints().size());
+        assertThat(coord.getPendingCheckpoints().size()).isOne();
         long checkpointId = Iterables.getOnlyElement(coord.getPendingCheckpoints().keySet());
 
         List<KeyGroupRange> keyGroupPartitions1 =
@@ -405,7 +410,7 @@ public class CheckpointCoordinatorRestoringTest extends TestLogger {
 
         List<CompletedCheckpoint> completedCheckpoints = coord.getSuccessfulCheckpoints();
 
-        assertEquals(1, completedCheckpoints.size());
+        assertThat(completedCheckpoints.size()).isOne();
 
         List<KeyGroupRange> newKeyGroupPartitions2 =
                 StateAssignmentOperation.createKeyGroupPartitions(maxParallelism2, newParallelism2);
@@ -415,7 +420,7 @@ public class CheckpointCoordinatorRestoringTest extends TestLogger {
                 new CheckpointCoordinatorTestingUtils.CheckpointExecutionGraphBuilder()
                         .addJobVertex(jobVertexID1, parallelism1, maxParallelism1)
                         .addJobVertex(jobVertexID2, newParallelism2, maxParallelism2)
-                        .build();
+                        .build(EXECUTOR_RESOURCE.getExecutor());
 
         final ExecutionJobVertex newJobVertex1 = newGraph.getJobVertex(jobVertexID1);
         final ExecutionJobVertex newJobVertex2 = newGraph.getJobVertex(jobVertexID2);
@@ -423,15 +428,14 @@ public class CheckpointCoordinatorRestoringTest extends TestLogger {
         // set up the coordinator and validate the initial state
         CheckpointCoordinator newCoord =
                 new CheckpointCoordinatorBuilder()
-                        .setExecutionGraph(newGraph)
                         .setCompletedCheckpointStore(completedCheckpointStore)
                         .setTimer(manuallyTriggeredScheduledExecutor)
-                        .build();
+                        .build(newGraph);
 
         Set<ExecutionJobVertex> tasks = new HashSet<>();
         tasks.add(newJobVertex1);
         tasks.add(newJobVertex2);
-        assertTrue(newCoord.restoreLatestCheckpointedStateToAll(tasks, false));
+        assertThat(newCoord.restoreLatestCheckpointedStateToAll(tasks, false)).isTrue();
 
         // verify the restored state
         verifyStateRestore(jobVertexID1, newJobVertex1, keyGroupPartitions1);
@@ -453,7 +457,7 @@ public class CheckpointCoordinatorRestoringTest extends TestLogger {
                             .getTaskVertices()[i]
                             .getCurrentExecutionAttempt()
                             .getTaskRestore();
-            Assert.assertEquals(1L, taskRestore.getRestoreCheckpointId());
+            assertThat(taskRestore.getRestoreCheckpointId()).isOne();
             TaskStateSnapshot taskStateHandles = taskRestore.getTaskStateSnapshot();
 
             final int headOpIndex = operatorIDs.size() - 1;
@@ -491,8 +495,9 @@ public class CheckpointCoordinatorRestoringTest extends TestLogger {
      *
      * @throws Exception
      */
-    @Test(expected = IllegalStateException.class)
-    public void testRestoreLatestCheckpointFailureWhenMaxParallelismChanges() throws Exception {
+    //    @Test(expected = IllegalStateException.class)
+    @Test
+    void testRestoreLatestCheckpointFailureWhenMaxParallelismChanges() throws Exception {
         final JobVertexID jobVertexID1 = new JobVertexID();
         final JobVertexID jobVertexID2 = new JobVertexID();
         int parallelism1 = 3;
@@ -506,23 +511,22 @@ public class CheckpointCoordinatorRestoringTest extends TestLogger {
                 new CheckpointCoordinatorTestingUtils.CheckpointExecutionGraphBuilder()
                         .addJobVertex(jobVertexID1, parallelism1, maxParallelism1)
                         .addJobVertex(jobVertexID2, parallelism2, maxParallelism2)
-                        .build();
+                        .build(EXECUTOR_RESOURCE.getExecutor());
         ExecutionJobVertex jobVertex1 = graph.getJobVertex(jobVertexID1);
         ExecutionJobVertex jobVertex2 = graph.getJobVertex(jobVertexID2);
 
         // set up the coordinator and validate the initial state
         CheckpointCoordinator coord =
                 new CheckpointCoordinatorBuilder()
-                        .setExecutionGraph(graph)
                         .setCompletedCheckpointStore(completedCheckpointStore)
                         .setTimer(manuallyTriggeredScheduledExecutor)
-                        .build();
+                        .build(graph);
 
         // trigger the checkpoint
         coord.triggerCheckpoint(false);
         manuallyTriggeredScheduledExecutor.triggerAll();
 
-        assertEquals(1, coord.getPendingCheckpoints().size());
+        assertThat(coord.getPendingCheckpoints().size()).isOne();
         long checkpointId = Iterables.getOnlyElement(coord.getPendingCheckpoints().keySet());
 
         List<KeyGroupRange> keyGroupPartitions1 =
@@ -576,7 +580,7 @@ public class CheckpointCoordinatorRestoringTest extends TestLogger {
 
         List<CompletedCheckpoint> completedCheckpoints = coord.getSuccessfulCheckpoints();
 
-        assertEquals(1, completedCheckpoints.size());
+        assertThat(completedCheckpoints.size()).isOne();
 
         int newMaxParallelism1 = 20;
         int newMaxParallelism2 = 42;
@@ -585,7 +589,7 @@ public class CheckpointCoordinatorRestoringTest extends TestLogger {
                 new CheckpointCoordinatorTestingUtils.CheckpointExecutionGraphBuilder()
                         .addJobVertex(jobVertexID1, parallelism1, newMaxParallelism1)
                         .addJobVertex(jobVertexID2, parallelism2, newMaxParallelism2)
-                        .build();
+                        .build(EXECUTOR_RESOURCE.getExecutor());
 
         ExecutionJobVertex newJobVertex1 = newGraph.getJobVertex(jobVertexID1);
         ExecutionJobVertex newJobVertex2 = newGraph.getJobVertex(jobVertexID2);
@@ -593,31 +597,30 @@ public class CheckpointCoordinatorRestoringTest extends TestLogger {
         // set up the coordinator and validate the initial state
         CheckpointCoordinator newCoord =
                 new CheckpointCoordinatorBuilder()
-                        .setExecutionGraph(newGraph)
                         .setCompletedCheckpointStore(completedCheckpointStore)
                         .setTimer(manuallyTriggeredScheduledExecutor)
-                        .build();
+                        .build(newGraph);
 
         Set<ExecutionJobVertex> tasks = new HashSet<>();
         tasks.add(newJobVertex1);
         tasks.add(newJobVertex2);
-        assertTrue(newCoord.restoreLatestCheckpointedStateToAll(tasks, false));
-
-        fail("The restoration should have failed because the max parallelism changed.");
+        assertThatThrownBy(() -> newCoord.restoreLatestCheckpointedStateToAll(tasks, false))
+                .as("The restoration should have failed because the max parallelism changed.")
+                .isInstanceOf(IllegalStateException.class);
     }
 
     @Test
-    public void testStateRecoveryWhenTopologyChangeOut() throws Exception {
+    void testStateRecoveryWhenTopologyChangeOut() throws Exception {
         testStateRecoveryWithTopologyChange(TestScaleType.INCREASE_PARALLELISM);
     }
 
     @Test
-    public void testStateRecoveryWhenTopologyChangeIn() throws Exception {
+    void testStateRecoveryWhenTopologyChangeIn() throws Exception {
         testStateRecoveryWithTopologyChange(TestScaleType.DECREASE_PARALLELISM);
     }
 
     @Test
-    public void testStateRecoveryWhenTopologyChange() throws Exception {
+    void testStateRecoveryWhenTopologyChange() throws Exception {
         testStateRecoveryWithTopologyChange(TestScaleType.SAME_PARALLELISM);
     }
 
@@ -658,7 +661,8 @@ public class CheckpointCoordinatorRestoringTest extends TestLogger {
 
         // prepare vertex1 state
         for (Tuple2<JobVertexID, OperatorID> id : Arrays.asList(id1, id2)) {
-            OperatorState taskState = new OperatorState(id.f1, parallelism1, maxParallelism1);
+            OperatorState taskState =
+                    new OperatorState(null, null, id.f1, parallelism1, maxParallelism1);
             operatorStates.put(id.f1, taskState);
             for (int index = 0; index < taskState.getParallelism(); index++) {
                 OperatorSubtaskState subtaskState =
@@ -678,7 +682,8 @@ public class CheckpointCoordinatorRestoringTest extends TestLogger {
                 new ArrayList<>();
         // prepare vertex2 state
         for (Tuple2<JobVertexID, OperatorID> id : Arrays.asList(id3, id4)) {
-            OperatorState operatorState = new OperatorState(id.f1, parallelism2, maxParallelism2);
+            OperatorState operatorState =
+                    new OperatorState(null, null, id.f1, parallelism2, maxParallelism2);
             operatorStates.put(id.f1, operatorState);
             List<ChainedStateHandle<OperatorStateHandle>> expectedManagedOperatorState =
                     new ArrayList<>();
@@ -753,7 +758,7 @@ public class CheckpointCoordinatorRestoringTest extends TestLogger {
                                         .map(OperatorIDPair::generatedIDOnly)
                                         .collect(Collectors.toList()),
                                 true)
-                        .build();
+                        .build(EXECUTOR_RESOURCE.getExecutor());
 
         ExecutionJobVertex newJobVertex1 = newGraph.getJobVertex(id5.f0);
         ExecutionJobVertex newJobVertex2 = newGraph.getJobVertex(id3.f0);
@@ -778,14 +783,14 @@ public class CheckpointCoordinatorRestoringTest extends TestLogger {
 
         // set up the coordinator and validate the initial state
         SharedStateRegistry sharedStateRegistry =
-                SharedStateRegistry.DEFAULT_FACTORY.create(Executors.directExecutor(), emptyList());
+                SharedStateRegistry.DEFAULT_FACTORY.create(
+                        Executors.directExecutor(), emptyList(), RecoveryClaimMode.DEFAULT);
         CheckpointCoordinator coord =
                 new CheckpointCoordinatorBuilder()
-                        .setExecutionGraph(newGraph)
                         .setCompletedCheckpointStore(
                                 storeFor(sharedStateRegistry, () -> {}, completedCheckpoint))
                         .setTimer(manuallyTriggeredScheduledExecutor)
-                        .build();
+                        .build(newGraph);
 
         coord.restoreLatestCheckpointedStateToAll(tasks, true);
 
@@ -798,14 +803,14 @@ public class CheckpointCoordinatorRestoringTest extends TestLogger {
                             .getTaskVertices()[i]
                             .getCurrentExecutionAttempt()
                             .getTaskRestore();
-            Assert.assertEquals(2L, taskRestore.getRestoreCheckpointId());
+            assertThat(taskRestore.getRestoreCheckpointId()).isEqualTo(2L);
             TaskStateSnapshot stateSnapshot = taskRestore.getTaskStateSnapshot();
 
             OperatorSubtaskState headOpState =
                     stateSnapshot.getSubtaskStateByOperatorID(
                             operatorIDs.get(operatorIDs.size() - 1).getGeneratedOperatorID());
-            assertTrue(headOpState.getManagedKeyedState().isEmpty());
-            assertTrue(headOpState.getRawKeyedState().isEmpty());
+            assertThat(headOpState.getManagedKeyedState()).isEmpty();
+            assertThat(headOpState.getRawKeyedState()).isEmpty();
 
             // operator5
             {
@@ -814,8 +819,8 @@ public class CheckpointCoordinatorRestoringTest extends TestLogger {
                         stateSnapshot.getSubtaskStateByOperatorID(
                                 operatorIDs.get(operatorIndexInChain).getGeneratedOperatorID());
 
-                assertTrue(opState.getManagedOperatorState().isEmpty());
-                assertTrue(opState.getRawOperatorState().isEmpty());
+                assertThat(opState.getManagedOperatorState()).isEmpty();
+                assertThat(opState.getRawOperatorState()).isEmpty();
             }
             // operator1
             {
@@ -831,18 +836,20 @@ public class CheckpointCoordinatorRestoringTest extends TestLogger {
 
                 Collection<OperatorStateHandle> managedOperatorState =
                         opState.getManagedOperatorState();
-                assertEquals(1, managedOperatorState.size());
-                assertTrue(
-                        CommonTestUtils.isStreamContentEqual(
-                                expectedManagedOpState.openInputStream(),
-                                managedOperatorState.iterator().next().openInputStream()));
+                assertThat(managedOperatorState.size()).isOne();
+                assertThat(
+                                CommonTestUtils.isStreamContentEqual(
+                                        expectedManagedOpState.openInputStream(),
+                                        managedOperatorState.iterator().next().openInputStream()))
+                        .isTrue();
 
                 Collection<OperatorStateHandle> rawOperatorState = opState.getRawOperatorState();
-                assertEquals(1, rawOperatorState.size());
-                assertTrue(
-                        CommonTestUtils.isStreamContentEqual(
-                                expectedRawOpState.openInputStream(),
-                                rawOperatorState.iterator().next().openInputStream()));
+                assertThat(rawOperatorState.size()).isOne();
+                assertThat(
+                                CommonTestUtils.isStreamContentEqual(
+                                        expectedRawOpState.openInputStream(),
+                                        rawOperatorState.iterator().next().openInputStream()))
+                        .isTrue();
             }
             // operator2
             {
@@ -858,18 +865,20 @@ public class CheckpointCoordinatorRestoringTest extends TestLogger {
 
                 Collection<OperatorStateHandle> managedOperatorState =
                         opState.getManagedOperatorState();
-                assertEquals(1, managedOperatorState.size());
-                assertTrue(
-                        CommonTestUtils.isStreamContentEqual(
-                                expectedManagedOpState.openInputStream(),
-                                managedOperatorState.iterator().next().openInputStream()));
+                assertThat(managedOperatorState.size()).isOne();
+                assertThat(
+                                CommonTestUtils.isStreamContentEqual(
+                                        expectedManagedOpState.openInputStream(),
+                                        managedOperatorState.iterator().next().openInputStream()))
+                        .isTrue();
 
                 Collection<OperatorStateHandle> rawOperatorState = opState.getRawOperatorState();
-                assertEquals(1, rawOperatorState.size());
-                assertTrue(
-                        CommonTestUtils.isStreamContentEqual(
-                                expectedRawOpState.openInputStream(),
-                                rawOperatorState.iterator().next().openInputStream()));
+                assertThat(rawOperatorState.size()).isOne();
+                assertThat(
+                                CommonTestUtils.isStreamContentEqual(
+                                        expectedRawOpState.openInputStream(),
+                                        rawOperatorState.iterator().next().openInputStream()))
+                        .isTrue();
             }
         }
 
@@ -887,7 +896,7 @@ public class CheckpointCoordinatorRestoringTest extends TestLogger {
                             .getTaskVertices()[i]
                             .getCurrentExecutionAttempt()
                             .getTaskRestore();
-            Assert.assertEquals(2L, taskRestore.getRestoreCheckpointId());
+            assertThat(taskRestore.getRestoreCheckpointId()).isEqualTo(2L);
             TaskStateSnapshot stateSnapshot = taskRestore.getTaskStateSnapshot();
 
             // operator 3
@@ -915,8 +924,8 @@ public class CheckpointCoordinatorRestoringTest extends TestLogger {
                 OperatorSubtaskState opState =
                         stateSnapshot.getSubtaskStateByOperatorID(
                                 operatorIDs.get(operatorIndexInChain).getGeneratedOperatorID());
-                assertTrue(opState.getManagedOperatorState().isEmpty());
-                assertTrue(opState.getRawOperatorState().isEmpty());
+                assertThat(opState.getManagedOperatorState()).isEmpty();
+                assertThat(opState.getRawOperatorState()).isEmpty();
             }
 
             KeyGroupsStateHandle originalKeyedStateBackend =
@@ -956,7 +965,7 @@ public class CheckpointCoordinatorRestoringTest extends TestLogger {
     }
 
     @Test
-    public void testRestoreLatestCheckpointedStateWithoutInFlightData() throws Exception {
+    void testRestoreLatestCheckpointedStateWithoutInFlightData() throws Exception {
         // given: Operator with not empty states.
         final JobVertexID jobVertexID = new JobVertexID();
         int parallelism1 = 3;
@@ -967,27 +976,26 @@ public class CheckpointCoordinatorRestoringTest extends TestLogger {
         final ExecutionGraph graph =
                 new CheckpointCoordinatorTestingUtils.CheckpointExecutionGraphBuilder()
                         .addJobVertex(jobVertexID, parallelism1, maxParallelism1)
-                        .build();
+                        .build(EXECUTOR_RESOURCE.getExecutor());
 
         final ExecutionJobVertex jobVertex = graph.getJobVertex(jobVertexID);
 
         // set up the coordinator and validate the initial state
         CheckpointCoordinator coord =
                 new CheckpointCoordinatorBuilder()
-                        .setExecutionGraph(graph)
                         .setCompletedCheckpointStore(completedCheckpointStore)
                         .setCheckpointCoordinatorConfiguration(
                                 new CheckpointCoordinatorConfigurationBuilder()
                                         .setCheckpointIdOfIgnoredInFlightData(1)
                                         .build())
                         .setTimer(manuallyTriggeredScheduledExecutor)
-                        .build();
+                        .build(graph);
 
         // trigger the checkpoint
         coord.triggerCheckpoint(false);
         manuallyTriggeredScheduledExecutor.triggerAll();
 
-        assertEquals(1, coord.getPendingCheckpoints().size());
+        assertThat(coord.getPendingCheckpoints().size()).isOne();
         long checkpointId = Iterables.getOnlyElement(coord.getPendingCheckpoints().keySet());
 
         List<KeyGroupRange> keyGroupPartitions1 =
@@ -1035,12 +1043,12 @@ public class CheckpointCoordinatorRestoringTest extends TestLogger {
             coord.receiveAcknowledgeMessage(acknowledgeCheckpoint, TASK_MANAGER_LOCATION_INFO);
         }
 
-        assertEquals(1, coord.getSuccessfulCheckpoints().size());
+        assertThat(coord.getSuccessfulCheckpoints().size()).isOne();
 
         // when: Restore latest checkpoint without in-flight data.
         Set<ExecutionJobVertex> tasks = new HashSet<>();
         tasks.add(jobVertex);
-        assertTrue(coord.restoreLatestCheckpointedStateToAll(tasks, false));
+        assertThat(coord.restoreLatestCheckpointedStateToAll(tasks, false)).isTrue();
 
         // then: All states should be restored successfully except InputChannel and
         // ResultSubpartition which should be ignored.
@@ -1048,38 +1056,38 @@ public class CheckpointCoordinatorRestoringTest extends TestLogger {
         for (int i = 0; i < jobVertex.getParallelism(); i++) {
             JobManagerTaskRestore taskRestore =
                     jobVertex.getTaskVertices()[i].getCurrentExecutionAttempt().getTaskRestore();
-            Assert.assertEquals(1L, taskRestore.getRestoreCheckpointId());
+            assertThat(taskRestore.getRestoreCheckpointId()).isOne();
             TaskStateSnapshot stateSnapshot = taskRestore.getTaskStateSnapshot();
 
             OperatorSubtaskState operatorState =
                     stateSnapshot.getSubtaskStateByOperatorID(
                             OperatorID.fromJobVertexID(jobVertexID));
 
-            assertTrue(operatorState.getInputChannelState().isEmpty());
-            assertTrue(operatorState.getResultSubpartitionState().isEmpty());
+            assertThat(operatorState.getInputChannelState()).isEmpty();
+            assertThat(operatorState.getResultSubpartitionState()).isEmpty();
 
-            assertFalse(operatorState.getRawOperatorState().isEmpty());
-            assertFalse(operatorState.getManagedOperatorState().isEmpty());
-            assertFalse(operatorState.getRawKeyedState().isEmpty());
-            assertFalse(operatorState.getManagedOperatorState().isEmpty());
+            assertThat(operatorState.getRawOperatorState()).isNotEmpty();
+            assertThat(operatorState.getManagedOperatorState()).isNotEmpty();
+            assertThat(operatorState.getRawKeyedState()).isNotEmpty();
+            assertThat(operatorState.getManagedOperatorState()).isNotEmpty();
         }
     }
 
     @Test
-    public void testRestoreFinishedStateWithoutInFlightData() throws Exception {
+    void testRestoreFinishedStateWithoutInFlightData() throws Exception {
         // given: Operator with not empty states.
         OperatorIDPair op1 = OperatorIDPair.generatedIDOnly(new OperatorID());
         final JobVertexID jobVertexID = new JobVertexID();
         ExecutionGraph graph =
                 new CheckpointCoordinatorTestingUtils.CheckpointExecutionGraphBuilder()
                         .addJobVertex(jobVertexID, 1, 1, singletonList(op1), true)
-                        .build();
+                        .build(EXECUTOR_RESOURCE.getExecutor());
 
         CompletedCheckpointStore completedCheckpointStore = new EmbeddedCompletedCheckpointStore();
         Map<OperatorID, OperatorState> operatorStates = new HashMap<>();
         operatorStates.put(
                 op1.getGeneratedOperatorID(),
-                new FullyFinishedOperatorState(op1.getGeneratedOperatorID(), 1, 1));
+                new FullyFinishedOperatorState(null, null, op1.getGeneratedOperatorID(), 1, 1));
         CompletedCheckpoint completedCheckpoint =
                 new CompletedCheckpoint(
                         graph.getJobID(),
@@ -1097,31 +1105,30 @@ public class CheckpointCoordinatorRestoringTest extends TestLogger {
 
         CheckpointCoordinator coord =
                 new CheckpointCoordinatorBuilder()
-                        .setExecutionGraph(graph)
                         .setCheckpointCoordinatorConfiguration(
                                 new CheckpointCoordinatorConfigurationBuilder()
                                         .setCheckpointIdOfIgnoredInFlightData(2)
                                         .build())
                         .setCompletedCheckpointStore(completedCheckpointStore)
-                        .build();
+                        .build(graph);
 
         ExecutionJobVertex vertex = graph.getJobVertex(jobVertexID);
-        coord.restoreInitialCheckpointIfPresent(Collections.singleton(vertex));
+        coord.restoreInitialCheckpointIfPresent(Collections.singleton(vertex), false);
         TaskStateSnapshot restoredState =
                 vertex.getTaskVertices()[0]
                         .getCurrentExecutionAttempt()
                         .getTaskRestore()
                         .getTaskStateSnapshot();
-        assertTrue(restoredState.isTaskDeployedAsFinished());
+        assertThat(restoredState.isTaskDeployedAsFinished()).isTrue();
     }
 
     @Test
-    public void testJobGraphModificationsAreCheckedForInitialCheckpoint() throws Exception {
+    void testJobGraphModificationsAreCheckedForInitialCheckpoint() throws Exception {
         final JobVertexID jobVertexID = new JobVertexID();
         ExecutionGraph graph =
                 new CheckpointCoordinatorTestingUtils.CheckpointExecutionGraphBuilder()
                         .addJobVertex(jobVertexID, 1, 1)
-                        .build();
+                        .build(EXECUTOR_RESOURCE.getExecutor());
         CompletedCheckpointStore completedCheckpointStore = new EmbeddedCompletedCheckpointStore();
         CompletedCheckpoint completedCheckpoint =
                 new CompletedCheckpoint(
@@ -1141,7 +1148,6 @@ public class CheckpointCoordinatorRestoringTest extends TestLogger {
         BooleanValue checked = new BooleanValue(false);
         CheckpointCoordinator restoreCoordinator =
                 new CheckpointCoordinatorBuilder()
-                        .setExecutionGraph(graph)
                         .setCompletedCheckpointStore(completedCheckpointStore)
                         .setVertexFinishedStateCheckerFactory(
                                 (vertices, states) ->
@@ -1151,27 +1157,86 @@ public class CheckpointCoordinatorRestoringTest extends TestLogger {
                                                 checked.set(true);
                                             }
                                         })
-                        .build();
+                        .build(graph);
         restoreCoordinator.restoreInitialCheckpointIfPresent(
-                new HashSet<>(graph.getAllVertices().values()));
-        assertTrue(
-                "The finished states should be checked when job is restored on startup",
-                checked.get());
+                new HashSet<>(graph.getAllVertices().values()), false);
+        assertThat(checked.get())
+                .as("The finished states should be checked when job is restored on startup")
+                .isTrue();
     }
 
     @Test
-    public void testJobGraphModificationsAreCheckedForSavepoint() throws Exception {
+    void testRestoreInitialCheckpointAllowsNonRestoredStateWhenTrue() throws Exception {
+        Tuple2<CheckpointCoordinator, ExecutionJobVertex> fixture = buildNonRestoredStateFixture();
+
+        assertThat(
+                        fixture.f0.restoreInitialCheckpointIfPresent(
+                                Collections.singleton(fixture.f1), true))
+                .isTrue();
+    }
+
+    @Test
+    void testRestoreInitialCheckpointRejectsNonRestoredStateWhenFalse() throws Exception {
+        Tuple2<CheckpointCoordinator, ExecutionJobVertex> fixture = buildNonRestoredStateFixture();
+
+        assertThatThrownBy(
+                        () ->
+                                fixture.f0.restoreInitialCheckpointIfPresent(
+                                        Collections.singleton(fixture.f1), false))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("There is no operator for the state");
+    }
+
+    private Tuple2<CheckpointCoordinator, ExecutionJobVertex> buildNonRestoredStateFixture()
+            throws Exception {
         final JobVertexID jobVertexID = new JobVertexID();
         ExecutionGraph graph =
                 new CheckpointCoordinatorTestingUtils.CheckpointExecutionGraphBuilder()
                         .addJobVertex(jobVertexID, 1, 1)
-                        .build();
+                        .build(EXECUTOR_RESOURCE.getExecutor());
+
+        OperatorID orphanedOperatorID = new OperatorID();
+        Map<OperatorID, OperatorState> operatorStates = new HashMap<>();
+        operatorStates.put(
+                orphanedOperatorID, new OperatorState(null, null, orphanedOperatorID, 1, 1));
+
+        CompletedCheckpoint completedCheckpoint =
+                new CompletedCheckpoint(
+                        graph.getJobID(),
+                        1,
+                        System.currentTimeMillis(),
+                        System.currentTimeMillis() + 3000,
+                        operatorStates,
+                        Collections.emptyList(),
+                        CheckpointProperties.forCheckpoint(
+                                CheckpointRetentionPolicy.NEVER_RETAIN_AFTER_TERMINATION),
+                        new TestCompletedCheckpointStorageLocation(),
+                        null);
+
+        CompletedCheckpointStore completedCheckpointStore = new EmbeddedCompletedCheckpointStore();
+        completedCheckpointStore.addCheckpointAndSubsumeOldestOne(
+                completedCheckpoint, new CheckpointsCleaner(), () -> {});
+
+        CheckpointCoordinator coord =
+                new CheckpointCoordinatorBuilder()
+                        .setCompletedCheckpointStore(completedCheckpointStore)
+                        .build(graph);
+
+        return Tuple2.of(coord, graph.getJobVertex(jobVertexID));
+    }
+
+    @Test
+    void testJobGraphModificationsAreCheckedForSavepoint() throws Exception {
+        final JobVertexID jobVertexID = new JobVertexID();
+        ExecutionGraph graph =
+                new CheckpointCoordinatorTestingUtils.CheckpointExecutionGraphBuilder()
+                        .addJobVertex(jobVertexID, 1, 1)
+                        .build(EXECUTOR_RESOURCE.getExecutor());
         CheckpointCoordinator coordinator =
                 new CheckpointCoordinatorBuilder()
-                        .setExecutionGraph(graph)
                         .setTimer(manuallyTriggeredScheduledExecutor)
-                        .build();
-        File savepointPath = tmpFolder.newFolder();
+                        .build(graph);
+        File savepointPath = TempDirUtils.newFolder(tmpFolder);
         CompletableFuture<CompletedCheckpoint> savepointFuture =
                 coordinator.triggerSavepoint(
                         "file://" + savepointPath.getAbsolutePath(), SavepointFormatType.CANONICAL);
@@ -1187,12 +1252,11 @@ public class CheckpointCoordinatorRestoringTest extends TestLogger {
                                 .getAttemptId(),
                         pendingSavepointId),
                 "localhost");
-        assertTrue(savepointFuture.isDone());
+        assertThat(savepointFuture).isDone();
 
         BooleanValue checked = new BooleanValue(false);
         CheckpointCoordinator restoreCoordinator =
                 new CheckpointCoordinatorBuilder()
-                        .setExecutionGraph(graph)
                         .setVertexFinishedStateCheckerFactory(
                                 (vertices, states) ->
                                         new VertexFinishedStateChecker(vertices, states) {
@@ -1201,13 +1265,13 @@ public class CheckpointCoordinatorRestoringTest extends TestLogger {
                                                 checked.set(true);
                                             }
                                         })
-                        .build();
+                        .build(graph);
         restoreCoordinator.restoreSavepoint(
                 SavepointRestoreSettings.forPath(savepointFuture.get().getExternalPointer()),
                 graph.getAllVertices(),
                 getClass().getClassLoader());
-        assertTrue(
-                "The finished states should be checked when job is restored on startup",
-                checked.get());
+        assertThat(checked.get())
+                .as("The finished states should be checked when job is restored on startup")
+                .isTrue();
     }
 }

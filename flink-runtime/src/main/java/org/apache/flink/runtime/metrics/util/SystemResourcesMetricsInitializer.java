@@ -18,7 +18,6 @@
 
 package org.apache.flink.runtime.metrics.util;
 
-import org.apache.flink.api.common.time.Time;
 import org.apache.flink.metrics.Gauge;
 import org.apache.flink.metrics.MetricGroup;
 
@@ -28,12 +27,14 @@ import oshi.SystemInfo;
 import oshi.hardware.GlobalMemory;
 import oshi.hardware.HardwareAbstractionLayer;
 
+import java.time.Duration;
+
 /** Utility class to initialize system resource metrics. */
 public class SystemResourcesMetricsInitializer {
     private static final Logger LOG =
             LoggerFactory.getLogger(SystemResourcesMetricsInitializer.class);
 
-    public static void instantiateSystemMetrics(MetricGroup metricGroup, Time probeInterval) {
+    public static void instantiateSystemMetrics(MetricGroup metricGroup, Duration probeInterval) {
         try {
             MetricGroup system = metricGroup.addGroup("System");
 
@@ -63,8 +64,8 @@ public class SystemResourcesMetricsInitializer {
     }
 
     private static void instantiateSwapMetrics(MetricGroup metrics, GlobalMemory memory) {
-        metrics.<Long, Gauge<Long>>gauge("Used", memory::getSwapUsed);
-        metrics.<Long, Gauge<Long>>gauge("Total", memory::getSwapTotal);
+        metrics.<Long, Gauge<Long>>gauge("Used", memory.getVirtualMemory()::getSwapUsed);
+        metrics.<Long, Gauge<Long>>gauge("Total", memory.getVirtualMemory()::getSwapTotal);
     }
 
     private static void instantiateCPUMetrics(
@@ -77,6 +78,7 @@ public class SystemResourcesMetricsInitializer {
         metrics.<Double, Gauge<Double>>gauge("Nice", usageCounter::getCpuNice);
         metrics.<Double, Gauge<Double>>gauge("Irq", usageCounter::getCpuIrq);
         metrics.<Double, Gauge<Double>>gauge("SoftIrq", usageCounter::getCpuSoftIrq);
+        metrics.<Double, Gauge<Double>>gauge("Steal", usageCounter::getCpuSteal);
 
         metrics.<Double, Gauge<Double>>gauge("Load1min", usageCounter::getCpuLoad1);
         metrics.<Double, Gauge<Double>>gauge("Load5min", usageCounter::getCpuLoad5);

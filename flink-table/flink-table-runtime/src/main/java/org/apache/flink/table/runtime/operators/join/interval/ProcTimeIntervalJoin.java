@@ -31,10 +31,23 @@ public final class ProcTimeIntervalJoin extends TimeIntervalJoin {
             FlinkJoinType joinType,
             long leftLowerBound,
             long leftUpperBound,
+            long minCleanUpInterval,
             InternalTypeInfo<RowData> leftType,
             InternalTypeInfo<RowData> rightType,
-            IntervalJoinFunction genJoinFunc) {
-        super(joinType, leftLowerBound, leftUpperBound, 0L, leftType, rightType, genJoinFunc);
+            IntervalJoinFunction genJoinFunc,
+            long earlyFireDelay) {
+        super(
+                joinType,
+                leftLowerBound,
+                leftUpperBound,
+                0L,
+                minCleanUpInterval,
+                leftType,
+                rightType,
+                genJoinFunc,
+                earlyFireDelay,
+                // A proctime join's early fire shares the cleanup domain; never cross-domain.
+                false);
     }
 
     @Override

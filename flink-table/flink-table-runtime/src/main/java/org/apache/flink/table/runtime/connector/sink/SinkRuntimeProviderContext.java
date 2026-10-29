@@ -26,6 +26,10 @@ import org.apache.flink.table.runtime.typeutils.InternalTypeInfo;
 import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.types.logical.LogicalType;
 
+import javax.annotation.Nullable;
+
+import java.util.Optional;
+
 import static org.apache.flink.table.types.utils.DataTypeUtils.validateOutputDataType;
 
 /** Implementation of {@link DynamicTableSink.Context}. */
@@ -34,8 +38,15 @@ public final class SinkRuntimeProviderContext implements DynamicTableSink.Contex
 
     private final boolean isBounded;
 
+    @Nullable private final int[][] targetColumns;
+
     public SinkRuntimeProviderContext(boolean isBounded) {
+        this(isBounded, null);
+    }
+
+    public SinkRuntimeProviderContext(boolean isBounded, @Nullable int[][] targetColumns) {
         this.isBounded = isBounded;
+        this.targetColumns = targetColumns;
     }
 
     @Override
@@ -60,5 +71,11 @@ public final class SinkRuntimeProviderContext implements DynamicTableSink.Contex
         validateOutputDataType(consumedDataType);
         return new DataStructureConverterWrapper(
                 DataStructureConverters.getConverter(consumedDataType));
+    }
+
+    @Override
+    @Deprecated(since = "2.2")
+    public Optional<int[][]> getTargetColumns() {
+        return Optional.ofNullable(targetColumns);
     }
 }

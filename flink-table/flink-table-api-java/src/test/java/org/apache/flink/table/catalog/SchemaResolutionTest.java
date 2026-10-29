@@ -18,7 +18,6 @@
 
 package org.apache.flink.table.catalog;
 
-import org.apache.flink.core.testutils.FlinkMatchers;
 import org.apache.flink.table.api.DataTypes;
 import org.apache.flink.table.api.Schema;
 import org.apache.flink.table.expressions.CallExpression;
@@ -33,7 +32,7 @@ import org.apache.flink.table.types.logical.TimestampKind;
 import org.apache.flink.table.types.utils.DataTypeFactoryMock;
 import org.apache.flink.table.utils.ExpressionResolverMocks;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import javax.annotation.Nullable;
 
@@ -47,11 +46,10 @@ import static org.apache.flink.table.types.logical.utils.LogicalTypeChecks.isRow
 import static org.apache.flink.table.types.logical.utils.LogicalTypeChecks.isTimeAttribute;
 import static org.apache.flink.table.types.utils.TypeConversions.fromLogicalToDataType;
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.fail;
-import static org.assertj.core.api.HamcrestCondition.matching;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** Tests for {@link Schema}, {@link DefaultSchemaResolver}, and {@link ResolvedSchema}. */
-public class SchemaResolutionTest {
+class SchemaResolutionTest {
 
     private static final String COMPUTED_SQL = "orig_ts - INTERVAL '60' MINUTE";
 
@@ -91,6 +89,8 @@ public class SchemaResolutionTest {
                     .withComment("the 'origin' timestamp")
                     .watermark("ts", WATERMARK_SQL)
                     .columnByExpression("proctime", PROCTIME_SQL)
+                    .indexNamed("idx", Collections.singletonList("counter"))
+                    .immutableColumnsNamed("imt", Collections.singletonList("payload"))
                     .build();
 
     // the type of ts_ltz is TIMESTAMP_LTZ
@@ -110,10 +110,11 @@ public class SchemaResolutionTest {
                     .columnByExpression("ts1", callSql(COMPUTED_SQL_WITH_TS_LTZ))
                     .columnByMetadata("ts_ltz", DataTypes.TIMESTAMP_LTZ(3), "timestamp")
                     .watermark("ts1", WATERMARK_SQL_WITH_TS_LTZ)
+                    .indexNamed("idx", Collections.singletonList("id"))
                     .build();
 
     @Test
-    public void testSchemaResolution() {
+    void testSchemaResolution() {
         final ResolvedSchema expectedSchema =
                 new ResolvedSchema(
                         Arrays.asList(
@@ -139,7 +140,11 @@ public class SchemaResolutionTest {
                                 Column.computed("proctime", PROCTIME_RESOLVED)),
                         Collections.singletonList(WatermarkSpec.of("ts", WATERMARK_RESOLVED)),
                         UniqueConstraint.primaryKey(
-                                "primary_constraint", Collections.singletonList("id")));
+                                "primary_constraint", Collections.singletonList("id")),
+                        Collections.singletonList(
+                                DefaultIndex.newIndex("idx", Collections.singletonList("counter"))),
+                        ImmutableColumnsConstraint.immutableColumns(
+                                "imt", Collections.singletonList("payload")));
 
         final ResolvedSchema actualStreamSchema = resolveSchema(SCHEMA, true);
         {
@@ -157,7 +162,7 @@ public class SchemaResolutionTest {
     }
 
     @Test
-    public void testSchemaResolutionWithTimestampLtzRowtime() {
+    void testSchemaResolutionWithTimestampLtzRowtime() {
         final ResolvedSchema expectedSchema =
                 new ResolvedSchema(
                         Arrays.asList(
@@ -167,6 +172,9 @@ public class SchemaResolutionTest {
                                         "ts_ltz", DataTypes.TIMESTAMP_LTZ(3), "timestamp", false)),
                         Collections.singletonList(
                                 WatermarkSpec.of("ts1", WATERMARK_RESOLVED_WITH_TS_LTZ)),
+                        null,
+                        Collections.singletonList(
+                                DefaultIndex.newIndex("idx", Collections.singletonList("id"))),
                         null);
 
         final ResolvedSchema actualStreamSchema = resolveSchema(SCHEMA_WITH_TS_LTZ, true);
@@ -183,7 +191,7 @@ public class SchemaResolutionTest {
     }
 
     @Test
-    public void testSchemaResolutionWithSourceWatermark() {
+    void testSchemaResolutionWithSourceWatermark() {
         final ResolvedSchema expectedSchema =
                 new ResolvedSchema(
                         Collections.singletonList(
@@ -195,19 +203,23 @@ public class SchemaResolutionTest {
                                                 BuiltInFunctionDefinitions.SOURCE_WATERMARK,
                                                 Collections.emptyList(),
                                                 DataTypes.TIMESTAMP_LTZ(1)))),
+                        null,
+                        Collections.singletonList(
+                                DefaultIndex.newIndex("idx", Collections.singletonList("ts_ltz"))),
                         null);
         final ResolvedSchema resolvedSchema =
                 resolveSchema(
                         Schema.newBuilder()
                                 .column("ts_ltz", DataTypes.TIMESTAMP_LTZ(1))
                                 .watermark("ts_ltz", sourceWatermark())
+                                .indexNamed("idx", Collections.singletonList("ts_ltz"))
                                 .build());
 
         assertThat(resolvedSchema).isEqualTo(expectedSchema);
     }
 
     @Test
-    public void testSchemaResolutionErrors() {
+    void testSchemaResolutionErrors() {
 
         // columns
 
@@ -218,6 +230,26 @@ public class SchemaResolutionTest {
         testError(
                 Schema.newBuilder().columnByExpression("invalid", callSql("INVALID")).build(),
                 "Invalid expression for computed column 'invalid'.");
+
+        // metadata columns
+
+        testError(
+                Schema.newBuilder()
+                        .columnByMetadata("metadata", DataTypes.INT())
+                        .columnByMetadata("from_metadata", DataTypes.BIGINT(), "metadata", false)
+                        .build(),
+                "The column `metadata` and `from_metadata` in the table are both from the same metadata key 'metadata'. "
+                        + "Please specify one of the columns as the metadata column and use the "
+                        + "computed column syntax to specify the others.");
+
+        testError(
+                Schema.newBuilder()
+                        .columnByMetadata("from_metadata", DataTypes.BIGINT(), "metadata", false)
+                        .columnByMetadata("from_metadata2", DataTypes.STRING(), "metadata", true)
+                        .build(),
+                "The column `from_metadata` and `from_metadata2` in the table are both from the same metadata key 'metadata'. "
+                        + "Please specify one of the columns as the metadata column and use the "
+                        + "computed column syntax to specify the others.");
 
         // time attributes and watermarks
 
@@ -286,27 +318,170 @@ public class SchemaResolutionTest {
         testError(
                 Schema.newBuilder().column("id", DataTypes.INT()).primaryKey("id", "id").build(),
                 "Invalid primary key 'PK_id_id'. A primary key must not contain duplicate columns. Found: [id]");
+
+        // indexes
+
+        testError(
+                Schema.newBuilder().fromSchema(SCHEMA).index("counter").build(),
+                "Invalid index 'INDEX_counter'. "
+                        + "There is a duplicated index composed of the same columns: [counter]");
+
+        testError(
+                Schema.newBuilder()
+                        .fromSchema(SCHEMA)
+                        .index("counter", "payload")
+                        .index("counter", "payload")
+                        .build(),
+                "Invalid index 'INDEX_counter_payload'. "
+                        + "There is a duplicated index composed of the same columns: [counter, payload]");
+
+        testError(
+                Schema.newBuilder().index("counter").build(),
+                "Invalid index 'INDEX_counter'. Column 'counter' does not exist.");
+
+        testError(
+                Schema.newBuilder()
+                        .column("a", DataTypes.INT())
+                        .indexNamed("idx1", Collections.singletonList("a"))
+                        .indexNamed("idx2", Collections.singletonList("a"))
+                        .build(),
+                "Invalid index 'idx2'. "
+                        + "There is a duplicated index composed of the same columns: [a]");
+
+        testError(
+                Schema.newBuilder()
+                        .column("orig_ts", DataTypes.TIMESTAMP(3))
+                        .columnByExpression("ts", COMPUTED_SQL)
+                        .index("ts")
+                        .build(),
+                "Invalid index 'INDEX_ts'. "
+                        + "Column 'ts' is not a physical column or a metadata column.");
+
+        // immutable constraints
+
+        testError(
+                Schema.newBuilder().column("id", DataTypes.INT()).immutableColumns("id").build(),
+                "An immutable constraint must be defined on the table that contains primary key.");
+
+        testError(
+                Schema.newBuilder()
+                        .column("id", DataTypes.INT().notNull())
+                        .primaryKey("id")
+                        .immutableColumns("INVALID")
+                        .build(),
+                "Column 'INVALID' does not exist.");
+
+        testError(
+                Schema.newBuilder()
+                        .column("id", DataTypes.INT().notNull())
+                        .column("orig_ts", DataTypes.TIMESTAMP(3))
+                        .columnByExpression("ts", COMPUTED_SQL)
+                        .primaryKey("id")
+                        .immutableColumns("ts")
+                        .build(),
+                "Column 'ts' is not a physical column.");
+
+        testError(
+                Schema.newBuilder()
+                        .column("id", DataTypes.INT().notNull())
+                        .column("name", DataTypes.STRING())
+                        .primaryKey("id")
+                        .immutableColumns("name", "name")
+                        .build(),
+                "Invalid immutable constraint 'IMMUTABLE_COLUMNS_name_name'. "
+                        + "An immutable constraint must not contain duplicate columns. Found: [name]");
     }
 
     @Test
-    public void testUnresolvedSchemaString() {
+    void testIndexNamedBuildingErrors() {
+        assertThatThrownBy(
+                        () ->
+                                Schema.newBuilder()
+                                        .column("a", DataTypes.INT())
+                                        .indexNamed(null, Collections.singletonList("a"))
+                                        .build())
+                .hasMessageContaining("Index name must not be null.");
+
+        assertThatThrownBy(
+                        () ->
+                                Schema.newBuilder()
+                                        .column("a", DataTypes.INT())
+                                        .indexNamed("idx", null)
+                                        .build())
+                .hasMessageContaining("Index column names must not be null.");
+
+        assertThatThrownBy(
+                        () ->
+                                Schema.newBuilder()
+                                        .column("a", DataTypes.INT())
+                                        .indexNamed("idx", Collections.emptyList())
+                                        .build())
+                .hasMessageContaining("Index must be defined for at least a single column.");
+    }
+
+    @Test
+    void testImmutableColumnsBuildingErrors() {
+        assertThatThrownBy(
+                        () ->
+                                Schema.newBuilder()
+                                        .column("a", DataTypes.INT().notNull())
+                                        .primaryKey("a")
+                                        .immutableColumnsNamed(null, Collections.singletonList("a"))
+                                        .build())
+                .hasMessageContaining("Immutable constraint name must not be null.");
+
+        assertThatThrownBy(
+                        () ->
+                                Schema.newBuilder()
+                                        .column("a", DataTypes.INT())
+                                        .primaryKey("a")
+                                        .immutableColumnsNamed("imt", (String[]) null)
+                                        .build())
+                .hasMessageContaining("Immutable column names must not be null.");
+
+        assertThatThrownBy(
+                        () ->
+                                Schema.newBuilder()
+                                        .column("a", DataTypes.INT())
+                                        .primaryKey("a")
+                                        .immutableColumnsNamed("idx", Collections.emptyList())
+                                        .build())
+                .hasMessageContaining(
+                        "Immutable constraint must be defined for at least a single column.");
+
+        assertThatThrownBy(
+                        () ->
+                                Schema.newBuilder()
+                                        .column("a", DataTypes.INT().notNull())
+                                        .column("b", DataTypes.INT().notNull())
+                                        .primaryKey("a")
+                                        .immutableColumns("a")
+                                        .immutableColumns("b")
+                                        .build())
+                .hasMessageContaining("Multiple immutable constraints are not supported.");
+    }
+
+    @Test
+    void testUnresolvedSchemaString() {
         assertThat(SCHEMA.toString())
                 .isEqualTo(
                         "(\n"
                                 + "  `id` INT NOT NULL COMMENT 'people id',\n"
                                 + "  `counter` INT NOT NULL,\n"
                                 + "  `payload` [ROW<name STRING, age INT, flag BOOLEAN>],\n"
-                                + "  `topic` METADATA VIRTUAL COMMENT 'kafka topic',\n"
+                                + "  `topic` STRING METADATA VIRTUAL COMMENT 'kafka topic',\n"
                                 + "  `ts` AS [orig_ts - INTERVAL '60' MINUTE] COMMENT 'rowtime',\n"
-                                + "  `orig_ts` METADATA FROM 'timestamp' COMMENT 'the ''origin'' timestamp',\n"
+                                + "  `orig_ts` TIMESTAMP(3) METADATA FROM 'timestamp' COMMENT 'the ''origin'' timestamp',\n"
                                 + "  `proctime` AS [PROCTIME()],\n"
                                 + "  WATERMARK FOR `ts` AS [ts - INTERVAL '5' SECOND],\n"
-                                + "  CONSTRAINT `primary_constraint` PRIMARY KEY (`id`) NOT ENFORCED\n"
+                                + "  CONSTRAINT `primary_constraint` PRIMARY KEY (`id`) NOT ENFORCED,\n"
+                                + "  INDEX `idx` (`counter`),\n"
+                                + "  CONSTRAINT `imt` COLUMNS (`payload`) IMMUTABLE NOT ENFORCED\n"
                                 + ")");
     }
 
     @Test
-    public void testResolvedSchemaString() {
+    void testResolvedSchemaString() {
         final ResolvedSchema resolvedSchema = resolveSchema(SCHEMA);
         assertThat(resolvedSchema.toString())
                 .isEqualTo(
@@ -319,12 +494,14 @@ public class SchemaResolutionTest {
                                 + "  `orig_ts` TIMESTAMP(3) METADATA FROM 'timestamp' COMMENT 'the ''origin'' timestamp',\n"
                                 + "  `proctime` TIMESTAMP_LTZ(3) NOT NULL *PROCTIME* AS PROCTIME(),\n"
                                 + "  WATERMARK FOR `ts`: TIMESTAMP(3) AS ts - INTERVAL '5' SECOND,\n"
-                                + "  CONSTRAINT `primary_constraint` PRIMARY KEY (`id`) NOT ENFORCED\n"
+                                + "  CONSTRAINT `primary_constraint` PRIMARY KEY (`id`) NOT ENFORCED,\n"
+                                + "  INDEX `idx` (`counter`),\n"
+                                + "  CONSTRAINT `imt` COLUMNS (`payload`) IMMUTABLE NOT ENFORCED\n"
                                 + ")");
     }
 
     @Test
-    public void testGeneratedConstraintName() {
+    void testGeneratedConstraintName() {
         final Schema schema =
                 Schema.newBuilder()
                         .column("a", DataTypes.INT())
@@ -340,7 +517,24 @@ public class SchemaResolutionTest {
     }
 
     @Test
-    public void testSinkRowDataType() {
+    void testGeneratedIndexName() {
+        final Schema schema =
+                Schema.newBuilder()
+                        .column("a", DataTypes.INT())
+                        .column("b", DataTypes.STRING())
+                        .column("c", DataTypes.STRING())
+                        .index("b", "a")
+                        .build();
+        assertThat(
+                        schema.getIndexes().stream()
+                                .findFirst()
+                                .orElseThrow(IllegalStateException::new)
+                                .getIndexName())
+                .isEqualTo("INDEX_b_a");
+    }
+
+    @Test
+    void testSinkRowDataType() {
         final ResolvedSchema resolvedSchema = resolveSchema(SCHEMA);
         final DataType expectedDataType =
                 DataTypes.ROW(
@@ -358,7 +552,7 @@ public class SchemaResolutionTest {
     }
 
     @Test
-    public void testPhysicalRowDataType() {
+    void testPhysicalRowDataType() {
         final ResolvedSchema resolvedSchema1 = resolveSchema(SCHEMA);
         final DataType expectedDataType =
                 DataTypes.ROW(
@@ -381,7 +575,7 @@ public class SchemaResolutionTest {
     }
 
     @Test
-    public void testSourceRowDataType() {
+    void testSourceRowDataType() {
         final ResolvedSchema resolvedSchema = resolveSchema(SCHEMA);
         final DataType expectedDataType =
                 DataTypes.ROW(
@@ -407,6 +601,20 @@ public class SchemaResolutionTest {
                 .isFalse();
     }
 
+    @Test
+    void testPrimaryKeyIndices() {
+        final ResolvedSchema resolvedSchema =
+                resolveSchema(
+                        Schema.newBuilder()
+                                .columnByMetadata("orig_ts", DataTypes.TIMESTAMP(3), "timestamp")
+                                .column("id", DataTypes.INT().notNull())
+                                .column("counter", DataTypes.INT().notNull())
+                                .primaryKey("id")
+                                .build());
+
+        assertThat(resolvedSchema.getPrimaryKeyIndexes()).isEqualTo(new int[] {0});
+    }
+
     // --------------------------------------------------------------------------------------------
 
     private static void testError(Schema schema, String errorMessage) {
@@ -414,12 +622,8 @@ public class SchemaResolutionTest {
     }
 
     private static void testError(Schema schema, String errorMessage, boolean isStreaming) {
-        try {
-            resolveSchema(schema, isStreaming);
-            fail("Error message expected: " + errorMessage);
-        } catch (Throwable t) {
-            assertThat(t).satisfies(matching(FlinkMatchers.containsMessage(errorMessage)));
-        }
+        assertThatThrownBy(() -> resolveSchema(schema, isStreaming))
+                .hasMessageContaining(errorMessage);
     }
 
     private static ResolvedSchema resolveSchema(Schema schema) {

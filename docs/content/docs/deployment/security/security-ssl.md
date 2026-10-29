@@ -49,7 +49,7 @@ Internal connectivity includes:
   - The data plane: The connections between TaskManagers to exchange data during shuffles, broadcasts, redistribution, etc.
   - The Blob Service (distribution of libraries and other artifacts).
 
-All internal connections are SSL authenticated and encrypted. The connections use **mutual authentication**, meaning both server
+All internal connections are SSL authenticated and encrypted. The connections use **mutual authentication** (mTLS), meaning both server
 and client side of each connection need to present the certificate to each other. The certificate acts effectively as a shared
 secret when a dedicated CA is used to exclusively sign an internal cert.
 The certificate for internal communication is not needed by any other party to interact with Flink, and can be simply
@@ -87,12 +87,6 @@ Examples for proxies that Flink users have deployed are [Envoy Proxy](https://ww
 
 The rationale behind delegating authentication to a proxy is that such proxies offer a wide variety of authentication options and thus better integration into existing infrastructures.
 
-
-### Queryable State
-
-Connections to the queryable state endpoints is currently not authenticated or encrypted.
-
-
 ## Configuring SSL
 
 SSL can be enabled separately for *internal* and *external* connectivity:
@@ -107,7 +101,7 @@ When `security.ssl.internal.enabled` is set to `true`, you can set the following
 
   - `taskmanager.data.ssl.enabled`: Data communication between TaskManagers
   - `blob.service.ssl.enabled`: Transport of BLOBs from JobManager to TaskManager
-  - `akka.ssl.enabled`: Akka-based RPC connections between JobManager / TaskManager / ResourceManager
+  - `pekko.ssl.enabled`: Pekko-based RPC connections between JobManager / TaskManager / ResourceManager
 
 ### Keystores and Truststores
 
@@ -119,7 +113,7 @@ need to be set up such that the truststore trusts the keystore's certificate.
 
 Because internal communication is mutually authenticated between server and client side, keystore and truststore typically refer to a dedicated
 certificate that acts as a shared secret. In such a setup, the certificate can use wild card hostnames or addresses.
-WHen using self-signed certificates, it is even possible to use the same file as keystore and truststore.
+When using self-signed certificates, it is even possible to use the same file as keystore and truststore.
 
 ```yaml
 security.ssl.internal.keystore: /path/to/file.keystore
@@ -156,20 +150,18 @@ security.ssl.rest.authentication-enabled: false
 
 ### Cipher suites
 
-{{< hint warning >}}
-The [IETF RFC 7525](https://tools.ietf.org/html/rfc7525) recommends to use a specific set of cipher suites for strong security.
-Because these cipher suites were not available on many setups out of the box, Flink's default value is set to a slightly
-weaker but more compatible cipher suite.
-We recommend that SSL setups update to the stronger cipher suites, if possible, by adding the below entry to the Flink configuration:
+For strong security, it is crucial to use modern and robust cipher suites. [IETF RFC 9325](https://www.rfc-editor.org/info/rfc9325), which supersedes the older RFC 7525, provides current recommendations for the secure use of TLS.
 
+In response to evolving security standards and to ensure compatibility with modern Java versions, Flink has updated its default cipher suites. Recent JDK updates (affecting versions like 11.0.30+, 17.0.18+, etc.) have disabled older `TLS_RSA_*` cipher suites that lack forward secrecy.
 
-```yaml
-security.ssl.algorithms: TLS_DHE_RSA_WITH_AES_128_GCM_SHA256,TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,TLS_DHE_RSA_WITH_AES_256_GCM_SHA384,TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
-```
+To support these secure-by-default JDK versions and align with best practices, Flink's default value for `security.ssl.algorithms` is now:
 
+`TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,TLS_AES_128_GCM_SHA256,TLS_AES_256_GCM_SHA384`
+
+This default provides strong security and wide compatibility. You can customize the cipher suites using the `security.ssl.algorithms` configuration option if your environment has different requirements.
 If these cipher suites are not supported on your setup, you will see that Flink processes will not be able to connect to each other.
 
-{{< /hint >}}
+Flink's default `security.ssl.protocol` also includes TLS 1.3 (`TLSv1.2,TLSv1.3`), and the default cipher list above includes TLS 1.3's own suites (`TLS_AES_128_GCM_SHA256`, `TLS_AES_256_GCM_SHA384`) alongside the TLS 1.2 suites. Both endpoints negotiate the highest protocol version they have in common that also has a matching cipher suite, so deployments use TLS 1.3 automatically when possible and fall back to TLS 1.2 when a peer does not support it. No configuration change is required for this, and any `security.ssl.protocol` or `security.ssl.algorithms` values you have already customized are unaffected.
 
 ### Complete List of SSL Options
 
@@ -177,7 +169,7 @@ If these cipher suites are not supported on your setup, you will see that Flink 
 
 ## Creating and Deploying Keystores and Truststores
 
-Keys, Certificates, and the Keystores and Truststores can be generatedd using the [keytool utility](https://docs.oracle.com/javase/8/docs/technotes/tools/unix/keytool.html).
+Keys, Certificates, and the Keystores and Truststores can be generated using the [keytool utility](https://docs.oracle.com/javase/8/docs/technotes/tools/unix/keytool.html).
 You need to have an appropriate Java Keystore and Truststore accessible from each node in the Flink cluster.
 
   - For standalone setups, this means copying the files to each node, or adding them to a shared mounted directory.
@@ -272,7 +264,7 @@ $ keytool -importcert -keystore rest.signed.keystore -storepass rest_keystore_pa
 $ keytool -importcert -keystore rest.signed.keystore -storepass rest_keystore_password -file rest.cer -alias flink.rest -noprompt
 ```
 
-Now add the following configuration to your `flink-conf.yaml`:
+Now add the following configuration to your [Flink configuration file]({{< ref "docs/deployment/config#flink-configuration-file" >}}):
 
 ```yaml
 security.ssl.rest.enabled: true

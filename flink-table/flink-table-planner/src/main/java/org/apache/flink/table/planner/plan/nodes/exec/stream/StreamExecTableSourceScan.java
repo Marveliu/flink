@@ -21,6 +21,7 @@ package org.apache.flink.table.planner.plan.nodes.exec.stream;
 import org.apache.flink.FlinkVersion;
 import org.apache.flink.api.common.io.InputFormat;
 import org.apache.flink.api.dag.Transformation;
+import org.apache.flink.configuration.ReadableConfig;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.table.connector.source.ScanTableSource;
 import org.apache.flink.table.data.RowData;
@@ -35,24 +36,39 @@ import org.apache.flink.table.types.logical.RowType;
 import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.annotation.JsonCreator;
 import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.annotation.JsonProperty;
 
+import java.util.Collections;
+
 /**
  * Stream {@link ExecNode} to read data from an external source defined by a {@link
  * ScanTableSource}.
  */
+// Version 1: Initial version
 @ExecNodeMetadata(
         name = "stream-exec-table-source-scan",
         version = 1,
         producedTransformations = CommonExecTableSourceScan.SOURCE_TRANSFORMATION,
         minPlanVersion = FlinkVersion.v1_15,
         minStateVersion = FlinkVersion.v1_15)
+// Version 2: Fixed overwriting of transformation UIDs and names for the last transformation
+// returned by DataStreamScanProvider and TransformationScanProvider.
+@ExecNodeMetadata(
+        name = "stream-exec-table-source-scan",
+        version = 2,
+        producedTransformations = CommonExecTableSourceScan.SOURCE_TRANSFORMATION,
+        minPlanVersion = FlinkVersion.v2_3,
+        minStateVersion = FlinkVersion.v2_3)
 public class StreamExecTableSourceScan extends CommonExecTableSourceScan
         implements StreamExecNode<RowData> {
 
     public StreamExecTableSourceScan(
-            DynamicTableSourceSpec tableSourceSpec, RowType outputType, String description) {
+            ReadableConfig tableConfig,
+            DynamicTableSourceSpec tableSourceSpec,
+            RowType outputType,
+            String description) {
         this(
                 ExecNodeContext.newNodeId(),
                 ExecNodeContext.newContext(StreamExecTableSourceScan.class),
+                ExecNodeContext.newPersistedConfig(StreamExecTableSourceScan.class, tableConfig),
                 tableSourceSpec,
                 outputType,
                 description);
@@ -62,10 +78,18 @@ public class StreamExecTableSourceScan extends CommonExecTableSourceScan
     public StreamExecTableSourceScan(
             @JsonProperty(FIELD_NAME_ID) int id,
             @JsonProperty(FIELD_NAME_TYPE) ExecNodeContext context,
+            @JsonProperty(FIELD_NAME_CONFIGURATION) ReadableConfig persistedConfig,
             @JsonProperty(FIELD_NAME_SCAN_TABLE_SOURCE) DynamicTableSourceSpec tableSourceSpec,
             @JsonProperty(FIELD_NAME_OUTPUT_TYPE) RowType outputType,
             @JsonProperty(FIELD_NAME_DESCRIPTION) String description) {
-        super(id, context, tableSourceSpec, outputType, description);
+        super(
+                id,
+                context,
+                persistedConfig,
+                tableSourceSpec,
+                Collections.emptyList(),
+                outputType,
+                description);
     }
 
     @Override
@@ -77,5 +101,10 @@ public class StreamExecTableSourceScan extends CommonExecTableSourceScan
         // It's better to use StreamExecutionEnvironment.createInput()
         // rather than addLegacySource() for streaming, because it take care of checkpoint.
         return env.createInput(inputFormat, outputTypeInfo).name(operatorName).getTransformation();
+    }
+
+    @Override
+    protected final boolean legacyUidsEnabled() {
+        return getVersion() == 1;
     }
 }

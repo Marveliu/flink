@@ -18,20 +18,36 @@
 
 package org.apache.flink.table.factories;
 
+import org.apache.flink.annotation.Internal;
 import org.apache.flink.configuration.ReadableConfig;
 import org.apache.flink.table.api.TableException;
-import org.apache.flink.table.api.ValidationException;
+import org.apache.flink.table.api.config.TableConfigOptions;
 import org.apache.flink.table.catalog.Catalog;
 import org.apache.flink.table.catalog.CatalogTable;
 import org.apache.flink.table.catalog.ObjectIdentifier;
-import org.apache.flink.table.sinks.TableSink;
-import org.apache.flink.table.sources.TableSource;
+import org.apache.flink.table.catalog.ResolvedCatalogTable;
+import org.apache.flink.table.catalog.listener.CatalogModificationListener;
+import org.apache.flink.table.catalog.listener.CatalogModificationListenerFactory;
+import org.apache.flink.table.descriptors.ConnectorDescriptorValidator;
+import org.apache.flink.table.descriptors.DescriptorProperties;
+import org.apache.flink.table.expressions.DefaultSqlFactory;
+import org.apache.flink.table.legacy.factories.TableFactory;
+import org.apache.flink.table.legacy.factories.TableSinkFactory;
+import org.apache.flink.table.legacy.factories.TableSourceFactory;
+import org.apache.flink.table.legacy.sinks.TableSink;
+import org.apache.flink.table.legacy.sources.TableSource;
 
-import javax.annotation.Nullable;
+import java.util.Collections;
+import java.util.List;
+import java.util.stream.Collectors;
 
-import java.util.Optional;
-
-/** Utility for dealing with {@link TableFactory} using the {@link TableFactoryService}. */
+/**
+ * Utility for dealing with {@link TableFactory} using the {@link TableFactoryService}.
+ *
+ * @deprecated Use {@link FactoryUtil} instead.
+ */
+@Deprecated
+@Internal
 public class TableFactoryUtil {
 
     /** Returns a table source matching the descriptor. */
@@ -39,7 +55,9 @@ public class TableFactoryUtil {
     public static <T> TableSource<T> findAndCreateTableSource(TableSourceFactory.Context context) {
         try {
             return TableFactoryService.find(
-                            TableSourceFactory.class, context.getTable().toProperties())
+                            TableSourceFactory.class,
+                            ((ResolvedCatalogTable) context.getTable())
+                                    .toProperties(DefaultSqlFactory.INSTANCE))
                     .createTableSource(context);
         } catch (Throwable t) {
             throw new TableException("findAndCreateTableSource failed.", t);
@@ -53,7 +71,6 @@ public class TableFactoryUtil {
      */
     @SuppressWarnings("unchecked")
     public static <T> TableSource<T> findAndCreateTableSource(
-            @Nullable Catalog catalog,
             ObjectIdentifier objectIdentifier,
             CatalogTable catalogTable,
             ReadableConfig configuration,
@@ -61,20 +78,7 @@ public class TableFactoryUtil {
         TableSourceFactory.Context context =
                 new TableSourceFactoryContextImpl(
                         objectIdentifier, catalogTable, configuration, isTemporary);
-        Optional<TableFactory> factoryOptional =
-                catalog == null ? Optional.empty() : catalog.getTableFactory();
-        if (factoryOptional.isPresent()) {
-            TableFactory factory = factoryOptional.get();
-            if (factory instanceof TableSourceFactory) {
-                return ((TableSourceFactory<T>) factory).createTableSource(context);
-            } else {
-                throw new ValidationException(
-                        "Cannot query a sink-only table. "
-                                + "TableFactory provided by catalog must implement TableSourceFactory");
-            }
-        } else {
-            return findAndCreateTableSource(context);
-        }
+        return findAndCreateTableSource(context);
     }
 
     /** Returns a table sink matching the context. */
@@ -82,7 +86,9 @@ public class TableFactoryUtil {
     public static <T> TableSink<T> findAndCreateTableSink(TableSinkFactory.Context context) {
         try {
             return TableFactoryService.find(
-                            TableSinkFactory.class, context.getTable().toProperties())
+                            TableSinkFactory.class,
+                            ((ResolvedCatalogTable) context.getTable())
+                                    .toProperties(DefaultSqlFactory.INSTANCE))
                     .createTableSink(context);
         } catch (Throwable t) {
             throw new TableException("findAndCreateTableSink failed.", t);
@@ -96,7 +102,6 @@ public class TableFactoryUtil {
      */
     @SuppressWarnings("unchecked")
     public static <T> TableSink<T> findAndCreateTableSink(
-            @Nullable Catalog catalog,
             ObjectIdentifier objectIdentifier,
             CatalogTable catalogTable,
             ReadableConfig configuration,
@@ -109,24 +114,65 @@ public class TableFactoryUtil {
                         configuration,
                         !isStreamingMode,
                         isTemporary);
-        if (catalog == null) {
-            return findAndCreateTableSink(context);
+        return findAndCreateTableSink(context);
+    }
+
+    /** Checks whether the {@link CatalogTable} uses legacy connector sink options. */
+    public static boolean isLegacyConnectorOptions(
+            ReadableConfig configuration,
+            boolean isStreamingMode,
+            ObjectIdentifier objectIdentifier,
+            CatalogTable catalogTable,
+            boolean isTemporary) {
+        // normalize option keys
+        DescriptorProperties properties = new DescriptorProperties(true);
+        properties.putProperties(catalogTable.getOptions());
+        if (properties.containsKey(ConnectorDescriptorValidator.CONNECTOR_TYPE)) {
+            return true;
         } else {
-            return createTableSinkForCatalogTable(catalog, context)
-                    .orElseGet(() -> findAndCreateTableSink(context));
+            try {
+                // try to create legacy table source using the options,
+                // some legacy factories may use the 'type' key
+                TableFactoryUtil.findAndCreateTableSink(
+                        objectIdentifier,
+                        catalogTable,
+                        configuration,
+                        isStreamingMode,
+                        isTemporary);
+                // success, then we will use the legacy factories
+                return true;
+            } catch (Throwable ignore) {
+                // fail, then we will use new factories
+                return false;
+            }
         }
     }
 
-    /**
-     * Creates a table sink for a {@link CatalogTable} using table factory associated with the
-     * catalog.
-     */
-    public static Optional<TableSink> createTableSinkForCatalogTable(
-            Catalog catalog, TableSinkFactory.Context context) {
-        TableFactory tableFactory = catalog.getTableFactory().orElse(null);
-        if (tableFactory instanceof TableSinkFactory) {
-            return Optional.ofNullable(((TableSinkFactory) tableFactory).createTableSink(context));
-        }
-        return Optional.empty();
+    /** Find and create modification listener list from configuration. */
+    public static List<CatalogModificationListener> findCatalogModificationListenerList(
+            final ReadableConfig configuration, final ClassLoader classLoader) {
+        return configuration
+                .getOptional(TableConfigOptions.TABLE_CATALOG_MODIFICATION_LISTENERS)
+                .orElse(Collections.emptyList())
+                .stream()
+                .map(
+                        identifier ->
+                                FactoryUtil.discoverFactory(
+                                                classLoader,
+                                                CatalogModificationListenerFactory.class,
+                                                identifier)
+                                        .createListener(
+                                                new CatalogModificationListenerFactory.Context() {
+                                                    @Override
+                                                    public ReadableConfig getConfiguration() {
+                                                        return configuration;
+                                                    }
+
+                                                    @Override
+                                                    public ClassLoader getUserClassLoader() {
+                                                        return classLoader;
+                                                    }
+                                                }))
+                .collect(Collectors.toList());
     }
 }

@@ -25,8 +25,7 @@ under the License.
 	<parent>
 		<groupId>org.apache.flink</groupId>
 		<artifactId>flink-rpc</artifactId>
-		<version>1.16-SNAPSHOT</version>
-		<relativePath>..</relativePath>
+		<version>2.5-SNAPSHOT</version>
 	</parent>
 
 	<artifactId>flink-rpc-akka-loader</artifactId>
@@ -56,7 +55,7 @@ under the License.
 			<!-- Prevent dependency from being accessible to modules depending on flink-akka-loader-->
 			<optional>true</optional>
 			<exclusions>
-				<!-- Prevent akka and scala from being visible to other modules depending on flink-rpc-akka-loader -->
+				<!-- Prevent pekko and scala from being visible to other modules depending on flink-rpc-akka-loader -->
 				<exclusion>
 					<groupId>*</groupId>
 					<artifactId>*</artifactId>
@@ -80,6 +79,12 @@ under the License.
 						<goals>
 							<goal>test-jar</goal>
 						</goals>
+						<configuration>
+							<excludes>
+								<!-- test-jar is still used by JUnit4 modules -->
+								<exclude>META-INF/services/org.junit.jupiter.api.extension.Extension</exclude>
+							</excludes>
+						</configuration>
 					</execution>
 				</executions>
 			</plugin>

@@ -19,6 +19,7 @@
 package org.apache.flink.table.planner.functions.casting;
 
 import org.apache.flink.table.planner.codegen.CodeGenUtils;
+import org.apache.flink.table.planner.codegen.CodeGeneratorContext;
 import org.apache.flink.table.types.logical.DistinctType;
 import org.apache.flink.table.types.logical.LogicalType;
 import org.apache.flink.table.utils.EncodingUtils;
@@ -71,7 +72,10 @@ final class CastRuleUtils {
     }
 
     static String newArray(String innerType, String arraySize) {
-        return "new " + innerType + "[" + arraySize + "]";
+        final int arrayIndex = innerType.indexOf('[');
+        final String baseType = arrayIndex < 0 ? innerType : innerType.substring(0, arrayIndex);
+        final String dimensions = arrayIndex < 0 ? "" : innerType.substring(arrayIndex);
+        return "new " + baseType + "[" + arraySize + "]" + dimensions;
     }
 
     static String stringConcat(Object... args) {
@@ -134,7 +138,7 @@ final class CastRuleUtils {
 
     static String box(String term, LogicalType type) {
         switch (type.getTypeRoot()) {
-                // ordered by type root definition
+            // ordered by type root definition
             case BOOLEAN:
                 return staticCall(Boolean.class, "valueOf", term);
             case TINYINT:
@@ -154,7 +158,7 @@ final class CastRuleUtils {
             case DOUBLE:
                 return staticCall(Double.class, "valueOf", term);
             case DISTINCT_TYPE:
-                box(term, ((DistinctType) type).getSourceType());
+                return box(term, ((DistinctType) type).getSourceType());
         }
         return term;
     }
@@ -212,6 +216,10 @@ final class CastRuleUtils {
             return stmt(varName + " = " + value);
         }
 
+        public CodeWriter assignPlusStmt(String varName, String value) {
+            return stmt(varName + " += " + value);
+        }
+
         public CodeWriter assignArrayStmt(String varName, String index, String value) {
             return stmt(varName + "[" + index + "] = " + value);
         }
@@ -222,8 +230,10 @@ final class CastRuleUtils {
         }
 
         public CodeWriter forStmt(
-                String upperBound, BiConsumer<String, CodeWriter> bodyWriterConsumer) {
-            final String indexTerm = newName("i");
+                String upperBound,
+                BiConsumer<String, CodeWriter> bodyWriterConsumer,
+                CodeGeneratorContext codeGeneratorContext) {
+            final String indexTerm = newName(codeGeneratorContext, "i");
             final CodeWriter innerWriter = new CodeWriter();
 
             builder.append("for (int ")
@@ -274,15 +284,18 @@ final class CastRuleUtils {
 
         public CodeWriter tryCatchStmt(
                 Consumer<CodeWriter> bodyWriterConsumer,
-                BiConsumer<String, CodeWriter> catchConsumer) {
-            return tryCatchStmt(bodyWriterConsumer, Throwable.class, catchConsumer);
+                BiConsumer<String, CodeWriter> catchConsumer,
+                CodeGeneratorContext codeGeneratorContext) {
+            return tryCatchStmt(
+                    bodyWriterConsumer, Throwable.class, catchConsumer, codeGeneratorContext);
         }
 
         public CodeWriter tryCatchStmt(
                 Consumer<CodeWriter> bodyWriterConsumer,
                 Class<? extends Throwable> catchClass,
-                BiConsumer<String, CodeWriter> catchConsumer) {
-            final String exceptionTerm = newName("e");
+                BiConsumer<String, CodeWriter> catchConsumer,
+                CodeGeneratorContext codeGeneratorContext) {
+            final String exceptionTerm = newName(codeGeneratorContext, "e");
 
             final CodeWriter bodyWriter = new CodeWriter();
             final CodeWriter catchWriter = new CodeWriter();

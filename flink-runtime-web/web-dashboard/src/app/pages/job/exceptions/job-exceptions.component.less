@@ -29,7 +29,7 @@
     }
   }
 
-  nz-tabset {
+  nz-tabs {
     position: relative;
     flex: 1;
   }
@@ -47,6 +47,22 @@
 
   nz-table {
     margin-top: -@margin-md;
+
+    .exception-cell {
+      word-break: break-all;
+
+      nz-tag {
+        max-width: 100%;
+        height: auto;
+        line-height: 1.4;
+        white-space: normal;
+        word-break: break-all;
+      }
+    }
+  }
+
+  nz-tag {
+    margin-bottom: 5px;
   }
 
   .expand-td {
@@ -55,6 +71,6 @@
   }
 
   .exception-select {
-    width: 300px;
+    width: 100%;
   }
 }

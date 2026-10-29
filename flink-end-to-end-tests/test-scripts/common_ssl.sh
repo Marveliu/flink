@@ -67,11 +67,23 @@ function _set_conf_ssl_helper {
     keytool -importcert -keystore "${ssl_dir}/node.keystore" -storepass ${password} -file "${ssl_dir}/ca.cer" -alias ca -noprompt
     keytool -importcert -keystore "${ssl_dir}/node.keystore" -storepass ${password} -file "${ssl_dir}/node.cer" -alias node -noprompt
 
+    local additional_params
+    additional_params=""
+    if [[ ! "$(openssl version)" =~ OpenSSL\ 1 ]]; then
+        # OpenSSL 3.x doesn't enable PKCS12 by default - we need to enable legacy algorithms
+        additional_params="-legacy"
+    fi
+
     # keystore is converted into a pem format to use it as node.pem with curl in Flink REST API queries, see also $CURL_SSL_ARGS
-    openssl pkcs12 -passin pass:${password} -in "${ssl_dir}/node.keystore" -out "${ssl_dir}/node.pem" -nodes
+    openssl pkcs12 ${additional_params} -passin pass:${password} -in "${ssl_dir}/node.keystore" -out "${ssl_dir}/node.pem" -nodes
 
     if [ "${provider}" = "OPENSSL" -a "${provider_lib}" = "dynamic" ]; then
         cp $FLINK_DIR/opt/flink-shaded-netty-tcnative-dynamic-*.jar $FLINK_DIR/lib/
+        # if the CI prepared a newer OpenSSL than the system one (see e2e-template.yml), prefer it;
+        # local/developer runs without that variable set keep using the system OpenSSL as before
+        if [ -n "${FLINK_E2E_OPENSSL32_LIB:-}" ]; then
+            export LD_LIBRARY_PATH="${FLINK_E2E_OPENSSL32_LIB}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+        fi
     elif [ "${provider}" = "OPENSSL" -a "${provider_lib}" = "static" ]; then
         # Flink is not providing the statically-linked library because of potential licensing issues
         # -> we need to build it ourselves
@@ -88,6 +100,8 @@ function _set_conf_ssl_helper {
     fi
 
     # adapt config
+    set_config_key security.ssl.protocol "TLSv1.2,TLSv1.3"
+    set_config_key security.ssl.algorithms "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,TLS_AES_128_GCM_SHA256,TLS_AES_256_GCM_SHA384"
     set_config_key security.ssl.provider ${provider}
     set_config_key security.ssl.${type}.enabled true
     set_config_key security.ssl.${type}.keystore ${ssl_dir}/node.keystore
@@ -129,5 +143,5 @@ function set_conf_ssl {
 }
 
 function rollback_openssl_lib() {
-  rm $FLINK_DIR/lib/flink-shaded-netty-tcnative-{dynamic,static}-*.jar
+  rm -f $FLINK_DIR/lib/flink-shaded-netty-tcnative-{dynamic,static}-*.jar
 }

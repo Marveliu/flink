@@ -20,11 +20,31 @@
 function test_module() {
     module="$FLINK_PYTHON_DIR/pyflink/$1"
     echo "test module $module"
-    pytest --durations=20 ${module} $2
+    pytest -n ${PYFLINK_TEST_WORKERS:-4} --dist loadfile --durations=20 ${module} $2
     if [[ $? -ne 0 ]]; then
         echo "test module $module failed"
         exit 1
     fi
+}
+
+function test_all_modules() {
+    # test common module
+    test_module "common"
+
+    # test datastream module
+    test_module "datastream"
+
+    # test dataframe module
+    test_module "dataframe"
+
+    # test fn_execution module
+    test_module "fn_execution"
+
+    # test table module
+    test_module "table"
+
+    # test util module
+    test_module "util"
 }
 
 # CURRENT_DIR is "flink/flink-python/dev/"
@@ -33,17 +53,19 @@ CURRENT_DIR="$(cd "$( dirname "$0" )" && pwd)"
 # FLINK_PYTHON_DIR is "flink/flink-python"
 FLINK_PYTHON_DIR=$(dirname "$CURRENT_DIR")
 
-# test common module
-test_module "common"
+# FLINK_SOURCE_DIR is "flink"
+FLINK_SOURCE_DIR=$(dirname "$FLINK_PYTHON_DIR")
 
-# test datastream module
-test_module "datastream"
+# python test
+test_all_modules
 
-# test fn_execution module
-test_module "fn_execution"
-
-# test metrics module
-test_module "metrics"
-
-# test table module
-test_module "table"
+# cython test
+source "${FLINK_SOURCE_DIR}/tools/azure-pipelines/build_properties.sh"
+pr_contains_cython_changes
+if [[ "$?" == 0 ]] ; then
+    echo "This pull request doesn't contain cython files change. Skipping the cython check."
+else
+    # compile cython files
+    python setup.py build_ext --inplace --force
+    test_all_modules
+fi

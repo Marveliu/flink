@@ -18,6 +18,7 @@
 
 package org.apache.flink.runtime.execution.librarycache;
 
+import org.apache.flink.api.common.ApplicationID;
 import org.apache.flink.api.common.JobID;
 import org.apache.flink.runtime.blob.PermanentBlobKey;
 import org.apache.flink.util.UserCodeClassLoader;
@@ -43,9 +44,10 @@ public interface LibraryCacheManager {
      * job will be valid as long as there exists a valid lease for this job.
      *
      * @param jobId jobId for which to register a new class loader lease
+     * @param applicationId applicationId to which the job belongs
      * @return a new class loader lease for the given job
      */
-    ClassLoaderLease registerClassLoaderLease(JobID jobId);
+    ClassLoaderLease registerClassLoaderLease(JobID jobId, ApplicationID applicationId);
 
     /**
      * Shuts the library cache manager down. Thereby it will close all open {@link ClassLoaderLease}
@@ -64,6 +66,9 @@ public interface LibraryCacheManager {
          * the required jars are present and potentially cache the created user code class loader.
          * Every subsequent call to this method, will ensure that created user code class loader can
          * fulfill the required jar files and class paths.
+         *
+         * <p>Required jar files are matched by content, not by {@link PermanentBlobKey} identity,
+         * so a jar that is re-uploaded without changing still resolves to the cached class loader.
          *
          * @param requiredJarFiles requiredJarFiles the user code class loader needs to load
          * @param requiredClasspaths requiredClasspaths the user code class loader needs to be

@@ -18,7 +18,9 @@
 
 package org.apache.flink.table.runtime.operators.join.lookup;
 
+import org.apache.flink.api.common.functions.DefaultOpenContext;
 import org.apache.flink.api.common.functions.FlatMapFunction;
+import org.apache.flink.api.common.functions.OpenContext;
 import org.apache.flink.api.common.functions.util.FunctionUtils;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.streaming.api.functions.async.AsyncFunction;
@@ -26,12 +28,11 @@ import org.apache.flink.streaming.api.functions.async.ResultFuture;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.data.conversion.DataStructureConverter;
 import org.apache.flink.table.runtime.collector.TableFunctionResultFuture;
+import org.apache.flink.table.runtime.generated.FilterCondition;
 import org.apache.flink.table.runtime.generated.GeneratedFunction;
 import org.apache.flink.table.runtime.generated.GeneratedResultFuture;
 import org.apache.flink.table.runtime.typeutils.RowDataSerializer;
-import org.apache.flink.util.Collector;
 
-import java.util.ArrayList;
 import java.util.Collection;
 
 /** The async join runner with an additional calculate function on the dimension table. */
@@ -46,6 +47,7 @@ public class AsyncLookupJoinWithCalcRunner extends AsyncLookupJoinRunner {
             DataStructureConverter<RowData, Object> fetcherConverter,
             GeneratedFunction<FlatMapFunction<RowData, RowData>> generatedCalc,
             GeneratedResultFuture<TableFunctionResultFuture<RowData>> generatedResultFuture,
+            GeneratedFunction<FilterCondition> generatedPreFilterCondition,
             RowDataSerializer rightRowSerializer,
             boolean isLeftOuterJoin,
             int asyncBufferCapacity) {
@@ -53,6 +55,7 @@ public class AsyncLookupJoinWithCalcRunner extends AsyncLookupJoinRunner {
                 generatedFetcher,
                 fetcherConverter,
                 generatedResultFuture,
+                generatedPreFilterCondition,
                 rightRowSerializer,
                 isLeftOuterJoin,
                 asyncBufferCapacity);
@@ -60,8 +63,8 @@ public class AsyncLookupJoinWithCalcRunner extends AsyncLookupJoinRunner {
     }
 
     @Override
-    public void open(Configuration parameters) throws Exception {
-        super.open(parameters);
+    public void open(OpenContext openContext) throws Exception {
+        super.open(openContext);
         // try to compile the generated ResultFuture, fail fast if the code is corrupt.
         generatedCalc.compile(getRuntimeContext().getUserCodeClassLoader());
     }
@@ -74,7 +77,7 @@ public class AsyncLookupJoinWithCalcRunner extends AsyncLookupJoinRunner {
         FlatMapFunction<RowData, RowData> calc =
                 generatedCalc.newInstance(getRuntimeContext().getUserCodeClassLoader());
         FunctionUtils.setFunctionRuntimeContext(calc, getRuntimeContext());
-        FunctionUtils.openFunction(calc, parameters);
+        FunctionUtils.openFunction(calc, DefaultOpenContext.INSTANCE);
         return new TemporalTableCalcResultFuture(calc, joinConditionCollector);
     }
 
@@ -89,7 +92,8 @@ public class AsyncLookupJoinWithCalcRunner extends AsyncLookupJoinRunner {
 
         private final FlatMapFunction<RowData, RowData> calc;
         private final TableFunctionResultFuture<RowData> joinConditionResultFuture;
-        private final CalcCollectionCollector calcCollector = new CalcCollectionCollector();
+        private final CalcCollectionCollector calcCollector =
+                new CalcCollectionCollector(rightRowSerializer);
 
         private TemporalTableCalcResultFuture(
                 FlatMapFunction<RowData, RowData> calc,
@@ -111,7 +115,7 @@ public class AsyncLookupJoinWithCalcRunner extends AsyncLookupJoinRunner {
 
         @Override
         public void complete(Collection<RowData> result) {
-            if (result == null || result.size() == 0) {
+            if (result == null || result.isEmpty()) {
                 joinConditionResultFuture.complete(result);
             } else {
                 for (RowData row : result) {
@@ -121,7 +125,7 @@ public class AsyncLookupJoinWithCalcRunner extends AsyncLookupJoinRunner {
                         joinConditionResultFuture.completeExceptionally(e);
                     }
                 }
-                joinConditionResultFuture.complete(calcCollector.collection);
+                joinConditionResultFuture.complete(calcCollector.getCollection());
             }
         }
 
@@ -131,22 +135,5 @@ public class AsyncLookupJoinWithCalcRunner extends AsyncLookupJoinRunner {
             joinConditionResultFuture.close();
             FunctionUtils.closeFunction(calc);
         }
-    }
-
-    private class CalcCollectionCollector implements Collector<RowData> {
-
-        Collection<RowData> collection;
-
-        public void reset() {
-            this.collection = new ArrayList<>();
-        }
-
-        @Override
-        public void collect(RowData record) {
-            this.collection.add(rightRowSerializer.copy(record));
-        }
-
-        @Override
-        public void close() {}
     }
 }

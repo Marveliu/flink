@@ -35,6 +35,7 @@ import org.apache.flink.table.types.logical.RowType;
 import org.apache.flink.table.types.utils.TypeConversions;
 
 import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.annotation.JsonCreator;
+import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.annotation.JsonProperty;
 import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.annotation.JsonTypeName;
 
@@ -56,6 +57,7 @@ import static org.apache.flink.util.Preconditions.checkNotNull;
  * A sub-class of {@link SourceAbilitySpec} that can not only serialize/deserialize the aggregation
  * to/from JSON, but also can push the local aggregate into a {@link SupportsAggregatePushDown}.
  */
+@JsonIgnoreProperties(ignoreUnknown = true)
 @JsonTypeName("AggregatePushDown")
 public final class AggregatePushDownSpec extends SourceAbilitySpecBase {
 
@@ -108,7 +110,7 @@ public final class AggregatePushDownSpec extends SourceAbilitySpecBase {
                         .collect(Collectors.joining(","));
 
         List<AggregateExpression> aggregateExpressions =
-                buildAggregateExpressions(inputType, aggregateCalls);
+                buildAggregateExpressions(context, inputType, aggregateCalls);
         String aggFunctionsStr =
                 aggregateExpressions.stream()
                         .map(AggregateExpression::asSummaryString)
@@ -131,7 +133,7 @@ public final class AggregatePushDownSpec extends SourceAbilitySpecBase {
         assert context.isBatchMode() && groupingSets.size() == 1;
 
         List<AggregateExpression> aggregateExpressions =
-                buildAggregateExpressions(inputType, aggregateCalls);
+                buildAggregateExpressions(context, inputType, aggregateCalls);
 
         if (tableSource instanceof SupportsAggregatePushDown) {
             DataType producedDataType = TypeConversions.fromLogicalToDataType(producedType);
@@ -146,10 +148,14 @@ public final class AggregatePushDownSpec extends SourceAbilitySpecBase {
     }
 
     private static List<AggregateExpression> buildAggregateExpressions(
-            RowType inputType, List<AggregateCall> aggregateCalls) {
+            SourceAbilityContext context, RowType inputType, List<AggregateCall> aggregateCalls) {
         AggregateInfoList aggInfoList =
                 AggregateUtil.transformToBatchAggregateInfoList(
-                        inputType, JavaScalaConversionUtil.toScala(aggregateCalls), null, null);
+                        context.getTypeFactory(),
+                        inputType,
+                        JavaScalaConversionUtil.toScala(aggregateCalls),
+                        null,
+                        null);
         if (aggInfoList.aggInfos().length == 0) {
             // no agg function need to be pushed down
             return Collections.emptyList();
@@ -226,5 +232,10 @@ public final class AggregatePushDownSpec extends SourceAbilitySpecBase {
     @Override
     public int hashCode() {
         return Objects.hash(super.hashCode(), inputType, groupingSets, aggregateCalls);
+    }
+
+    @Override
+    public boolean needAdjustFieldReferenceAfterProjection() {
+        return true;
     }
 }

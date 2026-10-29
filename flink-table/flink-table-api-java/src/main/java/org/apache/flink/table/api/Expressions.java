@@ -29,11 +29,14 @@ import org.apache.flink.table.expressions.TimePointUnit;
 import org.apache.flink.table.functions.BuiltInFunctionDefinition;
 import org.apache.flink.table.functions.BuiltInFunctionDefinitions;
 import org.apache.flink.table.functions.FunctionDefinition;
+import org.apache.flink.table.functions.ProcessTableFunction;
 import org.apache.flink.table.functions.UserDefinedFunction;
 import org.apache.flink.table.functions.UserDefinedFunctionHelper;
 import org.apache.flink.table.types.DataType;
+import org.apache.flink.table.types.logical.LogicalType;
 import org.apache.flink.table.types.utils.TypeConversions;
 import org.apache.flink.table.types.utils.ValueDataTypeConverter;
+import org.apache.flink.types.ColumnList;
 
 import java.util.Arrays;
 import java.util.List;
@@ -44,6 +47,7 @@ import static org.apache.flink.table.expressions.ApiExpressionUtils.objectToExpr
 import static org.apache.flink.table.expressions.ApiExpressionUtils.unresolvedCall;
 import static org.apache.flink.table.expressions.ApiExpressionUtils.unresolvedRef;
 import static org.apache.flink.table.expressions.ApiExpressionUtils.valueLiteral;
+import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.JSON;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.JSON_ARRAY;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.JSON_ARRAYAGG_ABSENT_ON_NULL;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.JSON_ARRAYAGG_NULL_ON_NULL;
@@ -83,11 +87,13 @@ public final class Expressions {
      * }</pre>
      *
      * @see #col(String)
+     * @see #withAllColumns()
      */
     // CHECKSTYLE.OFF: MethodName
     public static ApiExpression $(String name) {
         return new ApiExpression(unresolvedRef(name));
     }
+
     // CHECKSTYLE.ON: MethodName
 
     /**
@@ -101,13 +107,15 @@ public final class Expressions {
      * <pre>{@code
      * tab.select(col("key"), col("value"))
      * }</pre>
+     *
+     * @see #withAllColumns()
      */
     public static ApiExpression col(String name) {
         return $(name);
     }
 
     /**
-     * Creates a SQL literal.
+     * Creates a literal (i.e. a constant value).
      *
      * <p>The data type is derived from the object's class and its value.
      *
@@ -126,15 +134,26 @@ public final class Expressions {
     }
 
     /**
-     * Creates a SQL literal of a given {@link DataType}.
+     * Creates a literal (i.e. a constant value) of a given {@link DataType}.
      *
      * <p>The method {@link #lit(Object)} is preferred as it extracts the {@link DataType}
      * automatically. Use this method only when necessary. The class of {@code v} must be supported
-     * according to the {@link
-     * org.apache.flink.table.types.logical.LogicalType#supportsInputConversion(Class)}.
+     * according to the {@link LogicalType#supportsInputConversion(Class)}.
      */
     public static ApiExpression lit(Object v, DataType dataType) {
         return new ApiExpression(valueLiteral(v, dataType));
+    }
+
+    /**
+     * Creates a literal describing an arbitrary, unvalidated list of column names.
+     *
+     * <p>Passing a list of columns can be useful for parameterizing a function. In particular, it
+     * enables declaring the {@code on_time} argument for {@link ProcessTableFunction}.
+     *
+     * <p>The data type will be {@link DataTypes#DESCRIPTOR()}.
+     */
+    public static ApiExpression descriptor(String... columnNames) {
+        return new ApiExpression(valueLiteral(ColumnList.of(Arrays.asList(columnNames))));
     }
 
     /**
@@ -205,34 +224,51 @@ public final class Expressions {
     }
 
     /**
+     * Returns true if the given numeric expression is NaN (Not-a-Number).
+     *
+     * <p>This method supports a three-valued logic by preserving {@code NULL}. This means if the
+     * input expression is {@code NULL}, the result will also be {@code NULL}.
+     */
+    public static ApiExpression isNan(Object expression) {
+        return apiCall(BuiltInFunctionDefinitions.IS_NAN, expression);
+    }
+
+    /**
+     * Returns true if the given numeric expression is not NaN (Not-a-Number).
+     *
+     * <p>This method supports a three-valued logic by preserving {@code NULL}. This means if the
+     * input expression is {@code NULL}, the result will also be {@code NULL}.
+     */
+    public static ApiExpression isNotNan(Object expression) {
+        return apiCall(BuiltInFunctionDefinitions.IS_NOT_NAN, expression);
+    }
+
+    /**
      * Offset constant to be used in the {@code preceding} clause of unbounded {@code Over} windows.
      * Use this constant for a time interval. Unbounded over windows start with the first row of a
      * partition.
      */
-    public static final ApiExpression UNBOUNDED_ROW =
-            apiCall(BuiltInFunctionDefinitions.UNBOUNDED_ROW);
+    public static final ApiExpression UNBOUNDED_ROW = lit(OverWindowRange.UNBOUNDED_ROW);
 
     /**
      * Offset constant to be used in the {@code preceding} clause of unbounded {@link Over} windows.
      * Use this constant for a row-count interval. Unbounded over windows start with the first row
      * of a partition.
      */
-    public static final ApiExpression UNBOUNDED_RANGE =
-            apiCall(BuiltInFunctionDefinitions.UNBOUNDED_RANGE);
+    public static final ApiExpression UNBOUNDED_RANGE = lit(OverWindowRange.UNBOUNDED_RANGE);
 
     /**
      * Offset constant to be used in the {@code following} clause of {@link Over} windows. Use this
      * for setting the upper bound of the window to the current row.
      */
-    public static final ApiExpression CURRENT_ROW = apiCall(BuiltInFunctionDefinitions.CURRENT_ROW);
+    public static final ApiExpression CURRENT_ROW = lit(OverWindowRange.CURRENT_ROW);
 
     /**
      * Offset constant to be used in the {@code following} clause of {@link Over} windows. Use this
      * for setting the upper bound of the window to the sort key of the current row, i.e., all rows
      * with the same sort key as the current row are included in the window.
      */
-    public static final ApiExpression CURRENT_RANGE =
-            apiCall(BuiltInFunctionDefinitions.CURRENT_RANGE);
+    public static final ApiExpression CURRENT_RANGE = lit(OverWindowRange.CURRENT_RANGE);
 
     /**
      * Returns the current SQL date in local time zone, the return type of this expression is {@link
@@ -280,6 +316,14 @@ public final class Expressions {
     }
 
     /**
+     * Return the current database, the return type of this expression is {@link
+     * DataTypes#STRING()}.
+     */
+    public static ApiExpression currentDatabase() {
+        return apiCall(BuiltInFunctionDefinitions.CURRENT_DATABASE);
+    }
+
+    /**
      * Returns the current SQL time in local time zone, the return type of this expression is {@link
      * DataTypes#TIME()}, this is a synonym for {@link Expressions#currentTime()}.
      */
@@ -296,21 +340,171 @@ public final class Expressions {
     }
 
     /**
+     * Converts the given date string with format 'yyyy-MM-dd' to {@link DataTypes#DATE()}.
+     *
+     * @param dateStr The date string.
+     * @return The date value of {@link DataTypes#DATE()} type.
+     */
+    public static ApiExpression toDate(Object dateStr) {
+        return apiCall(BuiltInFunctionDefinitions.TO_DATE, dateStr);
+    }
+
+    /**
+     * Converts the date string with the specified format to {@link DataTypes#DATE()}.
+     *
+     * @param dateStr The date string.
+     * @param format The format of the string.
+     * @return The date value of {@link DataTypes#DATE()} type.
+     */
+    public static ApiExpression toDate(Object dateStr, Object format) {
+        return apiCall(BuiltInFunctionDefinitions.TO_DATE, dateStr, format);
+    }
+
+    /**
+     * Converts the given date time string with format 'yyyy-MM-dd HH:mm:ss' under the 'UTC+0' time
+     * zone to {@link DataTypes#TIMESTAMP()}.
+     *
+     * @param timestampStr The date time string.
+     * @return The timestamp value with {@link DataTypes#TIMESTAMP()} type.
+     */
+    public static ApiExpression toTimestamp(Object timestampStr) {
+        return apiCall(BuiltInFunctionDefinitions.TO_TIMESTAMP, timestampStr);
+    }
+
+    /**
+     * Converts the given time string with the specified format under the 'UTC+0' time zone to
+     * {@link DataTypes#TIMESTAMP()}.
+     *
+     * @param timestampStr The date time string.
+     * @param format The format of the string.
+     * @return The timestamp value with {@link DataTypes#TIMESTAMP()} type.
+     */
+    public static ApiExpression toTimestamp(Object timestampStr, Object format) {
+        return apiCall(BuiltInFunctionDefinitions.TO_TIMESTAMP, timestampStr, format);
+    }
+
+    /**
      * Converts a numeric type epoch time to {@link DataTypes#TIMESTAMP_LTZ(int)}.
      *
-     * <p>The supported precision is 0 or 3:
+     * <p>The supported precision is between 0 and 9 inclusive. It determines the unit of the
+     * numeric value:
      *
      * <ul>
-     *   <li>0 means the numericEpochTime is in second.
-     *   <li>3 means the numericEpochTime is in millisecond.
+     *   <li>0: seconds since epoch
+     *   <li>3: milliseconds since epoch (default)
+     *   <li>6: microseconds since epoch
+     *   <li>9: nanoseconds since epoch
      * </ul>
      *
+     * <p>Other values in {@code [0, 9]} represent units of {@code 10^(-precision)} seconds. The
+     * output type is {@code TIMESTAMP_LTZ(3)} for precision 0-3, and {@code
+     * TIMESTAMP_LTZ(precision)} for precision 4-9. When precision is supplied as a non-literal
+     * expression the output defaults to {@code TIMESTAMP_LTZ(3)} and sub-millisecond digits are
+     * truncated.
+     *
+     * <p>Example:
+     *
+     * <pre>{@code
+     * toTimestampLtz(1234567890L, 0)             // epoch seconds
+     * toTimestampLtz(1234567890123L, 3)          // epoch milliseconds
+     * toTimestampLtz(1234567890123456789L, 9)    // epoch nanoseconds
+     * }</pre>
+     *
      * @param numericEpochTime The epoch time with numeric type.
-     * @param precision The precision to indicate the epoch time is in second or millisecond.
+     * @param precision The precision (0-9) that determines the unit of the numeric value.
      * @return The timestamp value with {@link DataTypes#TIMESTAMP_LTZ(int)} type.
      */
     public static ApiExpression toTimestampLtz(Object numericEpochTime, Object precision) {
         return apiCall(BuiltInFunctionDefinitions.TO_TIMESTAMP_LTZ, numericEpochTime, precision);
+    }
+
+    /**
+     * Converts the given time string with the specified format to {@link
+     * DataTypes#TIMESTAMP_LTZ(int)} under the {@code UTC} time zone.
+     *
+     * <p>The output precision is inferred from the longest run of {@code 'S'} characters in the
+     * format pattern (outside quoted literal sections), clamped to {@code [3, 9]}. For example,
+     * {@code 'yyyy-MM-dd HH:mm:ss.SSS'} produces {@code TIMESTAMP_LTZ(3)}, {@code 'yyyy-MM-dd
+     * HH:mm:ss.SSSSSS X'} produces {@code TIMESTAMP_LTZ(6)}.
+     *
+     * <p>This inference only applies when the format is a literal at plan time. If the format is
+     * supplied as a non-literal expression, the output defaults to {@code TIMESTAMP_LTZ(3)} and
+     * sub-millisecond digits are truncated.
+     *
+     * <p>Example:
+     *
+     * <pre>{@code
+     * // Output type TIMESTAMP_LTZ(6), inferred from the run of 6 'S' characters.
+     * toTimestampLtz("2023-01-01 00:00:00.123456 Z", "yyyy-MM-dd HH:mm:ss.SSSSSS X")
+     * }</pre>
+     *
+     * @param timestampStr The timestamp string to convert.
+     * @param format The format pattern to parse the timestamp string.
+     * @return The timestamp value with {@link DataTypes#TIMESTAMP_LTZ(int)} type.
+     */
+    public static ApiExpression toTimestampLtz(String timestampStr, String format) {
+        return apiCall(BuiltInFunctionDefinitions.TO_TIMESTAMP_LTZ, timestampStr, format);
+    }
+
+    /**
+     * Converts the given timestamp string to {@link DataTypes#TIMESTAMP_LTZ(int)} using the default
+     * format {@code 'yyyy-MM-dd HH:mm:ss'} under the {@code UTC} time zone.
+     *
+     * <p>Example:
+     *
+     * <pre>{@code
+     * toTimestampLtz("2023-01-01 00:00:00")
+     * }</pre>
+     *
+     * @param timeStamp The timestamp string to be converted.
+     * @return The timestamp value with {@link DataTypes#TIMESTAMP_LTZ(int)} type at precision 3.
+     */
+    public static ApiExpression toTimestampLtz(String timeStamp) {
+        return apiCall(BuiltInFunctionDefinitions.TO_TIMESTAMP_LTZ, timeStamp);
+    }
+
+    /**
+     * Converts a numeric epoch time in milliseconds to {@link DataTypes#TIMESTAMP_LTZ(int)}.
+     *
+     * <p>Equivalent to calling {@link #toTimestampLtz(Object, Object)} with precision {@code 3}.
+     *
+     * <p>Example:
+     *
+     * <pre>{@code
+     * toTimestampLtz(1234567890123L)   // epoch milliseconds
+     * }</pre>
+     *
+     * @param numericEpochTime The epoch time in milliseconds.
+     * @return The timestamp value with {@link DataTypes#TIMESTAMP_LTZ(int)} type at precision 3.
+     */
+    public static ApiExpression toTimestampLtz(Object numericEpochTime) {
+        return apiCall(BuiltInFunctionDefinitions.TO_TIMESTAMP_LTZ, numericEpochTime);
+    }
+
+    /**
+     * Converts the given time string with the specified format and timezone to {@link
+     * DataTypes#TIMESTAMP_LTZ(int)}.
+     *
+     * <p>The output precision is inferred from the longest run of {@code 'S'} characters in the
+     * format pattern (outside quoted literal sections), clamped to {@code [3, 9]}. This inference
+     * only applies when the format is a literal at plan time; for non-literal formats the output
+     * defaults to {@code TIMESTAMP_LTZ(3)} and sub-millisecond digits are truncated.
+     *
+     * <p>Example:
+     *
+     * <pre>{@code
+     * toTimestampLtz("2023-01-01 08:00:00", "yyyy-MM-dd HH:mm:ss", "Asia/Shanghai")
+     * }</pre>
+     *
+     * @param timestampStr The timestamp string to convert.
+     * @param format The format pattern to parse the timestamp string.
+     * @param timezone The timezone to use for the conversion (e.g. {@code 'UTC'}, {@code
+     *     'Asia/Shanghai'}).
+     * @return The timestamp value with {@link DataTypes#TIMESTAMP_LTZ(int)} type.
+     */
+    public static ApiExpression toTimestampLtz(
+            Object timestampStr, Object format, Object timezone) {
+        return apiCall(BuiltInFunctionDefinitions.TO_TIMESTAMP_LTZ, timestampStr, format, timezone);
     }
 
     /**
@@ -381,6 +575,78 @@ public final class Expressions {
                 timePoint2);
     }
 
+    /**
+     * Converts a datetime dateStr (with default ISO timestamp format 'yyyy-MM-dd HH:mm:ss') from
+     * time zone tzFrom to time zone tzTo. The format of time zone should be either an abbreviation
+     * such as "PST", a full name such as "America/Los_Angeles", or a custom ID such as "GMT-08:00".
+     * E.g., convertTz('1970-01-01 00:00:00', 'UTC', 'America/Los_Angeles') returns '1969-12-31
+     * 16:00:00'.
+     *
+     * @param dateStr the date time string
+     * @param tzFrom the original time zone
+     * @param tzTo the target time zone
+     * @return The formatted timestamp as string.
+     */
+    public static ApiExpression convertTz(Object dateStr, Object tzFrom, Object tzTo) {
+        return apiCall(BuiltInFunctionDefinitions.CONVERT_TZ, dateStr, tzFrom, tzTo);
+    }
+
+    /**
+     * Converts unix timestamp (seconds since '1970-01-01 00:00:00' UTC) to datetime string in the
+     * "yyyy-MM-dd HH:mm:ss" format.
+     *
+     * @param unixtime The unix timestamp with numeric type.
+     * @return The formatted timestamp as string.
+     */
+    public static ApiExpression fromUnixtime(Object unixtime) {
+        return apiCall(BuiltInFunctionDefinitions.FROM_UNIXTIME, unixtime);
+    }
+
+    /**
+     * Converts unix timestamp (seconds since '1970-01-01 00:00:00' UTC) to datetime string in the
+     * given format.
+     *
+     * @param unixtime The unix timestamp with numeric type.
+     * @param format The format of the string.
+     * @return The formatted timestamp as string.
+     */
+    public static ApiExpression fromUnixtime(Object unixtime, Object format) {
+        return apiCall(BuiltInFunctionDefinitions.FROM_UNIXTIME, unixtime, format);
+    }
+
+    /**
+     * Gets the current unix timestamp in seconds. This function is not deterministic which means
+     * the value would be recalculated for each record.
+     *
+     * @return The current unix timestamp as bigint.
+     */
+    public static ApiExpression unixTimestamp() {
+        return apiCall(BuiltInFunctionDefinitions.UNIX_TIMESTAMP);
+    }
+
+    /**
+     * Converts the given date time string with format 'yyyy-MM-dd HH:mm:ss' to unix timestamp (in
+     * seconds), using the time zone specified in the table config.
+     *
+     * @param timestampStr The date time string.
+     * @return The converted timestamp as bigint.
+     */
+    public static ApiExpression unixTimestamp(Object timestampStr) {
+        return apiCall(BuiltInFunctionDefinitions.UNIX_TIMESTAMP, timestampStr);
+    }
+
+    /**
+     * Converts the given date time string with the specified format to unix timestamp (in seconds),
+     * using the specified timezone in table config.
+     *
+     * @param timestampStr The date time string.
+     * @param format The format of the date time string.
+     * @return The converted timestamp as bigint.
+     */
+    public static ApiExpression unixTimestamp(Object timestampStr, Object format) {
+        return apiCall(BuiltInFunctionDefinitions.UNIX_TIMESTAMP, timestampStr, format);
+    }
+
     /** Creates an array of literals. */
     public static ApiExpression array(Object head, Object... tail) {
         return apiCallAtLeastOneArgument(BuiltInFunctionDefinitions.ARRAY, head, tail);
@@ -407,6 +673,92 @@ public final class Expressions {
      */
     public static ApiExpression map(Object key, Object value, Object... tail) {
         return apiCallAtLeastTwoArgument(BuiltInFunctionDefinitions.MAP, key, value, tail);
+    }
+
+    /**
+     * Creates a map from an array of keys and an array of values.
+     *
+     * <pre>{@code
+     * table.select(
+     *     mapFromArrays(
+     *         array("key1", "key2", "key3"),
+     *         array(1, 2, 3)
+     *     ))
+     * }</pre>
+     *
+     * <p>Note both arrays should have the same length.
+     */
+    public static ApiExpression mapFromArrays(Object key, Object value) {
+        return apiCall(
+                BuiltInFunctionDefinitions.MAP_FROM_ARRAYS,
+                objectToExpression(key),
+                objectToExpression(value));
+    }
+
+    /**
+     * Creates a structured object from a list of key-value pairs.
+     *
+     * <p>This function creates an instance of a structured type identified by the given class. The
+     * structured type is created by providing alternating key-value pairs where keys must be string
+     * literals and values can be arbitrary expressions.
+     *
+     * <p>Note: The class is only used for distinguishing two structured types with identical
+     * fields. Structured types are internally handled with suitable data structures. Thus,
+     * serialization and equality checks are managed by the system.
+     *
+     * <p>Examples:
+     *
+     * <pre>{@code
+     * // Creates a User object with name="Alice" and age=30
+     * objectOf(User.class, "name", "Alice", "age", 30)
+     *
+     * }</pre>
+     *
+     * <p>This function corresponds to the SQL {@code OBJECT_OF} function.
+     *
+     * @param clazz The class representing the structured type
+     * @param fields Alternating key-value pairs: key1, value1, key2, value2, ...
+     * @return A structured object expression
+     * @see #objectOf(String, Object...)
+     */
+    public static ApiExpression objectOf(Class<?> clazz, Object... fields) {
+        return apiCallAtLeastOneArgument(
+                BuiltInFunctionDefinitions.OBJECT_OF, valueLiteral(clazz.getName()), fields);
+    }
+
+    /**
+     * Creates a structured object from a list of key-value pairs.
+     *
+     * <p>This function creates an instance of a structured type identified by the given class name.
+     * The structured type is created by providing alternating key-value pairs where keys must be
+     * string literals and values can be arbitrary expressions.
+     *
+     * <p>Note: The class name is only used for distinguishing two structured types with identical
+     * fields. Structured types are internally handled with suitable data structures. Thus,
+     * serialization and equality checks are managed by the system.
+     *
+     * <p>Examples:
+     *
+     * <pre>{@code
+     * // Creates a User object with name="Bob" and age=25
+     * objectOf("com.example.User", "name", "Bob", "age", 25)
+     *
+     * }</pre>
+     *
+     * <p>This function corresponds to the SQL {@code OBJECT_OF} function:
+     *
+     * <pre>{@code
+     * OBJECT_OF('com.example.User', 'name', 'Bob', 'age', 25)
+     * }</pre>
+     *
+     * @param className The fully qualified class name representing the structured type
+     * @param fields Alternating key-value pairs: key1, value1, key2, value2, ...
+     * @return A structured object expression
+     * @see #objectOf(Class, Object...)
+     */
+    public static ApiExpression objectOf(String className, Object... fields) {
+        return apiCallAtLeastOneArgument(
+                BuiltInFunctionDefinitions.OBJECT_OF, valueLiteral(className), fields);
     }
 
     /**
@@ -444,7 +796,7 @@ public final class Expressions {
     }
 
     /**
-     * Returns a pseudorandom integer value between 0.0 (inclusive) and the specified value
+     * Returns a pseudorandom integer value between 0 (inclusive) and the specified value
      * (exclusive).
      */
     public static ApiExpression randInteger(Object bound) {
@@ -452,7 +804,7 @@ public final class Expressions {
     }
 
     /**
-     * Returns a pseudorandom integer value between 0.0 (inclusive) and the specified value
+     * Returns a pseudorandom integer value between 0 (inclusive) and the specified value
      * (exclusive) with a initial seed. Two randInteger() functions will return identical sequences
      * of numbers if they have same initial seed and same bound.
      */
@@ -495,12 +847,37 @@ public final class Expressions {
 
     /**
      * Returns an UUID (Universally Unique Identifier) string (e.g.,
-     * "3d3c68f7-f608-473f-b60c-b0c44ad4cc4e") according to RFC 4122 type 4 (pseudo randomly
+     * "3d3c68f7-f608-473f-b60c-b0c44ad4cc4e") according to RFC 9562 version 4 (pseudo randomly
      * generated) UUID. The UUID is generated using a cryptographically strong pseudo random number
      * generator.
+     *
+     * @see <a href="https://www.rfc-editor.org/rfc/rfc9562.html">RFC 9562</a>
      */
     public static ApiExpression uuid() {
         return apiCall(BuiltInFunctionDefinitions.UUID);
+    }
+
+    /**
+     * Returns a random RFC 9562 version 4 (pseudo randomly generated) {@code UUID} value.
+     *
+     * <p>Compared to {@link #uuid()}, this function returns a value of the {@code UUID} data type.
+     *
+     * @see <a href="https://www.rfc-editor.org/rfc/rfc9562.html">RFC 9562</a>
+     */
+    public static ApiExpression uuidV4() {
+        return apiCall(BuiltInFunctionDefinitions.UUID_V4);
+    }
+
+    /**
+     * Returns a time-ordered RFC 9562 version 7 {@code UUID} value, generated from the current
+     * timestamp and a random component.
+     *
+     * <p>Compared to {@link #uuid()}, this function returns a value of the {@code UUID} data type.
+     *
+     * @see <a href="https://www.rfc-editor.org/rfc/rfc9562.html">RFC 9562</a>
+     */
+    public static ApiExpression uuidV7() {
+        return apiCall(BuiltInFunctionDefinitions.UUID_V7);
     }
 
     /**
@@ -585,13 +962,33 @@ public final class Expressions {
     }
 
     /**
+     * Creates an expression that selects all columns. It can be used wherever an array of
+     * expression is accepted such as function calls, projections, or groupings.
+     *
+     * <p>This expression is a synonym of $("*"). It is semantically equal to {@code SELECT *} in
+     * SQL when used in a projection.
+     *
+     * <p>Example:
+     *
+     * <pre>{@code
+     * tab.select(withAllColumns())
+     * }</pre>
+     *
+     * @see #withColumns(Object, Object...)
+     * @see #withoutColumns(Object, Object...)
+     */
+    public static ApiExpression withAllColumns() {
+        return $("*");
+    }
+
+    /**
      * Creates an expression that selects a range of columns. It can be used wherever an array of
      * expression is accepted such as function calls, projections, or groupings.
      *
      * <p>A range can either be index-based or name-based. Indices start at 1 and boundaries are
      * inclusive.
      *
-     * <p>e.g. withColumns(range("b", "c")) or withoutColumns($("*"))
+     * <p>e.g. withColumns(range("b", "c")) or withColumns($("*"))
      */
     public static ApiExpression withColumns(Object head, Object... tail) {
         return apiCallAtLeastOneArgument(BuiltInFunctionDefinitions.WITH_COLUMNS, head, tail);
@@ -641,9 +1038,13 @@ public final class Expressions {
      * jsonObject(JsonOnNull.ABSENT, "K1", nullOf(DataTypes.STRING())) // "{}"
      *
      * // {"K1":{"K2":"V"}}
+     * jsonObject(JsonOnNull.NULL, "K1", json("{\"K2\":\"V\"}"))
+     *
+     * // {"K1":{"K2":"V"}}
      * jsonObject(JsonOnNull.NULL, "K1", jsonObject(JsonOnNull.NULL, "K2", "V"))
      * }</pre>
      *
+     * @see #json(Object)
      * @see #jsonArray(JsonOnNull, Object...)
      */
     public static ApiExpression jsonObject(JsonOnNull onNull, Object... keyValues) {
@@ -651,6 +1052,47 @@ public final class Expressions {
                 Stream.concat(Stream.of(onNull), Arrays.stream(keyValues)).toArray(Object[]::new);
 
         return apiCall(JSON_OBJECT, arguments);
+    }
+
+    /**
+     * Expects a raw, pre-formatted JSON string and returns its values as-is without escaping it as
+     * a string.
+     *
+     * <p>This function can currently only be used within the {@link #jsonObject(JsonOnNull,
+     * Object...)} and {@link #jsonArray(JsonOnNull, Object...)} function. It allows passing
+     * pre-formatted JSON strings that will be inserted directly into the resulting JSON structure
+     * rather than being escaped as a string value. This allows storing nested JSON structures in a
+     * `JSON_OBJECT` or `JSON_ARRAY` without processing them as strings, which is often useful when
+     * ingesting already formatted json data. If the value is null or empty, the function returns
+     * {@code null}.
+     *
+     * <p>Examples:
+     *
+     * <pre>{@code
+     * // {"K":{"K2":42}}
+     * jsonObject(JsonOnNull.NULL, "K", json("{\"K2\": 42}"))
+     *
+     * // {"K":{"K2":{"K3":42}}}
+     * jsonObject(
+     *         JsonOnNull.NULL,
+     *         "K",
+     *         json("""
+     *                {
+     *                  "K2": {
+     *                    "K3": 42
+     *                  }
+     *                }
+     *              """))
+     *
+     * // {"K": null}
+     * jsonObject(JsonOnNull.NULL, "K", json(""))
+     *
+     * // Invalid - JSON function can only be used within JSON_OBJECT
+     * json("{\"value\": 42}")
+     * }</pre>
+     */
+    public static ApiExpression json(Object value) {
+        return apiCall(JSON, value);
     }
 
     /**
@@ -738,8 +1180,12 @@ public final class Expressions {
      *
      * // "[[1]]"
      * jsonArray(JsonOnNull.NULL, jsonArray(JsonOnNull.NULL, 1))
+     *
+     * // "[{\"nested_json\":{\"value\":42}}]"
+     * jsonArray(JsonOnNull.NULL, json("{\"nested_json\": {\"value\": 42}}"))
      * }</pre>
      *
+     * @see #json(Object)
      * @see #jsonObject(JsonOnNull, Object...)
      */
     public static ApiExpression jsonArray(JsonOnNull onNull, Object... values) {
@@ -781,6 +1227,126 @@ public final class Expressions {
         }
 
         return apiCall(functionDefinition, itemExpr);
+    }
+
+    /**
+     * A window function that provides access to a row that comes directly after the current row.
+     *
+     * <p>Example:
+     *
+     * <pre>{@code
+     * table.window(Over.orderBy($("ts")).partitionBy("organisation").as("w"))
+     *    .select(
+     *       $("organisation"),
+     *       $("revenue"),
+     *       lag($("revenue")).over($("w").as("next_revenue")
+     *    )
+     * }</pre>
+     */
+    public static ApiExpression lead(Object value) {
+        return apiCall(BuiltInFunctionDefinitions.LEAD, value);
+    }
+
+    /**
+     * A window function that provides access to a row at a specified physical offset which comes
+     * after the current row.
+     *
+     * <p>Example:
+     *
+     * <pre>{@code
+     * table.window(Over.orderBy($("ts")).partitionBy("organisation").as("w"))
+     *    .select(
+     *       $("organisation"),
+     *       $("revenue"),
+     *       lag($("revenue"), 1).over($("w").as("next_revenue")
+     *    )
+     * }</pre>
+     */
+    public static ApiExpression lead(Object value, Object offset) {
+        return apiCall(BuiltInFunctionDefinitions.LEAD, value, offset);
+    }
+
+    /**
+     * A window function that provides access to a row at a specified physical offset which comes
+     * after the current row.
+     *
+     * <p>The value to return when offset is beyond the scope of the partition. If a default value
+     * is not specified, NULL is returned. {@code default} must be type-compatible with {@code
+     * value}.
+     *
+     * <p>Example:
+     *
+     * <pre>{@code
+     * table.window(Over.orderBy($("ts")).partitionBy("organisation").as("w"))
+     *    .select(
+     *       $("organisation"),
+     *       $("revenue"),
+     *       lag($("revenue"), 1, lit(0)).over($("w").as("next_revenue")
+     *    )
+     * }</pre>
+     */
+    public static ApiExpression lead(Object value, Object offset, Object defaultValue) {
+        return apiCall(BuiltInFunctionDefinitions.LEAD, value, offset, defaultValue);
+    }
+
+    /**
+     * A window function that provides access to a row that comes directly before the current row.
+     *
+     * <p>Example:
+     *
+     * <pre>{@code
+     * table.window(Over.orderBy($("ts")).partitionBy("organisation").as("w"))
+     *    .select(
+     *       $("organisation"),
+     *       $("revenue"),
+     *       lag($("revenue")).over($("w").as("prev_revenue")
+     *    )
+     * }</pre>
+     */
+    public static ApiExpression lag(Object value) {
+        return apiCall(BuiltInFunctionDefinitions.LAG, value);
+    }
+
+    /**
+     * A window function that provides access to a row at a specified physical offset which comes
+     * before the current row.
+     *
+     * <p>Example:
+     *
+     * <pre>{@code
+     * table.window(Over.orderBy($("ts")).partitionBy("organisation").as("w"))
+     *    .select(
+     *       $("organisation"),
+     *       $("revenue"),
+     *       lag($("revenue"), 1).over($("w").as("prev_revenue")
+     *    )
+     * }</pre>
+     */
+    public static ApiExpression lag(Object value, Object offset) {
+        return apiCall(BuiltInFunctionDefinitions.LAG, value, offset);
+    }
+
+    /**
+     * A window function that provides access to a row at a specified physical offset which comes
+     * before the current row.
+     *
+     * <p>The value to return when offset is beyond the scope of the partition. If a default value
+     * is not specified, NULL is returned. {@code default} must be type-compatible with {@code
+     * value}.
+     *
+     * <p>Example:
+     *
+     * <pre>{@code
+     * org.window(Over.orderBy($("ts")).partitionBy("organisation").as("w"))
+     *    .select(
+     *       $("organisation"),
+     *       $("revenue"),
+     *       lag($("revenue"), 1, lit(0)).over($("w").as("prev_revenue")
+     *    )
+     * }</pre>
+     */
+    public static ApiExpression lag(Object value, Object offset, Object defaultValue) {
+        return apiCall(BuiltInFunctionDefinitions.LAG, value, offset, defaultValue);
     }
 
     /**

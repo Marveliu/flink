@@ -17,7 +17,7 @@
 
 package org.apache.flink.table.data.util;
 
-import org.apache.flink.api.common.ExecutionConfig;
+import org.apache.flink.api.common.serialization.SerializerConfigImpl;
 import org.apache.flink.api.common.typeinfo.BasicArrayTypeInfo;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.common.typeutils.CompositeType;
@@ -44,6 +44,7 @@ import org.apache.flink.table.data.binary.BinaryArrayData;
 import org.apache.flink.table.data.binary.BinaryMapData;
 import org.apache.flink.table.data.writer.BinaryArrayWriter;
 import org.apache.flink.table.data.writer.BinaryWriter;
+import org.apache.flink.table.legacy.types.logical.TypeInformationRawType;
 import org.apache.flink.table.runtime.types.LogicalTypeDataTypeConverter;
 import org.apache.flink.table.runtime.typeutils.BigDecimalTypeInfo;
 import org.apache.flink.table.runtime.typeutils.DecimalDataTypeInfo;
@@ -63,10 +64,11 @@ import org.apache.flink.table.types.logical.LocalZonedTimestampType;
 import org.apache.flink.table.types.logical.LogicalType;
 import org.apache.flink.table.types.logical.RawType;
 import org.apache.flink.table.types.logical.TimestampType;
-import org.apache.flink.table.types.logical.TypeInformationRawType;
 import org.apache.flink.table.types.utils.TypeConversions;
 import org.apache.flink.table.utils.DateTimeUtils;
 import org.apache.flink.types.Row;
+import org.apache.flink.types.bitmap.Bitmap;
+import org.apache.flink.types.variant.Variant;
 
 import org.apache.commons.lang3.ArrayUtils;
 
@@ -154,6 +156,8 @@ public class DataFormatConverters {
         t2C.put(
                 DataTypes.INTERVAL(DataTypes.SECOND(3)).bridgedTo(long.class),
                 LongConverter.INSTANCE);
+
+        t2C.put(DataTypes.BITMAP(), BitmapConverter.INSTANCE);
 
         TYPE_TO_CONVERTER = Collections.unmodifiableMap(t2C);
     }
@@ -347,8 +351,11 @@ public class DataFormatConverters {
 
                 if (clazz == RawValueData.class) {
                     return RawValueDataConverter.INSTANCE;
+                } else if (clazz == Variant.class) {
+                    return VariantConverter.INSTANCE;
                 }
-                return new GenericConverter(typeInfo.createSerializer(new ExecutionConfig()));
+
+                return new GenericConverter(typeInfo.createSerializer(new SerializerConfigImpl()));
             default:
                 throw new RuntimeException("Not support dataType: " + dataType);
         }
@@ -724,6 +731,34 @@ public class DataFormatConverters {
         @Override
         T toExternalImpl(RowData row, int column) {
             return (T) toExternalImpl(row.getRawValue(column));
+        }
+    }
+
+    public static final class VariantConverter extends IdentityConverter<Variant> {
+
+        private static final long serialVersionUID = 1L;
+
+        public static final VariantConverter INSTANCE = new VariantConverter();
+
+        private VariantConverter() {}
+
+        @Override
+        Variant toExternalImpl(RowData row, int column) {
+            return row.getVariant(column);
+        }
+    }
+
+    public static final class BitmapConverter extends IdentityConverter<Bitmap> {
+
+        private static final long serialVersionUID = 1L;
+
+        public static final BitmapConverter INSTANCE = new BitmapConverter();
+
+        private BitmapConverter() {}
+
+        @Override
+        Bitmap toExternalImpl(RowData row, int column) {
+            return row.getBitmap(column);
         }
     }
 
@@ -1130,7 +1165,7 @@ public class DataFormatConverters {
         private final DataFormatConverter<Object, T> elementConverter;
         private final int elementSize;
         private final TypeSerializer<T> eleSer;
-        private final boolean isEleIndentity;
+        private final boolean isEleIdentity;
 
         private transient BinaryArrayData reuseArray;
         private transient BinaryArrayWriter reuseWriter;
@@ -1142,12 +1177,12 @@ public class DataFormatConverters {
             this.elementConverter = DataFormatConverters.getConverterForDataType(elementType);
             this.elementSize = BinaryArrayData.calculateFixLengthPartSize(this.elementType);
             this.eleSer = InternalSerializers.create(this.elementType);
-            this.isEleIndentity = elementConverter instanceof IdentityConverter;
+            this.isEleIdentity = elementConverter instanceof IdentityConverter;
         }
 
         @Override
         ArrayData toInternalImpl(T[] value) {
-            return isEleIndentity ? new GenericArrayData(value) : toBinaryArray(value);
+            return isEleIdentity ? new GenericArrayData(value) : toBinaryArray(value);
         }
 
         private ArrayData toBinaryArray(T[] value) {
@@ -1178,7 +1213,7 @@ public class DataFormatConverters {
 
         @Override
         T[] toExternalImpl(ArrayData value) {
-            return (isEleIndentity && value instanceof GenericArrayData)
+            return (isEleIdentity && value instanceof GenericArrayData)
                     ? genericArrayToJavaArray((GenericArrayData) value, elementType)
                     : arrayDataToJavaArray(value, elementGetter, componentClass, elementConverter);
         }
@@ -1257,7 +1292,7 @@ public class DataFormatConverters {
         private final TypeSerializer keySer;
         private final TypeSerializer valueSer;
 
-        private final boolean isKeyValueIndentity;
+        private final boolean isKeyValueIdentity;
 
         private transient BinaryArrayData reuseKArray;
         private transient BinaryArrayWriter reuseKWriter;
@@ -1275,7 +1310,7 @@ public class DataFormatConverters {
             this.valueElementSize = BinaryArrayData.calculateFixLengthPartSize(valueType);
             this.keyComponentClass = keyTypeInfo.getConversionClass();
             this.valueComponentClass = valueTypeInfo.getConversionClass();
-            this.isKeyValueIndentity =
+            this.isKeyValueIdentity =
                     keyConverter instanceof IdentityConverter
                             && valueConverter instanceof IdentityConverter;
             this.keySer = InternalSerializers.create(this.keyType);
@@ -1284,7 +1319,7 @@ public class DataFormatConverters {
 
         @Override
         MapData toInternalImpl(Map value) {
-            return isKeyValueIndentity ? new GenericMapData(value) : toBinaryMap(value);
+            return isKeyValueIdentity ? new GenericMapData(value) : toBinaryMap(value);
         }
 
         private MapData toBinaryMap(Map value) {
@@ -1522,7 +1557,7 @@ public class DataFormatConverters {
         public CaseClassConverter(TupleTypeInfoBase t, DataType[] fieldTypes) {
             super(fieldTypes);
             this.t = t;
-            this.serializer = (TupleSerializerBase) t.createSerializer(new ExecutionConfig());
+            this.serializer = (TupleSerializerBase) t.createSerializer(new SerializerConfigImpl());
         }
 
         @Override

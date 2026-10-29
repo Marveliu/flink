@@ -15,11 +15,9 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.planner.plan.stream.table
 
 import org.apache.flink.api.java.tuple.Tuple1
-import org.apache.flink.api.scala._
 import org.apache.flink.table.api._
 import org.apache.flink.table.api.dataview.{ListView, MapView}
 import org.apache.flink.table.planner.plan.nodes.exec.utils.CommonPythonUtil
@@ -27,8 +25,8 @@ import org.apache.flink.table.planner.runtime.utils.JavaUserDefinedAggFunctions.
 import org.apache.flink.table.planner.utils.TableTestBase
 import org.apache.flink.table.runtime.dataview.{ListViewSpec, MapViewSpec}
 
-import org.junit.Assert.assertEquals
-import org.junit.Test
+import org.assertj.core.api.Assertions.{assertThat, assertThatExceptionOfType}
+import org.junit.jupiter.api.Test
 
 class PythonAggregateTest extends TableTestBase {
 
@@ -49,7 +47,8 @@ class PythonAggregateTest extends TableTestBase {
     val sourceTable = util.addTableSource[(Int, Long, Int)]("MyTable", 'a, 'b, 'c)
     val func = new TestPythonAggregateFunction
 
-    val resultTable = sourceTable.groupBy('b)
+    val resultTable = sourceTable
+      .groupBy('b)
       .select('b, func('a, 'c))
 
     util.verifyExecPlan(resultTable)
@@ -61,7 +60,8 @@ class PythonAggregateTest extends TableTestBase {
     val sourceTable = util.addTableSource[(Int, Long, Int)]("MyTable", 'a, 'b, 'c)
     val func = new TestPythonAggregateFunction
 
-    val resultTable = sourceTable.groupBy('b)
+    val resultTable = sourceTable
+      .groupBy('b)
       .select('b, func('a, 'c), 'a.count())
 
     util.verifyExecPlan(resultTable)
@@ -72,7 +72,8 @@ class PythonAggregateTest extends TableTestBase {
     val accType = DataTypes.ROW(
       DataTypes.FIELD("f0", DataTypes.STRING()),
       DataTypes.FIELD("f1", ListView.newListViewDataType(DataTypes.STRING())),
-      DataTypes.FIELD("f2", MapView.newMapViewDataType(DataTypes.STRING(), DataTypes.BIGINT())))
+      DataTypes.FIELD("f2", MapView.newMapViewDataType(DataTypes.STRING(), DataTypes.BIGINT()))
+    )
 
     val specs = CommonPythonUtil.extractDataViewSpecs(0, accType)
 
@@ -84,33 +85,40 @@ class PythonAggregateTest extends TableTestBase {
       new MapViewSpec(
         "agg0$f2",
         2,
-        DataTypes.MAP(
-          DataTypes.STRING(), DataTypes.BIGINT()).bridgedTo(classOf[java.util.Map[_, _]]),
-        false))
+        DataTypes
+          .MAP(DataTypes.STRING(), DataTypes.BIGINT())
+          .bridgedTo(classOf[java.util.Map[_, _]]),
+        false)
+    )
 
-    assertEquals(expected(0).getClass, specs(0).getClass)
-    assertEquals(expected(0).getDataType, specs(0).getDataType)
-    assertEquals(expected(0).getStateId, specs(0).getStateId)
-    assertEquals(expected(0).getFieldIndex, specs(0).getFieldIndex)
-    assertEquals(expected(1).getClass, specs(1).getClass)
-    assertEquals(expected(1).getDataType, specs(1).getDataType)
-    assertEquals(expected(1).getStateId, specs(1).getStateId)
-    assertEquals(expected(1).getFieldIndex, specs(1).getFieldIndex)
+    assertThat(specs(0)).hasSameClassAs(expected(0))
+    assertThat(specs(0).getDataType).isEqualTo(expected(0).getDataType)
+    assertThat(specs(0).getStateId).isEqualTo(expected(0).getStateId)
+    assertThat(specs(0).getFieldIndex).isEqualTo(expected(0).getFieldIndex)
+    assertThat(specs(1)).hasSameClassAs(expected(1))
+    assertThat(specs(1).getDataType).isEqualTo(expected(1).getDataType)
+    assertThat(specs(1).getStateId).isEqualTo(expected(1).getStateId)
+    assertThat(specs(1).getFieldIndex).isEqualTo(expected(1).getFieldIndex)
   }
 
-  @Test(expected = classOf[TableException])
+  @Test
   def testExtractSecondLevelDataViewSpecs(): Unit = {
     val accType = DataTypes.ROW(
-      DataTypes.FIELD("f0", DataTypes.ROW(
-        DataTypes.FIELD("f0", ListView.newListViewDataType(DataTypes.STRING())))))
-    CommonPythonUtil.extractDataViewSpecs(0, accType)
+      DataTypes.FIELD(
+        "f0",
+        DataTypes.ROW(DataTypes.FIELD("f0", ListView.newListViewDataType(DataTypes.STRING())))))
+
+    assertThatExceptionOfType(classOf[TableException])
+      .isThrownBy(() => CommonPythonUtil.extractDataViewSpecs(0, accType))
   }
 
-  @Test(expected = classOf[TableException])
+  @Test
   def testExtractDataViewSpecsFromStructuredType(): Unit = {
     val accType = DataTypes.STRUCTURED(
       classOf[Tuple1[_]],
       DataTypes.FIELD("f0", ListView.newListViewDataType(DataTypes.STRING())))
-    CommonPythonUtil.extractDataViewSpecs(0, accType)
+
+    assertThatExceptionOfType(classOf[TableException])
+      .isThrownBy(() => CommonPythonUtil.extractDataViewSpecs(0, accType))
   }
 }

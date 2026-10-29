@@ -15,3 +15,43 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+@import "theme";
+
+:host {
+  ::ng-deep {
+    .ant-table-cell {
+      font-size: @font-size-sm;
+    }
+
+    ::-webkit-scrollbar {
+      display: none;
+    }
+
+    nz-table,
+    nz-spin,
+    cdk-virtual-scroll-viewport,
+    nz-table-inner-scroll,
+    .ant-spin-container,
+    .ant-table {
+      height: 100%;
+    }
+  }
+}
+
+.timezone-selector {
+  display: flex;
+  align-items: center;
+  margin-bottom: 8px;
+  padding: 4px 0;
+
+  label {
+    margin-right: 8px;
+    color: @text-color;
+    font-size: @font-size-sm;
+    white-space: nowrap;
+  }
+
+  nz-select {
+    flex-shrink: 0;
+  }
+}

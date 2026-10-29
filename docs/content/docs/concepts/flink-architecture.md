@@ -43,7 +43,7 @@ The Flink runtime consists of two types of processes: a _JobManager_ and one or 
 The *Client* is not part of the runtime and program execution, but is used to
 prepare and send a dataflow to the JobManager.  After that, the client can
 disconnect (_detached mode_), or stay connected to receive progress reports
-(_attached mode_). The client runs either as part of the Java/Scala program
+(_attached mode_). The client runs either as part of the Java program
 that triggers the execution, or in the command line process `./bin/flink run
 ...`.
 
@@ -80,7 +80,7 @@ failures, among others. This process consists of three different components:
   * **JobMaster** 
 
     A _JobMaster_ is responsible for managing the execution of a single
-    [JobGraph]({{< ref "docs/concepts/glossary" >}}#logical-graph).
+    [JobGraph]({{< ref "docs/concepts/glossary" >}}#job-graph).
     Multiple jobs can run simultaneously in a Flink cluster, each having its
     own JobMaster.
 
@@ -143,7 +143,7 @@ different tasks, so long as they are from the same job. The result is that one
 slot may hold an entire pipeline of the job. Allowing this *slot sharing* has
 two main benefits:
 
-  - A Flink cluster needs exactly as many task slots as the highest parallelism
+  - A Flink job needs exactly as many task slots as the highest parallelism
     used in the job.  No need to calculate how many tasks (with varying
     parallelism) a program contains in total.
 
@@ -192,10 +192,10 @@ isolation guarantees.
 ### Flink Session Cluster
 
 * **Cluster Lifecycle**: in a Flink Session Cluster, the client connects to a
-  pre-existing, long-running cluster that can accept multiple job submissions.
-  Even after all jobs are finished, the cluster (and the JobManager) will
+  pre-existing, long-running cluster that can accept multiple application submissions.
+  Even after all applications are finished, the cluster (and the JobManager) will
   keep running until the session is manually stopped. The lifetime of a Flink
-  Session Cluster is therefore not bound to the lifetime of any Flink Job.
+  Session Cluster is therefore not bound to the lifetime of any Flink Application or Job.
 
 * **Resource Isolation**: TaskManager slots are allocated by the
   ResourceManager on job submission and released once the job is finished.
@@ -215,37 +215,6 @@ isolation guarantees.
 
 {{< hint info >}}
 Formerly, a Flink Session Cluster was also known as a Flink Cluster in `session mode`.
-{{< /hint >}}
-
-### Flink Job Cluster (deprecated)
-
-{{< hint danger >}}
-Per-job mode is only supported by YARN and has been deprecated in Flink 1.15.
-It will be dropped in [FLINK-26000](https://issues.apache.org/jira/browse/FLINK-26000).
-Please consider application mode to launch a dedicated cluster per-job on YARN.
-{{< /hint >}}
-
-* **Cluster Lifecycle**: in a Flink Job Cluster, the available cluster manager
-  (like YARN) is used to spin up a cluster for each submitted job
-  and this cluster is available to that job only. Here, the client first
-  requests resources from the cluster manager to start the JobManager and
-  submits the job to the Dispatcher running inside this process. TaskManagers
-  are then lazily allocated based on the resource requirements of the job. Once
-  the job is finished, the Flink Job Cluster is torn down.
-
-* **Resource Isolation**: a fatal error in the JobManager only affects the one job running in that Flink Job Cluster.
-
-* **Other considerations**: because the ResourceManager has to apply and wait
-  for external resource management components to start the TaskManager
-  processes and allocate resources, Flink Job Clusters are more suited to large
-  jobs that are long-running, have high-stability requirements and are not
-  sensitive to longer startup times.
-
-{{< hint info >}}
-Formerly, a Flink Job Cluster was also known as a Flink Cluster in `job (or per-job) mode`.
-{{< /hint >}}
-{{< hint info >}}
-Flink Job Clusters are only supperted with YARN.
 {{< /hint >}}
 
 {{< top >}}

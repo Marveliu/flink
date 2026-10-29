@@ -32,8 +32,11 @@ import org.apache.flink.table.catalog.ResolvedSchema;
 import org.apache.flink.table.expressions.ApiExpressionUtils;
 import org.apache.flink.table.expressions.Expression;
 import org.apache.flink.table.expressions.ExpressionUtils;
+import org.apache.flink.table.expressions.FieldReferenceExpression;
 import org.apache.flink.table.expressions.ResolvedExpression;
 import org.apache.flink.table.expressions.UnresolvedCallExpression;
+import org.apache.flink.table.expressions.UnresolvedReferenceExpression;
+import org.apache.flink.table.expressions.ValueLiteralExpression;
 import org.apache.flink.table.expressions.resolver.ExpressionResolver;
 import org.apache.flink.table.expressions.resolver.LookupCallResolver;
 import org.apache.flink.table.expressions.resolver.SqlExpressionResolver;
@@ -46,10 +49,13 @@ import org.apache.flink.table.functions.FunctionKind;
 import org.apache.flink.table.operations.DistinctQueryOperation;
 import org.apache.flink.table.operations.FilterQueryOperation;
 import org.apache.flink.table.operations.JoinQueryOperation.JoinType;
+import org.apache.flink.table.operations.PartitionQueryOperation;
 import org.apache.flink.table.operations.QueryOperation;
 import org.apache.flink.table.operations.ValuesQueryOperation;
 import org.apache.flink.table.operations.WindowAggregateQueryOperation.ResolvedGroupWindow;
+import org.apache.flink.table.operations.WindowTableFunctionQueryOperation;
 import org.apache.flink.table.types.DataType;
+import org.apache.flink.table.types.logical.LogicalTypeRoot;
 import org.apache.flink.table.types.utils.DataTypeUtils;
 import org.apache.flink.table.types.utils.TypeConversions;
 import org.apache.flink.table.typeutils.FieldInfoUtils;
@@ -57,6 +63,7 @@ import org.apache.flink.util.Preconditions;
 
 import javax.annotation.Nullable;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -83,6 +90,7 @@ import static org.apache.flink.table.types.logical.LogicalTypeRoot.ROW;
 public final class OperationTreeBuilder {
 
     private final TableConfig tableConfig;
+    private final ClassLoader userClassLoader;
     private final FunctionLookup functionCatalog;
     private final DataTypeFactory typeFactory;
     private final TableReferenceLookup tableReferenceLookup;
@@ -93,7 +101,8 @@ public final class OperationTreeBuilder {
     private final ProjectionOperationFactory projectionOperationFactory;
 
     private final SortOperationFactory sortOperationFactory;
-    private final CalculatedTableFactory calculatedTableFactory;
+    private final FunctionTableFactory functionTableFactory;
+    private final CorrelatedFunctionTableFactory correlatedFunctionTableFactory;
     private final SetOperationFactory setOperationFactory;
     private final AggregateOperationFactory aggregateOperationFactory;
     private final JoinOperationFactory joinOperationFactory;
@@ -101,25 +110,29 @@ public final class OperationTreeBuilder {
 
     private OperationTreeBuilder(
             TableConfig tableConfig,
+            ClassLoader userClassLoader,
             FunctionLookup functionLookup,
             DataTypeFactory typeFactory,
             TableReferenceLookup tableReferenceLookup,
             SqlExpressionResolver sqlExpressionResolver,
             ProjectionOperationFactory projectionOperationFactory,
             SortOperationFactory sortOperationFactory,
-            CalculatedTableFactory calculatedTableFactory,
+            FunctionTableFactory functionTableFactory,
+            CorrelatedFunctionTableFactory correlatedFunctionTableFactory,
             SetOperationFactory setOperationFactory,
             AggregateOperationFactory aggregateOperationFactory,
             JoinOperationFactory joinOperationFactory,
             ValuesOperationFactory valuesOperationFactory) {
         this.tableConfig = tableConfig;
+        this.userClassLoader = userClassLoader;
         this.functionCatalog = functionLookup;
         this.typeFactory = typeFactory;
         this.tableReferenceLookup = tableReferenceLookup;
         this.sqlExpressionResolver = sqlExpressionResolver;
         this.projectionOperationFactory = projectionOperationFactory;
         this.sortOperationFactory = sortOperationFactory;
-        this.calculatedTableFactory = calculatedTableFactory;
+        this.functionTableFactory = functionTableFactory;
+        this.correlatedFunctionTableFactory = correlatedFunctionTableFactory;
         this.setOperationFactory = setOperationFactory;
         this.aggregateOperationFactory = aggregateOperationFactory;
         this.joinOperationFactory = joinOperationFactory;
@@ -129,6 +142,7 @@ public final class OperationTreeBuilder {
 
     public static OperationTreeBuilder create(
             TableConfig tableConfig,
+            ClassLoader userClassLoader,
             FunctionLookup functionCatalog,
             DataTypeFactory typeFactory,
             TableReferenceLookup tableReferenceLookup,
@@ -136,13 +150,15 @@ public final class OperationTreeBuilder {
             boolean isStreamingMode) {
         return new OperationTreeBuilder(
                 tableConfig,
+                userClassLoader,
                 functionCatalog,
                 typeFactory,
                 tableReferenceLookup,
                 sqlExpressionResolver,
                 new ProjectionOperationFactory(),
                 new SortOperationFactory(),
-                new CalculatedTableFactory(),
+                new FunctionTableFactory(),
+                new CorrelatedFunctionTableFactory(),
                 new SetOperationFactory(isStreamingMode),
                 new AggregateOperationFactory(isStreamingMode),
                 new JoinOperationFactory(),
@@ -353,6 +369,70 @@ public final class OperationTreeBuilder {
                 flattenedProjection, aggregateWithAlias.aliases, groupingExpressions.size());
     }
 
+    public QueryOperation windowTableFunction(
+            WindowTableFunctionQueryOperation.WindowKind windowKind,
+            Expression timeColumn,
+            List<Expression> intervals,
+            QueryOperation child) {
+        return windowTableFunction(windowKind, timeColumn, intervals, List.of(), child);
+    }
+
+    public QueryOperation windowTableFunction(
+            WindowTableFunctionQueryOperation.WindowKind windowKind,
+            Expression timeColumn,
+            List<Expression> intervals,
+            List<Expression> partitionColumns,
+            QueryOperation child) {
+        final String timeColumnName = extractColumnName(timeColumn);
+        final List<Duration> durations = new ArrayList<>(intervals.size());
+        for (Expression interval : intervals) {
+            durations.add(toDayTimeDuration(interval));
+        }
+        final List<String> partitionKeys = new ArrayList<>(partitionColumns.size());
+        for (Expression partitionColumn : partitionColumns) {
+            partitionKeys.add(extractColumnName(partitionColumn));
+        }
+        return new WindowTableFunctionQueryOperation(
+                windowKind, timeColumnName, durations, partitionKeys, child);
+    }
+
+    private static String extractColumnName(Expression column) {
+        final Expression unwrapped = ApiExpressionUtils.unwrapFromApi(column);
+        if (unwrapped instanceof UnresolvedReferenceExpression) {
+            return ((UnresolvedReferenceExpression) unwrapped).getName();
+        }
+        if (unwrapped instanceof FieldReferenceExpression) {
+            return ((FieldReferenceExpression) unwrapped).getName();
+        }
+        throw new ValidationException(
+                "Window column must be a column reference, but was: " + column.asSummaryString());
+    }
+
+    private static Duration toDayTimeDuration(Expression interval) {
+        final Expression unwrapped = ApiExpressionUtils.unwrapFromApi(interval);
+        if (!(unwrapped instanceof ValueLiteralExpression)) {
+            throw new ValidationException(
+                    "Window interval must be an interval literal, e.g. lit(10).minutes().");
+        }
+        final ValueLiteralExpression literal = (ValueLiteralExpression) unwrapped;
+        final LogicalTypeRoot root = literal.getOutputDataType().getLogicalType().getTypeRoot();
+        if (root != LogicalTypeRoot.INTERVAL_DAY_TIME) {
+            throw new ValidationException(
+                    "Window interval must be a day-time interval, but was " + root + ".");
+        }
+        final Duration duration =
+                literal.getValueAs(Duration.class)
+                        .orElseThrow(
+                                () ->
+                                        new ValidationException(
+                                                "Could not read interval value from " + literal));
+        if (duration.isZero() || duration.isNegative()) {
+            throw new ValidationException(
+                    "Window interval must be positive, but was " + duration.toMillis() + " ms.");
+        }
+        return duration;
+    }
+
     public QueryOperation join(
             QueryOperation left,
             QueryOperation right,
@@ -376,13 +456,14 @@ public final class OperationTreeBuilder {
         ResolvedExpression resolvedFunction = resolveSingleExpression(tableFunction, resolver);
 
         QueryOperation temporalTable =
-                calculatedTableFactory.create(
+                correlatedFunctionTableFactory.create(
                         resolvedFunction, left.getResolvedSchema().getColumnNames());
 
         return join(left, temporalTable, joinType, condition, true);
     }
 
-    public Expression resolveExpression(Expression expression, QueryOperation... tableOperation) {
+    public ResolvedExpression resolveExpression(
+            Expression expression, QueryOperation... tableOperation) {
         final ExpressionResolver resolver = getResolver(tableOperation);
         return resolveSingleExpression(expression, resolver);
     }
@@ -391,6 +472,7 @@ public final class OperationTreeBuilder {
             QueryOperation... tableOperation) {
         return ExpressionResolver.resolverFor(
                 tableConfig,
+                userClassLoader,
                 tableReferenceLookup,
                 functionCatalog,
                 typeFactory,
@@ -467,17 +549,25 @@ public final class OperationTreeBuilder {
     }
 
     public QueryOperation map(Expression mapFunction, QueryOperation child) {
+        final ExpressionResolver resolver = getResolverBuilder(child).build();
+        final ResolvedExpression resolvedCall = resolveSingleExpression(mapFunction, resolver);
 
-        Expression resolvedMapFunction = mapFunction.accept(lookupResolver);
-
-        if (!isFunctionOfKind(resolvedMapFunction, FunctionKind.SCALAR)) {
+        if (!isFunctionOfKind(resolvedCall, FunctionKind.SCALAR)
+                && !isFunctionOfKind(resolvedCall, FunctionKind.ASYNC_SCALAR)) {
             throw new ValidationException(
                     "Only a scalar function can be used in the map operator.");
         }
 
+        final List<String> originFieldNames =
+                DataTypeUtils.flattenToNames(resolvedCall.getOutputDataType());
+
         Expression expandedFields =
-                unresolvedCall(BuiltInFunctionDefinitions.FLATTEN, resolvedMapFunction);
-        return project(Collections.singletonList(expandedFields), child, false);
+                unresolvedCall(BuiltInFunctionDefinitions.FLATTEN, resolvedCall);
+        return alias(
+                originFieldNames.stream()
+                        .map(ApiExpressionUtils::unresolvedRef)
+                        .collect(Collectors.toList()),
+                project(Collections.singletonList(expandedFields), child, false));
     }
 
     public QueryOperation flatMap(Expression tableFunctionCall, QueryOperation child) {
@@ -585,6 +675,26 @@ public final class OperationTreeBuilder {
         return valuesInternal(null, expressions);
     }
 
+    public QueryOperation tableFunction(Expression call) {
+        final ExpressionResolver resolver = getResolverBuilder().build();
+        final ResolvedExpression resolvedCall = resolveSingleExpression(call, resolver);
+        return functionTableFactory.create(resolvedCall);
+    }
+
+    public QueryOperation partition(List<Expression> partitionKeys, QueryOperation child) {
+        final ExpressionResolver resolver = getResolverBuilder(child).build();
+        final List<ResolvedExpression> resolvedPartitionKeys = resolver.resolve(partitionKeys);
+        return new PartitionQueryOperation(resolvedPartitionKeys, child);
+    }
+
+    public QueryOperation partition(
+            List<Expression> partitionKeys, List<Expression> orderKeys, QueryOperation child) {
+        final ExpressionResolver resolver = getResolverBuilder(child).build();
+        final List<ResolvedExpression> resolvedPartitionKeys = resolver.resolve(partitionKeys);
+        final List<ResolvedExpression> resolvedOrderKeys = resolver.resolve(orderKeys);
+        return new PartitionQueryOperation(resolvedPartitionKeys, resolvedOrderKeys, child);
+    }
+
     private QueryOperation valuesInternal(
             @Nullable ResolvedSchema valuesSchema, Expression... expressions) {
         if (expressions.length == 0) {
@@ -648,7 +758,9 @@ public final class OperationTreeBuilder {
         }
 
         private List<String> extractAliases(UnresolvedCallExpression unresolvedCall) {
-            return unresolvedCall.getChildren().subList(1, unresolvedCall.getChildren().size())
+            return unresolvedCall
+                    .getChildren()
+                    .subList(1, unresolvedCall.getChildren().size())
                     .stream()
                     .map(
                             ex ->
@@ -885,7 +997,7 @@ public final class OperationTreeBuilder {
         @Override
         public Void visit(UnresolvedCallExpression call) {
             FunctionDefinition functionDefinition = call.getFunctionDefinition();
-            if (BuiltInFunctionDefinitions.WINDOW_PROPERTIES.contains(functionDefinition)) {
+            if (OperationExpressionsUtils.WINDOW_PROPERTIES.contains(functionDefinition)) {
                 throw new ValidationException(exceptionMessage);
             }
             call.getChildren().forEach(expr -> expr.accept(this));
@@ -907,6 +1019,9 @@ public final class OperationTreeBuilder {
 
         @Override
         public Void visit(UnresolvedCallExpression call) {
+            if (call.getFunctionDefinition() == BuiltInFunctionDefinitions.OVER) {
+                return null;
+            }
             if (isFunctionOfKind(call, FunctionKind.AGGREGATE)) {
                 throw new ValidationException(exceptionMessage);
             }

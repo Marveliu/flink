@@ -19,21 +19,28 @@
 
 package org.apache.flink.test.example.java;
 
+import org.apache.flink.api.common.JobExecutionResult;
 import org.apache.flink.api.common.functions.FlatMapFunction;
 import org.apache.flink.api.common.functions.MapFunction;
 import org.apache.flink.api.common.functions.ReduceFunction;
-import org.apache.flink.api.java.DataSet;
-import org.apache.flink.api.java.ExecutionEnvironment;
+import org.apache.flink.api.common.serialization.SimpleStringEncoder;
+import org.apache.flink.connector.file.sink.FileSink;
+import org.apache.flink.core.fs.Path;
+import org.apache.flink.streaming.api.datastream.DataStream;
+import org.apache.flink.streaming.api.datastream.DataStreamSource;
+import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
+import org.apache.flink.streaming.api.legacy.io.TextInputFormat;
+import org.apache.flink.streaming.api.windowing.assigners.GlobalWindows;
 import org.apache.flink.test.testdata.WordCountData;
 import org.apache.flink.test.util.JavaProgramTestBase;
 import org.apache.flink.util.Collector;
 
 import java.io.Serializable;
 
+import static org.apache.flink.test.util.TestBaseUtils.compareResultsByLinesInMemory;
+
 /** WordCount with subclass and interface example. */
-@SuppressWarnings("serial")
-public class WordCountSubclassInterfacePOJOITCase extends JavaProgramTestBase
-        implements Serializable {
+class WordCountSubclassInterfacePOJOITCase extends JavaProgramTestBase implements Serializable {
     private static final long serialVersionUID = 1L;
     protected String textPath;
     protected String resultPath;
@@ -50,13 +57,14 @@ public class WordCountSubclassInterfacePOJOITCase extends JavaProgramTestBase
     }
 
     @Override
-    protected void testProgram() throws Exception {
-        final ExecutionEnvironment env = ExecutionEnvironment.getExecutionEnvironment();
-        DataSet<String> text = env.readTextFile(textPath);
+    protected JobExecutionResult testProgram() throws Exception {
+        final StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        DataStreamSource<String> text = env.createInput(new TextInputFormat(new Path(textPath)));
 
-        DataSet<WCBase> counts =
+        DataStream<WCBase> counts =
                 text.flatMap(new Tokenizer())
-                        .groupBy("word")
+                        .keyBy(x -> x.word)
+                        .window(GlobalWindows.createWithEndOfStreamTrigger())
                         .reduce(
                                 new ReduceFunction<WCBase>() {
                                     private static final long serialVersionUID = 1L;
@@ -81,9 +89,11 @@ public class WordCountSubclassInterfacePOJOITCase extends JavaProgramTestBase
                                     }
                                 });
 
-        counts.writeAsText(resultPath);
+        counts.sinkTo(
+                FileSink.forRowFormat(new Path(resultPath), new SimpleStringEncoder<WCBase>())
+                        .build());
 
-        env.execute("WordCount with custom data types example");
+        return env.execute("WordCount with custom data types example");
     }
 
     private static final class Tokenizer implements FlatMapFunction<String, WCBase> {

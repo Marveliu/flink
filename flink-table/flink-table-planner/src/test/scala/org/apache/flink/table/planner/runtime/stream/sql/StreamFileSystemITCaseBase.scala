@@ -15,27 +15,27 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.planner.runtime.stream.sql
 
-import org.apache.flink.api.scala._
-import org.apache.flink.streaming.api.functions.sink.SinkFunction
+import org.apache.flink.streaming.api.functions.sink.legacy.SinkFunction
 import org.apache.flink.table.api.TableEnvironment
 import org.apache.flink.table.api.bridge.scala._
 import org.apache.flink.table.planner.runtime.FileSystemITCaseBase
-import org.apache.flink.table.planner.runtime.utils.{AbstractExactlyOnceSink, StreamingTestBase, TestSinkUtil, TestingAppendSink}
+import org.apache.flink.table.planner.runtime.utils.{AbstractExactlyOnceSink, StreamingTestBase, TestingAppendSink, TestSinkUtil}
+import org.apache.flink.testutils.junit.extensions.parameterized.NoOpTestExtension
 import org.apache.flink.types.Row
-import org.junit.Assert.assertEquals
-import org.junit.{Assert, Before, Test}
 
-import scala.collection.{Seq, mutable}
+import org.assertj.core.api.Assertions.assertThat
+import org.junit.jupiter.api.{BeforeEach, Test}
+import org.junit.jupiter.api.extension.ExtendWith
 
-/**
-  * Streaming [[FileSystemITCaseBase]].
-  */
+import scala.collection.{mutable, Seq}
+
+/** Streaming [[FileSystemITCaseBase]]. */
+@ExtendWith(Array(classOf[NoOpTestExtension]))
 abstract class StreamFileSystemITCaseBase extends StreamingTestBase with FileSystemITCaseBase {
 
-  @Before
+  @BeforeEach
   override def before(): Unit = {
     super.before()
     super.open()
@@ -46,19 +46,18 @@ abstract class StreamFileSystemITCaseBase extends StreamingTestBase with FileSys
   }
 
   override def check(sqlQuery: String, expectedResult: Seq[Row]): Unit = {
-    val result = tEnv.sqlQuery(sqlQuery).toAppendStream[Row]
+    val result = tEnv.sqlQuery(sqlQuery).toDataStream
     val sink = new TestingAppendSink()
     result.addSink(sink)
     env.execute()
 
-    assertEquals(
-      expectedResult.map(TestSinkUtil.rowToString(_)).sorted,
-      sink.getAppendResults.sorted)
+    assertThat(expectedResult.map(TestSinkUtil.rowToString(_)).sorted)
+      .isEqualTo(sink.getAppendResults.sorted)
   }
 
   override def checkPredicate(sqlQuery: String, checkFunc: Row => Unit): Unit = {
     val result = tEnv.sqlQuery(sqlQuery).toDataStream
-    val sinkResults = new mutable.MutableList[Row]
+    val sinkResults = new mutable.ListBuffer[Row]
 
     val sink = new AbstractExactlyOnceSink[Row] {
       override def invoke(value: Row, context: SinkFunction.Context): Unit =
@@ -70,11 +69,13 @@ abstract class StreamFileSystemITCaseBase extends StreamingTestBase with FileSys
     try {
       sinkResults.foreach(checkFunc)
     } catch {
-      case e: AssertionError => throw new AssertionError(
-        s"""
-           |Results do not match for query:
-           |  $sqlQuery
-       """.stripMargin, e)
+      case e: AssertionError =>
+        throw new AssertionError(
+          s"""
+             |Results do not match for query:
+             |  $sqlQuery
+       """.stripMargin,
+          e)
     }
   }
 

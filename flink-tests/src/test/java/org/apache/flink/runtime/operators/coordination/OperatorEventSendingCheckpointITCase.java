@@ -20,17 +20,7 @@ package org.apache.flink.runtime.operators.coordination;
 
 import org.apache.flink.api.common.eventtime.WatermarkStrategy;
 import org.apache.flink.api.common.functions.MapFunction;
-import org.apache.flink.api.connector.source.ReaderOutput;
-import org.apache.flink.api.connector.source.SourceReader;
-import org.apache.flink.api.connector.source.SourceReaderContext;
-import org.apache.flink.api.connector.source.SplitEnumerator;
-import org.apache.flink.api.connector.source.SplitEnumeratorContext;
-import org.apache.flink.api.connector.source.lib.NumberSequenceSource;
-import org.apache.flink.api.connector.source.lib.util.IteratorSourceEnumerator;
-import org.apache.flink.api.connector.source.lib.util.IteratorSourceReader;
-import org.apache.flink.api.connector.source.lib.util.IteratorSourceSplit;
 import org.apache.flink.configuration.Configuration;
-import org.apache.flink.core.io.InputStatus;
 import org.apache.flink.runtime.executiongraph.ExecutionAttemptID;
 import org.apache.flink.runtime.jobgraph.OperatorID;
 import org.apache.flink.runtime.messages.Acknowledge;
@@ -51,48 +41,45 @@ import org.apache.flink.runtime.taskexecutor.TaskExecutorGatewayDecoratorBase;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.util.TestStreamEnvironment;
+import org.apache.flink.test.util.NumberSequenceSourceWithWaitForCheckpoint;
 import org.apache.flink.util.SerializedValue;
-import org.apache.flink.util.TestLogger;
+import org.apache.flink.util.TestLoggerExtension;
 import org.apache.flink.util.concurrent.FutureUtils;
 import org.apache.flink.util.concurrent.ScheduledExecutor;
 import org.apache.flink.util.function.TriFunction;
 
-import org.junit.AfterClass;
-import org.junit.BeforeClass;
-import org.junit.Test;
-
-import javax.annotation.Nullable;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.Serializable;
 import java.time.Duration;
-import java.util.ArrayDeque;
-import java.util.Collection;
 import java.util.Collections;
-import java.util.Iterator;
 import java.util.List;
-import java.util.Queue;
+import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.Callable;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 import java.util.stream.LongStream;
 
-import static org.junit.Assert.assertEquals;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * A test suite for source enumerator (operator coordinator) for situations where RPC calls for
  * split assignments (operator events) fails from time to time.
  */
-public class OperatorEventSendingCheckpointITCase extends TestLogger {
+@ExtendWith(TestLoggerExtension.class)
+class OperatorEventSendingCheckpointITCase {
 
     private static final int PARALLELISM = 1;
     private static MiniCluster flinkCluster;
 
-    @BeforeClass
-    public static void setupMiniClusterAndEnv() throws Exception {
+    @BeforeAll
+    static void setupMiniClusterAndEnv() throws Exception {
         Configuration config = new Configuration();
         // uncomment to run test with adaptive scheduler
         // config.set(JobManagerOptions.SCHEDULER, JobManagerOptions.SchedulerType.Adaptive);
@@ -101,8 +88,8 @@ public class OperatorEventSendingCheckpointITCase extends TestLogger {
         TestStreamEnvironment.setAsContext(flinkCluster, PARALLELISM);
     }
 
-    @AfterClass
-    public static void clearEnvAndStopMiniCluster() throws Exception {
+    @AfterAll
+    static void clearEnvAndStopMiniCluster() throws Exception {
         TestStreamEnvironment.unsetAsContext();
         if (flinkCluster != null) {
             flinkCluster.close();
@@ -119,8 +106,9 @@ public class OperatorEventSendingCheckpointITCase extends TestLogger {
      * event was lost and trigger recovery to prevent data loss. Data loss would manifest in a
      * stalled test, because we could wait forever to collect the required number of events back.
      */
-    @Test
-    public void testOperatorEventLostNoReaderFailure() throws Exception {
+    @ParameterizedTest
+    @ValueSource(booleans = {true, false})
+    void testOperatorEventLostNoReaderFailure(boolean pauseSources) throws Exception {
         final int[] eventsToLose = new int[] {2, 4, 6};
 
         OpEventRpcInterceptor.currentHandler =
@@ -128,7 +116,7 @@ public class OperatorEventSendingCheckpointITCase extends TestLogger {
                         (task, operator, event, originalRpcHandler) -> askTimeoutFuture(),
                         eventsToLose);
 
-        runTest(false);
+        runTest(pauseSources, false);
     }
 
     /**
@@ -136,8 +124,9 @@ public class OperatorEventSendingCheckpointITCase extends TestLogger {
      * (which is after the second successful event delivery, the fourth event), there is
      * additionally a failure on the reader that triggers recovery.
      */
-    @Test
-    public void testOperatorEventLostWithReaderFailure() throws Exception {
+    @ParameterizedTest
+    @ValueSource(booleans = {true, false})
+    void testOperatorEventLostWithReaderFailure(boolean pauseSources) throws Exception {
         final int[] eventsToLose = new int[] {1, 3};
 
         OpEventRpcInterceptor.currentHandler =
@@ -145,7 +134,7 @@ public class OperatorEventSendingCheckpointITCase extends TestLogger {
                         (task, operator, event, originalRpcHandler) -> askTimeoutFuture(),
                         eventsToLose);
 
-        runTest(true);
+        runTest(pauseSources, true);
     }
 
     /**
@@ -156,8 +145,9 @@ public class OperatorEventSendingCheckpointITCase extends TestLogger {
      * comes back. The enumerator must assume the assignments were unsuccessful, even though the
      * split assignment was received by the reader.
      */
-    @Test
-    public void testOperatorEventAckLost() throws Exception {
+    @ParameterizedTest
+    @ValueSource(booleans = {true, false})
+    void testOperatorEventAckLost(boolean pauseSources) throws Exception {
         final int[] eventsWithLostAck = new int[] {2, 4};
 
         OpEventRpcInterceptor.currentHandler =
@@ -170,7 +160,7 @@ public class OperatorEventSendingCheckpointITCase extends TestLogger {
                         },
                         eventsWithLostAck);
 
-        runTest(false);
+        runTest(pauseSources, false);
     }
 
     /**
@@ -180,8 +170,9 @@ public class OperatorEventSendingCheckpointITCase extends TestLogger {
      * very late, so that we expect multiple checkpoints would have normally happened in the
      * meantime. We trigger a failure (which happens after the second split)
      */
-    @Test
-    public void testOperatorEventAckDelay() throws Exception {
+    @ParameterizedTest
+    @ValueSource(booleans = {true, false})
+    void testOperatorEventAckDelay(boolean pauseSources) throws Exception {
         final int[] eventsWithLateAck = new int[] {2, 4};
 
         OpEventRpcInterceptor.currentHandler =
@@ -197,7 +188,7 @@ public class OperatorEventSendingCheckpointITCase extends TestLogger {
                         },
                         eventsWithLateAck);
 
-        runTest(false);
+        runTest(pauseSources, false);
     }
 
     /**
@@ -207,13 +198,14 @@ public class OperatorEventSendingCheckpointITCase extends TestLogger {
      * <p>If an intermittent failure should happen, it will happen after the second split was
      * assigned.
      */
-    private void runTest(boolean intermittentFailure) throws Exception {
+    private void runTest(boolean pauseSources, boolean intermittentFailure) throws Exception {
         final int numElements = 100;
         final int failAt = intermittentFailure ? numElements / 2 : numElements * 2;
 
         final StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
         env.setParallelism(1);
         env.enableCheckpointing(50);
+        env.getCheckpointConfig().setPauseSourcesUntilFirstCheckpoint(pauseSources);
 
         // This test depends on checkpoints persisting progress from the source before the
         // artificial exception gets triggered. Otherwise, the job will run for a long time (or
@@ -233,11 +225,18 @@ public class OperatorEventSendingCheckpointITCase extends TestLogger {
 
         final DataStream<Long> numbers =
                 env.fromSource(
-                                new TestingNumberSequenceSource(1L, numElements, 3),
+                                new NumberSequenceSourceWithWaitForCheckpoint(
+                                        1L,
+                                        numElements,
+                                        3,
+                                        env.getCheckpointConfig()
+                                                        .isPauseSourcesUntilFirstCheckpoint()
+                                                ? 2
+                                                : 1),
                                 WatermarkStrategy.noWatermarks(),
                                 "numbers")
                         .map(
-                                new MapFunction<Long, Long>() {
+                                new MapFunction<>() {
                                     private int num;
 
                                     @Override
@@ -256,12 +255,17 @@ public class OperatorEventSendingCheckpointITCase extends TestLogger {
         final List<Long> expectedSequence =
                 LongStream.rangeClosed(1L, numElements).boxed().collect(Collectors.toList());
 
-        assertEquals(expectedSequence, sequence);
+        assertThat(sequence).isEqualTo(expectedSequence);
     }
 
     private static CompletableFuture<Acknowledge> askTimeoutFuture() {
         final CompletableFuture<Acknowledge> future = new CompletableFuture<>();
-        FutureUtils.orTimeout(future, 500, TimeUnit.MILLISECONDS);
+        final long timeout = 500;
+        FutureUtils.orTimeout(
+                future,
+                timeout,
+                TimeUnit.MILLISECONDS,
+                String.format("Future timed out after %s ms.", timeout));
         return future;
     }
 
@@ -269,110 +273,6 @@ public class OperatorEventSendingCheckpointITCase extends TestLogger {
         final CompletableFuture<Acknowledge> future = new CompletableFuture<>();
         FutureUtils.completeDelayed(future, Acknowledge.get(), Duration.ofMillis(500));
         return future;
-    }
-
-    // ------------------------------------------------------------------------
-    //  Specialized Source
-    // ------------------------------------------------------------------------
-
-    /**
-     * This is an enumerator for the {@link NumberSequenceSource}, which only responds to the split
-     * requests after the next checkpoint is complete. That way, we naturally draw the split
-     * processing across checkpoints without artificial sleep statements.
-     */
-    private static final class AssignAfterCheckpointEnumerator<
-                    SplitT extends IteratorSourceSplit<?, ?>>
-            extends IteratorSourceEnumerator<SplitT> {
-        private final Queue<Integer> pendingRequests = new ArrayDeque<>();
-        private final SplitEnumeratorContext<?> context;
-
-        public AssignAfterCheckpointEnumerator(
-                SplitEnumeratorContext<SplitT> context, Collection<SplitT> splits) {
-            super(context, splits);
-            this.context = context;
-        }
-
-        @Override
-        public void handleSplitRequest(int subtaskId, @Nullable String requesterHostname) {
-            pendingRequests.add(subtaskId);
-        }
-
-        @Override
-        public Collection<SplitT> snapshotState(long checkpointId) throws Exception {
-            // this will be enqueued in the enumerator thread, so it will actually run after this
-            // method (the snapshot operation) is complete!
-            context.runInCoordinatorThread(this::fullFillPendingRequests);
-
-            return super.snapshotState(checkpointId);
-        }
-
-        private void fullFillPendingRequests() {
-            for (int subtask : pendingRequests) {
-                // respond only to requests for which we still have registered readers
-                if (!context.registeredReaders().containsKey(subtask)) {
-                    continue;
-                }
-                super.handleSplitRequest(subtask, null);
-            }
-            pendingRequests.clear();
-        }
-    }
-
-    private static class TestingNumberSequenceSource extends NumberSequenceSource {
-        private static final long serialVersionUID = 1L;
-
-        private final int numSplits;
-        private final long numAllowedMessageBeforeCheckpoint;
-
-        public TestingNumberSequenceSource(long from, long to, int numSplits) {
-            super(from, to);
-            this.numSplits = numSplits;
-            this.numAllowedMessageBeforeCheckpoint = (to - from) / numSplits;
-        }
-
-        @Override
-        public SplitEnumerator<NumberSequenceSplit, Collection<NumberSequenceSplit>>
-                createEnumerator(final SplitEnumeratorContext<NumberSequenceSplit> enumContext) {
-            final List<NumberSequenceSplit> splits =
-                    splitNumberRange(getFrom(), getTo(), numSplits);
-            return new AssignAfterCheckpointEnumerator<>(enumContext, splits);
-        }
-
-        @Override
-        public SourceReader<Long, NumberSequenceSplit> createReader(
-                SourceReaderContext readerContext) {
-            return new CheckpointListeningIteratorSourceReader<>(
-                    readerContext, numAllowedMessageBeforeCheckpoint);
-        }
-    }
-
-    private static class CheckpointListeningIteratorSourceReader<
-                    E, IterT extends Iterator<E>, SplitT extends IteratorSourceSplit<E, IterT>>
-            extends IteratorSourceReader<E, IterT, SplitT> {
-        private boolean checkpointed = false;
-        private long messagesProduced = 0;
-        private final long numAllowedMessageBeforeCheckpoint;
-
-        public CheckpointListeningIteratorSourceReader(
-                SourceReaderContext context, long waitForCheckpointAfterMessages) {
-            super(context);
-            this.numAllowedMessageBeforeCheckpoint = waitForCheckpointAfterMessages;
-        }
-
-        @Override
-        public InputStatus pollNext(ReaderOutput<E> output) {
-            if (messagesProduced < numAllowedMessageBeforeCheckpoint || checkpointed) {
-                messagesProduced++;
-                return super.pollNext(output);
-            } else {
-                return InputStatus.NOTHING_AVAILABLE;
-            }
-        }
-
-        @Override
-        public void notifyCheckpointComplete(long checkpointId) throws Exception {
-            checkpointed = true;
-        }
     }
 
     // ------------------------------------------------------------------------
@@ -480,6 +380,12 @@ public class OperatorEventSendingCheckpointITCase extends TestLogger {
         }
 
         @Override
+        public <C extends RpcGateway> C getSelfGateway(
+                Class<C> selfGatewayType, RpcServer rpcServer) {
+            return rpcService.getSelfGateway(selfGatewayType, rpcServer);
+        }
+
+        @Override
         public <C extends RpcGateway> CompletableFuture<C> connect(String address, Class<C> clazz) {
             final CompletableFuture<C> future = rpcService.connect(address, clazz);
             return clazz == TaskExecutorGateway.class ? decorateTmGateway(future) : future;
@@ -492,14 +398,9 @@ public class OperatorEventSendingCheckpointITCase extends TestLogger {
         }
 
         @Override
-        public <C extends RpcEndpoint & RpcGateway> RpcServer startServer(C rpcEndpoint) {
-            return rpcService.startServer(rpcEndpoint);
-        }
-
-        @Override
-        public <F extends Serializable> RpcServer fenceRpcServer(
-                RpcServer rpcServer, F fencingToken) {
-            return rpcService.fenceRpcServer(rpcServer, fencingToken);
+        public <C extends RpcEndpoint & RpcGateway> RpcServer startServer(
+                C rpcEndpoint, Map<String, String> loggingContext) {
+            return rpcService.startServer(rpcEndpoint, Collections.emptyMap());
         }
 
         @Override
@@ -508,33 +409,13 @@ public class OperatorEventSendingCheckpointITCase extends TestLogger {
         }
 
         @Override
-        public CompletableFuture<Void> stopService() {
-            return rpcService.stopService();
-        }
-
-        @Override
-        public CompletableFuture<Void> getTerminationFuture() {
-            return rpcService.getTerminationFuture();
+        public CompletableFuture<Void> closeAsync() {
+            return rpcService.closeAsync();
         }
 
         @Override
         public ScheduledExecutor getScheduledExecutor() {
             return rpcService.getScheduledExecutor();
-        }
-
-        @Override
-        public ScheduledFuture<?> scheduleRunnable(Runnable runnable, long delay, TimeUnit unit) {
-            return rpcService.scheduleRunnable(runnable, delay, unit);
-        }
-
-        @Override
-        public void execute(Runnable runnable) {
-            rpcService.execute(runnable);
-        }
-
-        @Override
-        public <T> CompletableFuture<T> execute(Callable<T> callable) {
-            return rpcService.execute(callable);
         }
 
         @SuppressWarnings("unchecked")
@@ -555,6 +436,7 @@ public class OperatorEventSendingCheckpointITCase extends TestLogger {
                 final int numSlots, final Configuration configuration) {
             super(
                     new MiniClusterConfiguration.Builder()
+                            .withRandomPorts()
                             .setRpcServiceSharing(RpcServiceSharing.SHARED)
                             .setNumTaskManagers(1)
                             .setConfiguration(configuration)

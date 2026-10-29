@@ -23,10 +23,10 @@ import org.apache.flink.api.common.typeutils.SameTypePairComparator;
 import org.apache.flink.api.common.typeutils.TypeComparator;
 import org.apache.flink.api.common.typeutils.TypePairComparator;
 import org.apache.flink.api.common.typeutils.TypeSerializer;
+import org.apache.flink.core.memory.AbstractPagedOutputView;
 import org.apache.flink.core.memory.DataInputView;
 import org.apache.flink.core.memory.MemorySegment;
-import org.apache.flink.runtime.io.disk.RandomAccessInputView;
-import org.apache.flink.runtime.memory.AbstractPagedOutputView;
+import org.apache.flink.core.memory.RandomAccessInputView;
 import org.apache.flink.util.Collector;
 import org.apache.flink.util.MathUtils;
 import org.apache.flink.util.MutableObjectIterator;
@@ -515,7 +515,9 @@ public class InPlaceMutableHashTable<T> extends AbstractMutableHashTable<T> {
         }
     }
 
-    /** @return String containing a summary of the memory consumption for error messages */
+    /**
+     * @return String containing a summary of the memory consumption for error messages
+     */
     private String getMemoryConsumptionString() {
         return "InPlaceMutableHashTable memory stats:\n"
                 + "Total memory:     "

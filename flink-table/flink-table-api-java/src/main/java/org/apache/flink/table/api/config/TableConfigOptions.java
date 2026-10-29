@@ -28,6 +28,8 @@ import org.apache.flink.configuration.description.InlineElement;
 import org.apache.flink.table.api.SqlDialect;
 import org.apache.flink.table.catalog.Catalog;
 
+import java.util.List;
+
 import static org.apache.flink.configuration.ConfigOptions.key;
 import static org.apache.flink.configuration.description.TextElement.text;
 
@@ -57,6 +59,17 @@ public class TableConfigOptions {
                     .withDescription(
                             "The name of the default database in the initial catalog to be created "
                                     + "when instantiating TableEnvironment.");
+
+    @Documentation.TableOption(execMode = Documentation.ExecMode.BATCH_STREAMING)
+    public static final ConfigOption<List<String>> TABLE_CATALOG_MODIFICATION_LISTENERS =
+            key("table.catalog-modification.listeners")
+                    .stringType()
+                    .asList()
+                    .noDefaultValue()
+                    .withDescription(
+                            "A (semicolon-separated) list of factories that creates listener for catalog "
+                                    + "modification which will be notified in catalog manager after it "
+                                    + "performs database and table ddl operations successfully.");
 
     @Documentation.TableOption(execMode = Documentation.ExecMode.BATCH_STREAMING)
     public static final ConfigOption<Boolean> TABLE_DML_SYNC =
@@ -101,6 +114,76 @@ public class TableConfigOptions {
                                     + "However, when converting to data types that don't include a time zone (e.g. TIMESTAMP, TIME, or simply STRING), "
                                     + "the session time zone is used during conversion. The input of option is either a full name "
                                     + "such as \"America/Los_Angeles\", or a custom timezone id such as \"GMT-08:00\".");
+
+    @Documentation.TableOption(execMode = Documentation.ExecMode.BATCH_STREAMING)
+    public static final ConfigOption<Integer> DISPLAY_MAX_COLUMN_WIDTH =
+            key("table.display.max-column-width")
+                    .intType()
+                    .defaultValue(30)
+                    .withDescription(
+                            "When printing the query results to the client console, this parameter determines the number of characters shown on screen before truncating. "
+                                    + "This only applies to columns with variable-length types (e.g. CHAR, VARCHAR, STRING) in the streaming mode. "
+                                    + "Fixed-length types are printed in the batch mode using a deterministic column width.");
+
+    @Documentation.TableOption(execMode = Documentation.ExecMode.BATCH_STREAMING)
+    @Documentation.OverrideDefault("System.getProperty(\"java.io.tmpdir\")")
+    public static final ConfigOption<String> RESOURCES_DOWNLOAD_DIR =
+            key("table.resources.download-dir")
+                    .stringType()
+                    .defaultValue(System.getProperty("java.io.tmpdir"))
+                    .withDescription(
+                            "Local directory that is used by planner for storing downloaded resources.");
+
+    @Documentation.TableOption(execMode = Documentation.ExecMode.BATCH_STREAMING)
+    public static final ConfigOption<Boolean> TABLE_RTAS_CTAS_ATOMICITY_ENABLED =
+            key("table.rtas-ctas.atomicity-enabled")
+                    .booleanType()
+                    .defaultValue(false)
+                    .withDescription(
+                            "Specifies if the CREATE TABLE/REPLACE TABLE/CREATE OR REPLACE AS SELECT statement is executed atomically. By default, the statement is non-atomic. "
+                                    + "The target table is created/replaced on the client side, and it will not be rolled back even though the job fails or is canceled. "
+                                    + "If set this option to true and the underlying DynamicTableSink implements the SupportsStaging interface, "
+                                    + "the statement is expected to be executed atomically, the behavior of which depends on the actual DynamicTableSink.");
+
+    @Documentation.TableOption(execMode = Documentation.ExecMode.BATCH_STREAMING)
+    public static final ConfigOption<Boolean> MATERIALIZED_TABLE_CONVERSION_FROM_TABLE_ENABLED =
+            key("table.materialized-table.conversion-from-table.enabled")
+                    .booleanType()
+                    .defaultValue(false)
+                    .withDescription(
+                            "If enabled, executing a CREATE OR ALTER MATERIALIZED TABLE on an existing regular table "
+                                    + "converts it in place to a materialized table, preserving identity and storage. "
+                                    + "The option is read at planning time from the session's root configuration, so it "
+                                    + "must be set when the TableEnvironment session is initialized (for example in the "
+                                    + "cluster configuration file config.yaml, or in the configuration used to create the "
+                                    + "session); a session-level SET statement has no effect. "
+                                    + "When disabled (the default), CREATE OR ALTER MATERIALIZED TABLE against a regular "
+                                    + "table is rejected.");
+
+    @Documentation.TableOption(execMode = Documentation.ExecMode.BATCH_STREAMING)
+    public static final ConfigOption<List<ColumnExpansionStrategy>>
+            TABLE_COLUMN_EXPANSION_STRATEGY =
+                    key("table.column-expansion-strategy")
+                            .enumType(ColumnExpansionStrategy.class)
+                            .asList()
+                            .defaultValues()
+                            .withDescription(
+                                    "Configures the default expansion behavior of 'SELECT *'. "
+                                            + "By default, all top-level columns of the table's "
+                                            + "schema are selected and nested fields are retained.");
+
+    @Documentation.TableOption(execMode = Documentation.ExecMode.BATCH_STREAMING)
+    public static final ConfigOption<Boolean> LEGACY_NESTED_ROW_NULLABILITY =
+            key("table.legacy-nested-row-nullability")
+                    .booleanType()
+                    .defaultValue(false)
+                    .withDescription(
+                            "Before Flink 2.2, row types defined in SQL "
+                                    + "e.g. `SELECT CAST(f AS ROW<i NOT NULL>)` did ignore the `NOT NULL` constraint. "
+                                    + "This was more aligned with the SQL standard but caused many type inconsistencies "
+                                    + "and cryptic error message when working on nested data. "
+                                    + "For example, it prevented using rows in computed columns or join keys. "
+                                    + "The new behavior takes the nullability into consideration.");
 
     // ------------------------------------------------------------------------------------------
     // Options for plan handling
@@ -261,6 +344,34 @@ public class TableConfigOptions {
         private final InlineElement description;
 
         CatalogPlanRestore(InlineElement description) {
+            this.description = description;
+        }
+
+        @Internal
+        @Override
+        public InlineElement getDescription() {
+            return description;
+        }
+    }
+
+    /** Strategy to expand columns in {@code SELECT *} queries. */
+    @PublicEvolving
+    public enum ColumnExpansionStrategy implements DescribedEnum {
+        EXCLUDE_ALIASED_VIRTUAL_METADATA_COLUMNS(
+                text(
+                        "Excludes virtual metadata columns that reference a metadata key via an alias. "
+                                + "For example, a column declared as 'c METADATA VIRTUAL FROM k' "
+                                + "is not selected by default if the strategy is applied.")),
+
+        EXCLUDE_DEFAULT_VIRTUAL_METADATA_COLUMNS(
+                text(
+                        "Excludes virtual metadata columns that directly reference a metadata key. "
+                                + "For example, a column declared as 'k METADATA VIRTUAL' "
+                                + "is not selected by default if the strategy is applied."));
+
+        private final InlineElement description;
+
+        ColumnExpansionStrategy(InlineElement description) {
             this.description = description;
         }
 

@@ -21,12 +21,13 @@ package org.apache.flink.runtime.entrypoint.component;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.MetricOptions;
 import org.apache.flink.configuration.RestOptions;
+import org.apache.flink.core.failure.FailureEnricher;
 import org.apache.flink.runtime.blob.BlobServer;
 import org.apache.flink.runtime.clusterframework.types.ResourceID;
+import org.apache.flink.runtime.dispatcher.ArchivedApplicationStore;
 import org.apache.flink.runtime.dispatcher.DispatcherGateway;
 import org.apache.flink.runtime.dispatcher.DispatcherId;
 import org.apache.flink.runtime.dispatcher.DispatcherOperationCaches;
-import org.apache.flink.runtime.dispatcher.ExecutionGraphInfoStore;
 import org.apache.flink.runtime.dispatcher.HistoryServerArchivist;
 import org.apache.flink.runtime.dispatcher.PartialDispatcherServices;
 import org.apache.flink.runtime.dispatcher.SessionDispatcherFactory;
@@ -36,7 +37,7 @@ import org.apache.flink.runtime.dispatcher.runner.DispatcherRunnerFactory;
 import org.apache.flink.runtime.entrypoint.ClusterInformation;
 import org.apache.flink.runtime.heartbeat.HeartbeatServices;
 import org.apache.flink.runtime.highavailability.HighAvailabilityServices;
-import org.apache.flink.runtime.jobmanager.HaServicesJobPersistenceComponentFactory;
+import org.apache.flink.runtime.jobmanager.HaServicesPersistenceComponentFactory;
 import org.apache.flink.runtime.leaderretrieval.LeaderRetrievalService;
 import org.apache.flink.runtime.metrics.MetricRegistry;
 import org.apache.flink.runtime.metrics.groups.JobManagerMetricGroup;
@@ -45,7 +46,6 @@ import org.apache.flink.runtime.resourcemanager.ResourceManagerGateway;
 import org.apache.flink.runtime.resourcemanager.ResourceManagerId;
 import org.apache.flink.runtime.resourcemanager.ResourceManagerService;
 import org.apache.flink.runtime.resourcemanager.ResourceManagerServiceImpl;
-import org.apache.flink.runtime.rest.JobRestEndpointFactory;
 import org.apache.flink.runtime.rest.RestEndpointFactory;
 import org.apache.flink.runtime.rest.SessionRestEndpointFactory;
 import org.apache.flink.runtime.rest.handler.legacy.metrics.MetricFetcher;
@@ -54,6 +54,7 @@ import org.apache.flink.runtime.rest.handler.legacy.metrics.VoidMetricFetcher;
 import org.apache.flink.runtime.rpc.FatalErrorHandler;
 import org.apache.flink.runtime.rpc.RpcService;
 import org.apache.flink.runtime.rpc.RpcUtils;
+import org.apache.flink.runtime.security.token.DelegationTokenManager;
 import org.apache.flink.runtime.webmonitor.WebMonitorEndpoint;
 import org.apache.flink.runtime.webmonitor.retriever.LeaderGatewayRetriever;
 import org.apache.flink.runtime.webmonitor.retriever.MetricQueryServiceRetriever;
@@ -108,9 +109,11 @@ public class DefaultDispatcherResourceManagerComponentFactory
             HighAvailabilityServices highAvailabilityServices,
             BlobServer blobServer,
             HeartbeatServices heartbeatServices,
+            DelegationTokenManager delegationTokenManager,
             MetricRegistry metricRegistry,
-            ExecutionGraphInfoStore executionGraphInfoStore,
+            ArchivedApplicationStore archivedApplicationStore,
             MetricQueryServiceRetriever metricQueryServiceRetriever,
+            Collection<FailureEnricher> failureEnrichers,
             FatalErrorHandler fatalErrorHandler)
             throws Exception {
 
@@ -145,12 +148,12 @@ public class DefaultDispatcherResourceManagerComponentFactory
 
             final ScheduledExecutorService executor =
                     WebMonitorEndpoint.createExecutorService(
-                            configuration.getInteger(RestOptions.SERVER_NUM_THREADS),
-                            configuration.getInteger(RestOptions.SERVER_THREAD_PRIORITY),
+                            configuration.get(RestOptions.SERVER_NUM_THREADS),
+                            configuration.get(RestOptions.SERVER_THREAD_PRIORITY),
                             "DispatcherRestEndpoint");
 
             final long updateInterval =
-                    configuration.getLong(MetricOptions.METRIC_FETCHER_UPDATE_INTERVAL);
+                    configuration.get(MetricOptions.METRIC_FETCHER_UPDATE_INTERVAL).toMillis();
             final MetricFetcher metricFetcher =
                     updateInterval == 0
                             ? VoidMetricFetcher.INSTANCE
@@ -168,7 +171,7 @@ public class DefaultDispatcherResourceManagerComponentFactory
                             blobServer,
                             executor,
                             metricFetcher,
-                            highAvailabilityServices.getClusterRestEndpointLeaderElectionService(),
+                            highAvailabilityServices.getClusterRestEndpointLeaderElection(),
                             fatalErrorHandler);
 
             log.debug("Starting Dispatcher REST endpoint.");
@@ -184,6 +187,7 @@ public class DefaultDispatcherResourceManagerComponentFactory
                             rpcService,
                             highAvailabilityServices,
                             heartbeatServices,
+                            delegationTokenManager,
                             fatalErrorHandler,
                             new ClusterInformation(hostname, blobServer.getPort()),
                             webMonitorEndpoint.getRestBaseUrl(),
@@ -193,7 +197,7 @@ public class DefaultDispatcherResourceManagerComponentFactory
 
             final HistoryServerArchivist historyServerArchivist =
                     HistoryServerArchivist.createHistoryServerArchivist(
-                            configuration, webMonitorEndpoint, ioExecutor);
+                            configuration, webMonitorEndpoint, webMonitorEndpoint, ioExecutor);
 
             final DispatcherOperationCaches dispatcherOperationCaches =
                     new DispatcherOperationCaches(
@@ -209,19 +213,20 @@ public class DefaultDispatcherResourceManagerComponentFactory
                             () ->
                                     JobManagerMetricGroup.createJobManagerMetricGroup(
                                             metricRegistry, hostname),
-                            executionGraphInfoStore,
+                            archivedApplicationStore,
                             fatalErrorHandler,
                             historyServerArchivist,
                             metricRegistry.getMetricQueryServiceGatewayRpcAddress(),
                             ioExecutor,
-                            dispatcherOperationCaches);
+                            dispatcherOperationCaches,
+                            failureEnrichers);
 
             log.debug("Starting Dispatcher.");
             dispatcherRunner =
                     dispatcherRunnerFactory.createDispatcherRunner(
-                            highAvailabilityServices.getDispatcherLeaderElectionService(),
+                            highAvailabilityServices.getDispatcherLeaderElection(),
                             fatalErrorHandler,
-                            new HaServicesJobPersistenceComponentFactory(highAvailabilityServices),
+                            new HaServicesPersistenceComponentFactory(highAvailabilityServices),
                             ioExecutor,
                             rpcService,
                             partialDispatcherServices);
@@ -294,13 +299,5 @@ public class DefaultDispatcherResourceManagerComponentFactory
                         SessionDispatcherFactory.INSTANCE),
                 resourceManagerFactory,
                 SessionRestEndpointFactory.INSTANCE);
-    }
-
-    public static DefaultDispatcherResourceManagerComponentFactory createJobComponentFactory(
-            ResourceManagerFactory<?> resourceManagerFactory, JobGraphRetriever jobGraphRetriever) {
-        return new DefaultDispatcherResourceManagerComponentFactory(
-                DefaultDispatcherRunnerFactory.createJobRunner(jobGraphRetriever),
-                resourceManagerFactory,
-                JobRestEndpointFactory.INSTANCE);
     }
 }

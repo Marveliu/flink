@@ -15,20 +15,16 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.planner.plan.rules.logical.subquery
 
-import org.apache.flink.api.scala._
 import org.apache.flink.table.api._
 
-import org.junit.{Before, Test}
+import org.junit.jupiter.api.{BeforeEach, Test}
 
-/**
-  * Test for [[org.apache.flink.table.planner.plan.rules.logical.FlinkRewriteSubQueryRule]].
-  */
+/** Test for [[org.apache.flink.table.planner.plan.rules.logical.FlinkRewriteSubQueryRule]]. */
 class FlinkRewriteSubQueryRuleTest extends SubQueryTestBase {
 
-  @Before
+  @BeforeEach
   def setup(): Unit = {
     util.addTableSource[(Int, Long, String)]("x", 'a, 'b, 'c)
     util.addTableSource[(Int, Long, String)]("y", 'd, 'e, 'f)
@@ -48,25 +44,34 @@ class FlinkRewriteSubQueryRuleTest extends SubQueryTestBase {
   def testUnsupportedConversionWithUnexpectedComparisonNumber(): Unit = {
     // without correlation
     util.verifyRelPlanNotExpected(
-      "SELECT * FROM x WHERE (SELECT COUNT(*) FROM y WHERE d > 10) > 1", "joinType=[semi]")
+      "SELECT * FROM x WHERE (SELECT COUNT(*) FROM y WHERE d > 10) > 1",
+      "joinType=[semi]")
     util.verifyRelPlanNotExpected(
-      "SELECT * FROM x WHERE (SELECT COUNT(*) FROM y WHERE d > 10) >= 0", "joinType=[semi]")
+      "SELECT * FROM x WHERE (SELECT COUNT(*) FROM y WHERE d > 10) >= 0",
+      "joinType=[semi]")
     util.verifyRelPlanNotExpected(
-      "SELECT * FROM x WHERE (SELECT COUNT(*) FROM y WHERE d > 10) > -1", "joinType=[semi]")
+      "SELECT * FROM x WHERE (SELECT COUNT(*) FROM y WHERE d > 10) > -1",
+      "joinType=[semi]")
     util.verifyRelPlanNotExpected(
-      "SELECT * FROM x WHERE 0 <= (SELECT COUNT(*) FROM y WHERE d > 10)", "joinType=[semi]")
+      "SELECT * FROM x WHERE 0 <= (SELECT COUNT(*) FROM y WHERE d > 10)",
+      "joinType=[semi]")
     util.verifyRelPlanNotExpected(
-      "SELECT * FROM x WHERE -1 < (SELECT COUNT(*) FROM y WHERE d > 10)", "joinType=[semi]")
+      "SELECT * FROM x WHERE -1 < (SELECT COUNT(*) FROM y WHERE d > 10)",
+      "joinType=[semi]")
 
     // with correlation
     util.verifyRelPlanNotExpected(
-      "SELECT * FROM x WHERE (SELECT COUNT(*) FROM y WHERE a = d) > 1", "joinType=[semi]")
+      "SELECT * FROM x WHERE (SELECT COUNT(*) FROM y WHERE a = d) > 1",
+      "joinType=[semi]")
     util.verifyRelPlanNotExpected(
-      "SELECT * FROM x WHERE (SELECT COUNT(*) FROM y WHERE a = d) >= 0", "joinType=[semi]")
+      "SELECT * FROM x WHERE (SELECT COUNT(*) FROM y WHERE a = d) >= 0",
+      "joinType=[semi]")
     util.verifyRelPlanNotExpected(
-      "SELECT * FROM x WHERE 1 < (SELECT COUNT(*) FROM y WHERE a = d)", "joinType=[semi]")
+      "SELECT * FROM x WHERE 1 < (SELECT COUNT(*) FROM y WHERE a = d)",
+      "joinType=[semi]")
     util.verifyRelPlanNotExpected(
-      "SELECT * FROM x WHERE 0 <= (SELECT COUNT(*) FROM y WHERE a = d)", "joinType=[semi]")
+      "SELECT * FROM x WHERE 0 <= (SELECT COUNT(*) FROM y WHERE a = d)",
+      "joinType=[semi]")
   }
 
   @Test
@@ -152,8 +157,15 @@ class FlinkRewriteSubQueryRuleTest extends SubQueryTestBase {
 
   @Test
   def testSqlFromTpcDsQ41(): Unit = {
-    util.addTableSource[(Int, String, String, String, String, String, String)]("item",
-      'i_manufact_id, 'i_manufact, 'i_product_name, 'i_category, 'i_color, 'i_units, 'i_size)
+    util.addTableSource[(Int, String, String, String, String, String, String)](
+      "item",
+      'i_manufact_id,
+      'i_manufact,
+      'i_product_name,
+      'i_category,
+      'i_color,
+      'i_units,
+      'i_size)
     val sqlQuery =
       """
         |SELECT DISTINCT (i_product_name)

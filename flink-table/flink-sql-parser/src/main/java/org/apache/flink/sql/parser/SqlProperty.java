@@ -27,7 +27,6 @@ import org.apache.calcite.sql.SqlSpecialOperator;
 import org.apache.calcite.sql.SqlWriter;
 import org.apache.calcite.sql.parser.SqlParserPos;
 import org.apache.calcite.util.ImmutableNullableList;
-import org.apache.calcite.util.NlsString;
 
 import java.util.List;
 
@@ -40,7 +39,14 @@ import static java.util.Objects.requireNonNull;
 public class SqlProperty extends SqlCall {
 
     /** Use this operator only if you don't have a better one. */
-    protected static final SqlOperator OPERATOR = new SqlSpecialOperator("Property", SqlKind.OTHER);
+    protected static final SqlOperator OPERATOR =
+            new SqlSpecialOperator("Property", SqlKind.OTHER) {
+                @Override
+                public SqlCall createCall(
+                        SqlLiteral functionQualifier, SqlParserPos pos, SqlNode... operands) {
+                    return new SqlProperty((SqlIdentifier) operands[0], operands[1], pos);
+                }
+            };
 
     private final SqlIdentifier key;
     private final SqlNode value;
@@ -64,7 +70,7 @@ public class SqlProperty extends SqlCall {
     }
 
     public String getValueString() {
-        return ((NlsString) SqlLiteral.value(value)).getValue();
+        return SqlParseUtils.extractString(value);
     }
 
     @Override

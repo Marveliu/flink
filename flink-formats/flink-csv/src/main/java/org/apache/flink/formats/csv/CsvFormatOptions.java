@@ -87,5 +87,66 @@ public class CsvFormatOptions {
                             "Optional null literal string that is interpreted as a\n"
                                     + "null value (disabled by default)");
 
+    public static final ConfigOption<Boolean> WRITE_BIGDECIMAL_IN_SCIENTIFIC_NOTATION =
+            ConfigOptions.key("write-bigdecimal-in-scientific-notation")
+                    .booleanType()
+                    .defaultValue(true)
+                    .withDescription(
+                            "Enables representation of BigDecimal data type in scientific notation (default is true). For example, 100000 is encoded as 1E+5 by default, and will be written as 100000 if set this option to false. Note: Only when the value is not 0 and a multiple of 10 is converted to scientific notation.");
+
+    public static final ConfigOption<Boolean> TRIM_SPACES =
+            ConfigOptions.key("trim-spaces")
+                    .booleanType()
+                    .defaultValue(false)
+                    .withDescription(
+                            "Optional flag to trim leading/trailing spaces from "
+                                    + "unquoted field values (disabled by default). "
+                                    + "Only affects deserialization.");
+
+    public static final ConfigOption<Boolean> IGNORE_TRAILING_UNMAPPABLE =
+            ConfigOptions.key("ignore-trailing-unmappable")
+                    .booleanType()
+                    .defaultValue(false)
+                    .withDescription(
+                            "Optional flag to ignore extra trailing fields that "
+                                    + "cannot be mapped to the schema (disabled by default). "
+                                    + "Only affects deserialization.");
+
+    public static final ConfigOption<Boolean> ALLOW_TRAILING_COMMA =
+            ConfigOptions.key("allow-trailing-comma")
+                    .booleanType()
+                    .defaultValue(true)
+                    .withDescription(
+                            "Optional flag to allow a trailing comma after the "
+                                    + "last field value (enabled by default). "
+                                    + "Only affects deserialization.");
+
+    public static final ConfigOption<Boolean> FAIL_ON_MISSING_COLUMNS =
+            ConfigOptions.key("fail-on-missing-columns")
+                    .booleanType()
+                    .defaultValue(false)
+                    .withDescription(
+                            "Optional flag to fail when a row has fewer columns "
+                                    + "than the schema expects (disabled by default). "
+                                    + "Only affects deserialization.");
+
+    public static final ConfigOption<Boolean> EMPTY_STRING_AS_NULL =
+            ConfigOptions.key("empty-string-as-null")
+                    .booleanType()
+                    .defaultValue(false)
+                    .withDescription(
+                            "Optional flag to treat empty string values as null "
+                                    + "(disabled by default). "
+                                    + "Only affects deserialization.");
+
+    public static final ConfigOption<Boolean> IGNORE_FIRST_LINE =
+            ConfigOptions.key("ignore-first-line")
+                    .booleanType()
+                    .defaultValue(false)
+                    .withDescription(
+                            "Optional flag to skip the first CSV record of each input file "
+                                    + "(false by default). "
+                                    + "Only affects deserialization.");
+
     private CsvFormatOptions() {}
 }

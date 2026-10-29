@@ -29,23 +29,30 @@ import org.apache.flink.runtime.jobgraph.JobGraph;
 import org.apache.flink.runtime.jobgraph.JobVertex;
 import org.apache.flink.runtime.jobgraph.OperatorID;
 import org.apache.flink.runtime.operators.coordination.TestingOperatorCoordinator;
+import org.apache.flink.testutils.TestingUtils;
+import org.apache.flink.testutils.executor.TestExecutorExtension;
 import org.apache.flink.util.SerializedValue;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.RegisterExtension;
 
 import java.io.IOException;
+import java.util.concurrent.ScheduledExecutorService;
 
 import static org.apache.flink.runtime.executiongraph.ExecutionGraphTestUtils.createNoOpVertex;
 import static org.apache.flink.runtime.io.network.partition.ResultPartitionType.BLOCKING;
 import static org.apache.flink.runtime.jobgraph.DistributionPattern.ALL_TO_ALL;
-import static org.hamcrest.MatcherAssert.assertThat;
-import static org.hamcrest.Matchers.containsInAnyOrder;
+import static org.apache.flink.runtime.util.JobVertexConnectionUtils.connectNewDataSetAsInput;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /** Test for {@link DefaultOperatorCoordinatorHandler}. */
-public class DefaultOperatorCoordinatorHandlerTest {
+class DefaultOperatorCoordinatorHandlerTest {
+    @RegisterExtension
+    private static final TestExecutorExtension<ScheduledExecutorService> EXECUTOR_EXTENSION =
+            TestingUtils.defaultExecutorExtension();
 
     @Test
-    public void testRegisterAndStartNewCoordinators() throws Exception {
+    void testRegisterAndStartNewCoordinators() throws Exception {
 
         final JobVertex[] jobVertices = createJobVertices(BLOCKING);
         OperatorID operatorId1 = OperatorID.fromJobVertexID(jobVertices[0].getID());
@@ -60,14 +67,54 @@ public class DefaultOperatorCoordinatorHandlerTest {
 
         DefaultOperatorCoordinatorHandler handler =
                 new DefaultOperatorCoordinatorHandler(executionGraph, throwable -> {});
-        assertThat(handler.getCoordinatorMap().keySet(), containsInAnyOrder(operatorId1));
+        assertThat(handler.getCoordinatorMap().keySet()).contains(operatorId1);
 
         executionGraph.initializeJobVertex(ejv2, 0L);
         handler.registerAndStartNewCoordinators(
-                ejv2.getOperatorCoordinators(), executionGraph.getJobMasterMainThreadExecutor());
+                ejv2.getOperatorCoordinators(),
+                executionGraph.getJobMasterMainThreadExecutor(),
+                ejv2.getParallelism());
 
-        assertThat(
-                handler.getCoordinatorMap().keySet(), containsInAnyOrder(operatorId1, operatorId2));
+        assertThat(handler.getCoordinatorMap().keySet()).contains(operatorId1, operatorId2);
+    }
+
+    @Test
+    void testDisposeAllOperatorCoordinatorsClosesThoseOfEveryVertex() throws Exception {
+        final JobVertex[] jobVertices = createJobVertices(BLOCKING);
+        final JobVertex unconnected = createNoOpVertex(3);
+        unconnected.addOperatorCoordinator(
+                new SerializedValue<>(
+                        new TestingOperatorCoordinator.Provider(
+                                OperatorID.fromJobVertexID(unconnected.getID()))));
+
+        final ExecutionGraph executionGraph =
+                createDynamicGraph(jobVertices[0], jobVertices[1], unconnected);
+        final ExecutionJobVertex registered = executionGraph.getJobVertex(jobVertices[0].getID());
+        final ExecutionJobVertex neverRegistered =
+                executionGraph.getJobVertex(jobVertices[1].getID());
+        final ExecutionJobVertex uninitialized = executionGraph.getJobVertex(unconnected.getID());
+        executionGraph.start(ComponentMainThreadExecutorServiceAdapter.forMainThread());
+        executionGraph.initializeJobVertex(registered, 0L);
+        final DefaultOperatorCoordinatorHandler handler =
+                new DefaultOperatorCoordinatorHandler(executionGraph, throwable -> {});
+        executionGraph.initializeJobVertex(neverRegistered, 0L);
+
+        handler.disposeAllOperatorCoordinators();
+
+        assertClosed(registered);
+        assertClosed(neverRegistered);
+        assertClosed(uninitialized);
+    }
+
+    private static void assertClosed(ExecutionJobVertex vertex) {
+        assertThat(vertex.getOperatorCoordinatorsEvenIfUninitialized())
+                .singleElement()
+                .satisfies(
+                        holder ->
+                                assertThat(
+                                                ((TestingOperatorCoordinator) holder.coordinator())
+                                                        .isClosed())
+                                        .isTrue());
     }
 
     private JobVertex[] createJobVertices(ResultPartitionType resultPartitionType)
@@ -76,7 +123,7 @@ public class DefaultOperatorCoordinatorHandlerTest {
         final int parallelism = 3;
         jobVertices[0] = createNoOpVertex(parallelism);
         jobVertices[1] = createNoOpVertex(parallelism);
-        jobVertices[1].connectNewDataSetAsInput(jobVertices[0], ALL_TO_ALL, resultPartitionType);
+        connectNewDataSetAsInput(jobVertices[1], jobVertices[0], ALL_TO_ALL, resultPartitionType);
 
         jobVertices[0].addOperatorCoordinator(
                 new SerializedValue<>(
@@ -94,6 +141,6 @@ public class DefaultOperatorCoordinatorHandlerTest {
     private DefaultExecutionGraph createDynamicGraph(JobVertex... jobVertices) throws Exception {
         return TestingDefaultExecutionGraphBuilder.newBuilder()
                 .setJobGraph(new JobGraph(new JobID(), "TestJob", jobVertices))
-                .buildDynamicGraph();
+                .buildDynamicGraph(EXECUTOR_EXTENSION.getExecutor());
     }
 }

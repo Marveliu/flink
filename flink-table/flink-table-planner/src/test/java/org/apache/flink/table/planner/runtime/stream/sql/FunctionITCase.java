@@ -18,102 +18,182 @@
 
 package org.apache.flink.table.planner.runtime.stream.sql;
 
-import org.apache.flink.api.common.ExecutionConfig;
+import org.apache.flink.api.common.serialization.SerializerConfigImpl;
 import org.apache.flink.api.java.typeutils.runtime.kryo.KryoSerializer;
+import org.apache.flink.configuration.Configuration;
+import org.apache.flink.core.fs.Path;
+import org.apache.flink.table.annotation.ArgumentHint;
 import org.apache.flink.table.annotation.DataTypeHint;
 import org.apache.flink.table.annotation.FunctionHint;
 import org.apache.flink.table.annotation.HintFlag;
 import org.apache.flink.table.annotation.InputGroup;
 import org.apache.flink.table.api.DataTypes;
 import org.apache.flink.table.api.Table;
+import org.apache.flink.table.api.TableEnvironment;
 import org.apache.flink.table.api.TableResult;
 import org.apache.flink.table.api.ValidationException;
 import org.apache.flink.table.api.dataview.MapView;
 import org.apache.flink.table.catalog.Catalog;
+import org.apache.flink.table.catalog.CatalogDatabaseImpl;
+import org.apache.flink.table.catalog.CatalogDescriptor;
 import org.apache.flink.table.catalog.CatalogFunction;
 import org.apache.flink.table.catalog.DataTypeFactory;
 import org.apache.flink.table.catalog.ObjectPath;
 import org.apache.flink.table.connector.source.LookupTableSource;
+import org.apache.flink.table.data.GenericRowData;
+import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.data.StringData;
 import org.apache.flink.table.functions.AggregateFunction;
+import org.apache.flink.table.functions.BuiltInFunctionDefinitions;
+import org.apache.flink.table.functions.FunctionContext;
 import org.apache.flink.table.functions.ScalarFunction;
 import org.apache.flink.table.functions.SpecializedFunction;
 import org.apache.flink.table.functions.TableFunction;
 import org.apache.flink.table.planner.factories.utils.TestCollectionTableFactory;
-import org.apache.flink.table.planner.functions.BuiltInFunctionTestBase;
 import org.apache.flink.table.planner.runtime.utils.StreamingTestBase;
+import org.apache.flink.table.resource.ResourceType;
+import org.apache.flink.table.resource.ResourceUri;
 import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.types.inference.TypeInference;
 import org.apache.flink.table.types.inference.TypeStrategies;
 import org.apache.flink.table.types.logical.RawType;
+import org.apache.flink.testutils.junit.utils.TempDirUtils;
 import org.apache.flink.types.Row;
+import org.apache.flink.util.CloseableIterator;
 import org.apache.flink.util.CollectionUtil;
+import org.apache.flink.util.FlinkRuntimeException;
+import org.apache.flink.util.Preconditions;
 import org.apache.flink.util.StringUtils;
+import org.apache.flink.util.UserClassLoaderJarTestUtils;
 
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
+import java.lang.invoke.MethodHandle;
 import java.math.BigDecimal;
 import java.nio.ByteBuffer;
 import java.time.DayOfWeek;
 import java.time.LocalDateTime;
-import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Random;
+import java.util.UUID;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
+import static org.apache.flink.table.api.Expressions.$;
+import static org.apache.flink.table.utils.UserDefinedFunctions.GENERATED_LOWER_UDF_CLASS;
+import static org.apache.flink.table.utils.UserDefinedFunctions.GENERATED_LOWER_UDF_CODE;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatNoException;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.fail;
 
 /**
  * Tests for catalog and system functions in a table environment.
  *
- * <p>Note: This class is meant for testing the core function support. Use {@link
- * BuiltInFunctionTestBase} for testing individual function implementations.
+ * <p>Note: This class is meant for testing the core function support. Use {@code
+ * org.apache.flink.table.planner.functions.BuiltInFunctionTestBase} for testing individual function
+ * implementations.
  */
 public class FunctionITCase extends StreamingTestBase {
 
     private static final String TEST_FUNCTION = TestUDF.class.getName();
 
-    @Test
-    public void testCreateCatalogFunctionInDefaultCatalog() {
-        String ddl1 = "create function f1 as 'org.apache.flink.function.TestFunction'";
-        tEnv().executeSql(ddl1);
-        assertThat(Arrays.asList(tEnv().listFunctions())).contains("f1");
+    private static final Random random = new Random();
+    private String udfClassName;
+    private String jarPath;
 
-        tEnv().executeSql("DROP FUNCTION IF EXISTS default_catalog.default_database.f1");
-        assertThat(Arrays.asList(tEnv().listFunctions())).doesNotContain("f1");
+    @BeforeEach
+    @Override
+    public void before() throws Exception {
+        super.before();
+        udfClassName = GENERATED_LOWER_UDF_CLASS + random.nextInt(50);
+        jarPath =
+                UserClassLoaderJarTestUtils.createJarFile(
+                                TempDirUtils.newFolder(
+                                        tempFolder(),
+                                        String.format("test-jar-%s", UUID.randomUUID())),
+                                "test-classloader-udf.jar",
+                                udfClassName,
+                                String.format(GENERATED_LOWER_UDF_CODE, udfClassName))
+                        .toURI()
+                        .toString();
     }
 
     @Test
-    public void testCreateFunctionWithFullPath() {
+    void testCreateCatalogFunctionInDefaultCatalog() {
+        String ddl1 = "create function f1 as 'org.apache.flink.function.TestFunction'";
+        tEnv().executeSql(ddl1);
+        assertThat(List.of(tEnv().listFunctions())).contains("f1");
+
+        tEnv().executeSql("DROP FUNCTION IF EXISTS default_catalog.default_database.f1");
+        assertThat(List.of(tEnv().listFunctions())).doesNotContain("f1");
+    }
+
+    @Test
+    void testCreateFunctionWithFullPath() {
         String ddl1 =
                 "create function default_catalog.default_database.f2 as"
                         + " 'org.apache.flink.function.TestFunction'";
         tEnv().executeSql(ddl1);
-        assertThat(Arrays.asList(tEnv().listFunctions())).contains("f2");
+        assertThat(List.of(tEnv().listFunctions())).contains("f2");
 
         tEnv().executeSql("DROP FUNCTION IF EXISTS default_catalog.default_database.f2");
-        assertThat(Arrays.asList(tEnv().listFunctions())).doesNotContain("f2");
+        assertThat(List.of(tEnv().listFunctions())).doesNotContain("f2");
     }
 
     @Test
-    public void testCreateFunctionWithoutCatalogIdentifier() {
+    void testCreateFunctionWithoutCatalogIdentifier() {
         String ddl1 =
                 "create function default_database.f3 as"
                         + " 'org.apache.flink.function.TestFunction'";
         tEnv().executeSql(ddl1);
-        assertThat(Arrays.asList(tEnv().listFunctions())).contains("f3");
+        assertThat(List.of(tEnv().listFunctions())).contains("f3");
 
         tEnv().executeSql("DROP FUNCTION IF EXISTS default_catalog.default_database.f3");
-        assertThat(Arrays.asList(tEnv().listFunctions())).doesNotContain("f3");
+        assertThat(List.of(tEnv().listFunctions())).doesNotContain("f3");
     }
 
     @Test
-    public void testCreateFunctionCatalogNotExists() {
+    void testDynamicDatetimeFunctions() {
+        assertThatNoException()
+                .isThrownBy(
+                        () ->
+                                tEnv().sqlQuery(
+                                                "SELECT CURRENT_TIMESTAMP, CURRENT_TIMESTAMP(),"
+                                                        + " LOCALTIME, LOCALTIME(),"
+                                                        + " CURRENT_TIME, CURRENT_TIME(),"
+                                                        + " LOCALTIMESTAMP, LOCALTIMESTAMP(),"
+                                                        + " CURRENT_DATE, CURRENT_DATE()")
+                                        .execute());
+    }
+
+    @Test
+    void testDynamicDatetimeFunctionsAreEqual() {
+        TableResult tableResult =
+                tEnv().sqlQuery(
+                                "SELECT CURRENT_TIMESTAMP = CURRENT_TIMESTAMP(),"
+                                        + " LOCALTIME = LOCALTIME(),"
+                                        + " CURRENT_TIME = CURRENT_TIME(),"
+                                        + " LOCALTIMESTAMP = LOCALTIMESTAMP(),"
+                                        + " CURRENT_DATE = CURRENT_DATE()")
+                        .execute();
+        List<Row> actualRows = CollectionUtil.iteratorToList(tableResult.collect());
+        assertThat(actualRows).isEqualTo(List.of(Row.of(true, true, true, true, true)));
+    }
+
+    @Test
+    void testCreateFunctionCatalogNotExists() {
         String ddl1 =
                 "create function catalog1.database1.f3 as 'org.apache.flink.function.TestFunction'";
 
@@ -125,7 +205,7 @@ public class FunctionITCase extends StreamingTestBase {
     }
 
     @Test
-    public void testCreateFunctionDBNotExists() {
+    void testCreateFunctionDBNotExists() {
         String ddl1 =
                 "create function default_catalog.database1.f3 as 'org.apache.flink.function.TestFunction'";
 
@@ -137,7 +217,7 @@ public class FunctionITCase extends StreamingTestBase {
     }
 
     @Test
-    public void testCreateTemporaryCatalogFunction() {
+    void testCreateTemporaryCatalogFunction() {
         String ddl1 =
                 "create temporary function default_catalog.default_database.f4"
                         + " as '"
@@ -155,13 +235,13 @@ public class FunctionITCase extends StreamingTestBase {
         String ddl4 = "drop temporary function if exists default_catalog.default_database.f4";
 
         tEnv().executeSql(ddl1);
-        assertThat(Arrays.asList(tEnv().listFunctions())).contains("f4");
+        assertThat(List.of(tEnv().listFunctions())).contains("f4");
 
         tEnv().executeSql(ddl2);
-        assertThat(Arrays.asList(tEnv().listFunctions())).contains("f4");
+        assertThat(List.of(tEnv().listFunctions())).contains("f4");
 
         tEnv().executeSql(ddl3);
-        assertThat(Arrays.asList(tEnv().listFunctions())).doesNotContain("f4");
+        assertThat(List.of(tEnv().listFunctions())).doesNotContain("f4");
 
         tEnv().executeSql(ddl1);
         assertThatThrownBy(() -> tEnv().executeSql(ddl1))
@@ -179,7 +259,7 @@ public class FunctionITCase extends StreamingTestBase {
     }
 
     @Test
-    public void testCreateTemporarySystemFunction() {
+    void testCreateTemporarySystemFunction() {
         String ddl1 = "create temporary system function f5" + " as '" + TEST_FUNCTION + "'";
 
         String ddl2 =
@@ -193,7 +273,112 @@ public class FunctionITCase extends StreamingTestBase {
     }
 
     @Test
-    public void testAlterFunction() throws Exception {
+    void testCreateTemporarySystemFunctionByUsingJar() throws Exception {
+        String ddl =
+                String.format(
+                        "CREATE TEMPORARY SYSTEM FUNCTION f10 AS '%s' USING JAR '%s'",
+                        udfClassName, jarPath);
+        tEnv().executeSql(ddl);
+        assertThat(List.of(tEnv().listFunctions())).contains("f10");
+
+        try (CloseableIterator<Row> itor = tEnv().executeSql("SHOW JARS").collect()) {
+            assertThat(itor.hasNext()).isFalse();
+        }
+
+        tEnv().executeSql("DROP TEMPORARY SYSTEM FUNCTION f10");
+        assertThat(List.of(tEnv().listFunctions())).doesNotContain("f10");
+    }
+
+    @Test
+    void testCreateTemporarySystemFunctionWithTableAPI() {
+        ResourceUri resourceUri = new ResourceUri(ResourceType.JAR, jarPath);
+        tEnv().createTemporarySystemFunction("f10", udfClassName, List.of(resourceUri));
+        assertThat(List.of(tEnv().listFunctions())).contains("f10");
+
+        tEnv().executeSql("DROP TEMPORARY SYSTEM FUNCTION f10");
+        assertThat(List.of(tEnv().listFunctions())).doesNotContain("f10");
+    }
+
+    @Test
+    void testUserDefinedTemporarySystemFunctionWithTableAPI() throws Exception {
+        ResourceUri resourceUri = new ResourceUri(ResourceType.JAR, jarPath);
+        String dropFunctionSql = "DROP TEMPORARY SYSTEM FUNCTION lowerUdf";
+        testUserDefinedFunctionByUsingJar(
+                environment ->
+                        environment.createTemporarySystemFunction(
+                                "lowerUdf", udfClassName, List.of(resourceUri)),
+                dropFunctionSql);
+    }
+
+    @Test
+    void testCreateCatalogFunctionByUsingJar() {
+        String ddl =
+                String.format(
+                        "CREATE FUNCTION default_database.f11 AS '%s' USING JAR '%s'",
+                        udfClassName, jarPath);
+        tEnv().executeSql(ddl);
+        assertThat(List.of(tEnv().listFunctions())).contains("f11");
+
+        tEnv().executeSql("DROP FUNCTION default_database.f11");
+        assertThat(List.of(tEnv().listFunctions())).doesNotContain("f11");
+    }
+
+    @Test
+    void testCreateCatalogFunctionWithTableAPI() {
+        ResourceUri resourceUri = new ResourceUri(ResourceType.JAR, jarPath);
+        tEnv().createFunction("f11", udfClassName, List.of(resourceUri));
+        assertThat(List.of(tEnv().listFunctions())).contains("f11");
+
+        tEnv().executeSql("DROP FUNCTION default_database.f11");
+        assertThat(List.of(tEnv().listFunctions())).doesNotContain("f11");
+    }
+
+    @Test
+    void testUserDefinedCatalogFunctionWithTableAPI() throws Exception {
+        ResourceUri resourceUri = new ResourceUri(ResourceType.JAR, jarPath);
+        String dropFunctionSql = "DROP FUNCTION default_database.lowerUdf";
+        testUserDefinedFunctionByUsingJar(
+                environment ->
+                        environment.createFunction("lowerUdf", udfClassName, List.of(resourceUri)),
+                dropFunctionSql);
+    }
+
+    @Test
+    void testCreateTemporaryCatalogFunctionByUsingJar() {
+        String ddl =
+                String.format(
+                        "CREATE TEMPORARY FUNCTION default_database.f12 AS '%s' USING JAR '%s'",
+                        udfClassName, jarPath);
+        tEnv().executeSql(ddl);
+        assertThat(List.of(tEnv().listFunctions())).contains("f12");
+
+        tEnv().executeSql("DROP TEMPORARY FUNCTION default_database.f12");
+        assertThat(List.of(tEnv().listFunctions())).doesNotContain("f12");
+    }
+
+    @Test
+    void testCreateTemporaryCatalogFunctionWithTableAPI() {
+        ResourceUri resourceUri = new ResourceUri(ResourceType.JAR, jarPath);
+        tEnv().createTemporaryFunction("f12", udfClassName, List.of(resourceUri));
+        assertThat(List.of(tEnv().listFunctions())).contains("f12");
+
+        tEnv().executeSql("DROP TEMPORARY FUNCTION default_database.f12");
+        assertThat(List.of(tEnv().listFunctions())).doesNotContain("f12");
+    }
+
+    @Test
+    void testUserDefinedTemporaryCatalogFunctionWithTableAPI() throws Exception {
+        ResourceUri resourceUri = new ResourceUri(ResourceType.JAR, jarPath);
+        String dropFunctionSql = "DROP TEMPORARY FUNCTION default_database.lowerUdf";
+        testUserDefinedFunctionByUsingJar(
+                environment ->
+                        environment.createTemporaryFunction(
+                                "lowerUdf", udfClassName, List.of(resourceUri)),
+                dropFunctionSql);
+    }
+
+    @Test
+    void testAlterFunction() throws Exception {
         String create = "create function f3 as 'org.apache.flink.function.TestFunction'";
         String alter = "alter function f3 as 'org.apache.flink.function.TestFunction2'";
 
@@ -210,7 +395,7 @@ public class FunctionITCase extends StreamingTestBase {
     }
 
     @Test
-    public void testAlterFunctionNonExists() {
+    void testAlterFunctionNonExists() {
         String alterUndefinedFunction =
                 "ALTER FUNCTION default_catalog.default_database.f4"
                         + " as 'org.apache.flink.function.TestFunction'";
@@ -235,7 +420,7 @@ public class FunctionITCase extends StreamingTestBase {
     }
 
     @Test
-    public void testAlterTemporaryCatalogFunction() {
+    void testAlterTemporaryCatalogFunction() {
         String alterTemporary =
                 "ALTER TEMPORARY FUNCTION default_catalog.default_database.f4"
                         + " as 'org.apache.flink.function.TestFunction'";
@@ -245,7 +430,7 @@ public class FunctionITCase extends StreamingTestBase {
     }
 
     @Test
-    public void testAlterTemporarySystemFunction() {
+    void testAlterTemporarySystemFunction() {
         String alterTemporary =
                 "ALTER TEMPORARY SYSTEM FUNCTION default_catalog.default_database.f4"
                         + " as 'org.apache.flink.function.TestFunction'";
@@ -255,7 +440,7 @@ public class FunctionITCase extends StreamingTestBase {
     }
 
     @Test
-    public void testDropFunctionNonExists() {
+    void testDropFunctionNonExists() {
         String dropUndefinedFunction = "DROP FUNCTION default_catalog.default_database.f4";
 
         String dropFunctionInWrongCatalog = "DROP FUNCTION catalog1.default_database.f4";
@@ -274,7 +459,7 @@ public class FunctionITCase extends StreamingTestBase {
     }
 
     @Test
-    public void testDropTemporaryFunctionNonExits() {
+    void testDropTemporaryFunctionNonExits() {
         String dropUndefinedFunction =
                 "DROP TEMPORARY FUNCTION default_catalog.default_database.f4";
         String dropFunctionInWrongCatalog = "DROP TEMPORARY FUNCTION catalog1.default_database.f4";
@@ -295,7 +480,7 @@ public class FunctionITCase extends StreamingTestBase {
     }
 
     @Test
-    public void testCreateDropTemporaryCatalogFunctionsWithDifferentIdentifier() {
+    void testCreateDropTemporaryCatalogFunctionsWithDifferentIdentifier() {
         String createNoCatalogDB = "create temporary function f4" + " as '" + TEST_FUNCTION + "'";
 
         String dropNoCatalogDB = "drop temporary function f4";
@@ -324,7 +509,7 @@ public class FunctionITCase extends StreamingTestBase {
     }
 
     @Test
-    public void testDropTemporarySystemFunction() {
+    void testDropTemporarySystemFunction() {
         String ddl1 = "create temporary system function f5 as '" + TEST_FUNCTION + "'";
 
         String ddl2 = "drop temporary system function f5";
@@ -341,7 +526,7 @@ public class FunctionITCase extends StreamingTestBase {
     }
 
     @Test
-    public void testUserDefinedRegularCatalogFunction() throws Exception {
+    void testUserDefinedRegularCatalogFunction() throws Exception {
         String functionDDL = "create function addOne as '" + TEST_FUNCTION + "'";
 
         String dropFunctionDDL = "drop function addOne";
@@ -351,7 +536,7 @@ public class FunctionITCase extends StreamingTestBase {
     }
 
     @Test
-    public void testUserDefinedTemporaryCatalogFunction() throws Exception {
+    void testUserDefinedTemporaryCatalogFunction() throws Exception {
         String functionDDL = "create temporary function addOne as '" + TEST_FUNCTION + "'";
 
         String dropFunctionDDL = "drop temporary function addOne";
@@ -361,13 +546,61 @@ public class FunctionITCase extends StreamingTestBase {
     }
 
     @Test
-    public void testUserDefinedTemporarySystemFunction() throws Exception {
+    void testUserDefinedTemporarySystemFunctionByUsingJar() throws Exception {
+        String functionDDL =
+                String.format(
+                        "create temporary system function lowerUdf as '%s' using jar '%s'",
+                        udfClassName, jarPath);
+
+        String dropFunctionDDL = "drop temporary system function lowerUdf";
+        testUserDefinedFunctionByUsingJar(env -> env.executeSql(functionDDL), dropFunctionDDL);
+    }
+
+    @Test
+    void testUserDefinedRegularCatalogFunctionByUsingJar() throws Exception {
+        String functionDDL =
+                String.format(
+                        "create function lowerUdf as '%s' using jar '%s'", udfClassName, jarPath);
+
+        String dropFunctionDDL = "drop function lowerUdf";
+        testUserDefinedFunctionByUsingJar(env -> env.executeSql(functionDDL), dropFunctionDDL);
+    }
+
+    @Test
+    void testUserDefinedTemporaryCatalogFunctionByUsingJar() throws Exception {
+        String functionDDL =
+                String.format(
+                        "create temporary function lowerUdf as '%s' using jar '%s'",
+                        udfClassName, jarPath);
+
+        String dropFunctionDDL = "drop temporary function lowerUdf";
+        testUserDefinedFunctionByUsingJar(env -> env.executeSql(functionDDL), dropFunctionDDL);
+    }
+
+    @Test
+    void testUserDefinedTemporarySystemFunction() throws Exception {
         String functionDDL = "create temporary system function addOne as '" + TEST_FUNCTION + "'";
 
         String dropFunctionDDL = "drop temporary system function addOne";
         testUserDefinedCatalogFunction(functionDDL);
         // delete the function
         tEnv().executeSql(dropFunctionDDL);
+    }
+
+    @Test
+    void testExpressionReducerByUsingJar() {
+        String functionDDL =
+                String.format(
+                        "create temporary function lowerUdf as '%s' using jar '%s'",
+                        udfClassName, jarPath);
+        tEnv().executeSql(functionDDL);
+
+        TableResult tableResult = tEnv().executeSql("SELECT lowerUdf('HELLO')");
+
+        List<Row> actualRows = CollectionUtil.iteratorToList(tableResult.collect());
+        assertThat(actualRows).isEqualTo(List.of(Row.of("hello")));
+
+        tEnv().executeSql("drop temporary function lowerUdf");
     }
 
     /** Test udf class. */
@@ -380,7 +613,7 @@ public class FunctionITCase extends StreamingTestBase {
 
     private void testUserDefinedCatalogFunction(String createFunctionDDL) throws Exception {
         List<Row> sourceData =
-                Arrays.asList(
+                List.of(
                         Row.of(1, "1000", 2),
                         Row.of(2, "1", 3),
                         Row.of(3, "2000", 4),
@@ -403,21 +636,60 @@ public class FunctionITCase extends StreamingTestBase {
         Table t2 = tEnv().sqlQuery(query);
         t2.executeInsert("t2").await();
 
-        Row[] result = TestCollectionTableFactory.RESULT().toArray(new Row[0]);
-        Row[] expected = sourceData.toArray(new Row[0]);
-        assertThat(result).isEqualTo(expected);
+        List<Row> result = TestCollectionTableFactory.RESULT();
+        assertThat(result).isEqualTo(sourceData);
 
         tEnv().executeSql("drop table t1");
         tEnv().executeSql("drop table t2");
     }
 
+    private void testUserDefinedFunctionByUsingJar(FunctionCreator creator, String dropFunctionDDL)
+            throws Exception {
+        List<Row> sourceData =
+                List.of(
+                        Row.of(1, "JARK"),
+                        Row.of(2, "RON"),
+                        Row.of(3, "LeoNard"),
+                        Row.of(1, "FLINK"),
+                        Row.of(2, "CDC"));
+
+        TestCollectionTableFactory.reset();
+        TestCollectionTableFactory.initData(sourceData);
+
+        String sourceDDL = "create table t1(a int, b varchar) with ('connector' = 'COLLECTION')";
+        String sinkDDL = "create table t2(a int, b varchar) with ('connector' = 'COLLECTION')";
+
+        String query = "select a, lowerUdf(b) from t1";
+
+        tEnv().executeSql(sourceDDL);
+        tEnv().executeSql(sinkDDL);
+        creator.createFunction(tEnv());
+        Table t2 = tEnv().sqlQuery(query);
+        t2.executeInsert("t2").await();
+
+        List<Row> result = TestCollectionTableFactory.RESULT();
+        List<Row> expected =
+                List.of(
+                        Row.of(1, "jark"),
+                        Row.of(2, "ron"),
+                        Row.of(3, "leonard"),
+                        Row.of(1, "flink"),
+                        Row.of(2, "cdc"));
+        assertThat(result).isEqualTo(expected);
+
+        tEnv().executeSql("drop table t1");
+        tEnv().executeSql("drop table t2");
+        // delete the function
+        tEnv().executeSql(dropFunctionDDL);
+    }
+
     @Test
-    public void testPrimitiveScalarFunction() throws Exception {
+    void testPrimitiveScalarFunction() throws Exception {
         final List<Row> sourceData =
-                Arrays.asList(Row.of(1, 1L, "-"), Row.of(2, 2L, "--"), Row.of(3, 3L, "---"));
+                List.of(Row.of(1, 1L, "-"), Row.of(2, 2L, "--"), Row.of(3, 3L, "---"));
 
         final List<Row> sinkData =
-                Arrays.asList(Row.of(1, 3L, "-"), Row.of(2, 6L, "--"), Row.of(3, 9L, "---"));
+                List.of(Row.of(1, 3L, "-"), Row.of(2, 6L, "--"), Row.of(3, 9L, "---"));
 
         TestCollectionTableFactory.reset();
         TestCollectionTableFactory.initData(sourceData);
@@ -435,7 +707,7 @@ public class FunctionITCase extends StreamingTestBase {
     }
 
     @Test
-    public void testNullScalarFunction() throws Exception {
+    void testNullScalarFunction() throws Exception {
         final List<Row> sinkData =
                 Collections.singletonList(
                         Row.of("Boolean", "String", "<<unknown>>", "String", "Object", "Boolean"));
@@ -466,9 +738,9 @@ public class FunctionITCase extends StreamingTestBase {
     }
 
     @Test
-    public void testRowScalarFunction() throws Exception {
+    void testRowScalarFunction() throws Exception {
         final List<Row> sourceData =
-                Arrays.asList(
+                List.of(
                         Row.of(1, Row.of(1, "1")),
                         Row.of(2, Row.of(2, "2")),
                         Row.of(3, Row.of(3, "3")));
@@ -489,16 +761,16 @@ public class FunctionITCase extends StreamingTestBase {
     }
 
     @Test
-    public void testComplexScalarFunction() throws Exception {
+    void testComplexScalarFunction() throws Exception {
         final List<Row> sourceData =
-                Arrays.asList(
+                List.of(
                         Row.of(1, new byte[] {1, 2, 3}),
                         Row.of(2, new byte[] {2, 3, 4}),
                         Row.of(3, new byte[] {3, 4, 5}),
                         Row.of(null, null));
 
         final List<Row> sinkData =
-                Arrays.asList(
+                List.of(
                         Row.of(
                                 1,
                                 "1+2012-12-12 12:12:12.123456789",
@@ -529,7 +801,8 @@ public class FunctionITCase extends StreamingTestBase {
 
         final RawType<Object> rawType =
                 new RawType<>(
-                        Object.class, new KryoSerializer<>(Object.class, new ExecutionConfig()));
+                        Object.class,
+                        new KryoSerializer<>(Object.class, new SerializerConfigImpl()));
 
         tEnv().executeSql(
                         "CREATE TABLE SourceTable(i INT, b BYTES) "
@@ -561,13 +834,12 @@ public class FunctionITCase extends StreamingTestBase {
     }
 
     @Test
-    public void testCustomScalarFunction() throws Exception {
+    void testCustomScalarFunction() throws Exception {
         final List<Row> sourceData =
-                Arrays.asList(Row.of(1), Row.of(2), Row.of(3), Row.of((Integer) null));
+                List.of(Row.of(1), Row.of(2), Row.of(3), Row.of((Integer) null));
 
         final List<Row> sinkData =
-                Arrays.asList(
-                        Row.of(1, 1, 5), Row.of(2, 2, 5), Row.of(3, 3, 5), Row.of(null, null, 5));
+                List.of(Row.of(1, 1, 5), Row.of(2, 2, 5), Row.of(3, 3, 5), Row.of(null, null, 5));
 
         TestCollectionTableFactory.reset();
         TestCollectionTableFactory.initData(sourceData);
@@ -590,8 +862,8 @@ public class FunctionITCase extends StreamingTestBase {
     }
 
     @Test
-    public void testVarArgScalarFunction() throws Exception {
-        final List<Row> sourceData = Arrays.asList(Row.of("Bob", 1), Row.of("Alice", 2));
+    void testVarArgScalarFunction() {
+        final List<Row> sourceData = List.of(Row.of("Bob", 1), Row.of("Alice", 2));
 
         TestCollectionTableFactory.reset();
         TestCollectionTableFactory.initData(sourceData);
@@ -619,7 +891,7 @@ public class FunctionITCase extends StreamingTestBase {
 
         final List<Row> actual = CollectionUtil.iteratorToList(result.collect());
         final List<Row> expected =
-                Arrays.asList(
+                List.of(
                         Row.of(
                                 "(INT...)",
                                 "(INT...)",
@@ -636,9 +908,9 @@ public class FunctionITCase extends StreamingTestBase {
     }
 
     @Test
-    public void testRawLiteralScalarFunction() throws Exception {
+    void testRawLiteralScalarFunction() throws Exception {
         final List<Row> sourceData =
-                Arrays.asList(
+                List.of(
                         Row.of(1, DayOfWeek.MONDAY),
                         Row.of(2, DayOfWeek.FRIDAY),
                         Row.of(null, null));
@@ -659,7 +931,7 @@ public class FunctionITCase extends StreamingTestBase {
         final RawType<DayOfWeek> rawType =
                 new RawType<>(
                         DayOfWeek.class,
-                        new KryoSerializer<>(DayOfWeek.class, new ExecutionConfig()));
+                        new KryoSerializer<>(DayOfWeek.class, new SerializerConfigImpl()));
 
         tEnv().executeSql(
                         "CREATE TABLE SourceTable("
@@ -697,13 +969,414 @@ public class FunctionITCase extends StreamingTestBase {
         assertThat(TestCollectionTableFactory.getResult()).containsExactlyInAnyOrder(sinkData);
     }
 
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("inputForTestCalcLocalRefReuse")
+    void testCalcLocalRefReuse(
+            String sql, List<Row> expectedRows, int expectedDetCalls, int expectedNonDetCalls) {
+        final List<Row> sourceData = List.of(Row.of("Bob"), Row.of("Alice"));
+
+        TestCollectionTableFactory.reset();
+        TestCollectionTableFactory.initData(sourceData);
+        CountingUpperScalarFunction.COUNT.set(0);
+        NonDeterministicCountingScalarFunction.COUNT.set(0);
+
+        tEnv().createTemporarySystemFunction("Det", CountingUpperScalarFunction.class);
+        tEnv().createTemporarySystemFunction(
+                        "Nondet", NonDeterministicCountingScalarFunction.class);
+        tEnv().executeSql("CREATE TABLE SourceTable (s STRING) WITH ('connector' = 'COLLECTION')");
+
+        final List<Row> actual = CollectionUtil.iteratorToList(tEnv().executeSql(sql).collect());
+
+        assertThat(actual).containsExactlyElementsOf(expectedRows);
+        assertThat(CountingUpperScalarFunction.COUNT.get())
+                .as("Deterministic invocations")
+                .isEqualTo(expectedDetCalls);
+        assertThat(NonDeterministicCountingScalarFunction.COUNT.get())
+                .as("Non-deterministic invocations")
+                .isEqualTo(expectedNonDetCalls);
+    }
+
+    static Stream<Arguments> inputForTestCalcLocalRefReuse() {
+        return Stream.of(
+                Arguments.of(
+                        "SELECT Det(s), Det(s), Det(s) FROM SourceTable",
+                        List.of(Row.of("BOB", "BOB", "BOB"), Row.of("ALICE", "ALICE", "ALICE")),
+                        2, // expected localref calls: rows × 1 (cached)
+                        0),
+                Arguments.of(
+                        "SELECT Det(s), Det(s), UPPER(s) FROM SourceTable",
+                        List.of(Row.of("BOB", "BOB", "BOB"), Row.of("ALICE", "ALICE", "ALICE")),
+                        2, // rows × 1 (cached); built-in UPPER not counted
+                        0),
+                Arguments.of(
+                        "SELECT Det(Det(s)), Det(Det(s)), Det(Det(s)) FROM SourceTable",
+                        List.of(Row.of("BOB", "BOB", "BOB"), Row.of("ALICE", "ALICE", "ALICE")),
+                        4, // rows × 2 layers
+                        0),
+                Arguments.of(
+                        "SELECT Nondet(s), Nondet(s), Nondet(s) FROM SourceTable",
+                        List.of(
+                                Row.of("BOB_1", "BOB_2", "BOB_3"),
+                                Row.of("ALICE_4", "ALICE_5", "ALICE_6")),
+                        0,
+                        6 // rows × 3 projections
+                        ),
+                Arguments.of(
+                        "SELECT Nondet(Det(s)), Nondet(Det(s)), Nondet(Det(s)) FROM SourceTable",
+                        List.of(
+                                Row.of("BOB_1", "BOB_2", "BOB_3"),
+                                Row.of("ALICE_4", "ALICE_5", "ALICE_6")),
+                        2, // rows × 1 (inner cached)
+                        6 // rows × 3 projections
+                        ),
+                Arguments.of(
+                        "SELECT Det(Nondet(s)), Det(Nondet(s)), Det(Nondet(s)) FROM SourceTable",
+                        List.of(
+                                Row.of("BOB_1", "BOB_2", "BOB_3"),
+                                Row.of("ALICE_4", "ALICE_5", "ALICE_6")),
+                        6, // rows × 3 (nondet input disables cache)
+                        6 // rows × 3 projections
+                        ),
+                // shared Det in filter → cached once per row
+                Arguments.of(
+                        "SELECT s FROM SourceTable"
+                                + " WHERE Det(s) IS NOT NULL AND Det(s) <> '' AND Det(s) <> ' '",
+                        List.of(Row.of("Bob"), Row.of("Alice")),
+                        2,
+                        0),
+                // mixed UDF + built-in
+                Arguments.of(
+                        "SELECT s FROM SourceTable"
+                                + " WHERE Det(s) IS NOT NULL AND Det(s) <> '' AND UPPER(s) <> ''",
+                        List.of(Row.of("Bob"), Row.of("Alice")),
+                        2,
+                        0),
+                // nested Det in filter; both layers cached
+                Arguments.of(
+                        "SELECT s FROM SourceTable"
+                                + " WHERE Det(Det(s)) IS NOT NULL"
+                                + " AND Det(Det(s)) <> '' AND Det(Det(s)) <> ' '",
+                        List.of(Row.of("Bob"), Row.of("Alice")),
+                        4,
+                        0),
+                // non-deterministic in filter — never cached
+                Arguments.of(
+                        "SELECT s FROM SourceTable"
+                                + " WHERE Nondet(s) IS NOT NULL"
+                                + " AND Nondet(s) <> '' AND Nondet(s) <> ' '",
+                        List.of(Row.of("Bob"), Row.of("Alice")),
+                        0,
+                        6),
+                // outer nondet, inner Det cached
+                Arguments.of(
+                        "SELECT s FROM SourceTable"
+                                + " WHERE Nondet(Det(s)) IS NOT NULL"
+                                + " AND Nondet(Det(s)) <> '' AND Nondet(Det(s)) <> ' '",
+                        List.of(Row.of("Bob"), Row.of("Alice")),
+                        2,
+                        6),
+                // Det with nondet input → cache bypassed
+                Arguments.of(
+                        "SELECT s FROM SourceTable"
+                                + " WHERE Det(Nondet(s)) IS NOT NULL"
+                                + " AND Det(Nondet(s)) <> '' AND Det(Nondet(s)) <> ' '",
+                        List.of(Row.of("Bob"), Row.of("Alice")),
+                        6,
+                        6),
+                // filter ↔ projection share via unified program
+                Arguments.of(
+                        "SELECT Det(s) FROM SourceTable WHERE Det(s) = 'BOB'",
+                        List.of(Row.of("BOB")),
+                        2,
+                        0),
+                Arguments.of(
+                        "SELECT Det(s), Det(s) FROM SourceTable WHERE Det(s) = 'BOB'",
+                        List.of(Row.of("BOB", "BOB")),
+                        2,
+                        0),
+
+                // ---------------------------------------------------------------------------
+                // JSON construction scenarios. These verify that the localref / RexProgram CSE
+                // cache also fires when the shared sub-expression is wrapped inside (or itself
+                // is) a JSON_OBJECT / JSON_ARRAY / JSON_STRING call.
+                // ---------------------------------------------------------------------------
+
+                // JSON_OBJECT × 2 sharing inner Det → cached once per row.
+                Arguments.of(
+                        "SELECT JSON_OBJECT(KEY 'a' VALUE Det(s)),"
+                                + " JSON_OBJECT(KEY 'b' VALUE Det(s))"
+                                + " FROM SourceTable",
+                        List.of(
+                                Row.of("{\"a\":\"BOB\"}", "{\"b\":\"BOB\"}"),
+                                Row.of("{\"a\":\"ALICE\"}", "{\"b\":\"ALICE\"}")),
+                        2, // rows × 1 (cached)
+                        0),
+                // JSON_ARRAY × 2 sharing inner Det → cached.
+                Arguments.of(
+                        "SELECT JSON_ARRAY(Det(s)), JSON_ARRAY(Det(s)) FROM SourceTable",
+                        List.of(
+                                Row.of("[\"BOB\"]", "[\"BOB\"]"),
+                                Row.of("[\"ALICE\"]", "[\"ALICE\"]")),
+                        2,
+                        0),
+                // JSON_STRING × 2 sharing inner Det → cached.
+                Arguments.of(
+                        "SELECT JSON_STRING(Det(s)), JSON_STRING(Det(s)) FROM SourceTable",
+                        List.of(Row.of("\"BOB\"", "\"BOB\""), Row.of("\"ALICE\"", "\"ALICE\"")),
+                        2,
+                        0),
+                // Mixed JSON_OBJECT + JSON_ARRAY sharing same Det.
+                Arguments.of(
+                        "SELECT JSON_OBJECT(KEY 'k' VALUE Det(s)), JSON_ARRAY(Det(s))"
+                                + " FROM SourceTable",
+                        List.of(
+                                Row.of("{\"k\":\"BOB\"}", "[\"BOB\"]"),
+                                Row.of("{\"k\":\"ALICE\"}", "[\"ALICE\"]")),
+                        2,
+                        0),
+                // Mixed JSON_OBJECT + JSON_STRING sharing same Det.
+                Arguments.of(
+                        "SELECT JSON_OBJECT(KEY 'k' VALUE Det(s)), JSON_STRING(Det(s))"
+                                + " FROM SourceTable",
+                        List.of(
+                                Row.of("{\"k\":\"BOB\"}", "\"BOB\""),
+                                Row.of("{\"k\":\"ALICE\"}", "\"ALICE\"")),
+                        2,
+                        0),
+                // JSON_OBJECT × 3 sharing same Det → cached across all 3 sites.
+                Arguments.of(
+                        "SELECT JSON_OBJECT(KEY 'a' VALUE Det(s)),"
+                                + " JSON_OBJECT(KEY 'b' VALUE Det(s)),"
+                                + " JSON_OBJECT(KEY 'c' VALUE Det(s))"
+                                + " FROM SourceTable",
+                        List.of(
+                                Row.of("{\"a\":\"BOB\"}", "{\"b\":\"BOB\"}", "{\"c\":\"BOB\"}"),
+                                Row.of(
+                                        "{\"a\":\"ALICE\"}",
+                                        "{\"b\":\"ALICE\"}",
+                                        "{\"c\":\"ALICE\"}")),
+                        2,
+                        0),
+                // Nested Det(Det(s)) inside two JSON_OBJECT projections → both layers cached.
+                Arguments.of(
+                        "SELECT JSON_OBJECT(KEY 'a' VALUE Det(Det(s))),"
+                                + " JSON_OBJECT(KEY 'b' VALUE Det(Det(s)))"
+                                + " FROM SourceTable",
+                        List.of(
+                                Row.of("{\"a\":\"BOB\"}", "{\"b\":\"BOB\"}"),
+                                Row.of("{\"a\":\"ALICE\"}", "{\"b\":\"ALICE\"}")),
+                        4, // rows × 2 layers
+                        0),
+                // Nondet inside two JSON_OBJECT projections → never cached.
+                Arguments.of(
+                        "SELECT JSON_OBJECT(KEY 'a' VALUE Nondet(s)),"
+                                + " JSON_OBJECT(KEY 'b' VALUE Nondet(s))"
+                                + " FROM SourceTable",
+                        List.of(
+                                Row.of("{\"a\":\"BOB_1\"}", "{\"b\":\"BOB_2\"}"),
+                                Row.of("{\"a\":\"ALICE_3\"}", "{\"b\":\"ALICE_4\"}")),
+                        0,
+                        4 // rows × 2 projections
+                        ),
+                // Outer Nondet, inner Det inside two JSON_OBJECT projections — Det cached.
+                Arguments.of(
+                        "SELECT JSON_OBJECT(KEY 'a' VALUE Nondet(Det(s))),"
+                                + " JSON_OBJECT(KEY 'b' VALUE Nondet(Det(s)))"
+                                + " FROM SourceTable",
+                        List.of(
+                                Row.of("{\"a\":\"BOB_1\"}", "{\"b\":\"BOB_2\"}"),
+                                Row.of("{\"a\":\"ALICE_3\"}", "{\"b\":\"ALICE_4\"}")),
+                        2, // inner Det cached
+                        4),
+                // Outer Det, inner Nondet → outer cache disabled by nondet operand.
+                Arguments.of(
+                        "SELECT JSON_OBJECT(KEY 'a' VALUE Det(Nondet(s))),"
+                                + " JSON_OBJECT(KEY 'b' VALUE Det(Nondet(s)))"
+                                + " FROM SourceTable",
+                        List.of(
+                                Row.of("{\"a\":\"BOB_1\"}", "{\"b\":\"BOB_2\"}"),
+                                Row.of("{\"a\":\"ALICE_3\"}", "{\"b\":\"ALICE_4\"}")),
+                        4, // outer Det not cached (nondet operand)
+                        4),
+                // Filter ↔ JSON projection share Det via unified program.
+                Arguments.of(
+                        "SELECT JSON_OBJECT(KEY 'k' VALUE Det(s))"
+                                + " FROM SourceTable WHERE Det(s) = 'BOB'",
+                        List.of(Row.of("{\"k\":\"BOB\"}")),
+                        2,
+                        0),
+                // Shared inner JSON_OBJECT(KEY 'k' VALUE Det(s)) inside two outer JSON_OBJECT
+                // projections — verifies CSE works when the cached node is itself a JSON
+                // construction call (and validates the JSON helpers' RexLocalRef deref path
+                // along the way).
+                Arguments.of(
+                        "SELECT JSON_OBJECT(KEY 'outer1' VALUE JSON_OBJECT(KEY 'k' VALUE Det(s))),"
+                                + " JSON_OBJECT(KEY 'outer2' VALUE JSON_OBJECT(KEY 'k' VALUE Det(s)))"
+                                + " FROM SourceTable",
+                        List.of(
+                                Row.of(
+                                        "{\"outer1\":{\"k\":\"BOB\"}}",
+                                        "{\"outer2\":{\"k\":\"BOB\"}}"),
+                                Row.of(
+                                        "{\"outer1\":{\"k\":\"ALICE\"}}",
+                                        "{\"outer2\":{\"k\":\"ALICE\"}}")),
+                        2,
+                        0),
+                // Shared inner JSON_ARRAY(Det(s)) inside two outer JSON_OBJECT projections.
+                Arguments.of(
+                        "SELECT JSON_OBJECT(KEY 'a' VALUE JSON_ARRAY(Det(s))),"
+                                + " JSON_OBJECT(KEY 'b' VALUE JSON_ARRAY(Det(s)))"
+                                + " FROM SourceTable",
+                        List.of(
+                                Row.of("{\"a\":[\"BOB\"]}", "{\"b\":[\"BOB\"]}"),
+                                Row.of("{\"a\":[\"ALICE\"]}", "{\"b\":[\"ALICE\"]}")),
+                        2,
+                        0),
+                // Shared inner JSON_OBJECT(KEY 'k' VALUE Det(s)) inside two JSON_ARRAY
+                // projections.
+                Arguments.of(
+                        "SELECT JSON_ARRAY(JSON_OBJECT(KEY 'k' VALUE Det(s))),"
+                                + " JSON_ARRAY(JSON_OBJECT(KEY 'k' VALUE Det(s)))"
+                                + " FROM SourceTable",
+                        List.of(
+                                Row.of("[{\"k\":\"BOB\"}]", "[{\"k\":\"BOB\"}]"),
+                                Row.of("[{\"k\":\"ALICE\"}]", "[{\"k\":\"ALICE\"}]")),
+                        2,
+                        0));
+    }
+
     @Test
-    public void testStructuredScalarFunction() throws Exception {
+    void testLocalRefReuseForMixedArgs() {
+        final List<Row> sourceData = List.of(Row.of("Bob"), Row.of("Alice"));
+        final int callSites = 2;
+
+        TestCollectionTableFactory.reset();
+        TestCollectionTableFactory.initData(sourceData);
+        CountingUpperScalarFunction.COUNT.set(0);
+        NonDeterministicCountingScalarFunction.COUNT.set(0);
+        CountingConcat3ScalarFunction.COUNT.set(0);
+
+        tEnv().createTemporarySystemFunction("Det", CountingUpperScalarFunction.class);
+        tEnv().createTemporarySystemFunction(
+                        "Nondet", NonDeterministicCountingScalarFunction.class);
+        tEnv().createTemporarySystemFunction("Concat3", CountingConcat3ScalarFunction.class);
+        tEnv().executeSql("CREATE TABLE SourceTable (s STRING) WITH ('connector' = 'COLLECTION')");
+
+        final List<Row> actual =
+                CollectionUtil.iteratorToList(
+                        tEnv().executeSql(
+                                        "SELECT Concat3(Det(s), Nondet(s), Det(s)),"
+                                                + " Concat3(Det(s), Nondet(s), Det(s))"
+                                                + " FROM SourceTable")
+                                .collect());
+
+        assertThat(actual)
+                .containsExactly(
+                        Row.of("BOB/BOB_1/BOB", "BOB/BOB_2/BOB"),
+                        Row.of("ALICE/ALICE_3/ALICE", "ALICE/ALICE_4/ALICE"));
+
+        assertThat(CountingUpperScalarFunction.COUNT.get()).isEqualTo(sourceData.size());
+        assertThat(NonDeterministicCountingScalarFunction.COUNT.get())
+                .isEqualTo(sourceData.size() * callSites);
+        // Concat3 is deterministic however has non-deterministic input
+        assertThat(CountingConcat3ScalarFunction.COUNT.get())
+                .isEqualTo(sourceData.size() * callSites);
+    }
+
+    @Test
+    void testCalcSharesSubExpressionBetweenFilterAndProjection() {
         final List<Row> sourceData =
-                Arrays.asList(Row.of("Bob", 42), Row.of("Alice", 12), Row.of(null, 0));
+                List.of(Row.of("Bob"), Row.of("Bob"), Row.of("Alice"), Row.of("Alice"));
+
+        TestCollectionTableFactory.reset();
+        TestCollectionTableFactory.initData(sourceData);
+        CountingUpperScalarFunction.COUNT.set(0);
+
+        tEnv().createTemporarySystemFunction("CountingUpper", CountingUpperScalarFunction.class);
+        tEnv().executeSql("CREATE TABLE SourceTable (s STRING) WITH ('connector' = 'COLLECTION')");
+
+        final List<Row> actual =
+                CollectionUtil.iteratorToList(
+                        tEnv().executeSql(
+                                        "SELECT CountingUpper(s) FROM SourceTable"
+                                                + " WHERE CountingUpper(s) = 'BOB' AND CountingUpper(s) <> 'BOB2'")
+                                .collect());
+
+        assertThat(actual).containsExactly(Row.of("BOB"), Row.of("BOB"));
+
+        // Filter and projection share via the unified RexProgram, so the UDF runs once per
+        // source row regardless of how many call sites name it.
+        assertThat(CountingUpperScalarFunction.COUNT.get()).isEqualTo(sourceData.size());
+    }
+
+    /**
+     * Pins the conditional-guard interaction with the RexLocalRef cache across CASE, IF and IFNULL.
+     * Without scoped caching the guarded operand's body is hoisted to the top of the generated
+     * method and evaluated for every row, throwing on inputs the guard was meant to exclude (the
+     * CASE case is a regression from TPC-DS query 34). With scoping the body stays inside its
+     * branch and runs only when the guard selects it.
+     */
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("inputForTestCalcGuardShortCircuit")
+    void testCalcGuardShortCircuit(
+            String name, String schema, List<Row> sourceData, String sql, List<Row> expected) {
+        TestCollectionTableFactory.reset();
+        TestCollectionTableFactory.initData(sourceData);
+        tEnv().executeSql(
+                        "CREATE TABLE SourceTable ("
+                                + schema
+                                + ") WITH ('connector' = 'COLLECTION')");
+
+        final List<Row> actual = CollectionUtil.iteratorToList(tEnv().executeSql(sql).collect());
+
+        assertThat(actual).containsExactlyElementsOf(expected);
+    }
+
+    static Stream<Arguments> inputForTestCalcGuardShortCircuit() {
+        return Stream.of(
+                // b = 0 rows must skip the THEN-branch division.
+                Arguments.of(
+                        "CASE",
+                        "a INT, b INT",
+                        List.of(
+                                Row.of(10, 0),
+                                Row.of(10, 2),
+                                Row.of(20, 0),
+                                Row.of(30, 5),
+                                Row.of(40, 0)),
+                        "SELECT a FROM SourceTable WHERE"
+                                + " (CASE WHEN b > 0"
+                                + "       THEN CAST(a AS DECIMAL(7,2)) / CAST(b AS DECIMAL(7,2))"
+                                + "       ELSE NULL END) > 1.2",
+                        List.of(Row.of(10), Row.of(30))),
+                // ELSE-branch CAST(s AS DOUBLE) must not run when the guard is true.
+                Arguments.of(
+                        "IF",
+                        "s STRING",
+                        List.of(Row.of(""), Row.of("1.5")),
+                        "SELECT IF(s IS NULL OR CHAR_LENGTH(s) = 0,"
+                                + " CAST(NULL AS DOUBLE),"
+                                + " CAST(s AS DOUBLE))"
+                                + " FROM SourceTable",
+                        List.of(Row.of((Object) null), Row.of(1.5d))),
+                // IFNULL is COALESCE; null_replacement must not run as input is never NULL.
+                Arguments.of(
+                        "IFNULL",
+                        "s STRING",
+                        List.of(Row.of(""), Row.of("1.5")),
+                        "SELECT IFNULL(CAST(CHAR_LENGTH(s) AS DOUBLE),"
+                                + " CAST(s AS DOUBLE))"
+                                + " FROM SourceTable",
+                        List.of(Row.of(0.0d), Row.of(3.0d))));
+    }
+
+    @Test
+    void testStructuredScalarFunction() throws Exception {
+        final List<Row> sourceData =
+                List.of(Row.of("Bob", 42), Row.of("Alice", 12), Row.of(null, 0));
 
         final List<Row> sinkData =
-                Arrays.asList(
+                List.of(
                         Row.of("Bob 42", "Tyler"),
                         Row.of("Alice 12", "Tyler"),
                         Row.of("<<null>>", "Tyler"));
@@ -730,7 +1403,7 @@ public class FunctionITCase extends StreamingTestBase {
     }
 
     @Test
-    public void testInvalidCustomScalarFunction() {
+    void testInvalidCustomScalarFunction() {
         tEnv().executeSql("CREATE TABLE SinkTable(s STRING) WITH ('connector' = 'COLLECTION')");
 
         tEnv().createTemporarySystemFunction("CustomScalarFunction", CustomScalarFunction.class);
@@ -747,13 +1420,12 @@ public class FunctionITCase extends StreamingTestBase {
     }
 
     @Test
-    public void testRowTableFunction() throws Exception {
+    void testRowTableFunction() throws Exception {
         final List<Row> sourceData =
-                Arrays.asList(
-                        Row.of("1,2,3"), Row.of("2,3,4"), Row.of("3,4,5"), Row.of((String) null));
+                List.of(Row.of("1,2,3"), Row.of("2,3,4"), Row.of("3,4,5"), Row.of((String) null));
 
         final List<Row> sinkData =
-                Arrays.asList(
+                List.of(
                         Row.of("1,2,3", new String[] {"1", "2", "3"}),
                         Row.of("2,3,4", new String[] {"2", "3", "4"}),
                         Row.of("3,4,5", new String[] {"3", "4", "5"}));
@@ -775,12 +1447,11 @@ public class FunctionITCase extends StreamingTestBase {
     }
 
     @Test
-    public void testStructuredTableFunction() throws Exception {
+    void testStructuredTableFunction() throws Exception {
         final List<Row> sourceData =
-                Arrays.asList(Row.of("Bob", 42), Row.of("Alice", 12), Row.of(null, 0));
+                List.of(Row.of("Bob", 42), Row.of("Alice", 12), Row.of(null, 0));
 
-        final List<Row> sinkData =
-                Arrays.asList(Row.of("Bob", 42), Row.of("Alice", 12), Row.of(null, 0));
+        final List<Row> sinkData = List.of(Row.of("Bob", 42), Row.of("Alice", 12), Row.of(null, 0));
 
         TestCollectionTableFactory.reset();
         TestCollectionTableFactory.initData(sourceData);
@@ -799,26 +1470,230 @@ public class FunctionITCase extends StreamingTestBase {
         assertThat(TestCollectionTableFactory.getResult()).isEqualTo(sinkData);
     }
 
-    @Test
-    public void testDynamicCatalogTableFunction() throws Exception {
+    @ParameterizedTest(name = "{index}: With table wrapper ({0})")
+    @ValueSource(booleans = {true, false})
+    void testDynamicCatalogTableFunction(final boolean withTableWrapper) throws Exception {
         final Row[] sinkData =
                 new Row[] {Row.of("Test is a string"), Row.of("42"), Row.of((String) null)};
+        final String catalogName = "cat";
+        final String databaseName = "db";
+        final String simpleFunctionName = "DynamicTableFunction";
+        final String functionNameWithDb = databaseName + "." + simpleFunctionName;
+        final String fullFunctionName = catalogName + "." + functionNameWithDb;
+
+        TestCollectionTableFactory.reset();
+
+        Configuration configuration = new Configuration();
+        configuration.setString("type", "generic_in_memory");
+        tEnv().createCatalog(catalogName, CatalogDescriptor.of(catalogName, configuration));
+        tEnv().getCatalog(catalogName)
+                .get()
+                .createDatabase(
+                        databaseName,
+                        new CatalogDatabaseImpl(new HashMap<>(), databaseName),
+                        false);
+        tEnv().createFunction(fullFunctionName, DynamicTableFunction.class);
+        tEnv().useCatalog(catalogName);
+        tEnv().useDatabase(databaseName);
+        tEnv().executeSql("CREATE TABLE SinkTable(s STRING) WITH ('connector' = 'COLLECTION')");
+
+        tEnv().executeSql(
+                        "INSERT INTO SinkTable "
+                                + "SELECT T1.s FROM "
+                                + getTableFunctionAsTable(
+                                        simpleFunctionName, "'Test'", withTableWrapper)
+                                + " AS T1(s) "
+                                + "UNION ALL "
+                                + "SELECT CAST(T2.i AS STRING) FROM "
+                                + getTableFunctionAsTable(
+                                        functionNameWithDb, "42", withTableWrapper)
+                                + " AS T2(i)"
+                                + "UNION ALL "
+                                + "SELECT CAST(T3.i AS STRING) FROM "
+                                + getTableFunctionAsTable(
+                                        fullFunctionName, "CAST(NULL AS INT)", withTableWrapper)
+                                + " AS T3(i)")
+                .await();
+
+        assertThat(TestCollectionTableFactory.getResult()).containsExactlyInAnyOrder(sinkData);
+    }
+
+    @Test
+    void testNamedArgumentsTableFunction() throws Exception {
+        final Row[] sinkData = new Row[] {Row.of("str1, str2")};
 
         TestCollectionTableFactory.reset();
 
         tEnv().executeSql("CREATE TABLE SinkTable(s STRING) WITH ('connector' = 'COLLECTION')");
 
-        tEnv().createFunction("DynamicTableFunction", DynamicTableFunction.class);
+        tEnv().createFunction("NamedArgumentsTableFunction", NamedArgumentsTableFunction.class);
         tEnv().executeSql(
                         "INSERT INTO SinkTable "
-                                + "SELECT T1.s FROM TABLE(DynamicTableFunction('Test')) AS T1(s) "
-                                + "UNION ALL "
-                                + "SELECT CAST(T2.i AS STRING) FROM TABLE(DynamicTableFunction(42)) AS T2(i)"
-                                + "UNION ALL "
-                                + "SELECT CAST(T3.i AS STRING) FROM TABLE(DynamicTableFunction(CAST(NULL AS INT))) AS T3(i)")
+                                + "SELECT T1.s FROM TABLE(NamedArgumentsTableFunction(in2 => 'str2', in1 => 'str1')) AS T1(s) ")
                 .await();
 
         assertThat(TestCollectionTableFactory.getResult()).containsExactlyInAnyOrder(sinkData);
+    }
+
+    @Test
+    void testNamedArgumentsTableFunctionWithOptionalArguments() throws Exception {
+        final Row[] sinkData = new Row[] {Row.of("null, str2")};
+
+        TestCollectionTableFactory.reset();
+
+        tEnv().executeSql("CREATE TABLE SinkTable(s STRING) WITH ('connector' = 'COLLECTION')");
+
+        tEnv().createFunction(
+                        "NamedArgumentsTableFunctionWithOptionalArguments",
+                        NamedArgumentsTableFunctionWithOptionalArguments.class);
+        tEnv().executeSql(
+                        "INSERT INTO SinkTable "
+                                + "SELECT T1.s FROM TABLE(NamedArgumentsTableFunctionWithOptionalArguments(in2 => 'str2')) AS T1(s)")
+                .await();
+
+        assertThat(TestCollectionTableFactory.getResult()).containsExactlyInAnyOrder(sinkData);
+    }
+
+    @Test
+    void testNamedArgumentsScalarFunction() throws Exception {
+        final List<Row> sourceData =
+                List.of(Row.of(1, 2, "str1"), Row.of(3, 4, "str2"), Row.of(5, 6, "str3"));
+
+        final List<Row> sinkData =
+                List.of(Row.of(1, 2, "1: 2"), Row.of(3, 4, "3: 4"), Row.of(5, 6, "5: 6"));
+
+        TestCollectionTableFactory.reset();
+        TestCollectionTableFactory.initData(sourceData);
+
+        tEnv().executeSql(
+                        "CREATE TABLE TestTable(i1 INT NOT NULL, i2 INT NOT NULL, s1 STRING) WITH ('connector' = 'COLLECTION')");
+
+        tEnv().createTemporarySystemFunction(
+                        "NamedArgumentsScalarFunction", NamedArgumentsScalarFunction.class);
+        tEnv().executeSql(
+                        "INSERT INTO TestTable SELECT"
+                                + " i1, i2,"
+                                + " NamedArgumentsScalarFunction(in2 => i2, in1 => i1) as s1 FROM TestTable")
+                .await();
+
+        assertThat(TestCollectionTableFactory.getResult()).isEqualTo(sinkData);
+    }
+
+    @Test
+    void testNamedParametersScalarFunctionWithOverloadedMethod() throws Exception {
+        final List<Row> sourceData =
+                List.of(Row.of(1, 2, "str1"), Row.of(3, 4, "str2"), Row.of(5, 6, "str3"));
+
+        TestCollectionTableFactory.reset();
+        TestCollectionTableFactory.initData(sourceData);
+
+        tEnv().executeSql(
+                        "CREATE TABLE TestTable(i1 INT NOT NULL, i2 INT NOT NULL, s1 STRING) WITH ('connector' = 'COLLECTION')");
+        tEnv().createTemporarySystemFunction(
+                        "NamedArgumentsScalarFunction",
+                        NamedArgumentsWithOverloadedScalarFunction.class);
+
+        assertThatThrownBy(
+                        () ->
+                                tEnv().executeSql(
+                                                "INSERT INTO TestTable SELECT"
+                                                        + " i1, i2,"
+                                                        + " NamedArgumentsScalarFunction(in2 => i2, in1 => i1) as s1 FROM TestTable")
+                                        .await())
+                .hasMessageContaining(
+                        "SQL validation failed. Unsupported function signature. Function must not be overloaded or use varargs.");
+    }
+
+    @Test
+    void testNamedArgumentsScalarFunctionWithOptionalArguments() throws Exception {
+        final List<Row> sinkData = List.of(Row.of("s1: null", "null: s2", "s1: s2", "null: null"));
+        TestCollectionTableFactory.reset();
+
+        tEnv().executeSql(
+                        "CREATE TABLE TestTable(s1 STRING, s2 STRING, s3 STRING, s4 STRING) WITH ('connector' = 'COLLECTION')");
+
+        tEnv().createTemporarySystemFunction(
+                        "NamedArgumentsScalarFunctionWithOptionalArguments",
+                        NamedArgumentsScalarFunctionWithOptionalArguments.class);
+        tEnv().executeSql(
+                        "INSERT INTO TestTable SELECT"
+                                + " NamedArgumentsScalarFunctionWithOptionalArguments(in1 => 's1') as s1,"
+                                + " NamedArgumentsScalarFunctionWithOptionalArguments(in2 => 's2') as s2,"
+                                + " NamedArgumentsScalarFunctionWithOptionalArguments(in1 => 's1', in2 => 's2') as s3,"
+                                + " NamedArgumentsScalarFunctionWithOptionalArguments() as s4")
+                .await();
+
+        assertThat(TestCollectionTableFactory.getResult()).isEqualTo(sinkData);
+    }
+
+    @Test
+    void testNamedArgumentAggregateFunction() throws Exception {
+        final List<Row> sourceData =
+                List.of(
+                        Row.of(LocalDateTime.parse("2007-12-03T10:15:30"), "a", "b", 1, 2),
+                        Row.of(LocalDateTime.parse("2007-12-03T10:15:30"), "c", "d", 33, 44),
+                        Row.of(LocalDateTime.parse("2007-12-03T10:15:32"), "e", "f", 5, 6),
+                        Row.of(LocalDateTime.parse("2007-12-03T10:15:32"), "gg", "hh", 7, 88));
+
+        final List<Row> sinkData = List.of(Row.of("a: b", "b: a"), Row.of("gg: hh", "hh: gg"));
+
+        TestCollectionTableFactory.reset();
+        TestCollectionTableFactory.initData(sourceData);
+
+        tEnv().executeSql(
+                        "CREATE TABLE SourceTable(ts TIMESTAMP(3), s1 STRING, s2 STRING, i1 INT, i2 INT, WATERMARK FOR ts AS ts - INTERVAL '1' SECOND) "
+                                + "WITH ('connector' = 'COLLECTION')");
+        tEnv().executeSql(
+                        "CREATE TABLE SinkTable(s1 STRING, s2 STRING) WITH ('connector' = 'COLLECTION')");
+
+        tEnv().createTemporarySystemFunction(
+                        "NamedArgumentAggregateFunction", NamedArgumentAggregateFunction.class);
+
+        tEnv().executeSql(
+                        "INSERT INTO SinkTable "
+                                + "SELECT NamedArgumentAggregateFunction(in2 => s2, in1 => s1),"
+                                + "NamedArgumentAggregateFunction(in1 => s2, in2 => s1)"
+                                + "FROM SourceTable "
+                                + "GROUP BY TUMBLE(ts, INTERVAL '1' SECOND)")
+                .await();
+
+        assertThat(TestCollectionTableFactory.getResult()).isEqualTo(sinkData);
+    }
+
+    @Test
+    void testNamedArgumentAggregateFunctionWithOptionalArguments() throws Exception {
+        final List<Row> sourceData =
+                List.of(
+                        Row.of(LocalDateTime.parse("2007-12-03T10:15:30"), "a", "b", 1, 2),
+                        Row.of(LocalDateTime.parse("2007-12-03T10:15:30"), "c", "d", 33, 44),
+                        Row.of(LocalDateTime.parse("2007-12-03T10:15:32"), "e", "f", 5, 6),
+                        Row.of(LocalDateTime.parse("2007-12-03T10:15:32"), "gg", "hh", 7, 88));
+
+        final List<Row> sinkData =
+                List.of(Row.of("a: null", "null: b"), Row.of("gg: null", "null: hh"));
+
+        TestCollectionTableFactory.reset();
+        TestCollectionTableFactory.initData(sourceData);
+
+        tEnv().executeSql(
+                        "CREATE TABLE SourceTable(ts TIMESTAMP(3), s1 STRING, s2 STRING, i1 INT, i2 INT, WATERMARK FOR ts AS ts - INTERVAL '1' SECOND) "
+                                + "WITH ('connector' = 'COLLECTION')");
+        tEnv().executeSql(
+                        "CREATE TABLE SinkTable(s1 STRING, s2 STRING) WITH ('connector' = 'COLLECTION')");
+
+        tEnv().createTemporarySystemFunction(
+                        "NamedArgumentAggregateFunctionWithOptionalArguments",
+                        NamedArgumentAggregateFunctionWithOptionalArguments.class);
+
+        tEnv().executeSql(
+                        "INSERT INTO SinkTable "
+                                + "SELECT NamedArgumentAggregateFunctionWithOptionalArguments(in1 => s1), "
+                                + "NamedArgumentAggregateFunctionWithOptionalArguments(in2 => s2) "
+                                + "FROM SourceTable "
+                                + "GROUP BY TUMBLE(ts, INTERVAL '1' SECOND)")
+                .await();
+
+        assertThat(TestCollectionTableFactory.getResult()).isEqualTo(sinkData);
     }
 
     @Test
@@ -838,7 +1713,7 @@ public class FunctionITCase extends StreamingTestBase {
     }
 
     @Test
-    public void testInvalidUseOfSystemScalarFunction() {
+    void testInvalidUseOfSystemScalarFunction() {
         tEnv().executeSql("CREATE TABLE SinkTable(s STRING) WITH ('connector' = 'COLLECTION')");
 
         assertThatThrownBy(
@@ -846,12 +1721,11 @@ public class FunctionITCase extends StreamingTestBase {
                                 tEnv().explainSql(
                                                 "INSERT INTO SinkTable "
                                                         + "SELECT * FROM TABLE(MD5('3'))"))
-                .hasMessageContaining(
-                        "Currently, only table functions can be used in a correlate operation.");
+                .hasMessageContaining("Argument must be a table function: MD5");
     }
 
     @Test
-    public void testInvalidUseOfTableFunction() {
+    void testInvalidUseOfTableFunction() {
         TestCollectionTableFactory.reset();
 
         tEnv().executeSql(
@@ -864,14 +1738,13 @@ public class FunctionITCase extends StreamingTestBase {
                                 tEnv().explainSql(
                                                 "INSERT INTO SinkTable "
                                                         + "SELECT RowTableFunction('test')"))
-                .hasMessageContaining(
-                        "Currently, only scalar functions can be used in a projection or filter operation.");
+                .hasMessageContaining("Cannot call table function here: 'RowTableFunction'");
     }
 
     @Test
-    public void testAggregateFunction() throws Exception {
+    void testAggregateFunction() throws Exception {
         final List<Row> sourceData =
-                Arrays.asList(
+                List.of(
                         Row.of(LocalDateTime.parse("2007-12-03T10:15:30"), "Bob"),
                         Row.of(LocalDateTime.parse("2007-12-03T10:15:30"), "Alice"),
                         Row.of(LocalDateTime.parse("2007-12-03T10:15:30"), null),
@@ -880,7 +1753,7 @@ public class FunctionITCase extends StreamingTestBase {
                         Row.of(LocalDateTime.parse("2007-12-03T10:15:32"), "Alice"));
 
         final List<Row> sinkData =
-                Arrays.asList(
+                List.of(
                         Row.of(
                                 "Jonathan",
                                 "Alice=(Alice, 5), Bob=(Bob, 3), Jonathan=(Jonathan, 8)"),
@@ -911,11 +1784,33 @@ public class FunctionITCase extends StreamingTestBase {
     }
 
     @Test
-    public void testLookupTableFunction() throws ExecutionException, InterruptedException {
-        final List<Row> sourceData = Arrays.asList(Row.of("Bob"), Row.of("Alice"));
+    void testLookupTableFunction() throws ExecutionException, InterruptedException {
+        testLookupTableFunctionBase(LookupTableFunction.class.getName());
+    }
+
+    @Test
+    void testLookupTableFunctionWithHintLevel1() throws ExecutionException, InterruptedException {
+        testLookupTableFunctionBase(LookupTableWithHintLevel1Function.class.getName());
+    }
+
+    @Test
+    void testLookupTableFunctionWithoutHintLevel0()
+            throws ExecutionException, InterruptedException {
+        testLookupTableFunctionBase(LookupTableWithoutHintLevel0Function.class.getName());
+    }
+
+    @Test
+    void testLookupTableFunctionWithoutHintLevel1()
+            throws ExecutionException, InterruptedException {
+        testLookupTableFunctionBase(LookupTableWithoutHintLevel1Function.class.getName());
+    }
+
+    private void testLookupTableFunctionBase(String lookupTableFunctionClassName)
+            throws ExecutionException, InterruptedException {
+        final List<Row> sourceData = List.of(Row.of("Bob"), Row.of("Alice"));
 
         final List<Row> sinkData =
-                Arrays.asList(
+                List.of(
                         Row.of("Bob", new byte[0]),
                         Row.of("Bob", new byte[] {66, 111, 98}),
                         Row.of("Alice", new byte[0]),
@@ -941,7 +1836,7 @@ public class FunctionITCase extends StreamingTestBase {
                                 + "WITH ("
                                 + "  'connector' = 'values',"
                                 + "  'lookup-function-class' = '"
-                                + LookupTableFunction.class.getName()
+                                + lookupTableFunctionClassName
                                 + "'"
                                 + ")");
 
@@ -960,9 +1855,9 @@ public class FunctionITCase extends StreamingTestBase {
     }
 
     @Test
-    public void testSpecializedFunction() {
+    void testSpecializedFunction() {
         final List<Row> sourceData =
-                Arrays.asList(
+                List.of(
                         Row.of("Bob", 1, new BigDecimal("123.45")),
                         Row.of("Alice", 2, new BigDecimal("123.456")));
 
@@ -992,15 +1887,61 @@ public class FunctionITCase extends StreamingTestBase {
 
         final List<Row> actual = CollectionUtil.iteratorToList(result.collect());
         final List<Row> expected =
-                Arrays.asList(
+                List.of(
                         Row.of("CHAR(7) NOT NULL", "STRING", "INT", "DECIMAL(6, 3)"),
                         Row.of("CHAR(7) NOT NULL", "STRING", "INT", "DECIMAL(6, 3)"));
         assertThat(actual).isEqualTo(expected);
     }
 
     @Test
-    public void testTimestampNotNull() {
-        List<Row> sourceData = Arrays.asList(Row.of(1), Row.of(2));
+    void testSpecializedFunctionWithExpressionEvaluation() {
+        final List<Row> sourceData =
+                List.of(
+                        Row.of("Bob", new Integer[] {1, 2, 3}, new BigDecimal("123.000")),
+                        Row.of("Bob", new Integer[] {4, 5, 6}, new BigDecimal("123.456")),
+                        Row.of("Alice", new Integer[] {1, 2, 3}, null),
+                        Row.of("Alice", null, new BigDecimal("123.456")));
+
+        TestCollectionTableFactory.reset();
+        TestCollectionTableFactory.initData(sourceData);
+
+        tEnv().executeSql(
+                        "CREATE TABLE SourceTable("
+                                + "  s STRING, "
+                                + "  a ARRAY<INT>,"
+                                + "  d DECIMAL(6, 3)"
+                                + ")"
+                                + "WITH ("
+                                + "  'connector' = 'COLLECTION'"
+                                + ")");
+
+        tEnv().createTemporarySystemFunction(
+                        "RowEqualityScalarFunction", RowEqualityScalarFunction.class);
+
+        final TableResult result =
+                tEnv().executeSql(
+                                "SELECT "
+                                        + "  s, "
+                                        + "  RowEqualityScalarFunction((a, d), (a, 123.456)), "
+                                        + "  RowEqualityScalarFunction((a, 123.456), (a, d))"
+                                        + "FROM SourceTable");
+
+        final List<Row> actual = CollectionUtil.iteratorToList(result.collect());
+        final List<Row> expected =
+                List.of(
+                        Row.of("Bob", null, null),
+                        Row.of(
+                                "Bob",
+                                Row.of(new Long[] {4L, 5L, 6L}, 123.456),
+                                Row.of(new Long[] {4L, 5L, 6L}, 123.456)),
+                        Row.of("Alice", null, null),
+                        Row.of("Alice", Row.of(null, 123.456), Row.of(null, 123.456)));
+        assertThat(actual).isEqualTo(expected);
+    }
+
+    @Test
+    void testTimestampNotNull() {
+        List<Row> sourceData = List.of(Row.of(1), Row.of(2));
         TestCollectionTableFactory.reset();
         TestCollectionTableFactory.initData(sourceData);
 
@@ -1013,8 +1954,8 @@ public class FunctionITCase extends StreamingTestBase {
     }
 
     @Test
-    public void testIsNullType() {
-        List<Row> sourceData = Arrays.asList(Row.of(1), Row.of((Object) null));
+    void testIsNullType() {
+        List<Row> sourceData = List.of(Row.of(1), Row.of((Object) null));
         TestCollectionTableFactory.reset();
         TestCollectionTableFactory.initData(sourceData);
 
@@ -1024,6 +1965,60 @@ public class FunctionITCase extends StreamingTestBase {
                 tEnv().executeSql(
                                 "SELECT BoolToInt(i is null), BoolToInt(i is not null) FROM SourceTable")
                         .collect());
+    }
+
+    @Test
+    void testWithBoolNotNullTypeHint() {
+        List<Row> sourceData = List.of(Row.of(1, 2), Row.of(2, 3));
+        TestCollectionTableFactory.reset();
+        TestCollectionTableFactory.initData(sourceData);
+
+        tEnv().executeSql(
+                        "CREATE TABLE SourceTable(x INT NOT NULL,y INT) WITH ('connector' = 'COLLECTION')");
+        tEnv().executeSql("CREATE FUNCTION BoolEcho AS '" + BoolEcho.class.getName() + "'");
+        CollectionUtil.iteratorToList(
+                tEnv().executeSql("SELECT BoolEcho(x=1 and y is null) FROM SourceTable").collect());
+    }
+
+    @Test
+    void testUsingAddJar() throws Exception {
+        tEnv().executeSql(String.format("ADD JAR '%s'", jarPath));
+
+        TableResult tableResult = tEnv().executeSql("SHOW JARS");
+        assertThat(
+                        CollectionUtil.iteratorToList(tableResult.collect())
+                                .equals(
+                                        Collections.singletonList(
+                                                Row.of(new Path(jarPath).getPath()))))
+                .isTrue();
+
+        testUserDefinedFunctionByUsingJar(
+                env ->
+                        env.executeSql(
+                                String.format(
+                                        "create function lowerUdf as '%s' LANGUAGE JAVA",
+                                        udfClassName)),
+                "drop function lowerUdf");
+    }
+
+    @Test
+    void testUdfWithMultiLocalVariables() {
+        List<Row> sourceData = List.of(Row.of(1L, 2L), Row.of(2L, 3L));
+        TestCollectionTableFactory.reset();
+        TestCollectionTableFactory.initData(sourceData);
+
+        tEnv().executeSql(
+                        "CREATE TABLE SourceTable(x BIGINT, y BIGINT) WITH ('connector' = 'COLLECTION')");
+        tEnv().executeSql(
+                        "CREATE FUNCTION MultiLocalVariables AS '"
+                                + MultiLocalVariableBlocksClass.class.getName()
+                                + "'");
+
+        List<Row> actualRows =
+                CollectionUtil.iteratorToList(
+                        tEnv().executeSql("SELECT MultiLocalVariables(x, y) FROM SourceTable")
+                                .collect());
+        assertThat(actualRows).isEqualTo(List.of(Row.of(2L), Row.of(6L)));
     }
 
     // --------------------------------------------------------------------------------------------
@@ -1056,6 +2051,55 @@ public class FunctionITCase extends StreamingTestBase {
         public @DataTypeHint("ROW<f0 INT, f1 STRING>") Row eval(
                 @DataTypeHint("ROW<f0 INT, f1 STRING>") Row row) {
             return row;
+        }
+    }
+
+    /** Scalar function with argument hint. */
+    public static class NamedArgumentsScalarFunction extends ScalarFunction {
+        @FunctionHint(
+                output = @DataTypeHint("STRING"),
+                arguments = {
+                    @ArgumentHint(name = "in1", type = @DataTypeHint("int")),
+                    @ArgumentHint(name = "in2", type = @DataTypeHint("int"))
+                })
+        public String eval(Integer arg1, Integer arg2) {
+            return (arg1 + ": " + arg2);
+        }
+    }
+
+    /** Scalar function with overloaded functions and arguments declared. */
+    public static class NamedArgumentsWithOverloadedScalarFunction extends ScalarFunction {
+        @FunctionHint(
+                output = @DataTypeHint("STRING"),
+                arguments = {
+                    @ArgumentHint(name = "in1", type = @DataTypeHint("int")),
+                    @ArgumentHint(name = "in2", type = @DataTypeHint("int"))
+                })
+        public String eval(Integer arg1, Integer arg2) {
+            return (arg1 + ": " + arg2);
+        }
+
+        @FunctionHint(
+                output = @DataTypeHint("STRING"),
+                arguments = {
+                    @ArgumentHint(name = "in1", type = @DataTypeHint("string")),
+                    @ArgumentHint(name = "in2", type = @DataTypeHint("string"))
+                })
+        public String eval(String arg1, String arg2) {
+            return (arg1 + ":" + arg2);
+        }
+    }
+
+    /** Function with optional arguments. */
+    public static class NamedArgumentsScalarFunctionWithOptionalArguments extends ScalarFunction {
+        @FunctionHint(
+                output = @DataTypeHint("STRING"),
+                arguments = {
+                    @ArgumentHint(name = "in1", type = @DataTypeHint("STRING"), isOptional = true),
+                    @ArgumentHint(name = "in2", type = @DataTypeHint("STRING"), isOptional = true)
+                })
+        public String eval(String arg1, String arg2) {
+            return (arg1 + ": " + arg2);
         }
     }
 
@@ -1108,6 +2152,41 @@ public class FunctionITCase extends StreamingTestBase {
                                 return Optional.of(dayOfWeekDataType);
                             }))
                     .build();
+        }
+    }
+
+    /** Deterministic function with a counter. */
+    public static class CountingUpperScalarFunction extends ScalarFunction {
+        public static final AtomicInteger COUNT = new AtomicInteger();
+
+        public String eval(String s) {
+            COUNT.incrementAndGet();
+            return s == null ? null : s.toUpperCase();
+        }
+    }
+
+    /** Deterministic function with a counter and 3 args. */
+    public static class CountingConcat3ScalarFunction extends ScalarFunction {
+        public static final AtomicInteger COUNT = new AtomicInteger();
+
+        public String eval(String a, String b, String c) {
+            COUNT.incrementAndGet();
+            return a + "/" + b + "/" + c;
+        }
+    }
+
+    /** Non-deterministic function with a counter. */
+    public static class NonDeterministicCountingScalarFunction extends ScalarFunction {
+        public static final AtomicInteger COUNT = new AtomicInteger();
+
+        public String eval(String s) {
+            final int count = COUNT.incrementAndGet();
+            return s == null ? null : s.toUpperCase() + "_" + count;
+        }
+
+        @Override
+        public boolean isDeterministic() {
+            return false;
         }
     }
 
@@ -1172,6 +2251,31 @@ public class FunctionITCase extends StreamingTestBase {
             } else {
                 collect(i);
             }
+        }
+    }
+
+    /** Function that returns a string or integer. */
+    public static class NamedArgumentsTableFunction extends TableFunction<Object> {
+        @FunctionHint(
+                input = {@DataTypeHint("STRING"), @DataTypeHint("STRING")},
+                output = @DataTypeHint("STRING"),
+                argumentNames = {"in1", "in2"})
+        public void eval(String arg1, String arg2) {
+            collect(arg1 + ", " + arg2);
+        }
+    }
+
+    /** Function that returns a string or integer. */
+    public static class NamedArgumentsTableFunctionWithOptionalArguments
+            extends TableFunction<Object> {
+        @FunctionHint(
+                arguments = {
+                    @ArgumentHint(type = @DataTypeHint("STRING"), name = "in1", isOptional = true),
+                    @ArgumentHint(type = @DataTypeHint("STRING"), name = "in2", isOptional = true)
+                },
+                output = @DataTypeHint("STRING"))
+        public void eval(String arg1, String arg2) {
+            collect(arg1 + ", " + arg2);
         }
     }
 
@@ -1289,6 +2393,66 @@ public class FunctionITCase extends StreamingTestBase {
         }
     }
 
+    /** Function that aggregates strings and finds the longest string. */
+    public static class NamedArgumentAggregateFunction extends AggregateFunction<String, Row> {
+
+        @Override
+        public Row createAccumulator() {
+            return Row.of((String) null);
+        }
+
+        @FunctionHint(
+                input = {@DataTypeHint("STRING"), @DataTypeHint("STRING")},
+                output = @DataTypeHint("STRING"),
+                argumentNames = {"in1", "in2"},
+                accumulator = @DataTypeHint("ROW<longestString STRING>"))
+        public void accumulate(Row acc, String arg1, String arg2) {
+            if (arg1 == null || arg2 == null) {
+                return;
+            }
+            String value = arg1 + ": " + arg2;
+            final String longestString = (String) acc.getField(0);
+            if (longestString == null || longestString.length() < value.length()) {
+                acc.setField(0, value);
+            }
+        }
+
+        @Override
+        public String getValue(Row acc) {
+            return (String) acc.getField(0);
+        }
+    }
+
+    /** Function that aggregates strings and finds the longest string. */
+    public static class NamedArgumentAggregateFunctionWithOptionalArguments
+            extends AggregateFunction<String, Row> {
+
+        @Override
+        public Row createAccumulator() {
+            return Row.of((String) null);
+        }
+
+        @FunctionHint(
+                output = @DataTypeHint("STRING"),
+                arguments = {
+                    @ArgumentHint(name = "in1", type = @DataTypeHint("STRING"), isOptional = true),
+                    @ArgumentHint(name = "in2", type = @DataTypeHint("STRING"), isOptional = true)
+                },
+                accumulator = @DataTypeHint("ROW<longestString STRING>"))
+        public void accumulate(Row acc, String arg1, String arg2) {
+            String value = arg1 + ": " + arg2;
+            final String longestString = (String) acc.getField(0);
+            if (longestString == null || longestString.length() < value.length()) {
+                acc.setField(0, value);
+            }
+        }
+
+        @Override
+        public String getValue(Row acc) {
+            return (String) acc.getField(0);
+        }
+    }
+
     /** Aggregate function that tests raw types in map views. */
     public static class RawMapViewAggregateFunction
             extends AggregateFunction<String, RawMapViewAggregateFunction.AccWithRawView> {
@@ -1346,6 +2510,42 @@ public class FunctionITCase extends StreamingTestBase {
         }
     }
 
+    /**
+     * Synchronous table function for {@link LookupTableSource} and inherits {@link TableFunction}
+     * at multiple levels.
+     */
+    public static class LookupTableWithHintLevel1Function extends LookupTableFunction {
+        public void eval(@DataTypeHint("STRING") StringData s) {
+            super.eval(s);
+        }
+    }
+
+    /** This is an empty synchronous table function. */
+    private static class LookupTableLevel0Function<T> extends TableFunction<T> {}
+
+    /**
+     * Synchronous table function that uses {@link RowData} type for {@link LookupTableSource} and
+     * inherits {@link TableFunction} at multiple levels.
+     */
+    public static class LookupTableWithoutHintLevel1Function
+            extends LookupTableLevel0Function<RowData> {
+        public void eval(@DataTypeHint("STRING") StringData s) {
+            collect(GenericRowData.of(StringData.fromString(s.toString()), new byte[0]));
+            collect(GenericRowData.of(StringData.fromString(s.toString()), s.toBytes()));
+        }
+    }
+
+    /**
+     * Synchronous table function that uses {@link RowData} type for {@link LookupTableSource} and
+     * inherits {@link TableFunction} at one level.
+     */
+    public static class LookupTableWithoutHintLevel0Function extends TableFunction<RowData> {
+        public void eval(@DataTypeHint("STRING") StringData s) {
+            collect(GenericRowData.of(StringData.fromString(s.toString()), new byte[0]));
+            collect(GenericRowData.of(StringData.fromString(s.toString()), s.toBytes()));
+        }
+    }
+
     /** A specialized "compile time" function for returning the argument's data type. */
     public static class TypeOfScalarFunction extends ScalarFunction implements SpecializedFunction {
 
@@ -1369,5 +2569,122 @@ public class FunctionITCase extends StreamingTestBase {
             final List<DataType> dataTypes = context.getCallContext().getArgumentDataTypes();
             return new TypeOfScalarFunction(dataTypes.get(0).toString());
         }
+    }
+
+    /** A specialized "compile time" function for evaluating expressions. */
+    public static class RowEqualityScalarFunction extends ScalarFunction
+            implements SpecializedFunction {
+
+        private static final DataType IN_ROW_TYPE =
+                DataTypes.ROW(
+                        DataTypes.FIELD("nested0", DataTypes.ARRAY(DataTypes.INT())),
+                        DataTypes.FIELD("nested1", DataTypes.DECIMAL(6, 3)));
+
+        private static final DataType OUT_ROW_TYPE =
+                DataTypes.ROW(
+                        DataTypes.FIELD("result0", DataTypes.ARRAY(DataTypes.BIGINT())),
+                        DataTypes.FIELD("result1", DataTypes.DOUBLE()));
+
+        private final ExpressionEvaluator rowEqualizer;
+        private final ExpressionEvaluator rowCaster;
+        private transient MethodHandle rowEqualizerHandle;
+        private transient MethodHandle rowCasterHandle;
+
+        public RowEqualityScalarFunction(
+                ExpressionEvaluator rowEqualizer, ExpressionEvaluator rowCaster) {
+            this.rowEqualizer = rowEqualizer;
+            this.rowCaster = rowCaster;
+        }
+
+        public RowEqualityScalarFunction() {
+            this(null, null); // filled during specialization
+        }
+
+        @Override
+        public TypeInference getTypeInference(DataTypeFactory typeFactory) {
+            return TypeInference.newBuilder()
+                    .typedArguments(IN_ROW_TYPE, IN_ROW_TYPE)
+                    .outputTypeStrategy(call -> Optional.of(OUT_ROW_TYPE))
+                    .build();
+        }
+
+        @Override
+        public RowEqualityScalarFunction specialize(SpecializedContext context) {
+            final ExpressionEvaluator rowEqualizer =
+                    context.createEvaluator(
+                            $("a").isEqual($("b")).ifNull($("on_null")),
+                            DataTypes.BOOLEAN().notNull().bridgedTo(boolean.class),
+                            DataTypes.FIELD("a", IN_ROW_TYPE),
+                            DataTypes.FIELD("b", IN_ROW_TYPE),
+                            DataTypes.FIELD(
+                                    "on_null",
+                                    DataTypes.BOOLEAN().notNull().bridgedTo(boolean.class)));
+            final ExpressionEvaluator rowCaster =
+                    context.createEvaluator(
+                            BuiltInFunctionDefinitions.CAST, OUT_ROW_TYPE, IN_ROW_TYPE);
+            return new RowEqualityScalarFunction(rowEqualizer, rowCaster);
+        }
+
+        @Override
+        public void open(FunctionContext context) throws Exception {
+            Preconditions.checkNotNull(rowEqualizer);
+            Preconditions.checkNotNull(rowCaster);
+            rowEqualizerHandle = rowEqualizer.open(context);
+            rowCasterHandle = rowCaster.open(context);
+        }
+
+        public Row eval(Row a, Row b) {
+            try {
+                final boolean isEqual = (boolean) rowEqualizerHandle.invokeExact(a, b, true);
+                if (isEqual) {
+                    return (Row) rowCasterHandle.invokeExact(a);
+                }
+                return null;
+            } catch (Throwable t) {
+                throw new FlinkRuntimeException(t);
+            }
+        }
+    }
+
+    /** A function that takes BOOLEAN NOT NULL. */
+    public static class BoolEcho extends ScalarFunction {
+        public Boolean eval(@DataTypeHint("BOOLEAN NOT NULL") Boolean b) {
+            return b;
+        }
+    }
+
+    /** A function that contains a local variable with multi blocks. */
+    public static class MultiLocalVariableBlocksClass extends ScalarFunction {
+
+        public Long eval(Long a, Long b) {
+            long localVariable;
+            if (a == null) {
+                // block 1
+                localVariable = 0;
+            } else if (a == 0) {
+                // block 2
+                localVariable = -1;
+            } else if (b < 1) {
+                // block 3
+                localVariable = -1L * a;
+            } else {
+                // block 4
+                localVariable = a;
+            }
+
+            return localVariable * Optional.ofNullable(b).orElse(0L);
+        }
+    }
+
+    private interface FunctionCreator {
+        void createFunction(TableEnvironment environment);
+    }
+
+    private static String getTableFunctionAsTable(
+            final String functionName, final String input, final boolean withTableWrapper) {
+        if (withTableWrapper) {
+            return "TABLE(" + functionName + "(" + input + "))";
+        }
+        return functionName + "(" + input + ")";
     }
 }

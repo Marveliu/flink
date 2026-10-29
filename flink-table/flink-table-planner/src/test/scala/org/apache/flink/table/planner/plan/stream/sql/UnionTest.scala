@@ -15,70 +15,66 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.planner.plan.stream.sql
 
-import org.apache.flink.api.scala._
 import org.apache.flink.table.api._
 import org.apache.flink.table.planner.utils.TableTestBase
 
-import org.junit.{Before, Test}
+import org.assertj.core.api.Assertions.{assertThat, assertThatThrownBy}
+import org.junit.jupiter.api.{BeforeEach, Test}
 
 // TODO add more union case after aggregation and join supported
 class UnionTest extends TableTestBase {
 
   private val util = streamTestUtil()
 
-  @Before
+  @BeforeEach
   def before(): Unit = {
     util.addTableSource[(Int, Long, String)]("MyTable1", 'a, 'b, 'c)
     util.addTableSource[(Int, Long, String)]("MyTable2", 'a, 'b, 'c)
     util.addTableSource[(Int, Long, String)]("MyTable3", 'a, 'b, 'c)
 
-    util.tableEnv.executeSql(
-      s"""
-         |CREATE TABLE t1 (
-         |  id int,
-         |  ts bigint,
-         |  name varchar(32),
-         |  timestamp_col timestamp(3),
-         |  val bigint,
-         |  timestamp_ltz_col as TO_TIMESTAMP_LTZ(ts, 3),
-         |  watermark for timestamp_col as timestamp_col
-         |) WITH (
-         |  'connector' = 'values',
-         |  'bounded' = 'false'
-         |)
+    util.tableEnv.executeSql(s"""
+                                |CREATE TABLE t1 (
+                                |  id int,
+                                |  ts bigint,
+                                |  name varchar(32),
+                                |  timestamp_col timestamp(3),
+                                |  val bigint,
+                                |  timestamp_ltz_col as TO_TIMESTAMP_LTZ(ts, 3),
+                                |  watermark for timestamp_col as timestamp_col
+                                |) WITH (
+                                |  'connector' = 'values',
+                                |  'bounded' = 'false'
+                                |)
        """.stripMargin)
 
-    util.tableEnv.executeSql(
-      s"""
-         |CREATE TABLE t2 (
-         |  id int,
-         |  ts bigint,
-         |  name string,
-         |  timestamp_col timestamp(3),
-         |  timestamp_ltz_col as TO_TIMESTAMP_LTZ(ts, 3),
-         |  watermark for timestamp_ltz_col as timestamp_ltz_col
-         |) WITH (
-         |  'connector' = 'values',
-         |  'bounded' = 'false'
-         |)
+    util.tableEnv.executeSql(s"""
+                                |CREATE TABLE t2 (
+                                |  id int,
+                                |  ts bigint,
+                                |  name string,
+                                |  timestamp_col timestamp(3),
+                                |  timestamp_ltz_col as TO_TIMESTAMP_LTZ(ts, 3),
+                                |  watermark for timestamp_ltz_col as timestamp_ltz_col
+                                |) WITH (
+                                |  'connector' = 'values',
+                                |  'bounded' = 'false'
+                                |)
        """.stripMargin)
 
-    util.tableEnv.executeSql(
-      s"""
-         |CREATE TABLE t3 (
-         |  id int,
-         |  ts bigint,
-         |  name string,
-         |  timestamp_col timestamp(3),
-         |  timestamp_ltz_col as TO_TIMESTAMP_LTZ(ts, 3),
-         |  watermark for timestamp_ltz_col as timestamp_ltz_col
-         |) WITH (
-         |  'connector' = 'values',
-         |  'bounded' = 'false'
-         |)
+    util.tableEnv.executeSql(s"""
+                                |CREATE TABLE t3 (
+                                |  id int,
+                                |  ts bigint,
+                                |  name string,
+                                |  timestamp_col timestamp(3),
+                                |  timestamp_ltz_col as TO_TIMESTAMP_LTZ(ts, 3),
+                                |  watermark for timestamp_ltz_col as timestamp_ltz_col
+                                |) WITH (
+                                |  'connector' = 'values',
+                                |  'bounded' = 'false'
+                                |)
        """.stripMargin)
   }
 
@@ -135,4 +131,20 @@ class UnionTest extends TableTestBase {
     util.verifyRelPlanWithType(sqlQuery)
   }
 
+  @Test
+  def testSeveralUnionWithOneWrongTypeColumn(): Unit = {
+    val sqlQuery =
+      """
+        | SELECT id, ts, name, timestamp_col, timestamp_ltz_col FROM t2
+        | UNION ALL
+        | SELECT  id, ts, name, timestamp_col, timestamp_ltz_col FROM t3
+        | UNION ALL
+        | SELECT  id, ts, timestamp_col as wrong_column_type, timestamp_col, timestamp_ltz_col FROM t2
+      """.stripMargin
+
+    val error = assertThatThrownBy(() => util.verifyRelPlanWithType(sqlQuery))
+
+    error.isInstanceOf(classOf[ValidationException])
+    error.hasMessageContaining("Type mismatch in column 3 of UNION ALL")
+  }
 }

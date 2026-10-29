@@ -27,10 +27,8 @@ import org.apache.flink.table.data.writer.BinaryRowWriter;
 import org.apache.flink.table.runtime.typeutils.BinaryRowDataSerializer;
 
 import org.apache.commons.lang3.RandomStringUtils;
-import org.junit.Before;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.ExpectedException;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -40,9 +38,10 @@ import java.util.Random;
 
 import static org.apache.flink.runtime.memory.MemoryManager.DEFAULT_PAGE_SIZE;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** Test for {@link ResettableExternalBuffer}. */
-public class ResettableExternalBufferTest {
+class ResettableExternalBufferTest {
 
     private static final int MEMORY_SIZE = 1024 * DEFAULT_PAGE_SIZE;
 
@@ -53,10 +52,8 @@ public class ResettableExternalBufferTest {
     private BinaryRowDataSerializer multiColumnFixedLengthSerializer;
     private BinaryRowDataSerializer multiColumnVariableLengthSerializer;
 
-    @Rule public ExpectedException thrown = ExpectedException.none();
-
-    @Before
-    public void before() {
+    @BeforeEach
+    void before() {
         this.memManager = MemoryManagerBuilder.newBuilder().setMemorySize(MEMORY_SIZE).build();
         this.ioManager = new IOManagerAsync();
         this.random = new Random();
@@ -80,7 +77,7 @@ public class ResettableExternalBufferTest {
     }
 
     @Test
-    public void testLess() throws Exception {
+    void testLess() throws Exception {
         ResettableExternalBuffer buffer = newBuffer(DEFAULT_PAGE_SIZE * 2);
 
         int number = 100;
@@ -98,7 +95,7 @@ public class ResettableExternalBufferTest {
     }
 
     @Test
-    public void testSpill() throws Exception {
+    void testSpill() throws Exception {
         ResettableExternalBuffer buffer = newBuffer(DEFAULT_PAGE_SIZE * 2);
 
         int number = 5000; // 16 * 5000
@@ -116,7 +113,7 @@ public class ResettableExternalBufferTest {
     }
 
     @Test
-    public void testBufferReset() throws Exception {
+    void testBufferReset() throws Exception {
         ResettableExternalBuffer buffer = newBuffer(DEFAULT_PAGE_SIZE * 2);
 
         // less
@@ -139,7 +136,7 @@ public class ResettableExternalBufferTest {
     }
 
     @Test
-    public void testBufferResetWithSpill() throws Exception {
+    void testBufferResetWithSpill() throws Exception {
         int inMemoryThreshold = 20;
         ResettableExternalBuffer buffer = newBuffer(DEFAULT_PAGE_SIZE * 2);
 
@@ -171,8 +168,7 @@ public class ResettableExternalBufferTest {
     }
 
     @Test
-    public void testHugeRecord() throws Exception {
-        thrown.expect(IOException.class);
+    void testHugeRecord() throws Exception {
         try (ResettableExternalBuffer buffer =
                 new ResettableExternalBuffer(
                         ioManager,
@@ -180,13 +176,17 @@ public class ResettableExternalBufferTest {
                                 this, memManager, 3 * DEFAULT_PAGE_SIZE / memManager.getPageSize()),
                         new BinaryRowDataSerializer(1),
                         false)) {
-            writeHuge(buffer, 10);
-            writeHuge(buffer, 50000);
+            assertThatThrownBy(
+                            () -> {
+                                writeHuge(buffer, 50000);
+                                writeHuge(buffer, 10);
+                            })
+                    .isInstanceOf(IOException.class);
         }
     }
 
     @Test
-    public void testRandomAccessLess() throws Exception {
+    void testRandomAccessLess() throws Exception {
         ResettableExternalBuffer buffer = newBuffer(DEFAULT_PAGE_SIZE * 2);
 
         int number = 100;
@@ -209,7 +209,7 @@ public class ResettableExternalBufferTest {
     }
 
     @Test
-    public void testRandomAccessSpill() throws Exception {
+    void testRandomAccessSpill() throws Exception {
         ResettableExternalBuffer buffer = newBuffer(DEFAULT_PAGE_SIZE * 2);
 
         int number = 5000;
@@ -232,7 +232,7 @@ public class ResettableExternalBufferTest {
     }
 
     @Test
-    public void testBufferResetWithSpillAndRandomAccess() throws Exception {
+    void testBufferResetWithSpillAndRandomAccess() throws Exception {
         final int tries = 100;
         ResettableExternalBuffer buffer = newBuffer(DEFAULT_PAGE_SIZE * 2);
 
@@ -273,66 +273,65 @@ public class ResettableExternalBufferTest {
     }
 
     @Test
-    public void testMultiColumnFixedLengthRandomAccessLess() throws Exception {
+    void testMultiColumnFixedLengthRandomAccessLess() throws Exception {
         testMultiColumnRandomAccessLess(
                 multiColumnFixedLengthSerializer, FixedLengthRowData.class, true);
     }
 
     @Test
-    public void testMultiColumnFixedLengthRandomAccessSpill() throws Exception {
+    void testMultiColumnFixedLengthRandomAccessSpill() throws Exception {
         testMultiColumnRandomAccessSpill(
                 multiColumnFixedLengthSerializer, FixedLengthRowData.class, true);
     }
 
     @Test
-    public void testBufferResetWithSpillAndMultiColumnFixedLengthRandomAccess() throws Exception {
+    void testBufferResetWithSpillAndMultiColumnFixedLengthRandomAccess() throws Exception {
         testBufferResetWithSpillAndMultiColumnRandomAccess(
                 multiColumnFixedLengthSerializer, FixedLengthRowData.class, true);
     }
 
     @Test
-    public void testMultiColumnVariableLengthRandomAccessLess() throws Exception {
+    void testMultiColumnVariableLengthRandomAccessLess() throws Exception {
         testMultiColumnRandomAccessLess(
                 multiColumnVariableLengthSerializer, VariableLengthRowData.class, false);
     }
 
     @Test
-    public void testMultiColumnVariableLengthRandomAccessSpill() throws Exception {
+    void testMultiColumnVariableLengthRandomAccessSpill() throws Exception {
         testMultiColumnRandomAccessSpill(
                 multiColumnVariableLengthSerializer, VariableLengthRowData.class, false);
     }
 
     @Test
-    public void testBufferResetWithSpillAndMultiColumnVariableLengthRandomAccess()
-            throws Exception {
+    void testBufferResetWithSpillAndMultiColumnVariableLengthRandomAccess() throws Exception {
         testBufferResetWithSpillAndMultiColumnRandomAccess(
                 multiColumnVariableLengthSerializer, VariableLengthRowData.class, false);
     }
 
     @Test
-    public void testIteratorOnFixedLengthEmptyBuffer() throws Exception {
+    void testIteratorOnFixedLengthEmptyBuffer() throws Exception {
         testIteratorOnMultiColumnEmptyBuffer(multiColumnFixedLengthSerializer, true);
     }
 
     @Test
-    public void testFixedLengthRandomAccessOutOfRange() throws Exception {
+    void testFixedLengthRandomAccessOutOfRange() throws Exception {
         testRandomAccessOutOfRange(
                 multiColumnFixedLengthSerializer, FixedLengthRowData.class, true);
     }
 
     @Test
-    public void testIteratorOnVariableLengthEmptyBuffer() throws Exception {
+    void testIteratorOnVariableLengthEmptyBuffer() throws Exception {
         testIteratorOnMultiColumnEmptyBuffer(multiColumnVariableLengthSerializer, false);
     }
 
     @Test
-    public void testVariableLengthRandomAccessOutOfRange() throws Exception {
+    void testVariableLengthRandomAccessOutOfRange() throws Exception {
         testRandomAccessOutOfRange(
                 multiColumnVariableLengthSerializer, VariableLengthRowData.class, false);
     }
 
     @Test
-    public void testIteratorReset() throws Exception {
+    void testIteratorReset() throws Exception {
         ResettableExternalBuffer buffer = newBuffer(DEFAULT_PAGE_SIZE * 2);
 
         int number = 100;
@@ -352,7 +351,7 @@ public class ResettableExternalBufferTest {
     }
 
     @Test
-    public void testIteratorResetWithSpill() throws Exception {
+    void testIteratorResetWithSpill() throws Exception {
         ResettableExternalBuffer buffer = newBuffer(DEFAULT_PAGE_SIZE * 2);
 
         int number = 5000; // 16 * 5000
@@ -372,7 +371,7 @@ public class ResettableExternalBufferTest {
     }
 
     @Test
-    public void testIteratorResetWithRandomAccess() throws Exception {
+    void testIteratorResetWithRandomAccess() throws Exception {
         ResettableExternalBuffer buffer = newBuffer(DEFAULT_PAGE_SIZE * 2);
 
         int number = 100;
@@ -400,7 +399,7 @@ public class ResettableExternalBufferTest {
     }
 
     @Test
-    public void testIteratorResetWithRandomAccessSpill() throws Exception {
+    void testIteratorResetWithRandomAccessSpill() throws Exception {
         ResettableExternalBuffer buffer = newBuffer(DEFAULT_PAGE_SIZE * 2);
 
         int number = 5000;
@@ -428,7 +427,7 @@ public class ResettableExternalBufferTest {
     }
 
     @Test
-    public void testMultipleIteratorsLess() throws Exception {
+    void testMultipleIteratorsLess() throws Exception {
         ResettableExternalBuffer buffer = newBuffer(DEFAULT_PAGE_SIZE * 2);
 
         int number = 100;
@@ -456,7 +455,7 @@ public class ResettableExternalBufferTest {
     }
 
     @Test
-    public void testMultipleIteratorsSpill() throws Exception {
+    void testMultipleIteratorsSpill() throws Exception {
         ResettableExternalBuffer buffer = newBuffer(DEFAULT_PAGE_SIZE * 2);
 
         int number = 5000;
@@ -484,7 +483,7 @@ public class ResettableExternalBufferTest {
     }
 
     @Test
-    public void testMultipleIteratorsWithIteratorReset() throws Exception {
+    void testMultipleIteratorsWithIteratorReset() throws Exception {
         ResettableExternalBuffer buffer = newBuffer(DEFAULT_PAGE_SIZE * 2);
 
         int number = 5000; // 16 * 5000
@@ -518,26 +517,48 @@ public class ResettableExternalBufferTest {
         buffer.close();
     }
 
-    @Test(expected = IllegalStateException.class)
-    public void testUpdateIteratorFixedLengthLess() throws Exception {
-        testUpdateIteratorLess(multiColumnFixedLengthSerializer, FixedLengthRowData.class, true);
+    @Test
+    void testUpdateIteratorFixedLengthLess() {
+        assertThatThrownBy(
+                        () ->
+                                testUpdateIteratorLess(
+                                        multiColumnFixedLengthSerializer,
+                                        FixedLengthRowData.class,
+                                        true))
+                .isInstanceOf(IllegalStateException.class);
     }
 
-    @Test(expected = IllegalStateException.class)
-    public void testUpdateIteratorFixedLengthSpill() throws Exception {
-        testUpdateIteratorSpill(multiColumnFixedLengthSerializer, FixedLengthRowData.class, true);
+    @Test
+    void testUpdateIteratorFixedLengthSpill() {
+        assertThatThrownBy(
+                        () ->
+                                testUpdateIteratorSpill(
+                                        multiColumnFixedLengthSerializer,
+                                        FixedLengthRowData.class,
+                                        true))
+                .isInstanceOf(IllegalStateException.class);
     }
 
-    @Test(expected = IllegalStateException.class)
-    public void testUpdateIteratorVariableLengthLess() throws Exception {
-        testUpdateIteratorLess(
-                multiColumnVariableLengthSerializer, VariableLengthRowData.class, false);
+    @Test
+    void testUpdateIteratorVariableLengthLess() {
+        assertThatThrownBy(
+                        () ->
+                                testUpdateIteratorLess(
+                                        multiColumnVariableLengthSerializer,
+                                        VariableLengthRowData.class,
+                                        false))
+                .isInstanceOf(IllegalStateException.class);
     }
 
-    @Test(expected = IllegalStateException.class)
-    public void testUpdateIteratorVariableLengthSpill() throws Exception {
-        testUpdateIteratorSpill(
-                multiColumnVariableLengthSerializer, VariableLengthRowData.class, false);
+    @Test
+    void testUpdateIteratorVariableLengthSpill() {
+        assertThatThrownBy(
+                        () ->
+                                testUpdateIteratorSpill(
+                                        multiColumnVariableLengthSerializer,
+                                        VariableLengthRowData.class,
+                                        false))
+                .isInstanceOf(IllegalStateException.class);
     }
 
     private <T extends RowData> void testMultiColumnRandomAccessLess(
@@ -632,7 +653,7 @@ public class ResettableExternalBufferTest {
     }
 
     private void testIteratorOnMultiColumnEmptyBuffer(
-            BinaryRowDataSerializer serializer, boolean isRowAllInFixedPart) throws Exception {
+            BinaryRowDataSerializer serializer, boolean isRowAllInFixedPart) {
         ResettableExternalBuffer buffer =
                 newBuffer(DEFAULT_PAGE_SIZE * 2, serializer, isRowAllInFixedPart);
 
@@ -891,13 +912,12 @@ public class ResettableExternalBufferTest {
     }
 
     private static class FixedLengthRowData implements RowData {
-        private boolean col0;
-        private long col1;
-        private int col2;
-        private Random random;
+        private final boolean col0;
+        private final long col1;
+        private final int col2;
 
         FixedLengthRowData() {
-            random = new Random();
+            Random random = new Random();
             col0 = random.nextBoolean();
             col1 = random.nextLong();
             col2 = random.nextInt();
@@ -924,15 +944,14 @@ public class ResettableExternalBufferTest {
     }
 
     private static class VariableLengthRowData implements RowData {
-        private boolean col0;
-        private long col1;
-        private StringData col2;
-        private int col3;
-        private StringData col4;
-        private Random random;
+        private final boolean col0;
+        private final long col1;
+        private final StringData col2;
+        private final int col3;
+        private final StringData col4;
 
         public VariableLengthRowData() {
-            random = new Random();
+            Random random = new Random();
             col0 = random.nextBoolean();
             col1 = random.nextLong();
             col2 = StringData.fromString(RandomStringUtils.random(random.nextInt(50) + 1));

@@ -19,6 +19,7 @@
 package org.apache.flink.runtime.checkpoint;
 
 import org.apache.flink.api.common.JobID;
+import org.apache.flink.core.execution.RecoveryClaimMode;
 import org.apache.flink.runtime.jobmanager.HighAvailabilityMode;
 import org.apache.flink.runtime.state.SharedStateRegistryFactory;
 
@@ -32,11 +33,15 @@ public class StandaloneCheckpointRecoveryFactory implements CheckpointRecoveryFa
             JobID jobId,
             int maxNumberOfCheckpointsToRetain,
             SharedStateRegistryFactory sharedStateRegistryFactory,
-            Executor ioExecutor)
+            Executor ioExecutor,
+            RecoveryClaimMode recoveryClaimMode)
             throws Exception {
 
         return new StandaloneCompletedCheckpointStore(
-                maxNumberOfCheckpointsToRetain, sharedStateRegistryFactory, ioExecutor);
+                maxNumberOfCheckpointsToRetain,
+                sharedStateRegistryFactory,
+                ioExecutor,
+                recoveryClaimMode);
     }
 
     @Override

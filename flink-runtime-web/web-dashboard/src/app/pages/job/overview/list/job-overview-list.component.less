@@ -21,6 +21,15 @@
   position: relative;
   display: flex;
   flex: 1;
+
+  .text-secondary {
+    color: @text-color-secondary;
+    font-size: @font-size-sm;
+  }
+
+  ::ng-deep .ant-table-wrapper {
+    width: 100%;
+  }
 }
 
 .name {

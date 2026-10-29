@@ -18,6 +18,7 @@
 
 package org.apache.flink.runtime.state;
 
+import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.state.ListState;
 import org.apache.flink.core.fs.FSDataOutputStream;
 import org.apache.flink.core.memory.DataOutputView;
@@ -27,6 +28,8 @@ import org.apache.flink.util.Preconditions;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
+
+import static org.apache.flink.util.Preconditions.checkNotNull;
 
 /**
  * Implementation of operator list state.
@@ -42,7 +45,7 @@ public final class PartitionableListState<S> implements ListState<S> {
     private final ArrayList<S> internalList;
 
     /** A typeSerializer that allows to perform deep copies of internalList */
-    private final ArrayListSerializer<S> internalListCopySerializer;
+    private ArrayListSerializer<S> internalListCopySerializer;
 
     PartitionableListState(RegisteredOperatorStateBackendMetaInfo<S> stateMetaInfo) {
         this(stateMetaInfo, new ArrayList<S>());
@@ -65,6 +68,8 @@ public final class PartitionableListState<S> implements ListState<S> {
     }
 
     public void setStateMetaInfo(RegisteredOperatorStateBackendMetaInfo<S> stateMetaInfo) {
+        this.internalListCopySerializer =
+                new ArrayListSerializer<>(stateMetaInfo.getPartitionStateSerializer());
         this.stateMetaInfo = stateMetaInfo;
     }
 
@@ -126,8 +131,17 @@ public final class PartitionableListState<S> implements ListState<S> {
 
     @Override
     public void addAll(List<S> values) {
-        if (values != null && !values.isEmpty()) {
-            internalList.addAll(values);
+        Preconditions.checkNotNull(values, "List of values to add cannot be null.");
+        if (!values.isEmpty()) {
+            for (S value : values) {
+                checkNotNull(value, "Any value to add to a list cannot be null.");
+                add(value);
+            }
         }
+    }
+
+    @VisibleForTesting
+    public ArrayListSerializer<S> getInternalListCopySerializer() {
+        return internalListCopySerializer;
     }
 }

@@ -187,7 +187,10 @@ public class MiniBatchGroupAggFunction
                     }
                 }
                 if (inputRows.isEmpty()) {
-                    return;
+                    // Skip this key and continue processing other keys in the bundle.
+                    // Using 'return' here would incorrectly exit the entire method,
+                    // silently dropping all remaining keys in the bundle.
+                    continue;
                 }
                 acc = function.createAccumulators();
                 firstRow = true;
@@ -221,7 +224,7 @@ public class MiniBatchGroupAggFunction
 
                 // if this was not the first row and we have to emit retractions
                 if (!firstRow) {
-                    if (!equaliser.equals(prevAggValue, newAggValue)) {
+                    if (stateRetentionTime > 0 || !equaliser.equals(prevAggValue, newAggValue)) {
                         // new row is not same with prev row
                         if (generateUpdateBefore) {
                             // prepare UPDATE_BEFORE message for previous row

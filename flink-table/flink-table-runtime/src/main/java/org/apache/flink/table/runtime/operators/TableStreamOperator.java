@@ -18,12 +18,13 @@
 
 package org.apache.flink.table.runtime.operators;
 
+import org.apache.flink.configuration.ReadableConfig;
 import org.apache.flink.core.memory.ManagedMemoryUseCase;
 import org.apache.flink.runtime.execution.Environment;
 import org.apache.flink.streaming.api.TimerService;
 import org.apache.flink.streaming.api.operators.AbstractStreamOperator;
-import org.apache.flink.streaming.api.operators.ChainingStrategy;
 import org.apache.flink.streaming.api.operators.InternalTimerService;
+import org.apache.flink.streaming.api.operators.StreamOperatorParameters;
 import org.apache.flink.streaming.api.watermark.Watermark;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
 import org.apache.flink.streaming.runtime.tasks.ProcessingTimeService;
@@ -43,7 +44,11 @@ public abstract class TableStreamOperator<OUT> extends AbstractStreamOperator<OU
     protected transient ContextImpl ctx;
 
     public TableStreamOperator() {
-        setChainingStrategy(ChainingStrategy.ALWAYS);
+        this(null);
+    }
+
+    public TableStreamOperator(StreamOperatorParameters<OUT> parameters) {
+        super(parameters);
     }
 
     @Override
@@ -53,9 +58,8 @@ public abstract class TableStreamOperator<OUT> extends AbstractStreamOperator<OU
     }
 
     @Override
-    public void processWatermark(Watermark mark) throws Exception {
-        super.processWatermark(mark);
-        currentWatermark = mark.getTimestamp();
+    public boolean useInterruptibleTimers(ReadableConfig config) {
+        return true;
     }
 
     /** Compute memory size from memory faction. */
@@ -67,8 +71,15 @@ public abstract class TableStreamOperator<OUT> extends AbstractStreamOperator<OU
                         getOperatorConfig()
                                 .getManagedMemoryFractionOperatorUseCaseOfSlot(
                                         ManagedMemoryUseCase.OPERATOR,
+                                        environment.getJobConfiguration(),
                                         environment.getTaskManagerInfo().getConfiguration(),
                                         environment.getUserCodeClassLoader().asClassLoader()));
+    }
+
+    @Override
+    public void processWatermark(Watermark mark) throws Exception {
+        currentWatermark = mark.getTimestamp();
+        super.processWatermark(mark);
     }
 
     /** Information available in an invocation of processElement. */
@@ -105,25 +116,25 @@ public abstract class TableStreamOperator<OUT> extends AbstractStreamOperator<OU
         @Override
         public void registerProcessingTimeTimer(long time) {
             throw new UnsupportedOperationException(
-                    "Setting timers is only supported on a keyed streams.");
+                    "Setting timers is only supported on keyed streams.");
         }
 
         @Override
         public void registerEventTimeTimer(long time) {
             throw new UnsupportedOperationException(
-                    "Setting timers is only supported on a keyed streams.");
+                    "Setting timers is only supported on keyed streams.");
         }
 
         @Override
         public void deleteProcessingTimeTimer(long time) {
             throw new UnsupportedOperationException(
-                    "Delete timers is only supported on a keyed streams.");
+                    "Delete timers is only supported on keyed streams.");
         }
 
         @Override
         public void deleteEventTimeTimer(long time) {
             throw new UnsupportedOperationException(
-                    "Delete timers is only supported on a keyed streams.");
+                    "Delete timers is only supported on keyed streams.");
         }
 
         public TimerService timerService() {

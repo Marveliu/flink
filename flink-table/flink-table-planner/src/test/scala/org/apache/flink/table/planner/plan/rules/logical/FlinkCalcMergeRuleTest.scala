@@ -17,10 +17,9 @@
  */
 package org.apache.flink.table.planner.plan.rules.logical
 
-import org.apache.flink.api.scala._
 import org.apache.flink.table.api._
 import org.apache.flink.table.planner.plan.nodes.FlinkConventions
-import org.apache.flink.table.planner.plan.nodes.logical.{FlinkLogicalCalc, FlinkLogicalLegacyTableSourceScan}
+import org.apache.flink.table.planner.plan.nodes.logical.{FlinkLogicalCalc, FlinkLogicalTableSourceScan}
 import org.apache.flink.table.planner.plan.optimize.program._
 import org.apache.flink.table.planner.plan.rules.FlinkBatchRuleSets
 import org.apache.flink.table.planner.runtime.utils.JavaUserDefinedScalarFunctions.NonDeterministicUdf
@@ -29,15 +28,13 @@ import org.apache.flink.table.planner.utils.TableTestBase
 import org.apache.calcite.plan.hep.HepMatchOrder
 import org.apache.calcite.rel.rules._
 import org.apache.calcite.tools.RuleSets
-import org.junit.{Before, Test}
+import org.junit.jupiter.api.{BeforeEach, Test}
 
-/**
-  * Test for [[FlinkCalcMergeRule]].
-  */
+/** Test for [[FlinkCalcMergeRule]]. */
 class FlinkCalcMergeRuleTest extends TableTestBase {
   private val util = batchTestUtil()
 
-  @Before
+  @BeforeEach
   def setup(): Unit = {
     val programs = new FlinkChainedProgram[BatchOptimizeContext]()
     programs.addLast(
@@ -46,23 +43,26 @@ class FlinkCalcMergeRuleTest extends TableTestBase {
         .setHepRulesExecutionType(HEP_RULES_EXECUTION_TYPE.RULE_SEQUENCE)
         .setHepMatchOrder(HepMatchOrder.BOTTOM_UP)
         .add(FlinkBatchRuleSets.TABLE_REF_RULES)
-        .build())
+        .build()
+    )
     programs.addLast(
       "logical",
       FlinkVolcanoProgramBuilder.newBuilder
-        .add(RuleSets.ofList(
-          CoreRules.FILTER_TO_CALC,
-          CoreRules.PROJECT_TO_CALC,
-          FlinkCalcMergeRule.INSTANCE,
-          FlinkLogicalCalc.CONVERTER,
-          FlinkLogicalLegacyTableSourceScan.CONVERTER
-        ))
+        .add(
+          RuleSets.ofList(
+            CoreRules.FILTER_TO_CALC,
+            CoreRules.PROJECT_TO_CALC,
+            FlinkCalcMergeRule.INSTANCE,
+            FlinkLogicalCalc.CONVERTER,
+            FlinkLogicalTableSourceScan.CONVERTER
+          ))
         .setRequiredOutputTraits(Array(FlinkConventions.LOGICAL))
-        .build())
+        .build()
+    )
     util.replaceBatchProgram(programs)
 
     util.addTableSource[(Int, Int, String)]("MyTable", 'a, 'b, 'c)
-    util.addFunction("random_udf", new NonDeterministicUdf)
+    util.addTemporarySystemFunction("random_udf", new NonDeterministicUdf)
   }
 
   @Test

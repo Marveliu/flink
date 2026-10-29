@@ -48,7 +48,10 @@ def normalize_table_function_result(it):
             return [value]
 
     if it is None:
-        return []
+        def func():
+            for i in []:
+                yield i
+        return func()
 
     if isinstance(it, (list, range, Generator)):
         def func():
@@ -57,7 +60,9 @@ def normalize_table_function_result(it):
 
         return func()
     else:
-        return [normalize_one_row(it)]
+        def func():
+            yield normalize_one_row(it)
+        return func()
 
 
 def normalize_pandas_result(it):
@@ -86,6 +91,35 @@ def check_pandas_udf_result(f, *input_args):
         "The result length '%d' of Pandas UDF '%s' is not equal to the input length '%d'" \
         % (len(output), f.__name__, len(input_args[0]))
     return output
+
+
+def check_arrow_udf_result(func, *args):
+    import pyarrow as pa
+
+    result = func(*args)
+    name = getattr(func, "__qualname__", type(func).__name__)
+    if not isinstance(result, (pa.Array, pa.ChunkedArray)):
+        raise TypeError(
+            f"Arrow UDF '{name}' must return a pyarrow.Array or pyarrow.ChunkedArray, "
+            f"got {type(result).__name__}.")
+    for arg in args:
+        if isinstance(arg, (pa.Array, pa.ChunkedArray)) and len(result) != len(arg):
+            raise ValueError(
+                f"Arrow UDF '{name}' returned {len(result)} rows, expected {len(arg)}.")
+    if isinstance(result, pa.ChunkedArray):
+        result = result.chunk(0) if result.num_chunks == 1 else result.combine_chunks()
+    return result
+
+
+def create_record_batch(results, row_count):
+    import pyarrow as pa
+
+    columns = []
+    for result in results:
+        if len(result) != row_count:
+            raise ValueError(f"Arrow UDF returned {len(result)} rows, expected {row_count}.")
+        columns.append(result)
+    return pa.RecordBatch.from_arrays(columns, names=[f"f{i}" for i in range(len(columns))])
 
 
 def extract_over_window_user_defined_function(user_defined_function_proto):
@@ -129,6 +163,9 @@ def extract_user_defined_function(user_defined_function_proto, pandas_udaf=False
                 else:
                     # the input argument is a column of the input row
                     args_str.append("value[%s]" % arg.inputOffset)
+            elif arg.HasField("refIndex"):
+                # Reference to a previously computed UDF result (CSE).
+                args_str.append("results[%s]" % arg.refIndex)
             else:
                 # the input argument is a constant value
                 constant_value_name, parsed_constant_value = \
@@ -152,6 +189,8 @@ def extract_user_defined_function(user_defined_function_proto, pandas_udaf=False
             variable_dict[func_name] = user_defined_func.func
     else:
         variable_dict[func_name] = user_defined_func.eval
+    if user_defined_function_proto.is_arrow_udf:
+        variable_dict[func_name] = partial(check_arrow_udf_result, variable_dict[func_name])
     user_defined_funcs.append(user_defined_func)
 
     func_args, input_variable_dict, input_funcs = _extract_input(user_defined_function_proto.inputs)
@@ -166,6 +205,18 @@ def extract_user_defined_function(user_defined_function_proto, pandas_udaf=False
             # we need to merge these Pandas.Series into a Pandas.DataFrame
             variable_dict['wrap_input_series_as_dataframe'] = wrap_input_series_as_dataframe
             func_str = "%s(wrap_input_series_as_dataframe(%s))" % (func_name, func_args)
+        elif 'results[' in func_args:
+            # CSE: when args contain refIndex references (results[N]), the UDF
+            # receives a previously computed intermediate result rather than
+            # the original input row. We must use func_args instead of `value`.
+            func_str = "%s(%s)" % (func_name, func_args)
+        elif user_defined_function_proto.is_arrow_udf:
+            import pyarrow as pa
+
+            variable_dict['create_struct_array'] = pa.StructArray.from_arrays
+            offsets = [arg.inputOffset for arg in user_defined_function_proto.inputs]
+            func_str = (f"{func_name}(create_struct_array([{func_args}], "
+                        f"fields=[value.schema[i] for i in {offsets}]))")
         else:
             # directly use `value` as input argument
             # e.g.
@@ -279,43 +330,6 @@ def load_aggregate_function(payload):
         return cls()
     else:
         return pickle.loads(payload)
-
-
-def parse_function_proto(proto):
-    from pyflink.fn_execution import flink_fn_execution_pb2
-    serialized_fn = flink_fn_execution_pb2.UserDefinedFunctions()
-    serialized_fn.ParseFromString(proto)
-    return serialized_fn
-
-
-def deserialized_operation_from_serialized_bytes(b):
-    import cloudpickle
-    return cloudpickle.loads(b)
-
-
-def create_scalar_operation_from_proto(proto, one_arg_optimization=False,
-                                       one_result_optimization=False):
-    from pyflink.fn_execution.table.operations import ScalarFunctionOperation
-
-    serialized_fn = parse_function_proto(proto)
-    scalar_operation = ScalarFunctionOperation(
-        serialized_fn, one_arg_optimization, one_result_optimization)
-    return scalar_operation
-
-
-def create_serialized_scalar_operation_from_proto(proto, one_arg_optimization=False,
-                                                  one_result_optimization=False):
-    """
-    The CPython extension included in proto does not support initialization multiple times, so we
-    choose the only interpreter process to be responsible for initialization and proto parsing. The
-    only interpreter parses the proto and serializes function operations with cloudpickle.
-    """
-
-    import cloudpickle
-
-    scalar_operation = create_scalar_operation_from_proto(
-        bytes(b % 256 for b in proto), one_arg_optimization, one_result_optimization)
-    return cloudpickle.dumps(scalar_operation)
 
 
 class PeriodicThread(threading.Thread):

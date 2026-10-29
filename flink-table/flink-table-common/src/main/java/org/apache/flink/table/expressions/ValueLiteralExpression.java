@@ -19,12 +19,21 @@
 package org.apache.flink.table.expressions;
 
 import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.table.api.TableException;
 import org.apache.flink.table.api.ValidationException;
 import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.types.inference.CallContext;
+import org.apache.flink.table.types.logical.DayTimeIntervalType;
+import org.apache.flink.table.types.logical.DecimalType;
+import org.apache.flink.table.types.logical.LocalZonedTimestampType;
 import org.apache.flink.table.types.logical.LogicalType;
 import org.apache.flink.table.types.logical.LogicalTypeFamily;
+import org.apache.flink.table.types.logical.LogicalTypeRoot;
+import org.apache.flink.table.types.logical.YearMonthIntervalType;
 import org.apache.flink.table.types.utils.ValueDataTypeConverter;
+import org.apache.flink.table.utils.DateTimeUtils;
+import org.apache.flink.table.utils.EncodingUtils;
+import org.apache.flink.types.ColumnList;
 import org.apache.flink.util.Preconditions;
 import org.apache.flink.util.StringUtils;
 
@@ -32,6 +41,7 @@ import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
 
 import java.math.BigDecimal;
+import java.nio.ByteBuffer;
 import java.sql.Date;
 import java.sql.Time;
 import java.sql.Timestamp;
@@ -43,10 +53,13 @@ import java.time.LocalTime;
 import java.time.OffsetDateTime;
 import java.time.Period;
 import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.Collections;
 import java.util.List;
+import java.util.Locale;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.UUID;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -126,6 +139,8 @@ public final class ValueLiteralExpression implements ResolvedExpression {
                 convertedValue = convertToInstant(value, valueClass);
             } else if (clazz == BigDecimal.class) {
                 convertedValue = convertToBigDecimal(value);
+            } else if (clazz == UUID.class) {
+                convertedValue = convertToUuid(value, valueClass);
             }
         }
 
@@ -204,6 +219,15 @@ public final class ValueLiteralExpression implements ResolvedExpression {
         return null;
     }
 
+    private @Nullable UUID convertToUuid(Object value, Class<?> valueClass) {
+        if (valueClass == byte[].class) {
+            final ByteBuffer buffer = ByteBuffer.wrap((byte[]) value);
+            return new UUID(buffer.getLong(), buffer.getLong());
+        }
+
+        return null;
+    }
+
     @Override
     public DataType getOutputDataType() {
         return dataType;
@@ -217,6 +241,105 @@ public final class ValueLiteralExpression implements ResolvedExpression {
     @Override
     public String asSummaryString() {
         return stringifyValue(value);
+    }
+
+    @Override
+    public String asSerializableString(SqlFactory sqlFactory) {
+        if (value == null && !dataType.getLogicalType().is(LogicalTypeRoot.NULL)) {
+            return String.format(
+                    "CAST(NULL AS %s)",
+                    // casting does not support nullability
+                    dataType.getLogicalType().copy(true).asSerializableString());
+        }
+        final LogicalType logicalType = dataType.getLogicalType();
+        switch (logicalType.getTypeRoot()) {
+            case TINYINT:
+                return String.format("CAST(%s AS TINYINT)", value);
+            case SMALLINT:
+                return String.format("CAST(%s AS SMALLINT)", value);
+            case BIGINT:
+                return String.format("CAST(%s AS BIGINT)", value);
+            case FLOAT:
+                return String.format("CAST(%s AS FLOAT)", value);
+            case DOUBLE:
+                return String.format("CAST(%s AS DOUBLE)", value);
+            case DECIMAL:
+                DecimalType decimalType = (DecimalType) logicalType;
+                final BigDecimal decimal = getValueAs(BigDecimal.class).get();
+                final String decimalString = decimal.toString();
+                if (decimal.precision() == decimalType.getPrecision()
+                        && decimal.scale() == decimalType.getScale()) {
+                    return decimalString;
+                } else {
+                    return String.format(
+                            "CAST(%s AS DECIMAL(%d, %d))",
+                            decimalString, decimalType.getPrecision(), decimalType.getScale());
+                }
+            case CHAR:
+            case VARCHAR:
+                return "'" + ((String) value).replace("'", "''") + "'";
+            case INTEGER:
+                return String.valueOf(value);
+            case BOOLEAN:
+            case NULL:
+                return String.valueOf(value).toUpperCase(Locale.ROOT);
+            case BINARY:
+            case VARBINARY:
+                return String.format("X'%s'", StringUtils.byteToHexString((byte[]) value));
+            case DATE:
+                return String.format("DATE '%s'", getValueAs(LocalDate.class).get());
+            case TIME_WITHOUT_TIME_ZONE:
+                final LocalTime localTime = getValueAs(LocalTime.class).get();
+                return String.format(
+                        "TIME '%s'", localTime.format(DateTimeFormatter.ISO_LOCAL_TIME));
+            case TIMESTAMP_WITHOUT_TIME_ZONE:
+                final LocalDateTime localDateTime = getValueAs(LocalDateTime.class).get();
+                return String.format(
+                        "TIMESTAMP '%s %s'",
+                        localDateTime.toLocalDate(),
+                        localDateTime.toLocalTime().format(DateTimeFormatter.ISO_LOCAL_TIME));
+            case TIMESTAMP_WITH_LOCAL_TIME_ZONE:
+                return serializeTimestampLtz(
+                        getValueAs(Instant.class).get(),
+                        ((LocalZonedTimestampType) dataType.getLogicalType()).getPrecision());
+            case INTERVAL_YEAR_MONTH:
+                return formatYearMonthIntervalLiteral(
+                        (YearMonthIntervalType) logicalType, getValueAs(Period.class).get());
+            case INTERVAL_DAY_TIME:
+                return formatDayTimeIntervalLiteral(
+                        (DayTimeIntervalType) logicalType, getValueAs(Duration.class).get());
+            case DESCRIPTOR:
+                final ColumnList columnList = getValueAs(ColumnList.class).get();
+                if (!columnList.getDataTypes().isEmpty()) {
+                    throw new TableException("Data types in DESCRIPTOR are not supported yet.");
+                }
+                return String.format(
+                        "DESCRIPTOR(%s)",
+                        columnList.getNames().stream()
+                                .map(EncodingUtils::escapeBackticks)
+                                .map(c -> String.format("`%s`", c))
+                                .collect(Collectors.joining()));
+            case UUID:
+                return String.format("UUID '%s'", getValueAs(UUID.class).get());
+            case ARRAY:
+            case MULTISET:
+            case MAP:
+            case ROW:
+                throw new TableException(
+                        "Constructed type literals are not SQL serializable. Please use respective"
+                                + " constructor functions");
+            case TIMESTAMP_WITH_TIME_ZONE:
+            case DISTINCT_TYPE:
+            case STRUCTURED_TYPE:
+            case RAW:
+            case SYMBOL:
+            case UNRESOLVED:
+            default:
+                throw new TableException(
+                        "Literals with "
+                                + dataType.getLogicalType()
+                                + " are not SQL serializable.");
+        }
     }
 
     @Override
@@ -298,6 +421,51 @@ public final class ValueLiteralExpression implements ResolvedExpression {
         }
     }
 
+    /**
+     * Formats a year-month interval value as a SQL literal, including explicit precision on the
+     * {@code YEAR} field.
+     */
+    private static String formatYearMonthIntervalLiteral(
+            YearMonthIntervalType type, Period period) {
+        final long totalMonths = period.toTotalMonths();
+        final long years = totalMonths / 12;
+        final int months = (int) (totalMonths % 12);
+        final int yearPrecision = type.getYearPrecision();
+        return String.format("INTERVAL '%d-%d' YEAR(%d) TO MONTH", years, months, yearPrecision);
+    }
+
+    /**
+     * Formats a day-time interval value as a SQL literal, including explicit precision on the
+     * {@code DAY} and {@code SECOND} field.
+     */
+    private static String formatDayTimeIntervalLiteral(
+            DayTimeIntervalType type, Duration duration) {
+        final long days = duration.toDays();
+        final int hours = duration.toHoursPart();
+        final int minutes = duration.toMinutesPart();
+        final int seconds = duration.toSecondsPart();
+        final int dayPrecision = type.getDayPrecision();
+        final int fractionalPrecision = type.getFractionalPrecision();
+        final String fraction = formatFractionalSeconds(duration.getNano(), fractionalPrecision);
+
+        return String.format(
+                "INTERVAL '%d %02d:%02d:%02d%s' DAY(%d) TO SECOND(%d)",
+                days, hours, minutes, seconds, fraction, dayPrecision, fractionalPrecision);
+    }
+
+    /**
+     * Formats the fractional-seconds suffix (including the leading {@code .}) from a raw nanosecond
+     * value to {@code fractionalPrecision} digits. Returns an empty string when {@code
+     * fractionalPrecision} is 0.
+     */
+    private static String formatFractionalSeconds(int nanos, int fractionalPrecision) {
+        if (fractionalPrecision == 0) {
+            return "";
+        }
+        final String nanosString = String.format("%09d", nanos);
+        return "." + nanosString.substring(0, fractionalPrecision);
+    }
+
     /** Supports (nested) arrays and makes string values more explicit. */
     private static String stringifyValue(Object value) {
         if (value instanceof String[]) {
@@ -314,5 +482,54 @@ public final class ValueLiteralExpression implements ResolvedExpression {
             return "'" + ((String) value).replace("'", "''") + "'";
         }
         return StringUtils.arrayAwareToString(value);
+    }
+
+    /**
+     * Serializes a TIMESTAMP_LTZ literal as a SQL string. Uses the numeric variant {@code
+     * TO_TIMESTAMP_LTZ(epoch, precision)} for readability when the value fits in a long, and falls
+     * back to the string variant for large values that would overflow.
+     */
+    private static String serializeTimestampLtz(Instant instant, int precision) {
+        String toTimestampLtzExpr;
+        if (canRepresentAsLong(instant, precision)) {
+            long epochValue = DateTimeUtils.toEpochValue(instant, precision);
+            toTimestampLtzExpr = String.format("TO_TIMESTAMP_LTZ(%d, %d)", epochValue, precision);
+        } else {
+            final LocalDateTime utcDateTime =
+                    LocalDateTime.ofInstant(instant, java.time.ZoneOffset.UTC);
+            final String formatPattern =
+                    precision > 0
+                            ? "yyyy-MM-dd HH:mm:ss." + "S".repeat(precision)
+                            : "yyyy-MM-dd HH:mm:ss";
+            final String timestampStr =
+                    utcDateTime.format(DateTimeFormatter.ofPattern(formatPattern));
+            toTimestampLtzExpr =
+                    String.format(
+                            "TO_TIMESTAMP_LTZ('%s', '%s', 'UTC')", timestampStr, formatPattern);
+        }
+        // For precision 0-2, TO_TIMESTAMP_LTZ returns TIMESTAMP_LTZ(3), so we need a CAST
+        // to match the actual data type precision.
+        if (precision < 3) {
+            return String.format("CAST(%s AS TIMESTAMP_LTZ(%d))", toTimestampLtzExpr, precision);
+        }
+        return toTimestampLtzExpr;
+    }
+
+    /**
+     * Checks whether an {@link Instant} can be represented as a {@code long} epoch value at the
+     * given precision without overflow. Accounts for the sub-second nanos term that {@link
+     * DateTimeUtils#toEpochValue} adds on top of {@code epochSeconds * 10^precision}.
+     */
+    private static boolean canRepresentAsLong(Instant instant, int precision) {
+        final long factor = (long) Math.pow(10, precision);
+        final long nanoDivisor = (long) Math.pow(10, 9 - precision);
+        final long epochSeconds = instant.getEpochSecond();
+        final long nanoPart = instant.getNano() / nanoDivisor;
+        if (epochSeconds > Long.MAX_VALUE / factor || epochSeconds < Long.MIN_VALUE / factor) {
+            return false;
+        }
+        final long base = epochSeconds * factor;
+        // Negative base + non-negative nanoPart moves toward zero, can't overflow upward.
+        return base < 0 || nanoPart <= Long.MAX_VALUE - base;
     }
 }

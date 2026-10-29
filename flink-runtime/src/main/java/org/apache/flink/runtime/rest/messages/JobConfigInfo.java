@@ -41,6 +41,7 @@ import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.databind.ser.std.S
 import javax.annotation.Nullable;
 
 import java.io.IOException;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 
@@ -168,14 +169,10 @@ public class JobConfigInfo implements ResponseBody {
     /** Nested class to encapsulate the execution configuration. */
     public static final class ExecutionConfigInfo {
 
-        public static final String FIELD_NAME_EXECUTION_MODE = "execution-mode";
         public static final String FIELD_NAME_RESTART_STRATEGY = "restart-strategy";
         public static final String FIELD_NAME_PARALLELISM = "job-parallelism";
         public static final String FIELD_NAME_OBJECT_REUSE_MODE = "object-reuse-mode";
         public static final String FIELD_NAME_GLOBAL_JOB_PARAMETERS = "user-config";
-
-        @JsonProperty(FIELD_NAME_EXECUTION_MODE)
-        private final String executionMode;
 
         @JsonProperty(FIELD_NAME_RESTART_STRATEGY)
         private final String restartStrategy;
@@ -191,21 +188,15 @@ public class JobConfigInfo implements ResponseBody {
 
         @JsonCreator
         public ExecutionConfigInfo(
-                @JsonProperty(FIELD_NAME_EXECUTION_MODE) String executionMode,
                 @JsonProperty(FIELD_NAME_RESTART_STRATEGY) String restartStrategy,
                 @JsonProperty(FIELD_NAME_PARALLELISM) int parallelism,
                 @JsonProperty(FIELD_NAME_OBJECT_REUSE_MODE) boolean isObjectReuse,
                 @JsonProperty(FIELD_NAME_GLOBAL_JOB_PARAMETERS)
                         Map<String, String> globalJobParameters) {
-            this.executionMode = Preconditions.checkNotNull(executionMode);
             this.restartStrategy = Preconditions.checkNotNull(restartStrategy);
             this.parallelism = parallelism;
             this.isObjectReuse = isObjectReuse;
             this.globalJobParameters = Preconditions.checkNotNull(globalJobParameters);
-        }
-
-        public String getExecutionMode() {
-            return executionMode;
         }
 
         public String getRestartStrategy() {
@@ -236,29 +227,25 @@ public class JobConfigInfo implements ResponseBody {
             ExecutionConfigInfo that = (ExecutionConfigInfo) o;
             return parallelism == that.parallelism
                     && isObjectReuse == that.isObjectReuse
-                    && Objects.equals(executionMode, that.executionMode)
                     && Objects.equals(restartStrategy, that.restartStrategy)
                     && Objects.equals(globalJobParameters, that.globalJobParameters);
         }
 
         @Override
         public int hashCode() {
-            return Objects.hash(
-                    executionMode,
-                    restartStrategy,
-                    parallelism,
-                    isObjectReuse,
-                    globalJobParameters);
+            return Objects.hash(restartStrategy, parallelism, isObjectReuse, globalJobParameters);
         }
 
-        public static ExecutionConfigInfo from(ArchivedExecutionConfig archivedExecutionConfig) {
+        public static ExecutionConfigInfo from(
+                ArchivedExecutionConfig archivedExecutionConfig,
+                List<String> additionalSensitiveKeys) {
             return new ExecutionConfigInfo(
-                    archivedExecutionConfig.getExecutionMode(),
                     archivedExecutionConfig.getRestartStrategyDescription(),
                     archivedExecutionConfig.getParallelism(),
                     archivedExecutionConfig.getObjectReuseEnabled(),
                     ConfigurationUtils.hideSensitiveValues(
-                            archivedExecutionConfig.getGlobalJobParameters()));
+                            archivedExecutionConfig.getGlobalJobParameters(),
+                            additionalSensitiveKeys));
         }
     }
 }

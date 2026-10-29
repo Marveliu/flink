@@ -24,6 +24,8 @@ import org.apache.flink.api.common.state.ReducingState;
 import org.apache.flink.api.common.state.ReducingStateDescriptor;
 import org.apache.flink.api.common.typeinfo.Types;
 import org.apache.flink.api.common.typeutils.base.LongSerializer;
+import org.apache.flink.api.java.tuple.Tuple2;
+import org.apache.flink.configuration.Configuration;
 import org.apache.flink.runtime.state.StateBackend;
 import org.apache.flink.state.api.functions.WindowReaderFunction;
 import org.apache.flink.state.api.utils.AggregateSum;
@@ -31,13 +33,12 @@ import org.apache.flink.state.api.utils.JobResultRetriever;
 import org.apache.flink.state.api.utils.ReduceSum;
 import org.apache.flink.state.api.utils.SavepointTestBase;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
-import org.apache.flink.streaming.api.functions.sink.DiscardingSink;
+import org.apache.flink.streaming.api.functions.sink.v2.DiscardingSink;
 import org.apache.flink.streaming.api.functions.windowing.ProcessWindowFunction;
 import org.apache.flink.streaming.api.functions.windowing.WindowFunction;
 import org.apache.flink.streaming.api.windowing.assigners.GlobalWindows;
 import org.apache.flink.streaming.api.windowing.assigners.TumblingEventTimeWindows;
 import org.apache.flink.streaming.api.windowing.evictors.Evictor;
-import org.apache.flink.streaming.api.windowing.time.Time;
 import org.apache.flink.streaming.api.windowing.triggers.CountTrigger;
 import org.apache.flink.streaming.api.windowing.triggers.PurgingTrigger;
 import org.apache.flink.streaming.api.windowing.windows.GlobalWindow;
@@ -46,25 +47,26 @@ import org.apache.flink.streaming.api.windowing.windows.Window;
 import org.apache.flink.streaming.runtime.operators.windowing.TimestampedValue;
 import org.apache.flink.util.Collector;
 
-import org.hamcrest.Matchers;
-import org.junit.Assert;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
+import java.time.Duration;
 import java.util.List;
 
+import static org.assertj.core.api.Assertions.assertThat;
+
 /** IT Case for reading window operator state. */
-public abstract class SavepointWindowReaderITCase<B extends StateBackend>
-        extends SavepointTestBase {
+abstract class SavepointWindowReaderITCase<B extends StateBackend> extends SavepointTestBase {
     private static final String uid = "stateful-operator";
 
     private static final Integer[] numbers = {1, 2, 3};
 
-    protected abstract B getStateBackend();
+    protected abstract Tuple2<Configuration, B> getStateBackendTuple();
 
     @Test
-    public void testReduceWindowStateReader() throws Exception {
-        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
-        env.setStateBackend(getStateBackend());
+    void testReduceWindowStateReader() throws Exception {
+        Tuple2<Configuration, B> backendTuple = getStateBackendTuple();
+        StreamExecutionEnvironment env =
+                StreamExecutionEnvironment.getExecutionEnvironment(backendTuple.f0);
         env.setParallelism(4);
 
         env.addSource(createSource(numbers))
@@ -73,31 +75,31 @@ public abstract class SavepointWindowReaderITCase<B extends StateBackend>
                         WatermarkStrategy.<Integer>noWatermarks()
                                 .withTimestampAssigner((event, timestamp) -> 0))
                 .keyBy(id -> id)
-                .window(TumblingEventTimeWindows.of(Time.milliseconds(10)))
+                .window(TumblingEventTimeWindows.of(Duration.ofMillis(10)))
                 .reduce(new ReduceSum())
                 .uid(uid)
-                .addSink(new DiscardingSink<>());
+                .sinkTo(new DiscardingSink<>());
 
         String savepointPath = takeSavepoint(env);
 
-        SavepointReader savepoint = SavepointReader.read(env, savepointPath, getStateBackend());
+        SavepointReader savepoint = SavepointReader.read(env, savepointPath, backendTuple.f1);
 
         List<Integer> results =
                 JobResultRetriever.collect(
                         savepoint
-                                .window(TumblingEventTimeWindows.of(Time.milliseconds(10)))
+                                .window(TumblingEventTimeWindows.of(Duration.ofMillis(10)))
                                 .reduce(uid, new ReduceSum(), Types.INT, Types.INT));
 
-        Assert.assertThat(
-                "Unexpected results from keyed state",
-                results,
-                Matchers.containsInAnyOrder(numbers));
+        assertThat(results)
+                .as("Unexpected results from keyed state")
+                .containsExactlyInAnyOrder(numbers);
     }
 
     @Test
-    public void testReduceEvictorWindowStateReader() throws Exception {
-        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
-        env.setStateBackend(getStateBackend());
+    void testReduceEvictorWindowStateReader() throws Exception {
+        Tuple2<Configuration, B> backendTuple = getStateBackendTuple();
+        StreamExecutionEnvironment env =
+                StreamExecutionEnvironment.getExecutionEnvironment(backendTuple.f0);
         env.setParallelism(4);
 
         env.addSource(createSource(numbers))
@@ -106,33 +108,33 @@ public abstract class SavepointWindowReaderITCase<B extends StateBackend>
                         WatermarkStrategy.<Integer>noWatermarks()
                                 .withTimestampAssigner((event, timestamp) -> 0))
                 .keyBy(id -> id)
-                .window(TumblingEventTimeWindows.of(Time.milliseconds(10)))
+                .window(TumblingEventTimeWindows.of(Duration.ofMillis(10)))
                 .evictor(new NoOpEvictor<>())
                 .reduce(new ReduceSum())
                 .uid(uid)
-                .addSink(new DiscardingSink<>());
+                .sinkTo(new DiscardingSink<>());
 
         String savepointPath = takeSavepoint(env);
 
-        SavepointReader savepoint = SavepointReader.read(env, savepointPath, getStateBackend());
+        SavepointReader savepoint = SavepointReader.read(env, savepointPath, backendTuple.f1);
 
         List<Integer> results =
                 JobResultRetriever.collect(
                         savepoint
-                                .window(TumblingEventTimeWindows.of(Time.milliseconds(10)))
+                                .window(TumblingEventTimeWindows.of(Duration.ofMillis(10)))
                                 .evictor()
                                 .reduce(uid, new ReduceSum(), Types.INT, Types.INT));
 
-        Assert.assertThat(
-                "Unexpected results from keyed state",
-                results,
-                Matchers.containsInAnyOrder(numbers));
+        assertThat(results)
+                .as("Unexpected results from keyed state")
+                .containsExactlyInAnyOrder(numbers);
     }
 
     @Test
-    public void testAggregateWindowStateReader() throws Exception {
-        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
-        env.setStateBackend(getStateBackend());
+    void testAggregateWindowStateReader() throws Exception {
+        Tuple2<Configuration, B> backendTuple = getStateBackendTuple();
+        StreamExecutionEnvironment env =
+                StreamExecutionEnvironment.getExecutionEnvironment(backendTuple.f0);
         env.setParallelism(4);
 
         env.addSource(createSource(numbers))
@@ -141,32 +143,32 @@ public abstract class SavepointWindowReaderITCase<B extends StateBackend>
                         WatermarkStrategy.<Integer>noWatermarks()
                                 .withTimestampAssigner((event, timestamp) -> 0))
                 .keyBy(id -> id)
-                .window(TumblingEventTimeWindows.of(Time.milliseconds(10)))
+                .window(TumblingEventTimeWindows.of(Duration.ofMillis(10)))
                 .aggregate(new AggregateSum())
                 .uid(uid)
-                .addSink(new DiscardingSink<>());
+                .sinkTo(new DiscardingSink<>());
 
         String savepointPath = takeSavepoint(env);
 
-        SavepointReader savepoint = SavepointReader.read(env, savepointPath, getStateBackend());
+        SavepointReader savepoint = SavepointReader.read(env, savepointPath, backendTuple.f1);
 
         List<Integer> results =
                 JobResultRetriever.collect(
                         savepoint
-                                .window(TumblingEventTimeWindows.of(Time.milliseconds(10)))
+                                .window(TumblingEventTimeWindows.of(Duration.ofMillis(10)))
                                 .aggregate(
                                         uid, new AggregateSum(), Types.INT, Types.INT, Types.INT));
 
-        Assert.assertThat(
-                "Unexpected results from keyed state",
-                results,
-                Matchers.containsInAnyOrder(numbers));
+        assertThat(results)
+                .as("Unexpected results from keyed state")
+                .containsExactlyInAnyOrder(numbers);
     }
 
     @Test
-    public void testAggregateEvictorWindowStateReader() throws Exception {
-        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
-        env.setStateBackend(getStateBackend());
+    void testAggregateEvictorWindowStateReader() throws Exception {
+        Tuple2<Configuration, B> backendTuple = getStateBackendTuple();
+        StreamExecutionEnvironment env =
+                StreamExecutionEnvironment.getExecutionEnvironment(backendTuple.f0);
         env.setParallelism(4);
 
         env.addSource(createSource(numbers))
@@ -175,34 +177,34 @@ public abstract class SavepointWindowReaderITCase<B extends StateBackend>
                         WatermarkStrategy.<Integer>noWatermarks()
                                 .withTimestampAssigner((event, timestamp) -> 0))
                 .keyBy(id -> id)
-                .window(TumblingEventTimeWindows.of(Time.milliseconds(10)))
+                .window(TumblingEventTimeWindows.of(Duration.ofMillis(10)))
                 .evictor(new NoOpEvictor<>())
                 .aggregate(new AggregateSum())
                 .uid(uid)
-                .addSink(new DiscardingSink<>());
+                .sinkTo(new DiscardingSink<>());
 
         String savepointPath = takeSavepoint(env);
 
-        SavepointReader savepoint = SavepointReader.read(env, savepointPath, getStateBackend());
+        SavepointReader savepoint = SavepointReader.read(env, savepointPath, backendTuple.f1);
 
         List<Integer> results =
                 JobResultRetriever.collect(
                         savepoint
-                                .window(TumblingEventTimeWindows.of(Time.milliseconds(10)))
+                                .window(TumblingEventTimeWindows.of(Duration.ofMillis(10)))
                                 .evictor()
                                 .aggregate(
                                         uid, new AggregateSum(), Types.INT, Types.INT, Types.INT));
 
-        Assert.assertThat(
-                "Unexpected results from keyed state",
-                results,
-                Matchers.containsInAnyOrder(numbers));
+        assertThat(results)
+                .as("Unexpected results from keyed state")
+                .containsExactlyInAnyOrder(numbers);
     }
 
     @Test
-    public void testProcessWindowStateReader() throws Exception {
-        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
-        env.setStateBackend(getStateBackend());
+    void testProcessWindowStateReader() throws Exception {
+        Tuple2<Configuration, B> backendTuple = getStateBackendTuple();
+        StreamExecutionEnvironment env =
+                StreamExecutionEnvironment.getExecutionEnvironment(backendTuple.f0);
         env.setParallelism(4);
 
         env.addSource(createSource(numbers))
@@ -211,19 +213,19 @@ public abstract class SavepointWindowReaderITCase<B extends StateBackend>
                         WatermarkStrategy.<Integer>noWatermarks()
                                 .withTimestampAssigner((event, timestamp) -> 0))
                 .keyBy(id -> id)
-                .window(TumblingEventTimeWindows.of(Time.milliseconds(10)))
+                .window(TumblingEventTimeWindows.of(Duration.ofMillis(10)))
                 .process(new NoOpProcessWindowFunction())
                 .uid(uid)
-                .addSink(new DiscardingSink<>());
+                .sinkTo(new DiscardingSink<>());
 
         String savepointPath = takeSavepoint(env);
 
-        SavepointReader savepoint = SavepointReader.read(env, savepointPath, getStateBackend());
+        SavepointReader savepoint = SavepointReader.read(env, savepointPath, backendTuple.f1);
 
         List<Integer> results =
                 JobResultRetriever.collect(
                         savepoint
-                                .window(TumblingEventTimeWindows.of(Time.milliseconds(10)))
+                                .window(TumblingEventTimeWindows.of(Duration.ofMillis(10)))
                                 .process(
                                         uid,
                                         new BasicReaderFunction(),
@@ -231,16 +233,16 @@ public abstract class SavepointWindowReaderITCase<B extends StateBackend>
                                         Types.INT,
                                         Types.INT));
 
-        Assert.assertThat(
-                "Unexpected results from keyed state",
-                results,
-                Matchers.containsInAnyOrder(numbers));
+        assertThat(results)
+                .as("Unexpected results from keyed state")
+                .containsExactlyInAnyOrder(numbers);
     }
 
     @Test
-    public void testProcessEvictorWindowStateReader() throws Exception {
-        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
-        env.setStateBackend(getStateBackend());
+    void testProcessEvictorWindowStateReader() throws Exception {
+        Tuple2<Configuration, B> backendTuple = getStateBackendTuple();
+        StreamExecutionEnvironment env =
+                StreamExecutionEnvironment.getExecutionEnvironment(backendTuple.f0);
         env.setParallelism(4);
 
         env.addSource(createSource(numbers))
@@ -249,20 +251,20 @@ public abstract class SavepointWindowReaderITCase<B extends StateBackend>
                         WatermarkStrategy.<Integer>noWatermarks()
                                 .withTimestampAssigner((event, timestamp) -> 0))
                 .keyBy(id -> id)
-                .window(TumblingEventTimeWindows.of(Time.milliseconds(10)))
+                .window(TumblingEventTimeWindows.of(Duration.ofMillis(10)))
                 .evictor(new NoOpEvictor<>())
                 .process(new NoOpProcessWindowFunction())
                 .uid(uid)
-                .addSink(new DiscardingSink<>());
+                .sinkTo(new DiscardingSink<>());
 
         String savepointPath = takeSavepoint(env);
 
-        SavepointReader savepoint = SavepointReader.read(env, savepointPath, getStateBackend());
+        SavepointReader savepoint = SavepointReader.read(env, savepointPath, backendTuple.f1);
 
         List<Integer> results =
                 JobResultRetriever.collect(
                         savepoint
-                                .window(TumblingEventTimeWindows.of(Time.milliseconds(10)))
+                                .window(TumblingEventTimeWindows.of(Duration.ofMillis(10)))
                                 .evictor()
                                 .process(
                                         uid,
@@ -271,16 +273,16 @@ public abstract class SavepointWindowReaderITCase<B extends StateBackend>
                                         Types.INT,
                                         Types.INT));
 
-        Assert.assertThat(
-                "Unexpected results from keyed state",
-                results,
-                Matchers.containsInAnyOrder(numbers));
+        assertThat(results)
+                .as("Unexpected results from keyed state")
+                .containsExactlyInAnyOrder(numbers);
     }
 
     @Test
-    public void testApplyWindowStateReader() throws Exception {
-        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
-        env.setStateBackend(getStateBackend());
+    void testApplyWindowStateReader() throws Exception {
+        Tuple2<Configuration, B> backendTuple = getStateBackendTuple();
+        StreamExecutionEnvironment env =
+                StreamExecutionEnvironment.getExecutionEnvironment(backendTuple.f0);
         env.setParallelism(4);
 
         env.addSource(createSource(numbers))
@@ -289,19 +291,19 @@ public abstract class SavepointWindowReaderITCase<B extends StateBackend>
                         WatermarkStrategy.<Integer>noWatermarks()
                                 .withTimestampAssigner((event, timestamp) -> 0))
                 .keyBy(id -> id)
-                .window(TumblingEventTimeWindows.of(Time.milliseconds(10)))
+                .window(TumblingEventTimeWindows.of(Duration.ofMillis(10)))
                 .apply(new NoOpWindowFunction())
                 .uid(uid)
-                .addSink(new DiscardingSink<>());
+                .sinkTo(new DiscardingSink<>());
 
         String savepointPath = takeSavepoint(env);
 
-        SavepointReader savepoint = SavepointReader.read(env, savepointPath, getStateBackend());
+        SavepointReader savepoint = SavepointReader.read(env, savepointPath, backendTuple.f1);
 
         List<Integer> results =
                 JobResultRetriever.collect(
                         savepoint
-                                .window(TumblingEventTimeWindows.of(Time.milliseconds(10)))
+                                .window(TumblingEventTimeWindows.of(Duration.ofMillis(10)))
                                 .process(
                                         uid,
                                         new BasicReaderFunction(),
@@ -309,16 +311,16 @@ public abstract class SavepointWindowReaderITCase<B extends StateBackend>
                                         Types.INT,
                                         Types.INT));
 
-        Assert.assertThat(
-                "Unexpected results from keyed state",
-                results,
-                Matchers.containsInAnyOrder(numbers));
+        assertThat(results)
+                .as("Unexpected results from keyed state")
+                .containsExactlyInAnyOrder(numbers);
     }
 
     @Test
-    public void testApplyEvictorWindowStateReader() throws Exception {
-        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
-        env.setStateBackend(getStateBackend());
+    void testApplyEvictorWindowStateReader() throws Exception {
+        Tuple2<Configuration, B> backendTuple = getStateBackendTuple();
+        StreamExecutionEnvironment env =
+                StreamExecutionEnvironment.getExecutionEnvironment(backendTuple.f0);
         env.setParallelism(4);
 
         env.addSource(createSource(numbers))
@@ -327,20 +329,20 @@ public abstract class SavepointWindowReaderITCase<B extends StateBackend>
                         WatermarkStrategy.<Integer>noWatermarks()
                                 .withTimestampAssigner((event, timestamp) -> 0))
                 .keyBy(id -> id)
-                .window(TumblingEventTimeWindows.of(Time.milliseconds(10)))
+                .window(TumblingEventTimeWindows.of(Duration.ofMillis(10)))
                 .evictor(new NoOpEvictor<>())
                 .apply(new NoOpWindowFunction())
                 .uid(uid)
-                .addSink(new DiscardingSink<>());
+                .sinkTo(new DiscardingSink<>());
 
         String savepointPath = takeSavepoint(env);
 
-        SavepointReader savepoint = SavepointReader.read(env, savepointPath, getStateBackend());
+        SavepointReader savepoint = SavepointReader.read(env, savepointPath, backendTuple.f1);
 
         List<Integer> results =
                 JobResultRetriever.collect(
                         savepoint
-                                .window(TumblingEventTimeWindows.of(Time.milliseconds(1)))
+                                .window(TumblingEventTimeWindows.of(Duration.ofMillis(1)))
                                 .evictor()
                                 .process(
                                         uid,
@@ -349,16 +351,16 @@ public abstract class SavepointWindowReaderITCase<B extends StateBackend>
                                         Types.INT,
                                         Types.INT));
 
-        Assert.assertThat(
-                "Unexpected results from keyed state",
-                results,
-                Matchers.containsInAnyOrder(numbers));
+        assertThat(results)
+                .as("Unexpected results from keyed state")
+                .containsExactlyInAnyOrder(numbers);
     }
 
     @Test
-    public void testWindowTriggerStateReader() throws Exception {
-        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
-        env.setStateBackend(getStateBackend());
+    void testWindowTriggerStateReader() throws Exception {
+        Tuple2<Configuration, B> backendTuple = getStateBackendTuple();
+        StreamExecutionEnvironment env =
+                StreamExecutionEnvironment.getExecutionEnvironment(backendTuple.f0);
         env.setParallelism(4);
 
         env.addSource(createSource(numbers))
@@ -368,11 +370,11 @@ public abstract class SavepointWindowReaderITCase<B extends StateBackend>
                 .trigger(PurgingTrigger.of(CountTrigger.of(10)))
                 .reduce(new ReduceSum())
                 .uid(uid)
-                .addSink(new DiscardingSink<>());
+                .sinkTo(new DiscardingSink<>());
 
         String savepointPath = takeSavepoint(env);
 
-        SavepointReader savepoint = SavepointReader.read(env, savepointPath, getStateBackend());
+        SavepointReader savepoint = SavepointReader.read(env, savepointPath, backendTuple.f1);
 
         List<Long> results =
                 JobResultRetriever.collect(
@@ -386,8 +388,7 @@ public abstract class SavepointWindowReaderITCase<B extends StateBackend>
                                         Types.INT,
                                         Types.LONG));
 
-        Assert.assertThat(
-                "Unexpected results from trigger state", results, Matchers.contains(1L, 1L, 1L));
+        assertThat(results).as("Unexpected results from trigger state").containsExactly(1L, 1L, 1L);
     }
 
     private static class NoOpProcessWindowFunction
@@ -422,11 +423,10 @@ public abstract class SavepointWindowReaderITCase<B extends StateBackend>
                 Iterable<Integer> elements,
                 Collector<Integer> out)
                 throws Exception {
-            Assert.assertEquals("Unexpected window", new TimeWindow(0, 10), context.window());
-            Assert.assertThat(
-                    "Unexpected registered timers",
-                    context.registeredEventTimeTimers(),
-                    Matchers.contains(9L));
+            assertThat(context.window()).as("Unexpected window").isEqualTo(new TimeWindow(0, 10));
+            assertThat(context.registeredEventTimeTimers())
+                    .as("Unexpected registered timers")
+                    .containsExactly(9L);
 
             out.collect(elements.iterator().next());
         }

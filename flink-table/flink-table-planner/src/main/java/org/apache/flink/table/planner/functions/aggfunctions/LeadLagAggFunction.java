@@ -21,6 +21,7 @@ package org.apache.flink.table.planner.functions.aggfunctions;
 import org.apache.flink.table.api.DataTypes;
 import org.apache.flink.table.expressions.Expression;
 import org.apache.flink.table.expressions.UnresolvedReferenceExpression;
+import org.apache.flink.table.functions.DeclarativeAggregateFunction;
 import org.apache.flink.table.runtime.operators.over.frame.OffsetOverFrame;
 import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.types.logical.CharType;
@@ -263,13 +264,16 @@ public abstract class LeadLagAggFunction extends DeclarativeAggregateFunction {
     /** TimeLeadLagAggFunction. */
     public static class TimeLeadLagAggFunction extends LeadLagAggFunction {
 
-        public TimeLeadLagAggFunction(int operandCount) {
+        private final TimeType type;
+
+        public TimeLeadLagAggFunction(TimeType type, int operandCount) {
             super(operandCount);
+            this.type = type;
         }
 
         @Override
         public DataType getResultType() {
-            return DataTypes.TIME(TimeType.DEFAULT_PRECISION);
+            return DataTypes.TIME(type.getPrecision());
         }
     }
 

@@ -18,67 +18,40 @@
 
 package org.apache.flink.table.planner.delegation;
 
+import org.apache.flink.configuration.SecurityOptions;
 import org.apache.flink.table.api.SqlParserEOFException;
 import org.apache.flink.table.api.SqlParserException;
 import org.apache.flink.table.api.TableConfig;
-import org.apache.flink.table.catalog.Catalog;
-import org.apache.flink.table.catalog.CatalogManager;
-import org.apache.flink.table.catalog.FunctionCatalog;
-import org.apache.flink.table.catalog.GenericInMemoryCatalog;
 import org.apache.flink.table.delegation.Parser;
-import org.apache.flink.table.module.ModuleManager;
 import org.apache.flink.table.operations.Operation;
 import org.apache.flink.table.planner.calcite.FlinkPlannerImpl;
-import org.apache.flink.table.planner.catalog.CatalogManagerCalciteSchema;
-import org.apache.flink.table.utils.CatalogManagerMocks;
+import org.apache.flink.table.planner.utils.PlannerMocks;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import javax.annotation.Nullable;
 
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.function.Supplier;
 
-import static org.apache.calcite.jdbc.CalciteSchemaBuilder.asRootSchema;
 import static org.apache.flink.table.planner.delegation.ParserImplTest.TestSpec.forStatement;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** Test for {@link ParserImpl}. */
-public class ParserImplTest {
+class ParserImplTest {
 
-    private final boolean isStreamingMode = false;
-    private final TableConfig tableConfig = new TableConfig();
-    private final Catalog catalog = new GenericInMemoryCatalog("MockCatalog", "default");
-    private final CatalogManager catalogManager =
-            CatalogManagerMocks.preparedCatalogManager().defaultCatalog("builtin", catalog).build();
-    private final ModuleManager moduleManager = new ModuleManager();
-    private final FunctionCatalog functionCatalog =
-            new FunctionCatalog(tableConfig, catalogManager, moduleManager);
-    private final PlannerContext plannerContext =
-            new PlannerContext(
-                    !isStreamingMode,
-                    tableConfig,
-                    moduleManager,
-                    functionCatalog,
-                    catalogManager,
-                    asRootSchema(new CatalogManagerCalciteSchema(catalogManager, isStreamingMode)),
-                    new ArrayList<>());
+    private final PlannerMocks plannerMocks = PlannerMocks.create(true);
 
-    private final Supplier<FlinkPlannerImpl> plannerSupplier =
-            () ->
-                    plannerContext.createFlinkPlanner(
-                            catalogManager.getCurrentCatalog(),
-                            catalogManager.getCurrentDatabase());
+    private final Supplier<FlinkPlannerImpl> plannerSupplier = plannerMocks::getPlanner;
 
     private final Parser parser =
             new ParserImpl(
-                    catalogManager,
+                    plannerMocks.getCatalogManager(),
                     plannerSupplier,
                     () -> plannerSupplier.get().parser(),
-                    plannerContext.getSqlExprToRexConverterFactory());
+                    plannerMocks.getPlannerContext().getRexFactory());
 
     private static final List<TestSpec> TEST_SPECS =
             Arrays.asList(
@@ -102,10 +75,18 @@ public class ParserImplTest {
                     forStatement("SET execution.runtime-type=")
                             // TODO: the exception message should be "no value defined"
                             .error(
-                                    "SQL parse failed. Encountered \"execution\" at line 1, column 5"));
+                                    "SQL parse failed. Encountered \"execution\" at line 1, column 5:\n"
+                                            + "    SET execution.runtime-type=\n"
+                                            + "        ^^^^^^^^^\n"),
+                    forStatement("ELECT 1")
+                            .error(
+                                    "SQL parse failed. Non-query expression encountered in illegal context."
+                                            + " From line 1, column 1 to line 1, column 5:\n"
+                                            + "    ELECT 1\n"
+                                            + "    ^^^^^"));
 
     @Test
-    public void testParseLegalStatements() {
+    void testParseLegalStatements() {
         for (TestSpec spec : TEST_SPECS) {
             if (spec.expectedSummary != null) {
                 Operation op = parser.parse(spec.statement).get(0);
@@ -121,13 +102,13 @@ public class ParserImplTest {
     }
 
     @Test
-    public void testPartialParse() {
+    void testPartialParse() {
         assertThatThrownBy(() -> parser.parse("select A From"))
                 .isInstanceOf(SqlParserEOFException.class);
     }
 
     @Test
-    public void testPartialParseWithStatementSet() {
+    void testPartialParseWithStatementSet() {
         assertThatThrownBy(
                         () ->
                                 parser.parse(
@@ -135,8 +116,27 @@ public class ParserImplTest {
                 .isInstanceOf(SqlParserEOFException.class);
     }
 
+    /** The statement parser comes from {@code PlannerContext}, which passes the configured keys. */
     @Test
-    public void testCompletionTest() {
+    void testStatementParserHonorsAdditionalSensitiveKeys() {
+        final TableConfig config = TableConfig.getDefault();
+        config.set(SecurityOptions.ADDITIONAL_SENSITIVE_KEYS, List.of("hunter"));
+        final PlannerMocks mocks = PlannerMocks.newBuilder().withTableConfig(config).build();
+        final Parser parser =
+                new DefaultParserFactory()
+                        .create(
+                                new DefaultCalciteContext(
+                                        mocks.getCatalogManager(), mocks.getPlannerContext()));
+        assertThatThrownBy(
+                        () -> parser.parse("CREATE TABLE t (a INT) WITH ('my.hunter.opt' = 'x') 1"))
+                .isInstanceOf(SqlParserException.class)
+                .message()
+                .contains("    CREATE TABLE t (a INT) WITH ('my.hunter.opt' = '*') 1\n")
+                .doesNotContain("'x'");
+    }
+
+    @Test
+    void testCompletionTest() {
         verifySqlCompletion("QU", 1, new String[] {"QUIT"});
         verifySqlCompletion("SE", 1, new String[] {"SET"});
         verifySqlCompletion("", 0, new String[] {"CLEAR", "HELP", "EXIT", "QUIT", "RESET", "SET"});

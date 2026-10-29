@@ -21,9 +21,16 @@ package org.apache.flink.api.connector.source;
 import org.apache.flink.annotation.Public;
 
 import java.io.Serializable;
+import java.util.Collections;
+import java.util.List;
 import java.util.Objects;
 
-/** A container class hosting the information of a {@link SourceReader}. */
+/**
+ * A container class hosting the information of a {@link SourceReader}.
+ *
+ * <p>The {@code reportedSplitsOnRegistration} can only be provided when the source implements
+ * {@link SupportsSplitReassignmentOnRecovery}.
+ */
 @Public
 public final class ReaderInfo implements Serializable {
 
@@ -31,33 +38,56 @@ public final class ReaderInfo implements Serializable {
 
     private final int subtaskId;
     private final String location;
+    private final List<SourceSplit> reportedSplitsOnRegistration;
 
     public ReaderInfo(int subtaskId, String location) {
-        this.subtaskId = subtaskId;
-        this.location = location;
+        this(subtaskId, location, Collections.emptyList());
     }
 
-    /** @return the ID of the subtask that runs the source reader. */
+    ReaderInfo(int subtaskId, String location, List<SourceSplit> splits) {
+        this.subtaskId = subtaskId;
+        this.location = location;
+        this.reportedSplitsOnRegistration = splits;
+    }
+
+    @SuppressWarnings("unchecked")
+    public static <SplitT extends SourceSplit> ReaderInfo createReaderInfo(
+            int subtaskId, String location, List<SplitT> splits) {
+        return new ReaderInfo(subtaskId, location, (List<SourceSplit>) splits);
+    }
+
+    @SuppressWarnings("unchecked")
+    public <SplitT extends SourceSplit> List<SplitT> getReportedSplitsOnRegistration() {
+        return (List<SplitT>) reportedSplitsOnRegistration;
+    }
+
+    /**
+     * @return the ID of the subtask that runs the source reader.
+     */
     public int getSubtaskId() {
         return subtaskId;
     }
 
-    /** @return the location of the subtask that runs this source reader. */
+    /**
+     * @return the location of the subtask that runs this source reader.
+     */
     public String getLocation() {
         return location;
     }
 
     @Override
-    public int hashCode() {
-        return Objects.hash(subtaskId, location);
+    public boolean equals(Object o) {
+        if (!(o instanceof ReaderInfo)) {
+            return false;
+        }
+        ReaderInfo that = (ReaderInfo) o;
+        return subtaskId == that.subtaskId
+                && Objects.equals(location, that.location)
+                && Objects.equals(reportedSplitsOnRegistration, that.reportedSplitsOnRegistration);
     }
 
     @Override
-    public boolean equals(Object obj) {
-        if (!(obj instanceof ReaderInfo)) {
-            return false;
-        }
-        ReaderInfo other = (ReaderInfo) obj;
-        return subtaskId == other.subtaskId && location.equals(other.location);
+    public int hashCode() {
+        return Objects.hash(subtaskId, location, reportedSplitsOnRegistration);
     }
 }

@@ -17,22 +17,42 @@
  */
 
 import { HttpClient } from '@angular/common/http';
-import { Injectable } from '@angular/core';
+import { ChangeDetectorRef, inject, Injectable } from '@angular/core';
 import { NavigationEnd, Router } from '@angular/router';
 import { EMPTY, fromEvent, interval, merge, Observable, Subject } from 'rxjs';
-import { debounceTime, filter, map, mapTo, share, startWith, switchMap, tap } from 'rxjs/operators';
+import { debounceTime, filter, map, share, startWith, switchMap, tap } from 'rxjs/operators';
 
-import { BASE_URL } from 'config';
-import { Configuration } from 'interfaces';
+import { Configuration } from '@flink-runtime-web/interfaces';
+
+import { ConfigService } from './config.service';
 
 @Injectable({
   providedIn: 'root'
 })
 export class StatusService {
-  constructor(private readonly httpClient: HttpClient) {}
+  private readonly httpClient = inject(HttpClient);
+  private readonly configService = inject(ConfigService);
+  private readonly router = inject(Router);
 
   /** Error server response message cache list. */
   public listOfErrorMessage: string[] = [];
+
+  /** Threshold of consecutive network failures before surfacing an error to the user. */
+  public readonly networkFailureThreshold = 5;
+  /** Count of consecutive network failures (status 0 or >=500) across all requests. */
+  public networkFailureCount = 0;
+  /** messageId of the currently-visible network-error notification, if any. */
+  public networkErrorNotificationId: string | null = null;
+
+  private appCdr?: ChangeDetectorRef;
+
+  public registerAppCdr(cdr: ChangeDetectorRef): void {
+    this.appCdr = cdr;
+  }
+
+  public markAppForCheck(): void {
+    this.appCdr?.markForCheck();
+  }
 
   /** Flink configuration from backend. */
   public configuration: Configuration;
@@ -46,30 +66,28 @@ export class StatusService {
   }
 
   /**
-   * Create refresh stream when APP_INITIALIZER
+   * Create refresh stream when is initializing
    * refresh interval stream will be regenerated when NavigationEnd || forceRefresh || visibility change
-   *
-   * @param router
    */
-  public boot(router: Router): Promise<Configuration> {
-    return this.httpClient
-      .get<Configuration>(`${BASE_URL}/config`)
-      .pipe(
-        tap(data => {
-          this.configuration = data;
-          const navigationEnd$ = router.events.pipe(
-            filter(item => item instanceof NavigationEnd),
-            mapTo(true)
-          );
-          const interval$ = interval(this.configuration['refresh-interval']).pipe(mapTo(true), startWith(true));
-          this.refresh$ = merge(this.visibility$, this.forceRefresh$, navigationEnd$).pipe(
-            startWith(true),
-            debounceTime(300),
-            switchMap(active => (active ? interval$ : EMPTY)),
-            share()
-          );
-        })
-      )
-      .toPromise();
+  public boot(): Observable<Configuration | undefined> {
+    return this.httpClient.get<Configuration>(`${this.configService.BASE_URL}/config`).pipe(
+      tap(data => {
+        this.configuration = data;
+        const navigationEnd$ = this.router.events.pipe(
+          filter(item => item instanceof NavigationEnd),
+          map(() => true)
+        );
+        const interval$ = interval(this.configuration['refresh-interval']).pipe(
+          map(() => true),
+          startWith(true)
+        );
+        this.refresh$ = merge(this.visibility$, this.forceRefresh$, navigationEnd$).pipe(
+          startWith(true),
+          debounceTime(300),
+          switchMap(active => (active ? interval$ : EMPTY)),
+          share()
+        );
+      })
+    );
   }
 }

@@ -22,17 +22,15 @@ import org.apache.flink.annotation.Experimental;
 import org.apache.flink.api.common.JobID;
 import org.apache.flink.api.common.JobStatus;
 import org.apache.flink.api.common.eventtime.WatermarkStrategy;
-import org.apache.flink.api.common.restartstrategy.RestartStrategies;
-import org.apache.flink.api.common.time.Deadline;
 import org.apache.flink.api.common.typeutils.TypeSerializer;
 import org.apache.flink.api.connector.sink2.Sink;
 import org.apache.flink.api.connector.source.Boundedness;
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.configuration.RpcOptions;
 import org.apache.flink.connector.testframe.environment.TestEnvironment;
 import org.apache.flink.connector.testframe.environment.TestEnvironmentSettings;
 import org.apache.flink.connector.testframe.external.ExternalSystemDataReader;
 import org.apache.flink.connector.testframe.external.sink.DataStreamSinkExternalContext;
-import org.apache.flink.connector.testframe.external.sink.DataStreamSinkV1ExternalContext;
 import org.apache.flink.connector.testframe.external.sink.DataStreamSinkV2ExternalContext;
 import org.apache.flink.connector.testframe.external.sink.TestingSinkSettings;
 import org.apache.flink.connector.testframe.junit.extensions.ConnectorTestingExtension;
@@ -40,19 +38,19 @@ import org.apache.flink.connector.testframe.junit.extensions.TestCaseInvocationC
 import org.apache.flink.connector.testframe.source.FromElementsSource;
 import org.apache.flink.connector.testframe.utils.CollectIteratorAssertions;
 import org.apache.flink.connector.testframe.utils.MetricQuerier;
+import org.apache.flink.core.execution.CheckpointingMode;
 import org.apache.flink.core.execution.JobClient;
 import org.apache.flink.core.execution.SavepointFormatType;
 import org.apache.flink.runtime.metrics.MetricNames;
 import org.apache.flink.runtime.rest.RestClient;
-import org.apache.flink.streaming.api.CheckpointingMode;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.datastream.DataStreamSink;
 import org.apache.flink.streaming.api.datastream.DataStreamSource;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.operators.collect.CollectResultIterator;
-import org.apache.flink.streaming.api.operators.collect.CollectSinkOperator;
 import org.apache.flink.streaming.api.operators.collect.CollectSinkOperatorFactory;
 import org.apache.flink.streaming.api.operators.collect.CollectStreamSink;
+import org.apache.flink.streaming.util.RestartStrategyUtils;
 import org.apache.flink.util.TestLoggerExtension;
 
 import org.apache.commons.math3.util.Precision;
@@ -79,17 +77,16 @@ import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
-import static org.apache.flink.connector.testframe.utils.ConnectorTestConstants.DEFAULT_COLLECT_DATA_TIMEOUT;
-import static org.apache.flink.connector.testframe.utils.ConnectorTestConstants.DEFAULT_JOB_STATUS_CHANGE_TIMEOUT;
 import static org.apache.flink.connector.testframe.utils.MetricQuerier.getJobDetails;
+import static org.apache.flink.core.execution.CheckpointingMode.AT_LEAST_ONCE;
+import static org.apache.flink.core.execution.CheckpointingMode.EXACTLY_ONCE;
+import static org.apache.flink.core.testutils.FlinkAssertions.assertThatFuture;
 import static org.apache.flink.runtime.testutils.CommonTestUtils.terminateJob;
 import static org.apache.flink.runtime.testutils.CommonTestUtils.waitForAllTaskRunning;
 import static org.apache.flink.runtime.testutils.CommonTestUtils.waitForJobStatus;
 import static org.apache.flink.runtime.testutils.CommonTestUtils.waitUntilCondition;
-import static org.apache.flink.streaming.api.CheckpointingMode.AT_LEAST_ONCE;
-import static org.apache.flink.streaming.api.CheckpointingMode.EXACTLY_ONCE;
+import static org.apache.flink.streaming.api.CheckpointingMode.convertToCheckpointingMode;
 import static org.apache.flink.util.Preconditions.checkNotNull;
-import static org.assertj.core.api.AssertionsForClassTypes.assertThat;
 
 /**
  * Base class for sink test suite.
@@ -143,7 +140,7 @@ public abstract class SinkTestSuiteBase<T extends Comparable<T>> {
                                 .build());
         execEnv.enableCheckpointing(50);
         DataStream<T> dataStream =
-                execEnv.fromCollection(testRecords)
+                execEnv.fromData(testRecords)
                         .name("sourceInSinkTest")
                         .setParallelism(1)
                         .returns(externalContext.getProducedType());
@@ -152,10 +149,7 @@ public abstract class SinkTestSuiteBase<T extends Comparable<T>> {
                 .name("sinkInSinkTest");
         final JobClient jobClient = execEnv.executeAsync("DataStream Sink Test");
 
-        waitForJobStatus(
-                jobClient,
-                Collections.singletonList(JobStatus.FINISHED),
-                Deadline.fromNow(DEFAULT_JOB_STATUS_CHANGE_TIMEOUT));
+        waitForJobStatus(jobClient, Collections.singletonList(JobStatus.FINISHED));
 
         // Check test result
         checkResultWithSemantic(
@@ -242,7 +236,7 @@ public abstract class SinkTestSuiteBase<T extends Comparable<T>> {
                         TestEnvironmentSettings.builder()
                                 .setConnectorJarPaths(externalContext.getConnectorJarPaths())
                                 .build());
-        execEnv.setRestartStrategy(RestartStrategies.noRestart());
+        RestartStrategyUtils.configureNoRestartStrategy(execEnv);
 
         // Step 2: Generate test data
         final List<T> testRecords = generateTestData(sinkSettings, externalContext);
@@ -281,23 +275,21 @@ public abstract class SinkTestSuiteBase<T extends Comparable<T>> {
                             getJobDetails(
                                     new RestClient(new Configuration(), executorService),
                                     testEnv.getRestEndpoint(),
-                                    jobClient.getJobID()),
-                    Deadline.fromNow(DEFAULT_JOB_STATUS_CHANGE_TIMEOUT));
+                                    jobClient.getJobID()));
 
             waitExpectedSizeData(iterator, numBeforeSuccess);
 
             savepointPath =
                     jobClient
                             .stopWithSavepoint(
-                                    true, testEnv.getCheckpointUri(), SavepointFormatType.CANONICAL)
+                                    false,
+                                    testEnv.getCheckpointUri(),
+                                    SavepointFormatType.CANONICAL)
                             .get(30, TimeUnit.SECONDS);
-            waitForJobStatus(
-                    jobClient,
-                    Collections.singletonList(JobStatus.FINISHED),
-                    Deadline.fromNow(DEFAULT_JOB_STATUS_CHANGE_TIMEOUT));
+            waitForJobStatus(jobClient, Collections.singletonList(JobStatus.FINISHED));
         } catch (Exception e) {
             executorService.shutdown();
-            killJob(jobClient);
+            terminateJob(jobClient);
             throw e;
         }
 
@@ -336,7 +328,7 @@ public abstract class SinkTestSuiteBase<T extends Comparable<T>> {
                     externalContext.createSinkDataReader(sinkSettings), testRecords, semantic);
         } finally {
             executorService.shutdown();
-            killJob(restartJobClient);
+            terminateJob(restartJobClient);
             iterator.close();
         }
     }
@@ -392,8 +384,7 @@ public abstract class SinkTestSuiteBase<T extends Comparable<T>> {
                             getJobDetails(
                                     new RestClient(new Configuration(), executorService),
                                     testEnv.getRestEndpoint(),
-                                    jobClient.getJobID()),
-                    Deadline.fromNow(DEFAULT_JOB_STATUS_CHANGE_TIMEOUT));
+                                    jobClient.getJobID()));
 
             waitUntilCondition(
                     () -> {
@@ -411,12 +402,11 @@ public abstract class SinkTestSuiteBase<T extends Comparable<T>> {
                             // skip failed assert try
                             return false;
                         }
-                    },
-                    Deadline.fromNow(DEFAULT_COLLECT_DATA_TIMEOUT));
+                    });
         } finally {
             // Clean up
             executorService.shutdown();
-            killJob(jobClient);
+            terminateJob(jobClient);
         }
     }
 
@@ -507,7 +497,7 @@ public abstract class SinkTestSuiteBase<T extends Comparable<T>> {
      * @param testData the test data
      * @param semantic the supported semantic, see {@link CheckpointingMode}
      */
-    private void checkResultWithSemantic(
+    protected void checkResultWithSemantic(
             ExternalSystemDataReader<T> reader, List<T> testData, CheckpointingMode semantic)
             throws Exception {
         final ArrayList<T> result = new ArrayList<>();
@@ -521,8 +511,21 @@ public abstract class SinkTestSuiteBase<T extends Comparable<T>> {
                     } catch (Throwable t) {
                         return false;
                     }
-                },
-                Deadline.fromNow(DEFAULT_COLLECT_DATA_TIMEOUT));
+                });
+    }
+
+    /**
+     * This method is required for downstream projects e.g. Flink connectors extending this test for
+     * the case when there should be supported Flink versions below 1.20. Could be removed together
+     * with dropping support for Flink 1.19.
+     */
+    @Deprecated
+    protected void checkResultWithSemantic(
+            ExternalSystemDataReader<T> reader,
+            List<T> testData,
+            org.apache.flink.streaming.api.CheckpointingMode semantic)
+            throws Exception {
+        checkResultWithSemantic(reader, testData, convertToCheckpointingMode(semantic));
     }
 
     /** Compare the metrics. */
@@ -560,24 +563,12 @@ public abstract class SinkTestSuiteBase<T extends Comparable<T>> {
         return TestingSinkSettings.builder().setCheckpointingMode(checkpointingMode).build();
     }
 
-    private void killJob(JobClient jobClient) throws Exception {
-        terminateJob(jobClient);
-        waitForJobStatus(
-                jobClient,
-                Collections.singletonList(JobStatus.CANCELED),
-                Deadline.fromNow(DEFAULT_JOB_STATUS_CHANGE_TIMEOUT));
-    }
-
     private DataStreamSink<T> tryCreateSink(
             DataStream<T> dataStream,
             DataStreamSinkExternalContext<T> context,
             TestingSinkSettings sinkSettings) {
         try {
-            if (context instanceof DataStreamSinkV1ExternalContext) {
-                org.apache.flink.api.connector.sink.Sink<T, ?, ?, ?> sinkV1 =
-                        ((DataStreamSinkV1ExternalContext<T>) context).createSink(sinkSettings);
-                return dataStream.sinkTo(sinkV1);
-            } else if (context instanceof DataStreamSinkV2ExternalContext) {
+            if (context instanceof DataStreamSinkV2ExternalContext) {
                 Sink<T> sinkV2 =
                         ((DataStreamSinkV2ExternalContext<T>) context).createSink(sinkSettings);
                 return dataStream.sinkTo(sinkV2);
@@ -602,9 +593,7 @@ public abstract class SinkTestSuiteBase<T extends Comparable<T>> {
      * </ul>
      */
     private String getSinkMetricFilter(DataStreamSinkExternalContext<T> context) {
-        if (context instanceof DataStreamSinkV1ExternalContext) {
-            return null;
-        } else if (context instanceof DataStreamSinkV2ExternalContext) {
+        if (context instanceof DataStreamSinkV2ExternalContext) {
             // See class `SinkTransformationTranslator`
             return "Writer";
         } else {
@@ -615,23 +604,27 @@ public abstract class SinkTestSuiteBase<T extends Comparable<T>> {
 
     protected CollectResultIterator<T> addCollectSink(DataStream<T> stream) {
         TypeSerializer<T> serializer =
-                stream.getType().createSerializer(stream.getExecutionConfig());
+                stream.getType()
+                        .createSerializer(stream.getExecutionConfig().getSerializerConfig());
         String accumulatorName = "dataStreamCollect_" + UUID.randomUUID();
         CollectSinkOperatorFactory<T> factory =
                 new CollectSinkOperatorFactory<>(serializer, accumulatorName);
-        CollectSinkOperator<T> operator = (CollectSinkOperator<T>) factory.getOperator();
+
         CollectStreamSink<T> sink = new CollectStreamSink<>(stream, factory);
+        String operatorUid = "dataStreamCollect";
         sink.name("Data stream collect sink");
+        sink.uid(operatorUid);
         stream.getExecutionEnvironment().addOperator(sink.getTransformation());
         return new CollectResultIterator<>(
-                operator.getOperatorIdFuture(),
+                operatorUid,
                 serializer,
                 accumulatorName,
-                stream.getExecutionEnvironment().getCheckpointConfig());
+                stream.getExecutionEnvironment().getCheckpointConfig(),
+                RpcOptions.ASK_TIMEOUT_DURATION.defaultValue().toMillis());
     }
 
     private void waitExpectedSizeData(CollectResultIterator<T> iterator, int targetNum) {
-        assertThat(
+        assertThatFuture(
                         CompletableFuture.supplyAsync(
                                 () -> {
                                     int count = 0;
@@ -646,6 +639,6 @@ public abstract class SinkTestSuiteBase<T extends Comparable<T>> {
                                     }
                                     return true;
                                 }))
-                .succeedsWithin(DEFAULT_COLLECT_DATA_TIMEOUT);
+                .eventuallySucceeds();
     }
 }

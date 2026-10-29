@@ -15,28 +15,27 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.planner.plan.utils
 
 import org.apache.flink.configuration.{ConfigOption, ConfigOptions}
 import org.apache.flink.table.catalog.ObjectIdentifier
-import org.apache.flink.table.factories.{TableFactoryUtil, TableSinkFactory, TableSourceFactory}
+import org.apache.flink.table.factories.TableFactoryUtil
+import org.apache.flink.table.legacy.factories.{TableSinkFactory, TableSourceFactory}
+import org.apache.flink.table.legacy.sinks.TableSink
+import org.apache.flink.table.legacy.sources.TableSource
 import org.apache.flink.table.planner.plan.utils.TestContextTableFactory.REQUIRED_KEY
-import org.apache.flink.table.sinks.TableSink
-import org.apache.flink.table.sources.TableSource
 
-import org.junit.Assert
+import org.junit.jupiter.api.Assertions.{assertEquals, assertTrue}
 
 import java.{lang, util}
 
-/**
-  * Test [[TableSourceFactory]] and [[TableSinkFactory]] for context.
-  */
+/** Test [[TableSourceFactory]] and [[TableSinkFactory]] for context. */
 class TestContextTableFactory[T](
     sourceIdentifier: ObjectIdentifier,
     sinkIdentifier: ObjectIdentifier,
     isBatch: Boolean)
-    extends TableSourceFactory[T] with TableSinkFactory[T] {
+  extends TableSourceFactory[T]
+  with TableSinkFactory[T] {
 
   var hasInvokedSource = false
   var hasInvokedSink = false
@@ -50,22 +49,24 @@ class TestContextTableFactory[T](
   }
 
   override def createTableSource(context: TableSourceFactory.Context): TableSource[T] = {
-    Assert.assertTrue(context.getConfiguration.get(REQUIRED_KEY))
-    Assert.assertEquals(sourceIdentifier, context.getObjectIdentifier)
+    assertTrue(context.getConfiguration.get(REQUIRED_KEY))
+    assertEquals(sourceIdentifier, context.getObjectIdentifier)
     hasInvokedSource = true
     TableFactoryUtil.findAndCreateTableSource(context)
   }
 
   override def createTableSink(context: TableSinkFactory.Context): TableSink[T] = {
-    Assert.assertTrue(context.getConfiguration.get(REQUIRED_KEY))
-    Assert.assertEquals(isBatch, context.isBounded)
-    Assert.assertEquals(sinkIdentifier, context.getObjectIdentifier)
+    assertTrue(context.getConfiguration.get(REQUIRED_KEY))
+    assertEquals(isBatch, context.isBounded)
+    assertEquals(sinkIdentifier, context.getObjectIdentifier)
     hasInvokedSink = true
     TableFactoryUtil.findAndCreateTableSink(context)
   }
 }
 
-object TestContextTableFactory{
+object TestContextTableFactory {
   val REQUIRED_KEY: ConfigOption[lang.Boolean] = ConfigOptions
-      .key("testing.required.key").booleanType().defaultValue(false)
+    .key("testing.required.key")
+    .booleanType()
+    .defaultValue(false)
 }

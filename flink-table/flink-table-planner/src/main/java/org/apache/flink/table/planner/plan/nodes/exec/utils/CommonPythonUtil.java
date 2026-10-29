@@ -21,8 +21,7 @@ package org.apache.flink.table.planner.plan.nodes.exec.utils;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.configuration.ConfigOption;
 import org.apache.flink.configuration.Configuration;
-import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
-import org.apache.flink.table.api.TableConfig;
+import org.apache.flink.configuration.ReadableConfig;
 import org.apache.flink.table.api.TableException;
 import org.apache.flink.table.api.dataview.DataView;
 import org.apache.flink.table.api.dataview.ListView;
@@ -30,9 +29,13 @@ import org.apache.flink.table.api.dataview.MapView;
 import org.apache.flink.table.functions.FunctionDefinition;
 import org.apache.flink.table.functions.UserDefinedFunction;
 import org.apache.flink.table.functions.python.BuiltInPythonAggregateFunction;
+import org.apache.flink.table.functions.python.ConstantInput;
+import org.apache.flink.table.functions.python.InputRef;
 import org.apache.flink.table.functions.python.PythonAggregateFunctionInfo;
 import org.apache.flink.table.functions.python.PythonFunction;
 import org.apache.flink.table.functions.python.PythonFunctionInfo;
+import org.apache.flink.table.functions.python.PythonFunctionInput;
+import org.apache.flink.table.functions.python.ResultRef;
 import org.apache.flink.table.planner.functions.aggfunctions.AvgAggFunction;
 import org.apache.flink.table.planner.functions.aggfunctions.Count1AggFunction;
 import org.apache.flink.table.planner.functions.aggfunctions.CountAggFunction;
@@ -47,9 +50,9 @@ import org.apache.flink.table.planner.functions.bridging.BridgingSqlFunction;
 import org.apache.flink.table.planner.functions.utils.AggSqlFunction;
 import org.apache.flink.table.planner.functions.utils.ScalarSqlFunction;
 import org.apache.flink.table.planner.functions.utils.TableSqlFunction;
+import org.apache.flink.table.planner.plan.schema.TimeIndicatorRelDataType;
 import org.apache.flink.table.planner.plan.utils.AggregateInfo;
 import org.apache.flink.table.planner.plan.utils.AggregateInfoList;
-import org.apache.flink.table.planner.utils.DummyStreamExecutionEnvironment;
 import org.apache.flink.table.runtime.dataview.DataViewSpec;
 import org.apache.flink.table.runtime.dataview.ListViewSpec;
 import org.apache.flink.table.runtime.dataview.MapViewSpec;
@@ -61,6 +64,7 @@ import org.apache.flink.table.runtime.functions.aggregate.ListAggWithRetractAggF
 import org.apache.flink.table.runtime.functions.aggregate.ListAggWsWithRetractAggFunction;
 import org.apache.flink.table.runtime.functions.aggregate.MaxWithRetractAggFunction;
 import org.apache.flink.table.runtime.functions.aggregate.MinWithRetractAggFunction;
+import org.apache.flink.table.runtime.functions.aggregate.WelfordM2AggFunction;
 import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.types.FieldsDataType;
 import org.apache.flink.table.types.inference.TypeInference;
@@ -70,22 +74,27 @@ import org.apache.flink.table.types.logical.StructuredType;
 
 import org.apache.calcite.rel.core.AggregateCall;
 import org.apache.calcite.rex.RexCall;
+import org.apache.calcite.rex.RexInputRef;
 import org.apache.calcite.rex.RexLiteral;
 import org.apache.calcite.rex.RexNode;
 import org.apache.calcite.sql.SqlAggFunction;
 import org.apache.calcite.sql.SqlOperator;
+import org.apache.calcite.sql.fun.SqlCastFunction;
 import org.apache.calcite.sql.type.SqlTypeName;
 
-import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
+import java.util.Set;
 import java.util.stream.IntStream;
 
 /** A utility class used in PyFlink. */
@@ -98,48 +107,129 @@ public class CommonPythonUtil {
 
     private CommonPythonUtil() {}
 
-    public static Class loadClass(String className) {
+    public static Class<?> loadClass(String className, ClassLoader classLoader) {
         try {
-            return Class.forName(className, false, Thread.currentThread().getContextClassLoader());
+            return Class.forName(className, false, classLoader);
         } catch (ClassNotFoundException e) {
             throw new TableException(
                     "The dependency of 'flink-python' is not present on the classpath.", e);
         }
     }
 
-    @SuppressWarnings("unchecked")
-    public static Configuration getMergedConfig(
-            StreamExecutionEnvironment env, TableConfig tableConfig) {
-        Class clazz = loadClass(PYTHON_CONFIG_UTILS_CLASS);
+    public static Configuration extractPythonConfiguration(
+            ReadableConfig tableConfig, ClassLoader classLoader) {
+        Class<?> clazz = loadClass(PYTHON_CONFIG_UTILS_CLASS, classLoader);
         try {
-            StreamExecutionEnvironment realEnv = getRealEnvironment(env);
             Method method =
-                    clazz.getDeclaredMethod(
-                            "getMergedConfig", StreamExecutionEnvironment.class, TableConfig.class);
-            return (Configuration) method.invoke(null, realEnv, tableConfig);
-        } catch (NoSuchFieldException
-                | IllegalAccessException
-                | NoSuchMethodException
-                | InvocationTargetException e) {
-            throw new TableException("Method getMergedConfig accessed failed.", e);
+                    clazz.getDeclaredMethod("extractPythonConfiguration", ReadableConfig.class);
+            return (Configuration) method.invoke(null, tableConfig);
+        } catch (IllegalAccessException | NoSuchMethodException | InvocationTargetException e) {
+            throw new TableException("Method extractPythonConfiguration accessed failed.", e);
+        }
+    }
+
+    public static Optional<Integer> deriveExplicitPythonFunctionParallelism(
+            PythonFunctionInfo[] pythonFunctionInfos,
+            String functionsDescription,
+            boolean isBatchMode) {
+        int explicitParallelism = -1;
+        for (PythonFunction function : collectPythonFunctions(pythonFunctionInfos)) {
+            final int parallelism = function.getParallelism();
+            if (parallelism > 0) {
+                if (isBatchMode) {
+                    throw new TableException(
+                            "Python UDF concurrency is not supported in batch mode. "
+                                    + "Omit concurrency to inherit the upstream parallelism.");
+                }
+                if (explicitParallelism > 0 && explicitParallelism != parallelism) {
+                    throw new TableException(
+                            functionsDescription
+                                    + " with different concurrency values should have been split "
+                                    + "into different operators.");
+                }
+                explicitParallelism = parallelism;
+            }
+        }
+        return explicitParallelism > 0 ? Optional.of(explicitParallelism) : Optional.empty();
+    }
+
+    public static int deriveArrowBatchSize(PythonFunctionInfo[] pythonFunctionInfos) {
+        int minBatchSize = -1;
+        for (PythonFunction function : collectPythonFunctions(pythonFunctionInfos)) {
+            final int batchSize = function.getMaxArrowBatchSize();
+            if (batchSize > 0) {
+                minBatchSize = minBatchSize > 0 ? Math.min(minBatchSize, batchSize) : batchSize;
+            }
+        }
+        return minBatchSize;
+    }
+
+    private static List<PythonFunction> collectPythonFunctions(
+            PythonFunctionInfo[] pythonFunctionInfos) {
+        final List<PythonFunction> functions = new ArrayList<>();
+        final Set<PythonFunctionInfo> visited = Collections.newSetFromMap(new IdentityHashMap<>());
+        for (PythonFunctionInfo functionInfo : pythonFunctionInfos) {
+            collectPythonFunctions(functionInfo, functions, visited);
+        }
+        return functions;
+    }
+
+    private static void collectPythonFunctions(
+            PythonFunctionInfo functionInfo,
+            List<PythonFunction> functions,
+            Set<PythonFunctionInfo> visited) {
+        if (!visited.add(functionInfo)) {
+            return;
+        }
+
+        functions.add(functionInfo.getPythonFunction());
+        for (Object input : functionInfo.getInputs()) {
+            if (input instanceof PythonFunctionInfo) {
+                collectPythonFunctions((PythonFunctionInfo) input, functions, visited);
+            }
         }
     }
 
     public static PythonFunctionInfo createPythonFunctionInfo(
-            RexCall pythonRexCall, Map<RexNode, Integer> inputNodes) {
+            RexCall pythonRexCall, Map<RexNode, Integer> inputNodes, ClassLoader classLoader) {
+        return createPythonFunctionInfo(
+                pythonRexCall, inputNodes, classLoader, noRefs(pythonRexCall));
+    }
+
+    /**
+     * Creates a {@link PythonFunctionInfo} for one entry of a CSE-flattened evaluation list. {@code
+     * operandRefs} holds, per operand of {@code pythonRexCall}, the entry whose result that operand
+     * reads, or {@link PythonCallCseResult#NO_REF}; a referenced operand becomes a {@link
+     * ResultRef} instead of a nested {@link PythonFunctionInfo}.
+     */
+    public static PythonFunctionInfo createPythonFunctionInfo(
+            RexCall pythonRexCall,
+            Map<RexNode, Integer> inputNodes,
+            ClassLoader classLoader,
+            int[] operandRefs) {
         SqlOperator operator = pythonRexCall.getOperator();
         try {
             if (operator instanceof ScalarSqlFunction) {
                 return createPythonFunctionInfo(
-                        pythonRexCall, inputNodes, ((ScalarSqlFunction) operator).scalarFunction());
+                        pythonRexCall,
+                        inputNodes,
+                        ((ScalarSqlFunction) operator).scalarFunction(),
+                        classLoader,
+                        operandRefs);
             } else if (operator instanceof TableSqlFunction) {
                 return createPythonFunctionInfo(
-                        pythonRexCall, inputNodes, ((TableSqlFunction) operator).udtf());
+                        pythonRexCall,
+                        inputNodes,
+                        ((TableSqlFunction) operator).udtf(),
+                        classLoader,
+                        operandRefs);
             } else if (operator instanceof BridgingSqlFunction) {
                 return createPythonFunctionInfo(
                         pythonRexCall,
                         inputNodes,
-                        ((BridgingSqlFunction) operator).getDefinition());
+                        ((BridgingSqlFunction) operator).getDefinition(),
+                        classLoader,
+                        operandRefs);
             }
         } catch (InvocationTargetException | IllegalAccessException e) {
             throw new TableException("Method pickleValue accessed failed. ", e);
@@ -148,10 +238,11 @@ public class CommonPythonUtil {
     }
 
     @SuppressWarnings("unchecked")
-    public static boolean isPythonWorkerUsingManagedMemory(Configuration config) {
-        Class clazz = loadClass(PYTHON_OPTIONS_CLASS);
+    public static boolean isPythonWorkerUsingManagedMemory(
+            Configuration config, ClassLoader classLoader) {
+        Class<?> clazz = loadClass(PYTHON_OPTIONS_CLASS, classLoader);
         try {
-            return config.getBoolean(
+            return config.get(
                     (ConfigOption<Boolean>) (clazz.getField("USE_MANAGED_MEMORY").get(null)));
         } catch (IllegalAccessException | NoSuchFieldException e) {
             throw new TableException("Field USE_MANAGED_MEMORY accessed failed.", e);
@@ -159,10 +250,11 @@ public class CommonPythonUtil {
     }
 
     @SuppressWarnings("unchecked")
-    public static boolean isPythonWorkerInProcessMode(Configuration config) {
-        Class clazz = loadClass(PYTHON_OPTIONS_CLASS);
+    public static boolean isPythonWorkerInProcessMode(
+            Configuration config, ClassLoader classLoader) {
+        Class<?> clazz = loadClass(PYTHON_OPTIONS_CLASS, classLoader);
         try {
-            return config.getString(
+            return config.get(
                             (ConfigOption<String>)
                                     (clazz.getField("PYTHON_EXECUTION_MODE").get(null)))
                     .equalsIgnoreCase("process");
@@ -185,7 +277,9 @@ public class CommonPythonUtil {
                 pythonAggregateFunctionInfoList.add(
                         new PythonAggregateFunctionInfo(
                                 (PythonFunction) function,
-                                Arrays.stream(aggInfo.argIndexes()).boxed().toArray(),
+                                Arrays.stream(aggInfo.argIndexes())
+                                        .mapToObj(InputRef::new)
+                                        .toArray(PythonFunctionInput[]::new),
                                 aggCalls[i].filterArg,
                                 aggCalls[i].isDistinct()));
                 TypeInference typeInference = function.getTypeInference(null);
@@ -207,7 +301,9 @@ public class CommonPythonUtil {
                 pythonAggregateFunctionInfoList.add(
                         new PythonAggregateFunctionInfo(
                                 getBuiltInPythonAggregateFunction(function),
-                                Arrays.stream(aggInfo.argIndexes()).boxed().toArray(),
+                                Arrays.stream(aggInfo.argIndexes())
+                                        .mapToObj(InputRef::new)
+                                        .toArray(PythonFunctionInput[]::new),
                                 filterArg,
                                 distinct));
                 // The data views of the built in Python Aggregate Function are different from Java
@@ -225,14 +321,14 @@ public class CommonPythonUtil {
         Map<Integer, Integer> inputNodes = new LinkedHashMap<>();
         List<PythonFunctionInfo> pythonFunctionInfos = new ArrayList<>();
         for (AggregateCall aggregateCall : aggCalls) {
-            List<Integer> inputs = new ArrayList<>();
+            List<PythonFunctionInput> inputs = new ArrayList<>();
             List<Integer> argList = aggregateCall.getArgList();
             for (Integer arg : argList) {
                 if (inputNodes.containsKey(arg)) {
-                    inputs.add(inputNodes.get(arg));
+                    inputs.add(new InputRef(inputNodes.get(arg)));
                 } else {
                     Integer inputOffset = inputNodes.size();
-                    inputs.add(inputOffset);
+                    inputs.add(new InputRef(inputOffset));
                     inputNodes.put(arg, inputOffset);
                 }
             }
@@ -249,7 +345,7 @@ public class CommonPythonUtil {
             PythonFunctionInfo pythonFunctionInfo =
                     new PythonAggregateFunctionInfo(
                             pythonFunction,
-                            inputs.toArray(),
+                            inputs.toArray(new PythonFunctionInput[0]),
                             aggregateCall.filterArg,
                             aggregateCall.isDistinct());
             pythonFunctionInfos.add(pythonFunctionInfo);
@@ -338,7 +434,8 @@ public class CommonPythonUtil {
                         });
     }
 
-    private static byte[] convertLiteralToPython(RexLiteral o, SqlTypeName typeName)
+    private static byte[] convertLiteralToPython(
+            RexLiteral o, SqlTypeName typeName, ClassLoader classLoader)
             throws InvocationTargetException, IllegalAccessException {
         byte type;
         Object value;
@@ -365,11 +462,11 @@ public class CommonPythonUtil {
                     break;
                 case FLOAT:
                     type = 0;
-                    value = ((BigDecimal) o.getValue3()).floatValue();
+                    value = ((Number) o.getValue3()).floatValue();
                     break;
                 case DOUBLE:
                     type = 0;
-                    value = ((BigDecimal) o.getValue3()).doubleValue();
+                    value = ((Number) o.getValue3()).doubleValue();
                     break;
                 case DECIMAL:
                 case BOOLEAN:
@@ -397,16 +494,18 @@ public class CommonPythonUtil {
                     throw new RuntimeException("Unsupported type " + typeName);
             }
         }
-        loadPickleValue();
+        loadPickleValue(classLoader);
         return (byte[]) pickleValue.invoke(null, value, type);
     }
 
-    @SuppressWarnings("unchecked")
-    private static void loadPickleValue() {
+    private static void loadPickleValue(ClassLoader classLoader) {
         if (pickleValue == null) {
             synchronized (CommonPythonUtil.class) {
                 if (pickleValue == null) {
-                    Class clazz = loadClass("org.apache.flink.api.common.python.PythonBridgeUtils");
+                    Class<?> clazz =
+                            loadClass(
+                                    "org.apache.flink.api.common.python.PythonBridgeUtils",
+                                    classLoader);
                     try {
                         pickleValue = clazz.getMethod("pickleValue", Object.class, byte.class);
                     } catch (NoSuchMethodException e) {
@@ -417,43 +516,66 @@ public class CommonPythonUtil {
         }
     }
 
+    private static int[] noRefs(RexCall call) {
+        int[] refs = new int[call.getOperands().size()];
+        Arrays.fill(refs, PythonCallCseResult.NO_REF);
+        return refs;
+    }
+
     private static PythonFunctionInfo createPythonFunctionInfo(
             RexCall pythonRexCall,
             Map<RexNode, Integer> inputNodes,
-            FunctionDefinition functionDefinition)
+            FunctionDefinition functionDefinition,
+            ClassLoader classLoader,
+            int[] operandRefs)
             throws InvocationTargetException, IllegalAccessException {
-        ArrayList<Object> inputs = new ArrayList<>();
-        for (RexNode operand : pythonRexCall.getOperands()) {
+        List<RexNode> operands = pythonRexCall.getOperands();
+        ArrayList<PythonFunctionInput> inputs = new ArrayList<>();
+        for (int k = 0; k < operands.size(); k++) {
+            RexNode operand = operands.get(k);
+            if (operandRefs[k] != PythonCallCseResult.NO_REF) {
+                inputs.add(new ResultRef(operandRefs[k]));
+                continue;
+            }
             if (operand instanceof RexCall) {
                 RexCall childPythonRexCall = (RexCall) operand;
-                PythonFunctionInfo argPythonInfo =
-                        createPythonFunctionInfo(childPythonRexCall, inputNodes);
-                inputs.add(argPythonInfo);
+                if (childPythonRexCall.getOperator() instanceof SqlCastFunction
+                        && childPythonRexCall.getOperands().get(0) instanceof RexInputRef
+                        && childPythonRexCall.getOperands().get(0).getType()
+                                instanceof TimeIndicatorRelDataType) {
+                    operand = childPythonRexCall.getOperands().get(0);
+                } else {
+                    // an inline child is not an entry of its own, so none of its operands can
+                    // read the evaluated list either
+                    PythonFunctionInfo argPythonInfo =
+                            createPythonFunctionInfo(
+                                    childPythonRexCall,
+                                    inputNodes,
+                                    classLoader,
+                                    noRefs(childPythonRexCall));
+                    inputs.add(argPythonInfo);
+                    continue;
+                }
             } else if (operand instanceof RexLiteral) {
                 RexLiteral literal = (RexLiteral) operand;
-                inputs.add(convertLiteralToPython(literal, literal.getType().getSqlTypeName()));
+                inputs.add(
+                        new ConstantInput(
+                                convertLiteralToPython(
+                                        literal, literal.getType().getSqlTypeName(), classLoader)));
+                continue;
+            }
+
+            assert operand instanceof RexInputRef;
+            if (inputNodes.containsKey(operand)) {
+                inputs.add(new InputRef(inputNodes.get(operand)));
             } else {
-                if (inputNodes.containsKey(operand)) {
-                    inputs.add(inputNodes.get(operand));
-                } else {
-                    Integer inputOffset = inputNodes.size();
-                    inputs.add(inputOffset);
-                    inputNodes.put(operand, inputOffset);
-                }
+                Integer inputOffset = inputNodes.size();
+                inputs.add(new InputRef(inputOffset));
+                inputNodes.put(operand, inputOffset);
             }
         }
-        return new PythonFunctionInfo((PythonFunction) functionDefinition, inputs.toArray());
-    }
-
-    private static StreamExecutionEnvironment getRealEnvironment(StreamExecutionEnvironment env)
-            throws NoSuchFieldException, IllegalAccessException {
-        Field realExecEnvField =
-                DummyStreamExecutionEnvironment.class.getDeclaredField("realExecEnv");
-        realExecEnvField.setAccessible(true);
-        while (env instanceof DummyStreamExecutionEnvironment) {
-            env = (StreamExecutionEnvironment) realExecEnvField.get(env);
-        }
-        return env;
+        return new PythonFunctionInfo(
+                (PythonFunction) functionDefinition, inputs.toArray(new PythonFunctionInput[0]));
     }
 
     private static BuiltInPythonAggregateFunction getBuiltInPythonAggregateFunction(
@@ -526,6 +648,9 @@ public class CommonPythonUtil {
         }
         if (javaBuiltInAggregateFunction instanceof SumWithRetractAggFunction) {
             return BuiltInPythonAggregateFunction.SUM_RETRACT;
+        }
+        if (javaBuiltInAggregateFunction instanceof WelfordM2AggFunction) {
+            return BuiltInPythonAggregateFunction.WELFORD_M2;
         }
         throw new TableException(
                 "Aggregate function "

@@ -20,6 +20,7 @@ import os
 import shlex
 import shutil
 import struct
+import sys
 import tempfile
 import time
 from logging import WARN
@@ -27,6 +28,8 @@ from threading import RLock
 
 from py4j.java_gateway import (java_import, logger, JavaGateway, GatewayParameters,
                                CallbackServerParameters)
+
+from pyflink.find_flink_home import _find_flink_home
 from pyflink.pyflink_gateway_server import launch_gateway_server_process
 from pyflink.util.exceptions import install_exception_handler, install_py4j_hooks
 
@@ -42,10 +45,19 @@ def is_launch_gateway_disabled():
         return False
 
 
-def get_gateway():
-    # type: () -> JavaGateway
+def _check_gateway_access():
+    # Pemja registers its native module before loading code in an embedded interpreter.
+    if '_pemja' in sys.modules:
+        raise RuntimeError(
+            'Accessing Java through Py4J is not supported in Python thread mode. '
+            'Use pemja.findClass to access Java classes instead. Launching a Py4J gateway '
+            'subprocess from the multithreaded TaskManager can deadlock. See FLINK-40628 for '
+            'details: https://issues.apache.org/jira/browse/FLINK-40628.')
+
+
+def get_gateway() -> JavaGateway:
     global _gateway
-    global _lock
+    _check_gateway_access()
     with _lock:
         if _gateway is None:
             # Set the level to WARN to mute the noisy INFO level logs
@@ -77,11 +89,11 @@ def get_gateway():
     return _gateway
 
 
-def launch_gateway():
-    # type: () -> JavaGateway
+def launch_gateway() -> JavaGateway:
     """
     launch jvm gateway
     """
+    _check_gateway_access()
     if is_launch_gateway_disabled():
         raise Exception("It's launching the PythonGatewayServer during Python UDF execution "
                         "which is unexpected. It usually happens when the job codes are "
@@ -100,6 +112,8 @@ def launch_gateway():
         os.close(fd)
         os.unlink(conn_info_file)
 
+        _find_flink_home()
+
         env = dict(os.environ)
         env["_PYFLINK_CONN_INFO_PATH"] = conn_info_file
 
@@ -109,7 +123,11 @@ def launch_gateway():
             time.sleep(0.1)
 
         if not os.path.isfile(conn_info_file):
-            raise Exception("Java gateway process exited before sending its port number")
+            stderr_info = p.stderr.read().decode('utf-8')
+            raise RuntimeError(
+                "Java gateway process exited before sending its port number.\nStderr:\n"
+                + stderr_info
+            )
 
         with open(conn_info_file, "rb") as info:
             gateway_port = struct.unpack("!I", info.read(4))[0]
@@ -132,19 +150,25 @@ def import_flink_view(gateway):
     """
     # Import the classes used by PyFlink
     java_import(gateway.jvm, "org.apache.flink.table.api.*")
+    java_import(gateway.jvm, "org.apache.flink.table.legacy.api.*")
     java_import(gateway.jvm, "org.apache.flink.table.api.config.*")
     java_import(gateway.jvm, "org.apache.flink.table.api.java.*")
     java_import(gateway.jvm, "org.apache.flink.table.api.bridge.java.*")
     java_import(gateway.jvm, "org.apache.flink.table.api.dataview.*")
     java_import(gateway.jvm, "org.apache.flink.table.catalog.*")
     java_import(gateway.jvm, "org.apache.flink.table.descriptors.*")
+    java_import(gateway.jvm, "org.apache.flink.table.legacy.descriptors.*")
     java_import(gateway.jvm, "org.apache.flink.table.descriptors.python.*")
     java_import(gateway.jvm, "org.apache.flink.table.expressions.*")
     java_import(gateway.jvm, "org.apache.flink.table.sources.*")
+    java_import(gateway.jvm, "org.apache.flink.table.legacy.sources.*")
     java_import(gateway.jvm, "org.apache.flink.table.sinks.*")
+    java_import(gateway.jvm, "org.apache.flink.table.legacy.sinks.*")
     java_import(gateway.jvm, "org.apache.flink.table.sources.*")
+    java_import(gateway.jvm, "org.apache.flink.table.legacy.sources.*")
     java_import(gateway.jvm, "org.apache.flink.table.types.*")
     java_import(gateway.jvm, "org.apache.flink.table.types.logical.*")
+    java_import(gateway.jvm, "org.apache.flink.table.legacy.types.logical.*")
     java_import(gateway.jvm, "org.apache.flink.table.util.python.*")
     java_import(gateway.jvm, "org.apache.flink.api.common.python.*")
     java_import(gateway.jvm, "org.apache.flink.api.common.typeinfo.TypeInformation")
@@ -152,12 +176,12 @@ def import_flink_view(gateway):
     java_import(gateway.jvm, "org.apache.flink.api.java.ExecutionEnvironment")
     java_import(gateway.jvm,
                 "org.apache.flink.streaming.api.environment.StreamExecutionEnvironment")
-    java_import(gateway.jvm, "org.apache.flink.api.common.restartstrategy.RestartStrategies")
     java_import(gateway.jvm, "org.apache.flink.python.util.PythonDependencyUtils")
     java_import(gateway.jvm, "org.apache.flink.python.PythonOptions")
     java_import(gateway.jvm, "org.apache.flink.client.python.PythonGatewayServer")
     java_import(gateway.jvm, "org.apache.flink.streaming.api.functions.python.*")
-    java_import(gateway.jvm, "org.apache.flink.streaming.api.operators.python.*")
+    java_import(gateway.jvm, "org.apache.flink.streaming.api.operators.python.process.*")
+    java_import(gateway.jvm, "org.apache.flink.streaming.api.operators.python.embedded.*")
     java_import(gateway.jvm, "org.apache.flink.streaming.api.typeinfo.python.*")
 
 

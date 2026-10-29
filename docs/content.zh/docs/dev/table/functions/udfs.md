@@ -38,12 +38,14 @@ under the License.
 当前 Flink 有如下几种函数：
 
 - *标量函数* 将标量值转换成一个新标量值；
+- *异步标量函数* 异步地将标量值映射为新的标量值。
 - *表值函数* 将标量值转换成新的行数据；
+- *Async Table functions* asynchronously map scalar values to new rows and can be used for table sources that perform a lookup.
 - *聚合函数* 将多行数据里的标量值转换成一个新标量值；
 - *表值聚合函数* 将多行数据里的标量值转换成新的行数据；
-- *异步表值函数* 是异步查询外部数据系统的特殊函数。
+- *Process table functions* map tables to new rows. Enabling user-defined operators with state and timers.
 
-<span class="label label-danger">注意</span> 标量和表值函数已经使用了新的基于[数据类型]({{< ref "docs/dev/table/types" >}})的类型系统，聚合函数仍然使用基于 `TypeInformation` 的旧类型系统。
+<span class="label label-danger">注意</span> 标量和表值函数已经使用了新的基于[数据类型]({{< ref "docs/sql/reference/data-types" >}})的类型系统，聚合函数仍然使用基于 `TypeInformation` 的旧类型系统。
 
 以下示例展示了如何创建一个基本的标量函数，以及如何在 Table API 和 SQL 里调用这个函数。
 
@@ -76,6 +78,9 @@ env.from("MyTable").select(call("SubstringFunction", $("myField"), 5, 12));
 
 // 在 SQL 里调用注册好的函数
 env.sqlQuery("SELECT SubstringFunction(myField, 5, 12) FROM MyTable");
+
+// 在 SQL 里使用命名参数调用注册好的函数
+env.sqlQuery("SELECT SubstringFunction(param1 => myField, param2 => 5, param3 => 12) FROM MyTable");
 
 ```
 {{< /tab >}}
@@ -224,6 +229,20 @@ env.from("MyTable").select(call(classOf[MyConcatFunction], $"a", $"b", $"c"));
 {{< /tab >}}
 {{< /tabs >}}
 
+{{< hint info >}}
+`TableEnvironment` 提供两个重载方法使用用户自定义函数来注册临时系统函数:
+
+- *createTemporarySystemFunction(
+  String name, Class<? extends UserDefinedFunction> functionClass)*
+- *createTemporarySystemFunction(String name, UserDefinedFunction functionInstance)*
+
+在用户自定义函数类支持无参数构造器时，建议尽量使用 `functionClass` 而不是 `functionInstance`, 
+因为 Flink 作为底层框架可以增加额外的内部功能来控制用户自定义函数实例的创建工作。
+目前， `TableEnvironmentImpl` 里默认的实现会在创建实例之前对不同的 `UserDefinedFunction` 子类类型, 
+例如`ScalaFunction`, `TableFunction`， 进行具体的类和方法实现验证。
+未来还可以在不影响用户代码的情况下在系统底层添加更多的功能和自动优化。
+{{< /hint >}}
+
 {{< top >}}
 
 开发指南
@@ -316,7 +335,7 @@ class SumFunction extends ScalarFunction {
 
 ### 类型推导
 
-Table（类似于 SQL 标准）是一种强类型的 API。因此，函数的参数和返回类型都必须映射到[数据类型]({{< ref "docs/dev/table/types.zh.md" >}})。
+Table（类似于 SQL 标准）是一种强类型的 API。因此，函数的参数和返回类型都必须映射到[数据类型]({{< ref "docs/sql/reference/data-types" >}})。
 
 从逻辑角度看，Planner 需要知道数据类型、精度和小数位数；从 JVM 角度来看，Planner 在调用自定义函数时需要知道如何将内部数据结构表示为 JVM 对象。
 
@@ -331,7 +350,7 @@ Flink 自定义函数实现了自动的类型推导提取，通过反射从函�
 
 自动类型推导会检查函数的类和求值方法，派生出函数参数和结果的数据类型， `@DataTypeHint` 和 `@FunctionHint` 注解支持自动类型推导。
 
-有关可以隐式映射到数据类型的类的完整列表，请参阅[数据类型]({{< ref "docs/dev/table/types.zh.md" >}}#数据类型注解)。
+有关可以隐式映射到数据类型的类的完整列表，请参阅[数据类型]({{< ref "docs/sql/reference/data-types" >}}#数据类型注解)。
 
 **`@DataTypeHint`**
 
@@ -393,19 +412,19 @@ class OverloadedFunction extends ScalarFunction {
 
   // 定义 decimal 的精度和小数位
   @DataTypeHint("DECIMAL(12, 3)")
-  def eval(double a, double b): BigDecimal = {
-    java.lang.BigDecimal.valueOf(a + b)
+  def eval(a: Double, b: Double): BigDecimal = {
+    BigDecimal(a + b)
   }
 
   // 定义嵌套数据类型
   @DataTypeHint("ROW<s STRING, t TIMESTAMP_LTZ(3)>")
-  def eval(Int i): Row = {
-    Row.of(java.lang.String.valueOf(i), java.time.Instant.ofEpochSecond(i))
+  def eval(i: Int): Row = {
+    Row.of(i.toString, java.time.Instant.ofEpochSecond(i))
   }
 
   // 允许任意类型的符入，并输出定制序列化后的值
   @DataTypeHint(value = "RAW", bridgedTo = classOf[java.nio.ByteBuffer])
-  def eval(@DataTypeHint(inputGroup = InputGroup.ANY) Object o): java.nio.ByteBuffer = {
+  def eval(@DataTypeHint(inputGroup = InputGroup.ANY) o: Any): java.nio.ByteBuffer = {
     MyUtils.serializeToByteBuffer(o)
   }
 }
@@ -585,6 +604,208 @@ public static class LiteralFunction extends ScalarFunction {
 For more examples of custom type inference, see also the `flink-examples-table` module with
 {{< gh_link file="flink-examples/flink-examples-table/src/main/java/org/apache/flink/table/examples/java/functions/AdvancedFunctionsExample.java" name="advanced function implementation" >}}.
 
+### 命名参数
+
+在调用函数时，可以使用参数名称来指定参数值。命名参数允许同时传递参数名和值给函数，避免了因为错误的参数顺序而导致混淆，并提高了代码的可读性和可维护性。 此外，命名参数还可以省略非必需的参数，默认情况下会使用 `null` 进行填充。
+我们可以通过 `@ArgumentHint` 注解来指定参数的名称，类型，是否是必需的参数等。
+
+**`@ArgumentHint`**
+
+下面三个示例展示了如何在不同的范围内使用 `@ArgumentHint`。更多信息请参考注解类的文档。
+
+1. 在 function 的 `eval` 方法的参数上使用 `@ArgumentHint` 注解。
+
+{{< tabs "8064df87-eb42-4def-9bd2-0988fc246d37" >}}
+{{< tab "Java" >}}
+
+```java
+import com.sun.tracing.dtrace.ArgsAttributes;
+import org.apache.flink.table.annotation.ArgumentHint;
+import org.apache.flink.table.functions.ScalarFunction;
+
+public static class NamedParameterClass extends ScalarFunction {
+
+    // 使用 @ArgumentHint 注解指定参数的名称，参数类型，以及是否是必需的参数
+    public String eval(@ArgumentHint(name = "param1", isOptional = false, type = @DataTypeHint("STRING")) String s1,
+                       @ArgumentHint(name = "param2", isOptional = true, type = @DataTypeHint("INT")) Integer s2) {
+        return s1 + ", " + s2;
+    }
+}
+
+```
+{{< /tab >}}
+{{< tab "Scala" >}}
+```scala
+import org.apache.flink.table.annotation.ArgumentHint;
+import org.apache.flink.table.annotation.DataTypeHint;
+import org.apache.flink.table.functions.ScalarFunction;
+
+class NamedParameterClass extends ScalarFunction {
+
+  // 使用 @ArgumentHint 注解指定参数的名称，参数类型，以及是否是必需的参数
+  def eval(@ArgumentHint(name = "param1", isOptional = false, `type` = new DataTypeHint("STRING")) s1: String,
+          @ArgumentHint(name = "param2", isOptional = true, `type` = new DataTypeHint("INTEGER")) s2: Integer) = {
+    s1 + ", " + s2
+  }
+}
+```
+{{< /tab >}}
+{{< /tabs >}}
+
+2. 在 function 的 `eval` 方法上使用 `@ArgumentHint` 注解。
+
+{{< tabs "1356086c-189c-4932-a797-badf5b5e27ab" >}}
+{{< tab "Java" >}}
+```java
+import org.apache.flink.table.annotation.ArgumentHint;
+import org.apache.flink.table.annotation.DataTypeHint;
+import org.apache.flink.table.annotation.FunctionHint;
+import org.apache.flink.table.functions.ScalarFunction;
+
+public static class NamedParameterClass extends ScalarFunction {
+    
+  // 使用 @ArgumentHint 注解指定参数的名称，参数类型，以及该参数是否是必需的参数
+  @FunctionHint(
+    arguments = {
+      @ArgumentHint(name = "param1", isOptional = false, type = @DataTypeHint("STRING")),
+      @ArgumentHint(name = "param2", isOptional = true, type = @DataTypeHint("INTEGER"))
+    }
+  )
+  public String eval(String s1, Integer s2) {
+    return s1 + ", " + s2;
+  }
+}
+```
+{{< /tab >}}
+{{< tab "Scala" >}}
+```scala
+import org.apache.flink.table.annotation.ArgumentHint;
+import org.apache.flink.table.annotation.DataTypeHint;
+import org.apache.flink.table.annotation.FunctionHint;
+import org.apache.flink.table.functions.ScalarFunction;
+
+class NamedParameterClass extends ScalarFunction {
+
+  // 使用 @ArgumentHint 注解指定参数的名称，参数类型，以及是否是必需的参数
+  @FunctionHint(
+    arguments = Array(
+      new ArgumentHint(name = "param1", isOptional = false, `type` = new DataTypeHint("STRING")),
+      new ArgumentHint(name = "param2", isOptional = true, `type` = new DataTypeHint("INTEGER"))
+    )
+  )
+  def eval(s1: String, s2: Int): String = {
+    s1 + ", " + s2
+  }
+}
+```
+{{< /tab >}}
+{{< /tabs >}}
+
+3. 在 function 的 class 上使用 `@ArgumentHint` 注解。
+
+{{< tabs "ba00146a-08bf-496c-89bc-8d5e333f04f7" >}}
+{{< tab "Java" >}}
+```java
+import org.apache.flink.table.annotation.ArgumentHint;
+import org.apache.flink.table.functions.ScalarFunction;
+
+// 使用 @ArgumentHint 注解指定参数的名称，参数类型，以及是否是必需的参数
+@FunctionHint(
+  arguments = {
+    @ArgumentHint(name = "param1", isOptional = false, type = @DataTypeHint("STRING")),
+    @ArgumentHint(name = "param2", isOptional = true, type = @DataTypeHint("INTEGER"))
+  }
+)
+public static class NamedParameterClass extends ScalarFunction {
+    
+  public String eval(String s1, Integer s2) {
+    return s1 + ", " + s2;
+  }
+}
+```
+{{< /tab >}}
+{{< tab "Scala" >}}
+```scala
+import org.apache.flink.table.annotation.ArgumentHint;
+import org.apache.flink.table.functions.ScalarFunction;
+
+// 使用 @ArgumentHint 注解指定参数的名称，参数类型，以及是否是必需的参数
+@FunctionHint(
+  arguments = Array(
+    new ArgumentHint(name = "param1", isOptional = false, `type` = new DataTypeHint("STRING")),
+    new ArgumentHint(name = "param2", isOptional = true, `type` = new DataTypeHint("INTEGER"))
+  )
+)
+class NamedParameterClass extends ScalarFunction {
+
+  // 使用 @ArgumentHint 注解指定参数的名称，参数类型，以及是否是必需的参数
+  def eval(s1: String, s2: Int): String = {
+    s1 + ", " + s2
+  }
+}
+```
+{{< /tab >}}
+{{< /tabs >}}
+
+
+{{< hint info >}}
+* `@ArgumentHint` 内部包含了 `@DataTypeHint` 注解，因此在 `@FunctionHint` 中不能同时声明 `input` 和 `argument` ，当作用于函数的参数时 `@ArgumentHint` 也不能和 `@DataTypeHint` 同时使用，推荐使用 `@ArgumentHint` 。
+* 命名参数只有在对应的类不包含重载函数和可变参函数才会生效，否则使用命名参数会导致报错。
+{{< /hint >}}
+
+### 确定性
+
+每个用户自定义函数类都可以通过重写 `isDeterministic()` 方法来声明它是否产生确定性的结果。如果该函数不是纯粹函数式的（如`random()`, `date()`, 或`now()`），该方法必须返回 `false`。默认情况下，`isDeterministic()` 返回 `true`。
+
+此外，重写 `isDeterministic()` 方法也可能影响运行时行为。运行时实现可能会在两个不同的阶段被调用：
+
+1. **在生成执行计划期间**：如果一个函数是通过常量表达式调用的或者常量表达式可以从给定的语句中推导出来，那么一个函数就会被预计算以减少常量表达式，并且可能不再在集群上执行。
+除非 `isDeterministic()` 被重写为 `false` 用来在这种情况下禁用常量表达式简化。比如说，以下对 `ABS` 的调用在生成执行计划期间被执行：`SELECT ABS(-1) FROM t` 和 `SELECT ABS(field) FROM t WHERE field = -1`，而 `SELECT ABS(field) FROM t` 则不执行。
+
+2. **在运行时（即在集群执行）**：如果一个函数被调用时带有非常量表达式或 `isDeterministic()` 返回 `false`。
+
+#### 内置函数的确定性
+系统（内置）函数的确定性是不可改变的。存在两种不具有确定性的函数：动态函数和非确定性函数，根据 Apache Calcite `SqlOperator` 的定义：
+```java
+  /**
+   * Returns whether a call to this operator is guaranteed to always return
+   * the same result given the same operands; true is assumed by default.
+   */
+  public boolean isDeterministic() {
+    return true;
+  }
+
+  /**
+   * Returns whether it is unsafe to cache query plans referencing this
+   * operator; false is assumed by default.
+   */
+  public boolean isDynamicFunction() {
+    return false;
+  }
+```
+
+`isDeterministic` 表示函数的确定性，声明返回 `false` 时将在运行时对每个记录进行计算。
+`isDynamicFunction` 声明返回 `true` 时意味着该函数只能在查询开始时被计算，对于批处理模式，它只在生成执行计划期间被执行，
+而对于流模式，它等效于一个非确定性的函数，这是因为查询在逻辑上是连续执行的（流模式对[动态表的连续查询抽象]({{< ref "docs/concepts/sql-table-concepts/dynamic_tables" >}}#dynamic-tables-amp-continuous-queries)），所以动态函数在每次查询执行时也会被重新计算（当前实现下等效于每条记录计算）。
+
+以下内置函数总是非确定性的（批和流模式下，都在运行时对每条记录进行计算）
+- UUID
+- RAND
+- RAND_INTEGER
+- CURRENT_DATABASE
+- UNIX_TIMESTAMP
+- CURRENT_ROW_TIMESTAMP
+
+以下内置时间函数是动态的，批处理模式下，将在生成执行计划期间被执行（查询开始），对于流模式，将在运行时对每条记录进行计算
+- CURRENT_DATE
+- CURRENT_TIME
+- CURRENT_TIMESTAMP
+- NOW
+- LOCALTIME
+- LOCALTIMESTAMP
+
+注意：`isDynamicFunction` 仅适用于内置函数
+
 ### 运行时集成
 -------------------
 
@@ -681,7 +902,7 @@ env.sqlQuery("SELECT myField, hashCode(myField) FROM MyTable")
 标量函数
 ----------------
 
-自定义标量函数可以把 0 到多个标量值映射成 1 个标量值，[数据类型]({{< ref "docs/dev/table/types.zh.md" >}})里列出的任何数据类型都可作为求值方法的参数和返回值类型。
+自定义标量函数可以把 0 到多个标量值映射成 1 个标量值，[数据类型]({{< ref "docs/sql/reference/data-types" >}})里列出的任何数据类型都可作为求值方法的参数和返回值类型。
 
 想要实现自定义标量函数，你需要扩展 `org.apache.flink.table.functions` 里面的 `ScalarFunction` 并且实现一个或者多个求值方法。标量函数的行为取决于你写的求值方法。求值方法必须是 `public` 的，而且名字必须是 `eval`。
 
@@ -751,7 +972,110 @@ env.sqlQuery("SELECT HashFunction(myField) FROM MyTable")
 {{< /tab >}}
 {{< /tabs >}}
 
-如果你打算使用 Python 实现或调用标量函数，详情可参考 [Python 标量函数]({{< ref "docs/dev/python/table/udfs/python_udfs" >}}#scalar-functions)。
+如果你打算使用 Python 实现或调用标量函数，详情可参考 [Python 标量函数]({{< ref "docs/dev/table/functions/python-udfs" >}}#scalar-functions)。
+
+{{< top >}}
+
+异步标量函数
+----------------
+
+当与外部系统交互时（例如使用数据库中存储的数据来丰富流事件时），需要注意网络或其他延迟不要主导流应用程序的运行时间。
+
+简单地访问外部数据库中的数据，例如使用 `ScalarFunction`，通常意味着**同步**交互：向数据库发送请求，然后 `ScalarFunction` 等待直到收到响应。在许多情况下，这种等待占据了函数执行时间的绝大部分。
+
+为了解决这种低效问题，引入了 `AsyncScalarFunction`。与数据库的异步交互意味着单个函数实例可以并发处理多个请求并并发接收响应。这样，等待时间可以与发送其他请求和接收响应重叠。至少，等待时间会分摊到多个请求上。这在大多数情况下会带来更高的流处理吞吐量。
+
+{{< img src="/fig/async_io.svg" width="50%" >}}
+
+#### 定义 AsyncScalarFunction
+
+用户自定义的异步标量函数将零个、一个或多个标量值映射为新的标量值。[数据类型部分]({{< ref "docs/sql/reference/data-types" >}})中列出的任何数据类型都可以用作求值方法的参数或返回类型。
+
+要定义异步标量函数，需要继承 `org.apache.flink.table.functions` 中的基类 `AsyncScalarFunction`，并实现一个或多个名为 `eval(...)` 的求值方法。第一个参数必须是 `CompletableFuture<...>`，用于返回结果，后续参数是传递给函数的参数。
+
+未完成的 `eval` 调用数量可以通过 [`table.exec.async-scalar.max-concurrent-operations`]({{< ref "docs/dev/table/config#table-exec-async-scalar-max-concurrent-operations" >}}) 配置。
+
+以下示例展示了如何在后台线程池上执行工作，不过任何暴露异步接口的库都可以直接用于从回调中完成 `CompletableFuture`。更多详细信息请参阅[实现指南](#implementation-guide)。
+
+```java
+import org.apache.flink.table.api.*;
+import org.apache.flink.table.functions.AsyncScalarFunction;
+
+import java.util.Random;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executor;
+import java.util.concurrent.Executors;
+
+import static org.apache.flink.table.api.Expressions.*;
+
+/**
+ * 一个模拟从数据库查询饮料名称的函数。
+ * 由于这类查询通常很慢，我们使用 AsyncScalarFunction。
+ */
+public static class BeverageNameLookupFunction extends AsyncScalarFunction {
+    private transient Executor executor;
+
+    @Override
+    public void open(FunctionContext context) {
+        // 创建一个线程池用于执行后台查询。
+        executor = Executors.newFixedThreadPool(10);
+    }
+
+    // eval 方法接收一个用于返回结果的 future 和要查询的饮料 ID。
+    public void eval(CompletableFuture<String> future, Integer beverageId) {
+        // 向线程池提交任务。我们不想阻塞主线程，
+        // 因为这会阻止并发执行。当查询完成时，
+        // 可以从另一个线程完成 future。
+        executor.execute(() -> {
+            // 通过睡眠 1 秒来模拟数据库查询。
+            try {
+                Thread.sleep(1000);
+            } catch (InterruptedException e) {}
+            // 用正确的饮料名称完成 future。
+            switch (beverageId) {
+                case 0:
+                    future.complete("Latte");
+                    break;
+                case 1:
+                    future.complete("Cappuccino");
+                    break;
+                case 2:
+                    future.complete("Espresso");
+                    break;
+                default:
+                    // 在异常情况下，返回错误。
+                    future.completeExceptionally(new IllegalArgumentException("Bad beverageId: " + beverageId));
+            }
+        });
+    }
+}
+
+TableEnvironment env = TableEnvironment.create(...);
+env.getConfig().set("table.exec.async-scalar.max-concurrent-operations", "5");
+env.getConfig().set("table.exec.async-scalar.timeout", "1m");
+
+// 在 Table API 中"内联"调用函数，无需注册
+env.from("Beverages").select(call(BeverageNameLookupFunction.class, $("beverageId")));
+
+// 注册函数
+env.createTemporarySystemFunction("GetBeverageName", BeverageNameLookupFunction.class);
+
+// 在 Table API 中调用已注册的函数
+env.from("Beverages").select(call("GetBeverageName", $("beverageId")));
+
+// 在 SQL 中调用已注册的函数
+env.sqlQuery("SELECT GetBeverageName(beverageId) FROM Beverages");
+
+```
+
+#### 异步语义
+虽然对 `AsyncScalarFunction` 的调用可能以与原始输入不同的顺序完成，但为了保持正确的语义，函数的输出会保证按照输入顺序传递给查询的下游组件。数据本身可能会显示完成顺序（例如包含获取时间戳），因此用户应该考虑这对于他们的使用场景是否可接受。
+
+#### 错误处理
+用户指示错误的主要方式是调用 `CompletableFuture.completeExceptionally(Throwable)`。同样，如果系统在调用 `eval` 时遇到异常，也会导致错误。当发生错误时，系统会考虑重试策略，该策略由 [`table.exec.async-scalar.retry-strategy`]({{< ref "docs/dev/table/config#table-exec-async-scalar-retry-strategy" >}}) 配置。如果设置为 `NO_RETRY`，作业将失败。如果设置为 `FIXED_DELAY`，将等待 [`table.exec.async-scalar.retry-delay`]({{< ref "docs/dev/table/config#table-exec-async-scalar-retry-delay" >}}) 时间段后重试函数调用。如果已经有 [`table.exec.async-scalar.max-attempts`]({{< ref "docs/dev/table/config#table-exec-async-scalar-max-attempts" >}}) 次失败尝试，或者超时 [`table.exec.async-scalar.timeout`]({{< ref "docs/dev/table/config#table-exec-async-scalar-timeout" >}})（包括所有重试尝试）到期，作业将失败。
+
+#### AsyncScalarFunction vs. ScalarFunction
+需要考虑的一点是 UDF 是否包含 CPU 密集型逻辑且没有阻塞调用。如果是这样，它可能不需要异步功能，可以使用 `ScalarFunction`。如果逻辑涉及等待网络或后台操作（例如数据库查询、RPC 或 REST 调用），这可能是加速的有效方法。还有一些查询不支持 `AsyncScalarFunction`，因此在不确定时，应该使用 `ScalarFunction`。
 
 {{< top >}}
 
@@ -764,7 +1088,7 @@ env.sqlQuery("SELECT HashFunction(myField) FROM MyTable")
 
 在 Table API 中，表值函数是通过 `.joinLateral(...)` 或者 `.leftOuterJoinLateral(...)` 来使用的。`joinLateral` 算子会把外表（算子左侧的表）的每一行跟跟表值函数返回的所有行（位于算子右侧）进行 （cross）join。`leftOuterJoinLateral` 算子也是把外表（算子左侧的表）的每一行跟表值函数返回的所有行（位于算子右侧）进行（cross）join，并且如果表值函数返回 0 行也会保留外表的这一行。
 
-在 SQL 里面用 `JOIN` 或者 以 `ON TRUE` 为条件的 `LEFT JOIN` 来配合 `LATERAL TABLE(<TableFunction>)` 的使用。
+在 SQL 里面用 `JOIN` 或者 以 `ON TRUE` 为条件的 `LEFT JOIN` 来配合 `LATERAL <TableFunction>(...)` 的使用（等价的写法为 `LATERAL TABLE(<TableFunction>(...))`）。
 
 下面的例子展示了如何实现一个分隔函数并在查询里调用它，详情可参考[开发指南](#开发指南)：
 
@@ -823,17 +1147,17 @@ env
 // 在 SQL 里调用注册好的函数
 env.sqlQuery(
   "SELECT myField, word, length " +
-  "FROM MyTable, LATERAL TABLE(SplitFunction(myField))");
+  "FROM MyTable, LATERAL SplitFunction(myField)");
 env.sqlQuery(
   "SELECT myField, word, length " +
   "FROM MyTable " +
-  "LEFT JOIN LATERAL TABLE(SplitFunction(myField)) ON TRUE");
+  "LEFT JOIN LATERAL SplitFunction(myField) ON TRUE");
 
 // 在 SQL 里重命名函数字段
 env.sqlQuery(
   "SELECT myField, newWord, newLength " +
   "FROM MyTable " +
-  "LEFT JOIN LATERAL TABLE(SplitFunction(myField)) AS T(newWord, newLength) ON TRUE");
+  "LEFT JOIN LATERAL SplitFunction(myField) AS T(newWord, newLength) ON TRUE");
 
 ```
 {{< /tab >}}
@@ -888,17 +1212,17 @@ env
 // 在 SQL 里调用注册好的函数
 env.sqlQuery(
   "SELECT myField, word, length " +
-  "FROM MyTable, LATERAL TABLE(SplitFunction(myField))");
+  "FROM MyTable, LATERAL SplitFunction(myField)");
 env.sqlQuery(
   "SELECT myField, word, length " +
   "FROM MyTable " +
-  "LEFT JOIN LATERAL TABLE(SplitFunction(myField)) ON TRUE")
+  "LEFT JOIN LATERAL SplitFunction(myField) ON TRUE")
 
 // 在 SQL 里重命名函数字段
 env.sqlQuery(
   "SELECT myField, newWord, newLength " +
   "FROM MyTable " +
-  "LEFT JOIN LATERAL TABLE(SplitFunction(myField)) AS T(newWord, newLength) ON TRUE")
+  "LEFT JOIN LATERAL SplitFunction(myField) AS T(newWord, newLength) ON TRUE")
 
 ```
 {{< /tab >}}
@@ -906,7 +1230,140 @@ env.sqlQuery(
 
 如果你打算使用 Scala，不要把表值函数声明为 Scala `object`，Scala `object` 是单例对象，将导致并发问题。
 
-如果你打算使用 Python 实现或调用表值函数，详情可参考 [Python 表值函数]({{< ref "docs/dev/python/table/udfs/python_udfs" >}}#table-functions)。
+如果你打算使用 Python 实现或调用表值函数，详情可参考 [Python 表值函数]({{< ref "docs/dev/table/functions/python-udfs" >}}#table-functions)。
+
+{{< top >}}
+
+异步表值函数
+----------------
+
+`AsyncTableFunction` 与 `AsyncScalarFunction` 类似，区别在于它返回的是多行结果而不是单个标量值。它最适合的场景同样是与外部系统打交道——例如访问数据库，做流上的维表打宽或者访问远程LLM集群获取推理结果。
+
+异步访问外部系统意味着同一个函数实例可以并发地发出多个请求、并发地接收响应；等待时间因此可以与其他请求的发送、响应的接收相互重叠。可以让等待开销分摊到多次请求上。在大多数场景下，这都会显著提高流处理的吞吐量。
+
+#### 定义 AsyncTableFunction
+
+用户自定义的异步表值函数接受零个、一个或多个参数，每次输入会输出零行、一行或多行结果。[数据类型部分]({{< ref "docs/sql/reference/data-types" >}}) 中列出的任何数据类型都可以作为求值方法的参数或返回类型。
+
+要定义一个异步表值函数，需要继承 `org.apache.flink.table.functions` 中的基类 `AsyncTableFunction`，并实现一个或多个名为 `eval(...)` 的求值方法。`eval` 的第一个参数必须是 `CompletableFuture<...>`，用于把结果回写给框架；之后的参数即对外暴露的函数实参。
+
+`eval` 的并发调用数量上限可以通过 [`table.exec.async-table.max-concurrent-operations`]({{< ref "docs/dev/table/config#table-exec-async-table-max-concurrent-operations" >}}) 进行配置。
+
+#### 异步语义
+对 `AsyncTableFunction` 的并发调用，其完成顺序可能与输入顺序不一致；但为了保证语义正确，框架仍会按输入顺序把函数输出交给查询下游的算子。即便如此，数据本身仍可能反映实际的完成顺序（例如携带获取时间戳）；这一点是否会影响业务，需要使用方自行判断。
+
+#### 错误处理
+上报错误的主要方式是调用 `CompletableFuture.completeExceptionally(Throwable)`；此外，如果框架在调用 `eval` 时本身就抛出了异常，同样会被视为出错。出错后系统会按照重试策略处理，该策略由 [`table.exec.async-table.retry-strategy`]({{< ref "docs/dev/table/config#table-exec-async-table-retry-strategy" >}}) 控制：若设为 `NO_RETRY`，作业直接失败；若设为 `FIXED_DELAY`，则会在等待 [`table.exec.async-table.retry-delay`]({{< ref "docs/dev/table/config#table-exec-async-table-retry-delay" >}}) 之后再次发起调用。当失败次数达到 [`table.exec.async-table.max-attempts`]({{< ref "docs/dev/table/config#table-exec-async-table-max-attempts" >}}) 上限，或总耗时（含全部重试）超过 [`table.exec.async-table.timeout`]({{< ref "docs/dev/table/config#table-exec-async-table-timeout" >}})，作业仍会失败。
+
+下面的示例演示了如何借助一个后台线程池完成异步任务；当然，任何暴露异步接口的库都可以直接拿来在回调中完成 `CompletableFuture`。更多细节请参阅[实现指南](#implementation-guide)。
+
+```java
+import org.apache.flink.table.api.*;
+import org.apache.flink.table.functions.AsyncTableFunction;
+
+import java.util.Random;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executor;
+import java.util.concurrent.Executors;
+
+import static org.apache.flink.table.api.Expressions.*;
+
+public static class BackgroundFunction extends AsyncTableFunction<Long> {
+    private Executor executor;
+
+    @Override
+    public void open(FunctionContext context) {
+        executor = Executors.newFixedThreadPool(10);
+    }
+
+    public void eval(CompletableFuture<Collection<Long>> future, Integer waitMax) {
+        executor.execute(() -> {
+            ArrayList<Long> result = new ArrayList<>();
+            long sleepTime = new Random().nextInt(waitMax);
+            try {
+                Thread.sleep(sleepTime);
+            } catch (InterruptedException e) {}
+            if (sleepTime < 1000) {
+                result.add(1L);
+                result.add(2L);
+            } else {
+                result.add(3L);
+            }
+            future.complete(result);
+        });
+    }
+}
+
+TableEnvironment env = TableEnvironment.create(...);
+env.getConfig().set("table.exec.async-table.max-concurrent-operations", "5");
+env.getConfig().set("table.exec.async-table.timeout", "1m");
+
+// 在 Table API 中"内联"调用函数，无需注册
+env.from("MyTable")
+        .joinLateral(call(BackgroundFunction.class, $("myField")))
+        .select($("*"))
+
+// 注册函数
+env.createTemporarySystemFunction("BackgroundFunction", BackgroundFunction.class);
+
+// 在 Table API 中调用已注册的函数
+env.from("MyTable")
+        .joinLateral(call("BackgroundFunction", $("myField")))
+        .select($("*"))
+
+// 在 SQL 中调用已注册的函数
+env.sqlQuery("SELECT * FROM MyTable, LATERAL BackgroundFunction(myField)");
+
+```
+
+#### 自定义超时处理
+
+默认情况下，如果某次 `eval` 调用在 [`table.exec.async-table.timeout`]({{< ref "docs/dev/table/config#table-exec-async-table-timeout" >}}) 之内仍未完成 `CompletableFuture`，且配置的重试也已用尽，框架会抛出 `java.util.concurrent.TimeoutException` 并让作业失败。如果希望覆盖这一行为，可以在 `AsyncTableFunction` 子类中声明一个与之匹配的 `timeout(...)` 方法，由它返回一行兜底数据，或由用户自定义超时处理。这通常在使用`AsyncTableFunction`发送请求调用远程LLM集群时很有用，众所周知，请求远程LLM集群出现超时的概率相对而言更高，相当多的用户希望超时不要直接导致作业失败，而是有自定义的兜底行为，`timeout`方法为此而生。
+
+`timeout` 方法需要**同时**满足以下条件：
+
+- **方法声明。** 必须是 `public` 实例方法（不能是 `static`），方法名固定为 `timeout`。
+- **签名要与 `eval` 对齐。** 参数列表需要与对应的 `eval` 严格一致：第一个参数是 `CompletableFuture`，其泛型类型必须与 `eval` **完全相同**；其余参数的类型和顺序也必须与 `eval` **完全相同**。`timeout` 支持重载——每一个需要兜底逻辑的 `eval` 重载都可以单独声明一个对应的 `timeout`。
+- **同步完成（强制要求）。** 该回调会在算子的 mailbox 线程上运行，**必须**在方法返回前完成 future。方法返回后，框架会立即检查 `future.isDone()`；如果尚未完成，会强制以 `IllegalStateException` 把 future 完成。也就是说：
+  - **不要**在方法体内再发起一次异步调用（例如又一次重试或二次查询），并指望它的回调最终把 future 完成——等回调真正触发时，框架已经放弃了这条记录。
+  - **不要**启动新线程异步去完成 future，理由同上。
+  - 方法体只该做一件事：给出一个轻量的兜底结果，比如返回一个常量行、一个 NULL 行、空集合，或者用业务自定义的异常调用 `completeExceptionally(...)`。
+- **抛异常是安全的。** 直接在方法体内同步抛出异常没有问题：框架会把异常转交给下游的 `ResultFuture`，效果等价于显式调用 `future.completeExceptionally(thrown)`。
+
+在以上约束之外，框架还会在以下场景保证稳定的行为：
+
+- **未声明 `timeout` 方法。** 沿用框架默认的 `TimeoutException`，不会引发代码生成阶段的失败。
+- **签名不兼容。** 如果 `timeout` 方法可见性合法，但参数列表无法和当前调用点的实参类型对应，框架会在规划期（代码生成阶段）以 `ValidationException` 直接失败；错误信息中会包含函数的全限定类名，并同时给出期望签名与实际签名。
+- **空集合兜底。** 调用 `future.complete(Collections.emptyList())` 时：对 INNER lookup join 而言该行会被丢弃；对 LEFT OUTER lookup join 而言，右表字段会被填充为 NULL。
+
+下面这段示例在 `BackgroundFunction` 的基础上加了一个 `timeout` 回调，展示如何同步地完成 future 并返回一行兜底数据：
+
+```java
+import org.apache.flink.table.functions.AsyncTableFunction;
+
+import java.util.Collection;
+import java.util.Collections;
+import java.util.concurrent.CompletableFuture;
+
+public static class BackgroundFunctionWithTimeout extends AsyncTableFunction<Long> {
+
+    public void eval(CompletableFuture<Collection<Long>> future, Integer waitMax) {
+        // ...逻辑与上面的 BackgroundFunction 一致：把异步任务派发出去，
+        // 然后在回调线程中完成 `future`。
+    }
+
+    // 参数列表必须与 eval() 对齐：CompletableFuture 的泛型相同，
+    // 后续参数（Integer waitMax）的类型和顺序也相同。
+    // 方法体必须同步完成 `future`——不要再发起异步调用，
+    // 也不要启动新线程异步去完成它；这个回调被触发时，
+    // 算子已经放弃了这条记录。
+    public void timeout(CompletableFuture<Collection<Long>> future, Integer waitMax) {
+        future.complete(Collections.singletonList(-1L));
+        // 也可以选择用业务自定义异常代替默认的 TimeoutException：
+        // future.completeExceptionally(new MyLookupTimeoutException(waitMax));
+    }
+}
+```
 
 {{< top >}}
 
@@ -1229,7 +1686,7 @@ public static class WeightedAvg extends AggregateFunction<Long, WeightedAvgAccum
 
 // 注册函数
 StreamTableEnvironment tEnv = ...
-tEnv.registerFunction("wAvg", new WeightedAvg());
+tEnv.createTemporarySystemFunction("wAvg", WeightedAvg.class);
 
 // 使用函数
 tEnv.sqlQuery("SELECT user, wAvg(points, level) AS avgPoints FROM userScores GROUP BY user");
@@ -1241,8 +1698,8 @@ tEnv.sqlQuery("SELECT user, wAvg(points, level) AS avgPoints FROM userScores GRO
 import java.lang.{Long => JLong, Integer => JInteger}
 import org.apache.flink.api.java.tuple.{Tuple1 => JTuple1}
 import org.apache.flink.api.java.typeutils.TupleTypeInfo
-import org.apache.flink.table.api.Types
 import org.apache.flink.table.functions.AggregateFunction
+import org.apache.flink.table.legacy.api.Types
 
 /**
  * Accumulator for WeightedAvg.
@@ -1302,7 +1759,7 @@ class WeightedAvg extends AggregateFunction[JLong, CountAccumulator] {
 
 // 注册函数
 val tEnv: StreamTableEnvironment = ???
-tEnv.registerFunction("wAvg", new WeightedAvg())
+tEnv.createTemporarySystemFunction("wAvg", WeightedAvg.class)
 
 // 使用函数
 tEnv.sqlQuery("SELECT user, wAvg(points, level) AS avgPoints FROM userScores GROUP BY user")
@@ -1372,7 +1829,7 @@ public static class WeightedAvg extends AggregateFunction<Long, WeightedAvgAccum
 
 # 注册函数
 t_env = ...  # type: StreamTableEnvironment
-t_env.register_java_function("wAvg", "my.java.function.WeightedAvg")
+t_env.create_java_temporary_function("wAvg", "my.java.function.WeightedAvg")
 
 # 使用函数
 t_env.sql_query("SELECT user, wAvg(points, level) AS avgPoints FROM userScores GROUP BY user")
@@ -1381,7 +1838,7 @@ t_env.sql_query("SELECT user, wAvg(points, level) AS avgPoints FROM userScores G
 {{< /tab >}}
 {{< /tabs >}}
 
-如果你打算使用 Python 实现或调用聚合函数，详情可参考 [Python 聚合函数]({{< ref "docs/dev/python/table/udfs/python_udfs" >}}#aggregate-functions)。
+如果你打算使用 Python 实现或调用聚合函数，详情可参考 [Python 聚合函数]({{< ref "docs/dev/table/functions/python-udfs" >}}#aggregate-functions)。
 
 {{< top >}}
 
@@ -1744,7 +2201,7 @@ public static class Top2 extends TableAggregateFunction<Tuple2<Integer, Integer>
 
 // 注册函数
 StreamTableEnvironment tEnv = ...
-tEnv.registerFunction("top2", new Top2());
+tEnv.createTemporarySystemFunction("top2", Top2.class);
 
 // 初始化表
 Table tab = ...;
@@ -1759,8 +2216,8 @@ tab.groupBy("key")
 {{< tab "Scala" >}}
 ```scala
 import java.lang.{Integer => JInteger}
-import org.apache.flink.table.api.Types
 import org.apache.flink.table.functions.TableAggregateFunction
+import org.apache.flink.table.legacy.api.Types
 
 /**
  * Accumulator for top2.
@@ -1825,7 +2282,10 @@ tab
 {{< /tabs >}}
 
 
-下面的例子展示了如何使用 `emitUpdateWithRetract` 方法来只发送更新的数据。为了只发送更新的结果，accumulator 保存了上一次的最大的2个值，也保存了当前最大的2个值。注意：如果 TopN 中的 n 非常大，这种既保存上次的结果，也保存当前的结果的方式不太高效。一种解决这种问题的方式是把输入数据直接存储到 `accumulator` 中，然后在调用 `emitUpdateWithRetract` 方法时再进行计算。
+下面的例子展示了如何使用 `emitUpdateWithRetract` 方法来只发送更新的数据。为了只发送更新的结果，accumulator 保存了上一次的最大的2个值，也保存了当前最大的2个值。
+{{< hint info >}}
+注意：请不要在 `emitUpdateWithRetract` 方法中更新 accumulator，因为在调用 `function#emitUpdateWithRetract` 之后，`GroupTableAggFunction` 不会重新调用 `function#getAccumulators` 来将最新的 accumulator 更新到状态中。
+{{< /hint >}}
 
 {{< tabs "e0d841fe-8d95-4706-9e19-e76141171966" >}}
 {{< tab "Java" >}}
@@ -1856,6 +2316,8 @@ public static class Top2 extends TableAggregateFunction<Tuple2<Integer, Integer>
     }
 
     public void accumulate(Top2Accum acc, Integer v) {
+        acc.oldFirst = acc.first;
+        acc.oldSecond = acc.second;
         if (v > acc.first) {
             acc.second = acc.first;
             acc.first = v;
@@ -1871,7 +2333,6 @@ public static class Top2 extends TableAggregateFunction<Tuple2<Integer, Integer>
                 out.retract(Tuple2.of(acc.oldFirst, 1));
             }
             out.collect(Tuple2.of(acc.first, 1));
-            acc.oldFirst = acc.first;
         }
 
         if (!acc.second.equals(acc.oldSecond)) {
@@ -1880,14 +2341,13 @@ public static class Top2 extends TableAggregateFunction<Tuple2<Integer, Integer>
                 out.retract(Tuple2.of(acc.oldSecond, 2));
             }
             out.collect(Tuple2.of(acc.second, 2));
-            acc.oldSecond = acc.second;
         }
     }
 }
 
 // 注册函数
 StreamTableEnvironment tEnv = ...
-tEnv.registerFunction("top2", new Top2());
+tEnv.createTemporarySystemFunction("top2", Top2.class);
 
 // 初始化表
 Table tab = ...;
@@ -1902,8 +2362,8 @@ tab.groupBy("key")
 {{< tab "Scala" >}}
 ```scala
 import java.lang.{Integer => JInteger}
-import org.apache.flink.table.api.Types
 import org.apache.flink.table.functions.TableAggregateFunction
+import org.apache.flink.table.legacy.api.Types
 
 /**
  * Accumulator for top2.
@@ -1930,6 +2390,8 @@ class Top2 extends TableAggregateFunction[JTuple2[JInteger, JInteger], Top2Accum
   }
 
   def accumulate(acc: Top2Accum, v: Int) {
+    acc.oldFirst = acc.first
+    acc.oldSecond = acc.second
     if (v > acc.first) {
       acc.second = acc.first
       acc.first = v
@@ -1948,7 +2410,6 @@ class Top2 extends TableAggregateFunction[JTuple2[JInteger, JInteger], Top2Accum
         out.retract(JTuple2.of(acc.oldFirst, 1))
       }
       out.collect(JTuple2.of(acc.first, 1))
-      acc.oldFirst = acc.first
     }
     if (acc.second != acc.oldSecond) {
       // if there is an update, retract old value then emit new value.
@@ -1956,7 +2417,6 @@ class Top2 extends TableAggregateFunction[JTuple2[JInteger, JInteger], Top2Accum
         out.retract(JTuple2.of(acc.oldSecond, 2))
       }
       out.collect(JTuple2.of(acc.second, 2))
-      acc.oldSecond = acc.second
     }
   }
 }
@@ -1973,5 +2433,27 @@ tab
 ```
 {{< /tab >}}
 {{< /tabs >}}
+
+{{< top >}}
+
+Process Table Functions
+-----------------------
+
+Process Table Functions (PTFs) are the most powerful function kind for Flink SQL and Table API. They enable implementing
+user-defined operators that can be as feature-rich as built-in operations. PTFs can take (partitioned) tables to produce
+a new table. They have access to Flink's managed state, event-time and timer services, and underlying table changelogs.
+
+Conceptually, a PTF is a superset of all other user-defined functions. It maps zero, one, or multiple tables to zero, one,
+or multiple rows (or structured types). Scalar arguments are supported. Due to its stateful nature, implementing aggregating
+behavior is possible as well.
+
+A PTF enables the following tasks:
+- Apply transformations on each row of a table.
+- Logically partition the table into distinct sets and apply transformations per set.
+- Store seen events for repeated access.
+- Continue the processing at a later point in time enabling waiting, synchronization, or timeouts.
+- Buffer and aggregate events using complex state machines or rule-based conditional logic.
+
+See the [dedicated page for PTFs]({{< ref "docs/dev/table/functions/ptfs" >}}) for more details.
 
 {{< top >}}

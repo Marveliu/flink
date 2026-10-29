@@ -15,10 +15,9 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.planner.runtime.stream.sql
 
-import org.apache.flink.api.scala._
+import org.apache.flink.table.api._
 import org.apache.flink.table.api.bridge.scala._
 import org.apache.flink.table.planner.factories.TestValuesTableFactory
 import org.apache.flink.table.planner.plan.rules.logical.PushLimitIntoTableSourceScanRule
@@ -26,12 +25,10 @@ import org.apache.flink.table.planner.runtime.utils.{StreamingTestBase, TestingR
 import org.apache.flink.table.planner.runtime.utils.BatchTestBase.row
 import org.apache.flink.types.Row
 
-import org.junit.Assert.assertEquals
-import org.junit.{Before, Test}
+import org.assertj.core.api.Assertions.assertThat
+import org.junit.jupiter.api.{BeforeEach, Test}
 
-/**
- * Test for [[PushLimitIntoTableSourceScanRule]].
- */
+/** Test for [[PushLimitIntoTableSourceScanRule]]. */
 class LimitableSourceITCase extends StreamingTestBase() {
 
   val data = Seq(
@@ -42,7 +39,7 @@ class LimitableSourceITCase extends StreamingTestBase() {
     row("fruit", 3, 44),
     row("fruit", 5, 22))
 
-  @Before
+  @BeforeEach
   def setup(): Unit = {
     val dataId = TestValuesTableFactory.registerData(data)
     val ddl =
@@ -68,12 +65,8 @@ class LimitableSourceITCase extends StreamingTestBase() {
     tEnv.sqlQuery(sql).toRetractStream[Row].addSink(sink).setParallelism(1)
     env.execute()
 
-    val expected = Seq(
-      "book,1,12",
-      "book,2,19",
-      "book,4,11",
-      "fruit,4,33")
-    assertEquals(expected.sorted, sink.getRetractResults.sorted)
+    val expected = Seq("book,1,12", "book,2,19", "book,4,11", "fruit,4,33")
+    assertThat(sink.getRetractResults.sorted).isEqualTo(expected.sorted)
   }
 
   @Test
@@ -84,12 +77,8 @@ class LimitableSourceITCase extends StreamingTestBase() {
     tEnv.sqlQuery(sql).toRetractStream[Row].addSink(sink).setParallelism(1)
     env.execute()
 
-    val expected = Seq(
-      "book,4,11",
-      "fruit,4,33",
-      "fruit,3,44",
-      "fruit,5,22")
-    assertEquals(expected.sorted, sink.getRetractResults.sorted)
+    val expected = Seq("book,4,11", "fruit,4,33", "fruit,3,44", "fruit,5,22")
+    assertThat(sink.getRetractResults.sorted).isEqualTo(expected.sorted)
   }
 
 }

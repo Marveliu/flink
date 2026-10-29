@@ -19,12 +19,12 @@
 package org.apache.flink.runtime.operators.hash;
 
 import org.apache.flink.api.common.typeutils.TypeSerializer;
+import org.apache.flink.core.memory.AbstractPagedInputView;
+import org.apache.flink.core.memory.AbstractPagedOutputView;
+import org.apache.flink.core.memory.ListMemorySegmentSource;
 import org.apache.flink.core.memory.MemorySegment;
 import org.apache.flink.core.memory.MemorySegmentSource;
 import org.apache.flink.core.memory.SeekableDataInputView;
-import org.apache.flink.runtime.memory.AbstractPagedInputView;
-import org.apache.flink.runtime.memory.AbstractPagedOutputView;
-import org.apache.flink.runtime.memory.ListMemorySegmentSource;
 
 import java.io.EOFException;
 import java.io.IOException;
@@ -139,7 +139,9 @@ public class InMemoryPartition<T> {
         this.partitionNumber = number;
     }
 
-    /** @return number of segments owned by partition */
+    /**
+     * @return number of segments owned by partition
+     */
     public int getBlockCount() {
         return this.partitionPages.size();
     }
@@ -190,7 +192,9 @@ public class InMemoryPartition<T> {
         return result;
     }
 
-    /** @return true if garbage exists in partition */
+    /**
+     * @return true if garbage exists in partition
+     */
     public boolean isCompacted() {
         return this.compacted;
     }

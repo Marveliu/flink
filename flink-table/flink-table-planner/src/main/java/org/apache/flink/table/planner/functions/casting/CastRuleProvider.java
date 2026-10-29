@@ -48,6 +48,8 @@ public class CastRuleProvider {
 
     static {
         INSTANCE
+                // Highest precedence rule
+                .addRule(IdentityCastRule.INSTANCE)
                 // Numeric rules
                 .addRule(DecimalToDecimalCastRule.INSTANCE)
                 .addRule(NumericPrimitiveToDecimalCastRule.INSTANCE)
@@ -85,6 +87,7 @@ public class CastRuleProvider {
                 .addRule(TimeToTimestampCastRule.INSTANCE)
                 .addRule(NumericToTimestampCastRule.INSTANCE)
                 .addRule(TimestampToNumericCastRule.INSTANCE)
+                .addRule(TimeToTimeCastRule.INSTANCE)
                 // To binary rules
                 .addRule(BinaryToBinaryCastRule.INSTANCE)
                 .addRule(RawToBinaryCastRule.INSTANCE)
@@ -92,10 +95,20 @@ public class CastRuleProvider {
                 .addRule(ArrayToArrayCastRule.INSTANCE)
                 .addRule(MapToMapAndMultisetToMultisetCastRule.INSTANCE)
                 .addRule(RowToRowCastRule.INSTANCE)
+                // Variant rules
+                .addRule(FromVariantCastRule.INSTANCE)
+                .addRule(ToVariantCastRule.INSTANCE)
+                // Bitmap rules
+                .addRule(BitmapToStringCastRule.INSTANCE)
+                .addRule(BitmapToBinaryCastRule.INSTANCE)
+                // UUID rules
+                .addRule(UuidToStringCastRule.INSTANCE)
+                .addRule(UuidToBinaryCastRule.INSTANCE)
+                .addRule(StringToUuidCastRule.INSTANCE)
+                .addRule(BinaryToUuidCastRule.INSTANCE)
                 // Special rules
                 .addRule(CharVarCharTrimPadCastRule.INSTANCE)
-                .addRule(NullToStringCastRule.INSTANCE)
-                .addRule(IdentityCastRule.INSTANCE);
+                .addRule(NullToStringCastRule.INSTANCE);
     }
 
     /* ------- Entrypoint ------- */
@@ -176,6 +189,11 @@ public class CastRuleProvider {
             LogicalType inputLogicalType,
             LogicalType targetLogicalType,
             Object value) {
+        if (resolve(inputLogicalType, targetLogicalType) == IdentityCastRule.INSTANCE) {
+            // identity cast: value is unchanged, no need to compile a CastExecutor
+            return value;
+        }
+
         CastExecutor<Object, Object> castExecutor =
                 (CastExecutor<Object, Object>)
                         CastRuleProvider.create(context, inputLogicalType, targetLogicalType);

@@ -27,11 +27,14 @@ import org.apache.flink.runtime.checkpoint.channel.ResultSubpartitionInfo;
 import org.apache.flink.runtime.executiongraph.Execution;
 import org.apache.flink.runtime.executiongraph.ExecutionJobVertex;
 import org.apache.flink.runtime.executiongraph.IntermediateResult;
+import org.apache.flink.runtime.io.network.api.writer.SubtaskStateMapper;
 import org.apache.flink.runtime.jobgraph.IntermediateDataSet;
 import org.apache.flink.runtime.jobgraph.IntermediateDataSetID;
+import org.apache.flink.runtime.jobgraph.JobEdge;
 import org.apache.flink.runtime.jobgraph.OperatorID;
 import org.apache.flink.runtime.jobgraph.OperatorInstanceID;
 import org.apache.flink.runtime.state.AbstractChannelStateHandle;
+import org.apache.flink.runtime.state.ChannelStateHelper;
 import org.apache.flink.runtime.state.InputChannelStateHandle;
 import org.apache.flink.runtime.state.KeyGroupRange;
 import org.apache.flink.runtime.state.KeyGroupRangeAssignment;
@@ -39,6 +42,7 @@ import org.apache.flink.runtime.state.KeyGroupsStateHandle;
 import org.apache.flink.runtime.state.KeyedStateHandle;
 import org.apache.flink.runtime.state.ResultSubpartitionStateHandle;
 import org.apache.flink.runtime.state.StateObject;
+import org.apache.flink.util.CollectionUtil;
 import org.apache.flink.util.Preconditions;
 
 import org.slf4j.Logger;
@@ -71,9 +75,11 @@ public class StateAssignmentOperation {
 
     private final long restoreCheckpointId;
     private final boolean allowNonRestoredState;
+    private final boolean recoverOutputOnDownstreamTask;
 
     /** The state assignments for each ExecutionJobVertex that will be filled in multiple passes. */
     private final Map<ExecutionJobVertex, TaskStateAssignment> vertexAssignments;
+
     /**
      * Stores the assignment of a consumer. {@link IntermediateResult} only allows to traverse
      * producer.
@@ -85,25 +91,37 @@ public class StateAssignmentOperation {
             long restoreCheckpointId,
             Set<ExecutionJobVertex> tasks,
             Map<OperatorID, OperatorState> operatorStates,
-            boolean allowNonRestoredState) {
+            boolean allowNonRestoredState,
+            boolean recoverOutputOnDownstreamTask) {
 
         this.restoreCheckpointId = restoreCheckpointId;
         this.tasks = Preconditions.checkNotNull(tasks);
         this.operatorStates = Preconditions.checkNotNull(operatorStates);
         this.allowNonRestoredState = allowNonRestoredState;
-        this.vertexAssignments = new HashMap<>(tasks.size());
+        this.recoverOutputOnDownstreamTask = recoverOutputOnDownstreamTask;
+        this.vertexAssignments = CollectionUtil.newHashMapWithExpectedSize(tasks.size());
     }
 
     public void assignStates() {
         checkStateMappingCompleteness(allowNonRestoredState, operatorStates, tasks);
 
+        buildStateAssignments();
+
+        repartitionState();
+
+        // actually assign the state
+        applyStateAssignments();
+    }
+
+    private void buildStateAssignments() {
         Map<OperatorID, OperatorState> localOperators = new HashMap<>(operatorStates);
 
         // find the states of all operators belonging to this task and compute additional
         // information in first pass
         for (ExecutionJobVertex executionJobVertex : tasks) {
             List<OperatorIDPair> operatorIDPairs = executionJobVertex.getOperatorIDs();
-            Map<OperatorID, OperatorState> operatorStates = new HashMap<>(operatorIDPairs.size());
+            Map<OperatorID, OperatorState> operatorStates =
+                    CollectionUtil.newHashMapWithExpectedSize(operatorIDPairs.size());
             for (OperatorIDPair operatorIDPair : operatorIDPairs) {
                 OperatorID operatorID =
                         operatorIDPair
@@ -115,6 +133,8 @@ public class StateAssignmentOperation {
                 if (operatorState == null) {
                     operatorState =
                             new OperatorState(
+                                    operatorIDPair.getUserDefinedOperatorName(),
+                                    operatorIDPair.getUserDefinedOperatorUid(),
                                     operatorID,
                                     executionJobVertex.getParallelism(),
                                     executionJobVertex.getMaxParallelism());
@@ -127,23 +147,51 @@ public class StateAssignmentOperation {
                             executionJobVertex,
                             operatorStates,
                             consumerAssignment,
-                            vertexAssignments);
+                            vertexAssignments,
+                            recoverOutputOnDownstreamTask);
             vertexAssignments.put(executionJobVertex, stateAssignment);
             for (final IntermediateResult producedDataSet : executionJobVertex.getInputs()) {
                 consumerAssignment.put(producedDataSet.getId(), stateAssignment);
             }
         }
+    }
 
+    private void repartitionState() {
         // repartition state
         for (TaskStateAssignment stateAssignment : vertexAssignments.values()) {
-            if (stateAssignment.hasNonFinishedState) {
+            if (stateAssignment.hasNonFinishedState
+                    // FLINK-31963: We need to run repartitioning for stateless operators that have
+                    // upstream output or downstream input states.
+                    || stateAssignment.hasUpstreamOutputStates()
+                    || stateAssignment.hasDownstreamInputStates()) {
                 assignAttemptState(stateAssignment);
             }
         }
 
-        // actually assign the state
+        // distribute output channel states to downstream tasks if needed
+        // Note: it has to be called after assignAttemptState for all tasks since the
+        // redistributing of result subpartition states depend on the inputSubtaskMappings
+        // of downstream tasks.
+        if (recoverOutputOnDownstreamTask) {
+            for (TaskStateAssignment stateAssignment : vertexAssignments.values()) {
+                // If recoverOutputOnDownstreamTask is enabled, all upstream output buffers have to
+                // be distributed to downstream since the upstream task side doesn’t deserialize
+                // records generally. It is easy to filter records and re-upload records if
+                // recovering output buffers on downstream task side directly.
+                stateAssignment.distributeOutputBuffersToDownstream();
+            }
+        }
+    }
+
+    private void applyStateAssignments() {
         for (TaskStateAssignment stateAssignment : vertexAssignments.values()) {
-            if (stateAssignment.hasNonFinishedState || stateAssignment.isFullyFinished) {
+            // If upstream has output states or downstream has input states, even the empty task
+            // state should be assigned for the current task in order to notify this task that the
+            // old states will send to it which likely should be filtered.
+            if (stateAssignment.hasNonFinishedState
+                    || stateAssignment.isFullyFinished
+                    || stateAssignment.hasUpstreamOutputStates()
+                    || stateAssignment.hasDownstreamInputStates()) {
                 assignTaskStateToExecutionJobVertices(stateAssignment);
             }
         }
@@ -256,9 +304,76 @@ public class StateAssignmentOperation {
     }
 
     public void checkParallelismPreconditions(TaskStateAssignment taskStateAssignment) {
+        checkMaxParallelismAgreement(taskStateAssignment);
         for (OperatorState operatorState : taskStateAssignment.oldState.values()) {
             checkParallelismPreconditions(operatorState, taskStateAssignment.executionJobVertex);
         }
+    }
+
+    /**
+     * Verifies that all operators chained into a single keyed vertex recorded the same maximum
+     * parallelism in the checkpoint.
+     *
+     * <p>The per-operator reconciliation below ({@link
+     * #checkParallelismPreconditions(OperatorState, ExecutionJobVertex)}) adopts each operator's
+     * recorded maximum parallelism onto the shared vertex, so when operators disagree the vertex is
+     * left with whichever value is reconciled last. Any keyed operator on the vertex is then
+     * restored under that value rather than its own, remapping its state through an incompatible
+     * {@code hash % maxParallelism} layout. Operators sharing a vertex normally record its single
+     * maximum parallelism and therefore agree; they can only differ here if the chaining topology
+     * regrouped them since the checkpoint. This regrouping was permitted for graph construction but
+     * never validated on restore. A disagreeing operator need not be keyed itself: its recorded
+     * value can win the reconciliation and misroute another operator's keyed state, so all
+     * operators are compared. Vertices without keyed state are unaffected, since maximum
+     * parallelism only governs keyed-state routing.
+     */
+    private static void checkMaxParallelismAgreement(TaskStateAssignment taskStateAssignment) {
+        OperatorID referenceOperator = null;
+        int referenceMaxParallelism = -1;
+        OperatorID conflictingOperator = null;
+        int conflictingMaxParallelism = -1;
+        boolean vertexHasKeyedState = false;
+
+        for (Map.Entry<OperatorID, OperatorState> entry : taskStateAssignment.oldState.entrySet()) {
+            final OperatorState operatorState = entry.getValue();
+            vertexHasKeyedState |= hasKeyedState(operatorState);
+
+            if (referenceOperator == null) {
+                referenceOperator = entry.getKey();
+                referenceMaxParallelism = operatorState.getMaxParallelism();
+            } else if (conflictingOperator == null
+                    && operatorState.getMaxParallelism() != referenceMaxParallelism) {
+                conflictingOperator = entry.getKey();
+                conflictingMaxParallelism = operatorState.getMaxParallelism();
+            }
+        }
+
+        if (vertexHasKeyedState && conflictingOperator != null) {
+            throw new IllegalStateException(
+                    "The state for the execution job vertex "
+                            + taskStateAssignment.executionJobVertex.getJobVertexId()
+                            + " can not be restored. Operators "
+                            + referenceOperator
+                            + " and "
+                            + conflictingOperator
+                            + " are chained into the same keyed vertex but recorded different"
+                            + " maximum parallelism in the checkpoint ("
+                            + referenceMaxParallelism
+                            + " and "
+                            + conflictingMaxParallelism
+                            + "). Restoring would remap keyed state through an incompatible"
+                            + " key-group layout. This is currently not supported.");
+        }
+    }
+
+    private static boolean hasKeyedState(OperatorState operatorState) {
+        for (OperatorSubtaskState subtaskState : operatorState.getStates()) {
+            if (!subtaskState.getManagedKeyedState().isEmpty()
+                    || !subtaskState.getRawKeyedState().isEmpty()) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private void reDistributeKeyedStates(
@@ -340,20 +455,21 @@ public class StateAssignmentOperation {
                                         newParallelism)));
     }
 
-    public <I, T extends AbstractChannelStateHandle<I>> void reDistributeResultSubpartitionStates(
-            TaskStateAssignment assignment) {
-        if (!assignment.hasOutputState) {
+    public void reDistributeResultSubpartitionStates(TaskStateAssignment assignment) {
+        // FLINK-31963: We can skip this phase if there is no output state AND downstream has no
+        // input states
+        if (!assignment.hasOutputState() && !assignment.hasDownstreamInputStates()) {
             return;
         }
 
         checkForUnsupportedToplogyChanges(
                 assignment.oldState,
-                OperatorSubtaskState::getResultSubpartitionState,
+                ChannelStateHelper::extractUnmergedOutputHandles,
                 assignment.outputOperatorID);
 
         final OperatorState outputState = assignment.oldState.get(assignment.outputOperatorID);
         final List<List<ResultSubpartitionStateHandle>> outputOperatorState =
-                splitBySubtasks(outputState, OperatorSubtaskState::getResultSubpartitionState);
+                splitBySubtasks(outputState, ChannelStateHelper::extractUnmergedOutputHandles);
 
         final ExecutionJobVertex executionJobVertex = assignment.executionJobVertex;
         final List<IntermediateDataSet> outputs =
@@ -367,6 +483,9 @@ public class StateAssignmentOperation {
         // Parallelism of this vertex changed, distribute ResultSubpartitionStateHandle
         // according to output mapping.
         for (int partitionIndex = 0; partitionIndex < outputs.size(); partitionIndex++) {
+            if (!assignment.hasInFlightDataForResultPartition(partitionIndex)) {
+                continue;
+            }
             final List<List<ResultSubpartitionStateHandle>> partitionState =
                     outputs.size() == 1
                             ? outputOperatorState
@@ -389,13 +508,15 @@ public class StateAssignmentOperation {
     }
 
     public void reDistributeInputChannelStates(TaskStateAssignment stateAssignment) {
-        if (!stateAssignment.hasInputState) {
+        // FLINK-31963: We can skip this phase only if there is no input state AND upstream has no
+        // output states
+        if (!stateAssignment.hasInputState() && !stateAssignment.hasUpstreamOutputStates()) {
             return;
         }
 
         checkForUnsupportedToplogyChanges(
                 stateAssignment.oldState,
-                OperatorSubtaskState::getInputChannelState,
+                ChannelStateHelper::extractUnmergedInputHandles,
                 stateAssignment.inputOperatorID);
 
         final ExecutionJobVertex executionJobVertex = stateAssignment.executionJobVertex;
@@ -405,8 +526,32 @@ public class StateAssignmentOperation {
         final OperatorState inputState =
                 stateAssignment.oldState.get(stateAssignment.inputOperatorID);
         final List<List<InputChannelStateHandle>> inputOperatorState =
-                splitBySubtasks(inputState, OperatorSubtaskState::getInputChannelState);
-        if (inputState.getParallelism() == executionJobVertex.getParallelism()) {
+                splitBySubtasks(inputState, ChannelStateHelper::extractUnmergedInputHandles);
+
+        boolean hasAnyFullMapper =
+                executionJobVertex.getJobVertex().getInputs().stream()
+                        .map(JobEdge::getDownstreamSubtaskStateMapper)
+                        .anyMatch(m -> m.equals(SubtaskStateMapper.FULL));
+        boolean hasAnyPreviousOperatorChanged =
+                executionJobVertex.getInputs().stream()
+                        .map(IntermediateResult::getProducer)
+                        .map(vertexAssignments::get)
+                        .anyMatch(
+                                taskStateAssignment -> {
+                                    final int oldParallelism =
+                                            stateAssignment
+                                                    .oldState
+                                                    .get(stateAssignment.inputOperatorID)
+                                                    .getParallelism();
+                                    return oldParallelism
+                                            != taskStateAssignment.executionJobVertex
+                                                    .getParallelism();
+                                });
+
+        // need rescale if any input operator parallelism was changed and have any input with FULL
+        // subtask state mapper
+        if (inputState.getParallelism() == executionJobVertex.getParallelism()
+                && !(hasAnyFullMapper && hasAnyPreviousOperatorChanged)) {
             stateAssignment.inputChannelStates.putAll(
                     toInstanceMap(stateAssignment.inputOperatorID, inputOperatorState));
             return;
@@ -419,8 +564,11 @@ public class StateAssignmentOperation {
         // old assignment: 0 -> [0;43); 1 -> [43;87); 2 -> [87;128)
         // new assignment: 0 -> [0;64]; 1 -> [64;128)
         // subtask 0 recovers data from old subtask 0 + 1 and subtask 1 recovers data from old
-        // subtask 0 + 2
+        // subtask 1 + 2
         for (int gateIndex = 0; gateIndex < inputs.size(); gateIndex++) {
+            if (!stateAssignment.hasInFlightDataForInputGate(gateIndex)) {
+                continue;
+            }
             final RescaleMappings mapping =
                     stateAssignment.getInputMapping(gateIndex).getRescaleMappings();
 
@@ -430,7 +578,7 @@ public class StateAssignmentOperation {
                             : getPartitionState(
                                     inputOperatorState, InputChannelInfo::getGateIdx, gateIndex);
             final MappingBasedRepartitioner<InputChannelStateHandle> repartitioner =
-                    new MappingBasedRepartitioner(mapping);
+                    new MappingBasedRepartitioner<>(mapping);
             final Map<OperatorInstanceID, List<InputChannelStateHandle>> repartitioned =
                     applyRepartitioner(
                             stateAssignment.inputOperatorID,
@@ -750,7 +898,8 @@ public class StateAssignmentOperation {
 
     private static <T> Map<OperatorInstanceID, List<T>> toInstanceMap(
             OperatorID operatorID, List<List<T>> states) {
-        Map<OperatorInstanceID, List<T>> result = new HashMap<>(states.size());
+        Map<OperatorInstanceID, List<T>> result =
+                CollectionUtil.newHashMapWithExpectedSize(states.size());
 
         for (int subtaskIndex = 0; subtaskIndex < states.size(); subtaskIndex++) {
             checkNotNull(states.get(subtaskIndex) != null, "states.get(subtaskIndex) is null");

@@ -24,6 +24,8 @@ import org.apache.flink.configuration.description.Description;
 import org.apache.flink.configuration.description.InlineElement;
 import org.apache.flink.configuration.description.TextElement;
 
+import java.time.Duration;
+
 import static org.apache.flink.configuration.ClusterOptions.UserSystemExitMode.THROW;
 import static org.apache.flink.configuration.ConfigOptions.key;
 import static org.apache.flink.configuration.description.LinkElement.link;
@@ -34,45 +36,60 @@ import static org.apache.flink.configuration.description.TextElement.text;
 @PublicEvolving
 public class ClusterOptions {
 
+    @Documentation.Section(Documentation.Sections.EXPERT_CLUSTER)
+    public static final ConfigOption<String> CLUSTER_ID =
+            key("cluster.id")
+                    .stringType()
+                    .defaultValue("00000000000000000000000000000000")
+                    .withDescription(
+                            Description.builder()
+                                    .text(
+                                            "The ID of the Flink cluster, used to separate multiple Flink clusters from each other. "
+                                                    + "Currently, this option is primarily used to determine the archive path, "
+                                                    + "and may also be used as the fixed application/job id (if not specified by the user) in high availability mode."
+                                                    + "The expected format is [0-9a-fA-F]{32}, e.g. fd72014d4c864993a2e5a9287b4a9c5d.")
+                                    .linebreak()
+                                    .text(
+                                            "If this option is not configured but %s is configured, the value will be derived from the value of %s.",
+                                            code(HighAvailabilityOptions.HA_CLUSTER_ID.key()),
+                                            code(HighAvailabilityOptions.HA_CLUSTER_ID.key()))
+                                    .build());
+
     @Documentation.Section(Documentation.Sections.EXPERT_FAULT_TOLERANCE)
-    public static final ConfigOption<Long> INITIAL_REGISTRATION_TIMEOUT =
+    public static final ConfigOption<Duration> INITIAL_REGISTRATION_TIMEOUT =
             ConfigOptions.key("cluster.registration.initial-timeout")
-                    .longType()
-                    .defaultValue(100L)
-                    .withDescription(
-                            "Initial registration timeout between cluster components in milliseconds.");
+                    .durationType()
+                    .defaultValue(Duration.ofMillis(100))
+                    .withDescription("Initial registration timeout between cluster components.");
 
     @Documentation.Section(Documentation.Sections.EXPERT_FAULT_TOLERANCE)
-    public static final ConfigOption<Long> MAX_REGISTRATION_TIMEOUT =
-            ConfigOptions.key("cluster.registration.max-timeout")
-                    .longType()
-                    .defaultValue(30000L)
-                    .withDescription(
-                            "Maximum registration timeout between cluster components in milliseconds.");
+    public static final ConfigOption<Duration> MAX_REGISTRATION_TIMEOUT =
+            key("cluster.registration.max-timeout")
+                    .durationType()
+                    .defaultValue(Duration.ofMillis(30000))
+                    .withDescription("Maximum registration timeout between cluster components.");
 
     @Documentation.Section(Documentation.Sections.EXPERT_FAULT_TOLERANCE)
-    public static final ConfigOption<Long> ERROR_REGISTRATION_DELAY =
+    public static final ConfigOption<Duration> ERROR_REGISTRATION_DELAY =
             ConfigOptions.key("cluster.registration.error-delay")
-                    .longType()
-                    .defaultValue(10000L)
+                    .durationType()
+                    .defaultValue(Duration.ofMillis(10000L))
                     .withDescription(
-                            "The pause made after an registration attempt caused an exception (other than timeout) in milliseconds.");
+                            "The pause made after an registration attempt caused an exception (other than timeout).");
 
     @Documentation.Section(Documentation.Sections.EXPERT_FAULT_TOLERANCE)
-    public static final ConfigOption<Long> REFUSED_REGISTRATION_DELAY =
+    public static final ConfigOption<Duration> REFUSED_REGISTRATION_DELAY =
             ConfigOptions.key("cluster.registration.refused-registration-delay")
-                    .longType()
-                    .defaultValue(30000L)
-                    .withDescription(
-                            "The pause made after the registration attempt was refused in milliseconds.");
+                    .durationType()
+                    .defaultValue(Duration.ofMillis(30000L))
+                    .withDescription("The pause made after the registration attempt was refused.");
 
     @Documentation.Section(Documentation.Sections.EXPERT_FAULT_TOLERANCE)
-    public static final ConfigOption<Long> CLUSTER_SERVICES_SHUTDOWN_TIMEOUT =
+    public static final ConfigOption<Duration> CLUSTER_SERVICES_SHUTDOWN_TIMEOUT =
             ConfigOptions.key("cluster.services.shutdown-timeout")
-                    .longType()
-                    .defaultValue(30000L)
-                    .withDescription(
-                            "The shutdown timeout for cluster services like executors in milliseconds.");
+                    .durationType()
+                    .defaultValue(Duration.ofMillis(30000L))
+                    .withDescription("The shutdown timeout for cluster services like executors.");
 
     @Documentation.Section(Documentation.Sections.EXPERT_FAULT_TOLERANCE)
     public static final ConfigOption<Integer> CLUSTER_IO_EXECUTOR_POOL_SIZE =
@@ -83,19 +100,6 @@ public class ClusterOptions {
                             "The size of the IO executor pool used by the cluster to execute blocking IO operations (Master as well as TaskManager processes). "
                                     + "By default it will use 4 * the number of CPU cores (hardware contexts) that the cluster process has access to. "
                                     + "Increasing the pool size allows to run more IO operations concurrently.");
-
-    @Documentation.Section(Documentation.Sections.EXPERT_SCHEDULING)
-    public static final ConfigOption<Boolean> EVENLY_SPREAD_OUT_SLOTS_STRATEGY =
-            ConfigOptions.key("cluster.evenly-spread-out-slots")
-                    .booleanType()
-                    .defaultValue(false)
-                    .withDescription(
-                            Description.builder()
-                                    .text(
-                                            "Enable the slot spread out allocation strategy. This strategy tries to spread out "
-                                                    + "the slots evenly across all available %s.",
-                                            code("TaskExecutors"))
-                                    .build());
 
     @Documentation.Section(Documentation.Sections.EXPERT_CLUSTER)
     public static final ConfigOption<Boolean> HALT_ON_FATAL_ERROR =
@@ -132,25 +136,27 @@ public class ClusterOptions {
     public static final ConfigOption<Integer> THREAD_DUMP_STACKTRACE_MAX_DEPTH =
             key("cluster.thread-dump.stacktrace-max-depth")
                     .intType()
-                    .defaultValue(8)
+                    .defaultValue(50)
                     .withDescription(
                             "The maximum stacktrace depth of TaskManager and JobManager's thread dump web-frontend displayed.");
 
-    @Documentation.Section(Documentation.Sections.EXPERT_SCHEDULING)
-    public static final ConfigOption<Boolean> ENABLE_FINE_GRAINED_RESOURCE_MANAGEMENT =
-            ConfigOptions.key("cluster.fine-grained-resource-management.enabled")
-                    .booleanType()
-                    .defaultValue(false)
+    @Documentation.Section(Documentation.Sections.EXPERT_CLUSTER)
+    public static final ConfigOption<ThreadDumpMode> THREAD_DUMP_DEFAULT_MODE =
+            key("cluster.thread-dump.default-mode")
+                    .enumType(ThreadDumpMode.class)
+                    .defaultValue(ThreadDumpMode.FULL)
                     .withDescription(
-                            "Defines whether the cluster uses fine-grained resource management.");
-
-    @Documentation.Section(Documentation.Sections.EXPERT_SCHEDULING)
-    public static final ConfigOption<Boolean> FINE_GRAINED_SHUFFLE_MODE_ALL_BLOCKING =
-            ConfigOptions.key("fine-grained.shuffle-mode.all-blocking")
-                    .booleanType()
-                    .defaultValue(false)
-                    .withDescription(
-                            "Whether to convert all PIPELINE edges to BLOCKING when apply fine-grained resource management in batch jobs.");
+                            Description.builder()
+                                    .text(
+                                            "Default granularity of the JobManager/TaskManager thread-dump REST endpoint "
+                                                    + "when no explicit %s query parameter is supplied. ",
+                                            code("mode"))
+                                    .text(
+                                            "The default is %s to preserve historical behavior; operators of large "
+                                                    + "clusters are strongly encouraged to switch to %s to avoid "
+                                                    + "heartbeat timeouts caused by long safepoint pauses.",
+                                            code("FULL"), code("LITE"))
+                                    .build());
 
     @Documentation.Section(Documentation.Sections.EXPERT_CLUSTER)
     public static final ConfigOption<UncaughtExceptionHandleMode> UNCAUGHT_EXCEPTION_HANDLING =
@@ -213,7 +219,7 @@ public class ClusterOptions {
         }
     }
 
-    private static boolean isReactiveModeEnabled(Configuration configuration) {
+    public static boolean isReactiveModeEnabled(Configuration configuration) {
         return configuration.get(JobManagerOptions.SCHEDULER_MODE)
                 == SchedulerExecutionMode.REACTIVE;
     }
@@ -224,14 +230,6 @@ public class ClusterOptions {
                     == JobManagerOptions.SchedulerType.Adaptive;
         } else {
             return System.getProperties().containsKey("flink.tests.enable-adaptive-scheduler");
-        }
-    }
-
-    public static boolean isFineGrainedResourceManagementEnabled(Configuration configuration) {
-        if (configuration.contains(ENABLE_FINE_GRAINED_RESOURCE_MANAGEMENT)) {
-            return configuration.get(ENABLE_FINE_GRAINED_RESOURCE_MANAGEMENT);
-        } else {
-            return System.getProperties().containsKey("flink.tests.enable-fine-grained");
         }
     }
 
@@ -253,7 +251,9 @@ public class ClusterOptions {
         }
     }
 
-    /** @see ClusterOptions#UNCAUGHT_EXCEPTION_HANDLING */
+    /**
+     * @see ClusterOptions#UNCAUGHT_EXCEPTION_HANDLING
+     */
     public enum UncaughtExceptionHandleMode {
         LOG,
         FAIL

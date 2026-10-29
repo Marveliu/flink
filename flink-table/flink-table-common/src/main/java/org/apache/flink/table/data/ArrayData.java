@@ -22,6 +22,8 @@ import org.apache.flink.annotation.PublicEvolving;
 import org.apache.flink.table.types.logical.ArrayType;
 import org.apache.flink.table.types.logical.DistinctType;
 import org.apache.flink.table.types.logical.LogicalType;
+import org.apache.flink.types.bitmap.Bitmap;
+import org.apache.flink.types.variant.Variant;
 
 import javax.annotation.Nullable;
 
@@ -96,6 +98,9 @@ public interface ArrayData {
     /** Returns the raw value at the given position. */
     <T> RawValueData<T> getRawValue(int pos);
 
+    /** Returns the Variant value at the given position. */
+    Variant getVariant(int i);
+
     /** Returns the binary value at the given position. */
     byte[] getBinary(int pos);
 
@@ -111,6 +116,12 @@ public interface ArrayData {
      * <p>The number of fields is required to correctly extract the row.
      */
     RowData getRow(int pos, int numFields);
+
+    /** Returns the bitmap value at the given position. */
+    default Bitmap getBitmap(int pos) {
+        throw new UnsupportedOperationException(
+                "This ArrayData implementation does not support Bitmap type.");
+    }
 
     // ------------------------------------------------------------------------------------------
     // Conversion Utilities
@@ -153,6 +164,7 @@ public interface ArrayData {
                 break;
             case BINARY:
             case VARBINARY:
+            case UUID:
                 elementGetter = ArrayData::getBinary;
                 break;
             case DECIMAL:
@@ -208,14 +220,18 @@ public interface ArrayData {
             case RAW:
                 elementGetter = ArrayData::getRawValue;
                 break;
+            case VARIANT:
+                elementGetter = ArrayData::getVariant;
+                break;
+            case BITMAP:
+                elementGetter = ArrayData::getBitmap;
+                break;
             case NULL:
             case SYMBOL:
             case UNRESOLVED:
+            case DESCRIPTOR:
             default:
                 throw new IllegalArgumentException();
-        }
-        if (!elementType.isNullable()) {
-            return elementGetter;
         }
         return (array, pos) -> {
             if (array.isNullAt(pos)) {
@@ -232,6 +248,12 @@ public interface ArrayData {
      */
     @PublicEvolving
     interface ElementGetter extends Serializable {
+
+        /**
+         * Converters and serializers always support nullability. The NOT NULL constraint is only
+         * considered on SQL semantic level but not data transfer. E.g. partial deletes (i.e.
+         * key-only upserts) set all non-key fields to null, regardless of logical type.
+         */
         @Nullable
         Object getElementOrNull(ArrayData array, int pos);
     }

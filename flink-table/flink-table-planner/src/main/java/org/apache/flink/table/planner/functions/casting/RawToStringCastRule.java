@@ -19,12 +19,12 @@
 package org.apache.flink.table.planner.functions.casting;
 
 import org.apache.flink.table.planner.codegen.CodeGenUtils;
+import org.apache.flink.table.planner.codegen.CodeGeneratorContext;
 import org.apache.flink.table.types.logical.LogicalType;
 import org.apache.flink.table.types.logical.LogicalTypeFamily;
 import org.apache.flink.table.types.logical.LogicalTypeRoot;
 import org.apache.flink.table.types.logical.utils.LogicalTypeChecks;
 
-import static org.apache.flink.table.codesplit.CodeSplitUtil.newName;
 import static org.apache.flink.table.planner.codegen.calls.BuiltInMethods.BINARY_STRING_DATA_FROM_STRING;
 import static org.apache.flink.table.planner.functions.casting.CastRuleUtils.methodCall;
 
@@ -47,20 +47,16 @@ class RawToStringCastRule extends AbstractNullAwareCodeGeneratorCastRule<Object,
     if (!isNull$0) {
         java.lang.Object deserializedObj$0 = _myInput.toObject(typeSerializer$2);
         if (deserializedObj$0 != null) {
+            java.lang.String deserializedObjString$2 = deserializedObj$0.toString();
             java.lang.String resultString$1;
-            resultString$1 = deserializedObj$0.toString().toString();
-            if (deserializedObj$0.toString().length() > 12) {
-                resultString$1 = deserializedObj$0.toString().substring(0, java.lang.Math.min(deserializedObj$0.toString().length(), 12));
+            if (deserializedObjString$2.length() > 12) {
+                resultString$1 = deserializedObjString$2.substring(0, 12);
             } else {
-                if (resultString$1.length() < 12) {
-                    int padLength$2;
-                    padLength$2 = 12 - resultString$1.length();
-                    java.lang.StringBuilder sbPadding$3;
-                    sbPadding$3 = new java.lang.StringBuilder();
-                    for (int i$4 = 0; i$4 < padLength$2; i$4++) {
-                        sbPadding$3.append(" ");
-                    }
-                    resultString$1 = resultString$1 + sbPadding$3.toString();
+                resultString$1 = deserializedObjString$2.toString();
+                if (deserializedObjString$2.length() < 12) {
+                    int padLength$3;
+                    padLength$3 = 12 - deserializedObjString$2.length();
+                    resultString$1 = resultString$1 + " ".repeat(padLength$3);
                 }
             }
             result$1 = org.apache.flink.table.data.binary.BinaryStringData.fromString(resultString$1);
@@ -72,6 +68,9 @@ class RawToStringCastRule extends AbstractNullAwareCodeGeneratorCastRule<Object,
         result$1 = org.apache.flink.table.data.binary.BinaryStringData.EMPTY_UTF8;
     }
 
+    returnTerm = result$1
+    isNullTerm = isNull$0
+
      */
     @Override
     protected String generateCodeBlockInternal(
@@ -80,10 +79,14 @@ class RawToStringCastRule extends AbstractNullAwareCodeGeneratorCastRule<Object,
             String returnVariable,
             LogicalType inputLogicalType,
             LogicalType targetLogicalType) {
+        CodeGeneratorContext codeGeneratorContext = context.getCodeGeneratorContext();
         final String typeSerializer = context.declareTypeSerializer(inputLogicalType);
-        final String deserializedObjTerm = newName("deserializedObj");
+        final String deserializedObjTerm =
+                CodeGenUtils.newName(codeGeneratorContext, "deserializedObj");
 
-        final String resultStringTerm = CodeGenUtils.newName("resultString");
+        final String resultStringTerm = CodeGenUtils.newName(codeGeneratorContext, "resultString");
+        final String deserializedObjStringTerm =
+                CodeGenUtils.newName(codeGeneratorContext, "deserializedObjString");
         final int length = LogicalTypeChecks.getLength(targetLogicalType);
 
         return new CastRuleUtils.CodeWriter()
@@ -95,12 +98,20 @@ class RawToStringCastRule extends AbstractNullAwareCodeGeneratorCastRule<Object,
                         deserializedObjTerm + " != null",
                         thenWriter ->
                                 CharVarCharTrimPadCastRule.padAndTrimStringIfNeeded(
-                                                thenWriter,
+                                                // toString() on a deserialized RAW value is
+                                                // user-defined and can be arbitrarily expensive,
+                                                // so it's computed once here.
+                                                thenWriter.declStmt(
+                                                        String.class,
+                                                        deserializedObjStringTerm,
+                                                        methodCall(
+                                                                deserializedObjTerm, "toString")),
                                                 targetLogicalType,
                                                 context.legacyBehaviour(),
                                                 length,
                                                 resultStringTerm,
-                                                methodCall(deserializedObjTerm, "toString"))
+                                                deserializedObjStringTerm,
+                                                context.getCodeGeneratorContext())
                                         .assignStmt(
                                                 returnVariable,
                                                 CastRuleUtils.staticCall(

@@ -34,10 +34,10 @@ Flink 利用 **[ZooKeeper](http://zookeeper.apache.org)** 在所有运行的 Job
 
 为了启用高可用集群（HA-cluster），你必须设置以下配置项:
 
-- [high-availability]({{< ref "docs/deployment/config" >}}#high-availability-1) (必要的):
-  `high-availability` 配置项必须设置为 `zookeeper`。
+- [high-availability.type]({{< ref "docs/deployment/config" >}}#high-availability-type) (必要的):
+  `high-availability.type` 配置项必须设置为 `zookeeper`。
 
-  <pre>high-availability: zookeeper</pre>
+  <pre>high-availability.type: zookeeper</pre>
 
 - [high-availability.storageDir]({{< ref "docs/deployment/config" >}}#high-availability-storagedir) (必要的):
   JobManager 元数据持久化到文件系统 `high-availability.storageDir` 配置的路径中，并且在 ZooKeeper 中只能有一个目录指向此位置。
@@ -68,10 +68,10 @@ Flink 利用 **[ZooKeeper](http://zookeeper.apache.org)** 在所有运行的 Job
 
 ### 配置示例
 
-在 `conf/flink-conf.yaml` 中配置高可用模式和 ZooKeeper 复制组（quorum）:
+在 [Flink 配置文件]({{< ref "docs/deployment/config#flink-配置文件" >}}) 中配置高可用模式和 ZooKeeper 复制组（quorum）:
 
 ```bash
-high-availability: zookeeper
+high-availability.type: zookeeper
 high-availability.zookeeper.quorum: localhost:2181
 high-availability.zookeeper.path.root: /flink
 high-availability.cluster-id: /cluster_one # 重要: 每个集群自定义
@@ -82,7 +82,7 @@ high-availability.storageDir: hdfs:///flink/recovery
 
 ## ZooKeeper 安全配置
 
-如果 ZooKeeper 使用 Kerberos 以安全模式运行，必要时可以在 `flink-conf.yaml` 中覆盖以下配置:
+如果 ZooKeeper 使用 Kerberos 以安全模式运行，必要时可以在 [Flink 配置文件]({{< ref "docs/deployment/config#flink-配置文件" >}}) 中覆盖以下配置:
 
 ```bash
 # 默认配置为 "zookeeper". 如果 ZooKeeper quorum 配置了不同的服务名称，
@@ -98,7 +98,20 @@ zookeeper.sasl.login-context-name: Client
 
 {{< top >}}
 
-## Advanced Configuration
+## 高级配置
+
+### ZooKeeper 客户端重试配置
+
+当 ZooKeeper 连接失败或中断时，Flink 会使用有界指数退避策略自动重试连接。该策略会逐步增加重试之间的等待时间（每次加倍），以避免对 ZooKeeper 集群造成过大压力，同时限制最大等待时间以确保能够相对快速地恢复。
+
+- **[high-availability.zookeeper.client.retry-wait]({{< ref "docs/deployment/config" >}}#high-availability-zookeeper-client-retry-wait)** (默认值: `5s`):
+  连续重试之间的初始等待时间。该值会随着每次重试而加倍（指数退避）。
+
+- **[high-availability.zookeeper.client.max-retry-wait]({{< ref "docs/deployment/config" >}}#high-availability-zookeeper-client-max-retry-wait)** (默认值: `60s`):
+  重试之间的最大等待时间。这限制了指数退避，以确保在 ZooKeeper 长时间故障期间恢复不会变得过慢。
+
+- **[high-availability.zookeeper.client.max-retry-attempts]({{< ref "docs/deployment/config" >}}#high-availability-zookeeper-client-max-retry-attempts)** (默认值: `3`):
+  放弃之前的最大连接重试次数。在这么多次失败尝试后，操作将失败。
 
 ### Tolerating Suspended ZooKeeper Connections
 
@@ -109,17 +122,7 @@ This behaviour might be too disruptive in some cases (e.g., unstable network env
 If you are willing to take a more aggressive approach, then you can tolerate suspended ZooKeeper connections and only treat lost connections as an error via [high-availability.zookeeper.client.tolerate-suspended-connections]({{< ref "docs/deployment/config" >}}#high-availability-zookeeper-client-tolerate-suspended-connection).
 Enabling this feature will make Flink more resilient against temporary connection problems but also increase the risk of running into ZooKeeper timing problems.
 
-For more information take a look at [Curator's error handling](https://curator.apache.org/errors.html).
-
-## ZooKeeper 版本
-
-Flink 附带了 3.4 和 3.5 的单独的 ZooKeeper 客户端，其中 3.4 位于发行版的 `lib` 目录中，为默认使用版本，而 3.5 位于 opt 目录中。
-
-3.5 客户端允许你通过 SSL 保护 ZooKeeper 连接，但 _可能_ 不适用于 3.4 版本的 ZooKeeper 安装。
-
-你可以通过在 `lib` 目录中放置任意一个 jar 来控制 Flink 使用哪个版本。
-
-{{< top >}}
+For more information take a look at [Curator's error handling](https://curator.apache.org/docs/errors).
 
 <a name="bootstrap-zookeeper" />
 

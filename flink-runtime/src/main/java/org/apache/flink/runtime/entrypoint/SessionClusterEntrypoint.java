@@ -18,19 +18,20 @@
 
 package org.apache.flink.runtime.entrypoint;
 
-import org.apache.flink.api.common.time.Time;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.ConfigurationUtils;
 import org.apache.flink.configuration.JobManagerOptions;
-import org.apache.flink.runtime.dispatcher.ExecutionGraphInfoStore;
-import org.apache.flink.runtime.dispatcher.FileExecutionGraphInfoStore;
-import org.apache.flink.runtime.dispatcher.MemoryExecutionGraphInfoStore;
+import org.apache.flink.runtime.dispatcher.ArchivedApplicationStore;
+import org.apache.flink.runtime.dispatcher.FileArchivedApplicationStore;
+import org.apache.flink.runtime.dispatcher.MemoryArchivedApplicationStore;
+import org.apache.flink.runtime.util.ArchivedApplicationStoreUtils;
 import org.apache.flink.util.concurrent.ScheduledExecutor;
 
-import org.apache.flink.shaded.guava30.com.google.common.base.Ticker;
+import org.apache.flink.shaded.guava33.com.google.common.base.Ticker;
 
 import java.io.File;
 import java.io.IOException;
+import java.time.Duration;
 
 /** Base class for session cluster entry points. */
 public abstract class SessionClusterEntrypoint extends ClusterEntrypoint {
@@ -40,24 +41,25 @@ public abstract class SessionClusterEntrypoint extends ClusterEntrypoint {
     }
 
     @Override
-    protected ExecutionGraphInfoStore createSerializableExecutionGraphStore(
+    protected ArchivedApplicationStore createArchivedApplicationStore(
             Configuration configuration, ScheduledExecutor scheduledExecutor) throws IOException {
-        final JobManagerOptions.JobStoreType jobStoreType =
-                configuration.get(JobManagerOptions.JOB_STORE_TYPE);
-        final Time expirationTime =
-                Time.seconds(configuration.getLong(JobManagerOptions.JOB_STORE_EXPIRATION_TIME));
+        final JobManagerOptions.ArchivedApplicationStoreType archivedApplicationStoreType =
+                configuration.get(JobManagerOptions.COMPLETED_APPLICATION_STORE_TYPE);
+        final Duration expirationTime =
+                ArchivedApplicationStoreUtils.getExpirationTime(configuration);
         final int maximumCapacity =
-                configuration.getInteger(JobManagerOptions.JOB_STORE_MAX_CAPACITY);
+                configuration.get(JobManagerOptions.COMPLETED_APPLICATION_STORE_MAX_CAPACITY);
 
-        switch (jobStoreType) {
+        switch (archivedApplicationStoreType) {
             case File:
                 {
                     final File tmpDir =
                             new File(ConfigurationUtils.parseTempDirectories(configuration)[0]);
                     final long maximumCacheSizeBytes =
-                            configuration.getLong(JobManagerOptions.JOB_STORE_CACHE_SIZE);
+                            configuration.get(
+                                    JobManagerOptions.COMPLETED_APPLICATION_STORE_CACHE_SIZE);
 
-                    return new FileExecutionGraphInfoStore(
+                    return new FileArchivedApplicationStore(
                             tmpDir,
                             expirationTime,
                             maximumCapacity,
@@ -67,7 +69,7 @@ public abstract class SessionClusterEntrypoint extends ClusterEntrypoint {
                 }
             case Memory:
                 {
-                    return new MemoryExecutionGraphInfoStore(
+                    return new MemoryArchivedApplicationStore(
                             expirationTime,
                             maximumCapacity,
                             scheduledExecutor,
@@ -76,7 +78,8 @@ public abstract class SessionClusterEntrypoint extends ClusterEntrypoint {
             default:
                 {
                     throw new IllegalArgumentException(
-                            "Unsupported job store type " + jobStoreType);
+                            "Unsupported archived application store type "
+                                    + archivedApplicationStoreType);
                 }
         }
     }

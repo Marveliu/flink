@@ -18,11 +18,14 @@
 
 package org.apache.flink.table.functions.python;
 
+import org.apache.flink.annotation.Internal;
+
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 
 /** The list of the built-in aggregate functions which can be mixed with the Python UDAF. */
+@Internal
 public enum BuiltInPythonAggregateFunction implements PythonFunction {
 
     /*
@@ -46,7 +49,8 @@ public enum BuiltInPythonAggregateFunction implements PythonFunction {
     FLOAT_SUM0("FloatSum0AggFunction"),
     DECIMAL_SUM0("DecimalSum0AggFunction"),
     SUM("SumAggFunction"),
-    SUM_RETRACT("SumWithRetractAggFunction");
+    SUM_RETRACT("SumWithRetractAggFunction"),
+    WELFORD_M2("WelfordM2AggFunction");
 
     private final byte[] payload;
 

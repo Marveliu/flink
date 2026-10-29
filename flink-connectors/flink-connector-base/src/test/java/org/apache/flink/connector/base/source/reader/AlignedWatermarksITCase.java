@@ -27,6 +27,7 @@ import org.apache.flink.api.common.eventtime.WatermarkStrategy;
 import org.apache.flink.api.common.functions.RichMapFunction;
 import org.apache.flink.api.connector.source.lib.NumberSequenceSource;
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.configuration.PipelineOptions;
 import org.apache.flink.metrics.Gauge;
 import org.apache.flink.metrics.Metric;
 import org.apache.flink.runtime.jobgraph.JobGraph;
@@ -37,7 +38,7 @@ import org.apache.flink.runtime.testutils.InMemoryReporter;
 import org.apache.flink.runtime.testutils.MiniClusterResourceConfiguration;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
-import org.apache.flink.streaming.api.functions.sink.DiscardingSink;
+import org.apache.flink.streaming.api.functions.sink.v2.DiscardingSink;
 import org.apache.flink.test.junit5.InjectMiniCluster;
 import org.apache.flink.test.junit5.MiniClusterExtension;
 import org.apache.flink.testutils.logging.LoggerAuditingExtension;
@@ -59,7 +60,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * it should never increase any further, but gradually decrease to the configured threshold, as the
  * slower source catches up.
  */
-public class AlignedWatermarksITCase {
+class AlignedWatermarksITCase {
     public static final String SLOW_SOURCE_NAME = "SlowNumberSequenceSource";
     public static final String FAST_SOURCE_NAME = "FastNumberSequenceSource";
     private static final Duration UPDATE_INTERVAL = Duration.ofMillis(100);
@@ -76,11 +77,17 @@ public class AlignedWatermarksITCase {
             new MiniClusterExtension(
                     new MiniClusterResourceConfiguration.Builder()
                             .setNumberTaskManagers(1)
-                            .setConfiguration(reporter.addToConfiguration(new Configuration()))
+                            .setConfiguration(
+                                    reporter.addToConfiguration(
+                                            new Configuration()
+                                                    .set(
+                                                            PipelineOptions
+                                                                    .WATERMARK_ALIGNMENT_BUFFER_SIZE,
+                                                            0)))
                             .build());
 
     @Test
-    public void testAlignment(@InjectMiniCluster MiniCluster miniCluster) throws Exception {
+    void testAlignment(@InjectMiniCluster MiniCluster miniCluster) throws Exception {
         final JobGraph jobGraph = getJobGraph();
         final CompletableFuture<JobSubmissionResult> submission = miniCluster.submitJob(jobGraph);
         final JobID jobID = submission.get().getJobID();
@@ -145,7 +152,7 @@ public class AlignedWatermarksITCase {
                                     }
                                 });
 
-        slowSource.union(fastSource).addSink(new DiscardingSink<>());
+        slowSource.union(fastSource).sinkTo(new DiscardingSink<>());
 
         return env.getStreamGraph().getJobGraph();
     }

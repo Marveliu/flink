@@ -1,0 +1,631 @@
+---
+title: "Joins"
+weight: 10
+type: docs
+aliases:
+  - /dev/table/streaming/joins.html
+---
+<!--
+Licensed to the Apache Software Foundation (ASF) under one
+or more contributor license agreements.  See the NOTICE file
+distributed with this work for additional information
+regarding copyright ownership.  The ASF licenses this file
+to you under the Apache License, Version 2.0 (the
+"License"); you may not use this file except in compliance
+with the License.  You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.
+-->
+
+# Joins
+
+{{< label Batch >}} {{< label Streaming >}}
+
+Flink SQL supports complex and flexible join operations over dynamic tables. 
+There are several different types of joins to account for the wide variety of semantics queries may require. 
+
+By default, the order of joins is not optimized. Tables are joined in the order in which they are specified in the `FROM` clause. You can tweak the performance of your join queries, by listing the tables with the lowest update frequency first and the tables with the highest update frequency last. Make sure to specify tables in an order that does not yield a cross join (Cartesian product), which are not supported and would cause a query to fail.
+
+Regular Joins
+-------------
+
+Regular joins are the most generic type of join in which any new record, or changes to either side of the join, are visible and affect the entirety of the join result. 
+For example, if there is a new record on the left side, it will be joined with all the previous and future records on the right side when the product id equals. 
+
+```sql
+SELECT * FROM Orders
+INNER JOIN Product
+ON Orders.productId = Product.id
+```
+
+For streaming queries, the grammar of regular joins is the most flexible and allow for any kind of updating (insert, update, delete) input table.
+However, this operation has important operational implications: it requires to keep both sides of the join input in Flink state forever.
+Thus, the required state for computing the query result might grow infinitely depending on the number of distinct input rows of all input tables and intermediate join results. You can provide a query configuration with an appropriate state time-to-live (TTL) to prevent excessive state size. Note that this might affect the correctness of the query result. See [query configuration]({{< ref "docs/dev/table/config" >}}#table-exec-state-ttl) for details.
+
+{{< query_state_warning >}}
+
+### INNER Equi-JOIN
+
+Returns a simple Cartesian product restricted by the join condition. Currently, only equi-joins are supported, i.e., joins that have at least one conjunctive condition with an equality predicate. Arbitrary cross or theta joins are not supported.
+
+```sql
+SELECT *
+FROM Orders
+INNER JOIN Product
+ON Orders.product_id = Product.id
+```
+
+### OUTER Equi-JOIN
+
+Returns all rows in the qualified Cartesian product (i.e., all combined rows that pass its join condition), plus one copy of each row in an outer table for which the join condition did not match with any row of the other table. Flink supports LEFT, RIGHT, and FULL outer joins. Currently, only equi-joins are supported, i.e., joins with at least one conjunctive condition with an equality predicate. Arbitrary cross or theta joins are not supported.
+
+```sql
+SELECT *
+FROM Orders
+LEFT JOIN Product
+ON Orders.product_id = Product.id
+
+SELECT *
+FROM Orders
+RIGHT JOIN Product
+ON Orders.product_id = Product.id
+
+SELECT *
+FROM Orders
+FULL OUTER JOIN Product
+ON Orders.product_id = Product.id
+```
+
+### Multiple Regular Joins
+If you are facing issues with the performance of your multiple chained joins and these generate a lot of state, consider using the `MultiJoin` operator. See [tuning multiple regular joins]({{< ref "docs/dev/table/tuning" >}}#multiple-regular-joins) for details.
+
+Interval Joins
+--------------
+
+Returns a simple Cartesian product restricted by the join condition and a time constraint. An interval join requires at least one equi-join predicate and a join condition that bounds the time on both sides. Two appropriate range predicates can define such a condition (<, <=, >=, >), a BETWEEN predicate, or a single equality predicate that compares [time attributes]({{< ref "docs/concepts/sql-table-concepts/time_attributes" >}}) of the same type (i.e., processing time or event time) of both input tables.
+
+For example, this query will join all orders with their corresponding shipments if the order was shipped four hours after the order was received.
+
+```sql
+SELECT *
+FROM Orders o, Shipments s
+WHERE o.id = s.order_id
+AND o.order_time BETWEEN s.ship_time - INTERVAL '4' HOUR AND s.ship_time
+```
+
+The following predicates are examples of valid interval join conditions:
+
+- `ltime = rtime`
+- `ltime >= rtime AND ltime < rtime + INTERVAL '10' MINUTE`
+- `ltime BETWEEN rtime - INTERVAL '10' SECOND AND rtime + INTERVAL '5' SECOND`
+
+For streaming queries, compared to the regular join, interval join only supports append-only tables with time attributes.
+Since time attributes are quasi-monotonic increasing, Flink can remove old values from its state without affecting the correctness of the result.
+
+### Early Fire for Outer Interval Joins
+
+By default an outer interval join waits for the time window of an unmatched row to fully close before emitting that row null-padded. The `EARLY_FIRE` hint shortens this wait: an unmatched outer row is emitted speculatively with a null-padded counterpart after a configurable `delay`, and corrected later if a real match arrives within the window. This trades the append-only result for an updating one, so the downstream sink must accept updates.
+
+```sql
+SELECT /*+ EARLY_FIRE('delay'='5s') */ o.id, s.ship_time
+FROM Orders o
+LEFT OUTER JOIN Shipments s
+ON o.id = s.order_id
+AND o.order_time BETWEEN s.ship_time - INTERVAL '1' HOUR AND s.ship_time
+```
+
+When an order has no shipment yet, the join emits `+I[id, NULL]` once the `delay` has elapsed, instead of waiting for the order's one-hour window to close. If a matching shipment later arrives inside the window, the speculative row is corrected with `-U[id, NULL]` followed by `+U[id, ship_time]`. Each outer row fires at most once; the hint does not emit periodically.
+
+The hint accepts the following options:
+
+| Option | Required | Description |
+| --- | --- | --- |
+| `target` | no | The operator kind the hint applies to. Currently only `interval_join` is supported; any other value is an error. When omitted, the hint applies to the interval join. |
+| `delay` | yes | A duration of at least 1 millisecond (for example `'5s'`). In `rowtime` mode it is measured from the row's time attribute; in `proctime` mode it is measured from the wall-clock time at which the row is processed. The speculative null-padded row is emitted once this delay elapses without a match. |
+| `time-mode` | no | Either `rowtime` or `proctime`. Controls whether the delay is measured against the watermark (`rowtime`) or wall-clock time (`proctime`). Defaults to `rowtime` for an event-time join and `proctime` for a processing-time join. Setting `'time-mode'='proctime'` on an event-time join triggers early fire on wall-clock time instead of the watermark, which helps when watermarks are sparse or stalled; matching and state cleanup still follow event time, and the join keeps extra state on each input to track the pending early fires. Setting `'time-mode'='rowtime'` on a processing-time join is an error. |
+
+The hint only affects outer joins (`LEFT`, `RIGHT`, `FULL`). It is ignored on inner joins and on joins whose window has a negative span, both of which remain append-only.
+
+**Note:** `EARLY_FIRE` is unrelated to the `table.exec.emit.early-fire.*` configuration, which controls early firing for windowed aggregations rather than interval joins.
+
+Temporal Joins
+--------------
+
+A Temporal table is a table that evolves over time - otherwise known in Flink as a [dynamic table]({{< ref "docs/concepts/sql-table-concepts/dynamic_tables" >}}). Rows in a temporal table are associated with one or more temporal periods and all Flink tables are temporal(dynamic).
+The temporal table contains one or more versioned table snapshots, it can be a changing history table which tracks the changes(e.g. database changelog, contains all snapshots) or a changing dimensioned table which materializes the changes(e.g. database table which contains the latest snapshot). 
+
+### Event Time Temporal Join
+
+Event Time temporal joins allow joining against a [versioned table]({{< ref "docs/concepts/sql-table-concepts/versioned_tables" >}}).
+This means a table can be enriched with changing metadata and retrieve its value at a certain point in time. 
+
+Temporal joins take an arbitrary table (left input/probe site) and correlate each row to the corresponding row's relevant version in the versioned table (right input/build side). 
+Flink uses the SQL syntax of `FOR SYSTEM_TIME AS OF` to perform this operation from the SQL:2011 standard. 
+The syntax of a temporal join is as follows;
+
+```sql
+SELECT [column_list]
+FROM table1 [AS <alias1>]
+[LEFT] JOIN table2 FOR SYSTEM_TIME AS OF table1.{ proctime | rowtime } [AS <alias2>]
+ON table1.column-name1 = table2.column-name1
+```
+
+With an event-time attribute (i.e., a rowtime attribute), it is possible to retrieve the value of a key as it was at some point in the past. 
+This allows for joining the two tables at a common point in time. 
+The versioned table will store all versions - identified by time - since the last watermark. 
+
+For example, suppose we have a table of orders, each with prices in different currencies.
+To properly normalize this table to a single currency, such as USD, each order needs to be joined with the proper currency conversion rate from the point-in-time when the order was placed. 
+
+```sql
+-- Create a table of orders. This is a standard
+-- append-only dynamic table.
+CREATE TABLE orders (
+    order_id    STRING,
+    price       DECIMAL(32,2),
+    currency    STRING,
+    order_time  TIMESTAMP(3),
+    WATERMARK FOR order_time AS order_time - INTERVAL '15' SECOND
+) WITH (/* ... */);
+
+-- Define a versioned table of currency rates. 
+-- This could be from a change-data-capture
+-- such as Debezium, a compacted Kafka topic, or any other
+-- way of defining a versioned table. 
+CREATE TABLE currency_rates (
+    currency STRING,
+    conversion_rate DECIMAL(32, 2),
+    update_time TIMESTAMP(3) METADATA FROM `values.source.timestamp` VIRTUAL,
+    WATERMARK FOR update_time AS update_time - INTERVAL '15' SECOND,
+    PRIMARY KEY(currency) NOT ENFORCED
+) WITH (
+   'connector' = 'kafka',
+   'value.format' = 'debezium-json',
+   /* ... */
+);
+
+SELECT 
+     order_id,
+     price,
+     orders.currency,
+     conversion_rate,
+     order_time
+FROM orders
+LEFT JOIN currency_rates FOR SYSTEM_TIME AS OF orders.order_time
+ON orders.currency = currency_rates.currency;
+
+order_id  price  currency  conversion_rate  order_time
+========  =====  ========  ===============  =========
+o_001     11.11  EUR       1.14             12:00:00
+o_002     12.51  EUR       1.10             12:06:00
+
+```
+
+**Note:** The event-time temporal join is triggered by a watermark from the left and right sides. 
+The `INTERVAL` time subtraction is used to wait for late events in order to make sure the join will meet the expectation. 
+Please ensure both sides of the join have set watermark correctly.
+
+**Note:** Probe-side (left) records that arrive late (their event time is less than or equal to the current watermark) are dropped on arrival and counted by the `numLateRecordsDropped` operator metric. They are not joined or emitted, not even as null-padded results for `LEFT JOIN`, because the matching build-side version may already have been cleaned up.
+
+**Note:** The event-time temporal join requires the primary key contained in the equivalence condition of the temporal join condition, e.g., The primary key `currency_rates.currency` of table `currency_rates` to be constrained in the condition `orders.currency = currency_rates.currency`.
+
+In contrast to [regular joins](#regular-joins), the previous temporal table results will not be affected despite the changes on the build side.
+Compared to [interval joins](#interval-joins), temporal table joins do not define a time window within which the records will be joined.
+Records from the probe side are always joined with the build side's version at the time specified by the time attribute. Thus, rows on the build side might be arbitrarily old.
+As time passes,  no longer needed versions of the record (for the given primary key) will be removed from the state.
+
+### Processing Time Temporal Join
+
+A processing time temporal table join uses a processing-time attribute to correlate rows to the latest version of a key in an external versioned table. 
+
+By definition, with a processing-time attribute, the join will always return the most up-to-date value for a given key. One can think of a lookup table as a simple HashMap<K, V> that stores all the records from the build side.
+The power of this join is it allows Flink to work directly against external systems when it is not feasible to materialize the table as a dynamic table within Flink. 
+
+The following processing-time temporal table join example shows an append-only table `orders` that should be joined with the table `LatestRates`.
+`LatestRates` is a dimension table (e.g. HBase table) that is materialized with the latest rate. At time `10:15`, `10:30`, `10:52`, the content of `LatestRates` looks as follows:
+
+```sql
+10:15> SELECT * FROM LatestRates;
+
+currency   rate
+======== ======
+US Dollar   102
+Euro        114
+Yen           1
+
+10:30> SELECT * FROM LatestRates;
+
+currency   rate
+======== ======
+US Dollar   102
+Euro        114
+Yen           1
+
+10:52> SELECT * FROM LatestRates;
+
+currency   rate
+======== ======
+US Dollar   102
+Euro        116     <==== changed from 114 to 116
+Yen           1
+```
+
+The content of `LastestRates` at times `10:15` and `10:30` are equal.
+The Euro rate has changed from 114 to 116 at `10:52`.
+
+`Orders` is an append-only table representing payments for the given `amount` and the given `currency`.
+For example, at `10:15` there was an order for an amount of `2 Euro`.
+
+```sql
+SELECT * FROM Orders;
+
+amount currency
+====== =========
+     2 Euro             <== arrived at time 10:15
+     1 US Dollar        <== arrived at time 10:30
+     2 Euro             <== arrived at time 10:52
+```
+
+Given these tables, we would like to calculate all `Orders` converted to a common currency.
+
+```text
+amount currency     rate   amount*rate
+====== ========= ======= ============
+     2 Euro          114          228    <== arrived at time 10:15
+     1 US Dollar     102          102    <== arrived at time 10:30
+     2 Euro          116          232    <== arrived at time 10:52
+```
+
+Currently, the `FOR SYSTEM_TIME AS OF` syntax used in temporal join with latest version of any view/table is not support yet, you can use temporal table function syntax as following:
+
+```sql
+SELECT
+  o_amount, r_rate
+FROM
+  Orders,
+  LATERAL Rates(o_proctime)
+WHERE
+  r_currency = o_currency
+```
+
+**Note** The reason why the `FOR SYSTEM_TIME AS OF` syntax used in temporal join with latest version of any table/view is not support is only the semantic consideration, because the join processing for left stream doesn't wait for the complete snapshot of temporal table, this may mislead users in production environment. The processing-time temporal join by temporal table function also exists same semantic problem, but it has been alive for a long time, thus we support it from the perspective of compatibility.
+
+The result is not deterministic for processing-time.
+The processing-time temporal join is most often used to enrich the stream with an external table (i.e., dimension table).
+
+In contrast to [regular joins](#regular-joins), the previous temporal table results will not be affected despite the changes on the build side.
+Compared to [interval joins](#interval-joins), temporal table joins do not define a time window within which the records join, i.e., old rows are not stored in state.
+
+### Temporal Table Function Join
+
+The syntax to join a table with a [temporal table function]({{< ref "docs/concepts/sql-table-concepts/temporal_table_function" >}}) is the same as in Join with [Table Function](#table-function).
+
+Note: Currently only inner join and left outer join with temporal tables are supported.
+
+Assuming Rates is a temporal table function, the join can be expressed in SQL as follows:
+
+```sql
+SELECT
+  o_amount, r_rate
+FROM
+  Orders,
+  LATERAL Rates(o_proctime)
+WHERE
+  r_currency = o_currency
+```
+
+The main difference between above Temporal Table DDL and Temporal Table Function are:
+
+- The temporal table DDL can be defined in SQL but temporal table function can not;
+- Both temporal table DDL and temporal table function support temporal join versioned table, but only temporal table function can temporal join the latest version of any table/view.
+
+LATERAL SNAPSHOT Join
+--------------
+
+{{< label Streaming >}} {{< label Batch >}}
+
+A `LATERAL SNAPSHOT` join is a *stream enrichment* join that augments an append-only table with the current state of an updating table.
+As in the [temporal joins](#temporal-joins), the enriched (left) input is called the *probe side* and the enriching (right) input is called the *build side*.
+Every probe-side row is joined with the build-side state that is current at the time the row is processed.
+
+For example, the following query enriches an append-only stream of `orders` (the probe side) with the conversion rate from an updating `currency_rates` table (the build side) that is current when the order is processed:
+
+```sql
+-- probe side: append-only stream of orders
+-- order_id | currency | amount | order_time
+-- ---------+----------+--------+-----------
+--        1 | EUR      |     10 |      10:15
+--        2 | EUR      |     10 |      10:31
+--        3 | USD      |     20 |      11:00
+
+-- build side: updating currency rates (upsert on currency)
+-- currency | rate | update_time
+-- ---------+------+------------
+-- EUR      | 1.1  |       10:00
+-- USD      | 1.0  |       10:00
+-- EUR      | 1.2  |       10:30
+
+SELECT o.order_id, o.currency, o.amount, r.rate
+FROM orders AS o
+JOIN LATERAL SNAPSHOT(input => TABLE currency_rates, on_time => DESCRIPTOR(update_time)) AS r
+ON o.currency = r.currency;
+
+order_id  currency  amount  rate
+========  ========  ======  ====
+       1  EUR           10  1.1   -- rate as of 10:00
+       2  EUR           10  1.2   -- rate as of 10:30
+       3  USD           20  1.0   -- rate as of 10:00
+```
+
+*Important:* The `LATERAL SNAPSHOT` join is non-deterministic. The order with `order_id = 2` could also have been joined with the `10:00` version of `EUR`. The result depends on the order in which the operator processes its inputs, which cannot be controlled.
+
+**When to use it**
+
+The `LATERAL SNAPSHOT` join is designed for enrichment scenarios where the other temporal joins are a poor fit:
+
+- **The build side does not receive continuous updates.** An event-time temporal join only emits a joined row once the combined watermark of both inputs has passed the event time of the probe-side row. A build side that does not continuously produce records, and therefore does not advance its watermark, stalls the join and lets probe-side state accumulate. A `LATERAL SNAPSHOT` join keeps making progress even when the build side is idle.
+- **Low latency is required.** An event-time temporal join holds back probe-side rows until the watermark catches up, which adds latency. After the initial load phase, the `LATERAL SNAPSHOT` join immediately joins a probe-side row when it arrives.
+- **The build side has no primary key.** Event-time and processing-time temporal joins require the build side to have a primary key that appears in the equi-join condition. A `LATERAL SNAPSHOT` join has no such requirement; neither the probe side nor the build side needs a primary key.
+
+**How the join works**
+
+A `LATERAL SNAPSHOT` join operates in two phases to avoid joining probe-side rows against an incomplete build side: 
+it first loads the build side up to a well-defined point in time (the *load phase*) before it starts joining (the *join phase*).
+
+During the *load phase*, the operator accumulates the build-side changes into state until the load-completion condition is met, without emitting any results yet. 
+Probe-side rows that arrive during the load phase are buffered. The load phase completes when one of the following occurs:
+
+- the build-side watermark reaches a configured `load_completed_time`. This time is either explicitly set by the user, or, if `load_completed_time` is not provided, automatically set to the wall-clock time when the query is compiled, or
+- as a fallback, the `load_completed_idle_timeout` elapses in processing time without the build-side watermark advancing (which handles build sides that become idle during start-up).
+
+When the load phase completes, the operator transitions to the *join phase*: all buffered probe-side rows are joined against the current build-side state and emitted. 
+From then on, each probe-side row is joined and emitted immediately against the build-side state that is current at that moment. 
+Build-side updates continue to be applied to the state and become visible to subsequent probe-side rows.
+
+The load phase is what distinguishes a `LATERAL SNAPSHOT` join from the [processing-time temporal join](#processing-time-temporal-join), which has been disabled for Flink SQL. 
+The processing-time temporal join starts joining immediately at query start, so early probe-side rows are joined against whatever build-side data happens to have been loaded so far, producing missing or stale results that depend on the order in which the inputs are read. 
+By first loading the build side, a `LATERAL SNAPSHOT` join avoids this problem.
+
+**Completing the load phase for static or nearly-static build sides**
+
+The event-time gate (build-side watermark reaches `load_completed_time`) works well when the build side keeps producing records and advancing its watermark. 
+Build sides that are *static* (loaded once, then silent) or *nearly static* (infrequent updates) are common for reference data such as currency rates, product catalogs, or feature tables.
+Since watermarks only advance when new records with larger event times arrive, such inputs may take a long time to (or never) produce a watermark that reaches `load_completed_time`.
+This leaves the join **stuck in the load phase indefinitely**: probe-side rows keep buffering, state keeps growing, and no results are ever emitted.
+
+Picking a `load_completed_time` that both sits above the build side's real event times and is guaranteed to be reached by its watermark is difficult and requires insight into the data: set it too low and the join flips before the build side is fully loaded (probe rows are joined against an incomplete build side); set it too high and the join never flips.
+
+If the build-side input is truly static and its source connector supports it, configure the connector to run in **bounded mode**. 
+When the source finishes reading, it advances the watermark to its maximum value, which completes the load phase.
+
+If the build side is not truly static or the connector does not support a bounded mode, set **`load_completed_idle_timeout`**. 
+It is a processing-time (wall-clock) safety net that is independent of event-time progress: the operator flips from load to join once the build-side watermark has not advanced for the configured duration, so it triggers the flip during a genuine stall — exactly the situation a static or idle build side ends up in once it has been fully read.
+Choose the timeout larger than any expected pause in the build side's changes during start-up — if it fires while the backlog is still being read, the join flips against an incomplete build side.
+`load_completed_idle_timeout` is **not set by default**, so you must set it explicitly if your build side may become static or idle during start-up.
+
+If a `LATERAL SNAPSHOT` join produces no output, first check whether it is stuck in the load phase using the metrics below, then set `load_completed_idle_timeout`.
+
+**Syntax**
+
+The build side is wrapped in the `SNAPSHOT` table function, which is called with `LATERAL`. The outer (probe-side) table must be an append-only table. 
+Both `INNER JOIN` and `LEFT [OUTER] JOIN` are supported. An equality predicate is recommended but not required: the `ON` clause may contain equality and non-equi predicates in any combination. In streaming mode, a join with at least one equality predicate is partitioned on the join key and runs in parallel, whereas a join without one runs single-threaded; prefer an equality predicate for better performance. In batch mode, a join without an equality predicate uses a broadcast nested-loop join that keeps the probe side parallel.
+
+```sql
+SELECT [column_list]
+FROM probe_table
+[LEFT] JOIN LATERAL SNAPSHOT(
+    input                        => TABLE build_table,
+    [ on_time                    => DESCRIPTOR(<rowtime_column>), ]
+    [ load_completed_time        => <timestamp_ltz>, ]
+    [ load_completed_idle_timeout => <interval>, ]
+    [ state_ttl                  => <interval> ]) AS s
+ON probe_table.col = s.col
+```
+
+The `SNAPSHOT` function accepts the following arguments:
+
+| Argument | Type | Required | Description                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| --- | --- | --- |-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `input` | TABLE | yes | The build-side table. It may use any [changelog mode]({{< ref "docs/sql/reference/queries/changelog" >}}) (inserts, updates, and deletes).                                                                                                                                                                                                                                                                                                    |
+| `on_time` | DESCRIPTOR | no | Declares a build-side rowtime column that defines the order in which the build-side changes are applied. The referenced column must exist in `input` and be a `TIMESTAMP` or `TIMESTAMP_LTZ` column (up to precision 3) that is declared as a [watermarked rowtime attribute]({{< ref "docs/concepts/sql-table-concepts/time_attributes" >}}#event-time). The argument is **required for streaming queries**. |
+| `load_completed_time` | TIMESTAMP_LTZ(3) | no | The build-side event time that completes the load phase. If omitted, the load phase completes once the build-side watermark reaches the wall-clock time at which the query was compiled.                                                                                                                                                                                             |
+| `load_completed_idle_timeout` | INTERVAL | no | A processing-time fallback to complete the load phase. The transition to the join phase happens when the build-side watermark does not advance for more than the configured interval.                                                                                                                                                                                                                                                         |
+| `state_ttl` | INTERVAL | no | Retention time for build-side state. Join keys that are not accessed within this duration become eligible for eviction. Only applied during the join phase. Defaults to the pipeline's [state TTL]({{< ref "docs/dev/table/config" >}}#table-exec-state-ttl).                                                                                                                                                                                 |
+
+`on_time`, `load_completed_time`, `load_completed_idle_timeout`, and `state_ttl` only affect streaming execution and are ignored in batch mode (see **Batch mode** below).
+
+**Result and state characteristics**
+
+The result is append-only and preserves the probe-side time attributes. A build-side rowtime attribute that is projected into the output is materialized as a regular `TIMESTAMP` and is no longer a time attribute. Probe-side watermarks are forwarded downstream during the join phase; build-side watermarks are consumed internally and are not propagated.
+
+Because rows are joined against the build-side state that is current at processing time, the result is **not deterministic**. A given probe-side row may be joined with different build-side versions across different runs, depending on the relative timing of the two inputs. Probe and build-side inputs can be configured with watermark alignment to keep the two inputs roughly aligned on event time, so that a probe-side row tends to be joined with build-side changes of a similar event time. This is a best-effort alignment and does not make the result deterministic.
+
+The build-side state grows with the number of distinct build-side keys, and during the load phase the buffered probe-side rows add to the state footprint until the operator transitions to the join phase. Use `state_ttl` to bound the build-side state for keys that are no longer updated or joined. Without an equality predicate the join has no join key, so all build-side rows share a single state entry; `state_ttl` can then only evict the whole build side at once, once it has been idle (no probe- or build-side activity) for longer than the TTL, rather than per key. You can reduce the amount of data that is buffered and processed during the load phase by configuring scan start offsets on the build and probe-side inputs, for example with a `scan.startup.*` [dynamic table option hint]({{< ref "docs/sql/reference/queries/hints" >}}#dynamic-table-options).
+
+**Monitoring**
+
+The operator exposes metrics that help you understand which phase the join is in and whether it is making progress. 
+They are reported under the operator's [metric group]({{< ref "docs/ops/metrics" >}}) alongside the standard operator metrics.
+
+| Metric | Type | Description                                                                                                                                                                                                                                                                                             |
+| --- | --- |---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `currentPhase` | Gauge | The current phase: `0` = load phase, `1` = join phase. A value stuck at `0` means the load phase has not completed.                                                                                                                                                                                     |
+| `currentBuildSideWatermark` | Gauge | The highest build-side watermark observed (epoch milliseconds). In the load phase the flip happens once this reaches `load_completed_time`. A value that stops advancing below `load_completed_time` is the signature of a static or idle build side that might not complete the load phase on its own. |
+| `currentProbeSideWatermark` | Gauge | The latest probe-side watermark observed (epoch milliseconds). Probe-side watermarks are held back during the load phase and forwarded during the join phase.                                                                                                                                           |
+| `numProbeSideRecordsBuffered` | Gauge | The number of probe-side rows currently buffered. This grows during the load phase and drops to zero shortly after the flip to the join phase.                                                                                                                                                          |
+| `numStateTtlEvictions` | Counter | The number of build-side keys evicted from state by `state_ttl`. Only advances during the join phase.                                                                                                                                                                                                   |
+| `maxJoinFanOut` | Gauge | The largest number of joined rows emitted for a single probe-side row.                                                                                                                                                                                                                                  |
+| `avgJoinFanOut` | Gauge | The average number of joined rows emitted per probe-side row.                                                                                                                                                                                                                                           |
+| `numUnmatchedProbeRecords` | Counter | The number of probe-side rows that found no build-side match. For an `INNER JOIN` these produce no output; for a `LEFT JOIN` they are emitted null-padded.                                                                                                                                              |
+| `numUnmatchedBuildRetractions` | Counter | The number of build-side retractions (`-U`/`-D`) for a row that was not present in state. Retractions of rows with a `NULL` in a join key compared with `=` are not counted, since such rows are never stored. |
+
+To diagnose a join that emits no output, check `currentPhase` first. If it is `0` while `numProbeSideRecordsBuffered` keeps growing, the join is stuck in the load phase. 
+Compare `currentBuildSideWatermark` against your `load_completed_time`: if the build-side watermark has stopped advancing below it, the build side has become static or idle and the event-time gate will never be crossed. 
+Set `load_completed_idle_timeout` as described above to let the load phase complete.
+
+On a query restart, the metric values are not restored: counters restart at zero and the watermark and buffer gauges are re-populated as new records and watermarks arrive. 
+The phase, however, is restored from state. 
+
+**Batch mode**
+
+In batch mode, a `LATERAL SNAPSHOT` join is executed as a regular (`INNER` or `LEFT`) join between the probe side and the complete build side. Batch execution reads the entire build side before joining, so there is no load phase and no incremental state build-up. The streaming-specific arguments (`on_time`, `load_completed_time`, `load_completed_idle_timeout`, and `state_ttl`) are accepted but have no effect, and the build side does not need to declare a watermark or provide a `on_time`.
+
+Because every probe-side row is joined against the final, complete build side, the batch result is **deterministic**.
+
+Lookup Join
+--------------
+
+A lookup join is typically used to enrich a table with data that is queried from an external system. The join requires one table to have a processing time attribute and the other table to be backed by a lookup source connector.
+
+The lookup join uses the above [Processing Time Temporal Join](#processing-time-temporal-join) syntax with the right table to be backed by a lookup source connector.
+
+The following example shows the syntax to specify a lookup join.
+
+```sql
+-- Customers is backed by the JDBC connector and can be used for lookup joins
+CREATE TEMPORARY TABLE Customers (
+  id INT,
+  name STRING,
+  country STRING,
+  zip STRING
+) WITH (
+  'connector' = 'jdbc',
+  'url' = 'jdbc:mysql://mysqlhost:3306/customerdb',
+  'table-name' = 'customers'
+);
+
+-- enrich each order with customer information
+SELECT o.order_id, o.total, c.country, c.zip
+FROM Orders AS o
+  JOIN Customers FOR SYSTEM_TIME AS OF o.proc_time AS c
+    ON o.customer_id = c.id;
+```
+
+In the example above, the Orders table is enriched with data from the Customers table which resides in a MySQL database. The `FOR SYSTEM_TIME AS OF` clause with the subsequent processing time attribute ensures that each row of the `Orders` table is joined with those Customers rows that match the join predicate at the point in time when the `Orders` row is processed by the join operator. It also prevents that the join result is updated when a joined `Customer` row is updated in the future. The lookup join also requires a mandatory equality join predicate, in the example above `o.customer_id = c.id`.
+
+Array, Multiset and Map Expansion
+--------------
+
+Unnest returns a new row for each element in the given array, multiset or map. Supports both `CROSS JOIN` and `LEFT JOIN`.
+```sql
+-- Returns a new row for each element in a constant array
+SELECT * FROM (VALUES('order_1')), UNNEST(ARRAY['shirt', 'pants', 'hat'])
+
+id       product_name
+=======  ============
+order_1  shirt
+order_1  pants
+order_1  hat
+
+-- Returns a new row for each element in the array
+-- assuming a Orders table with an array column `product_names`
+SELECT order_id, product_name
+FROM Orders 
+    CROSS JOIN UNNEST(product_names) AS t(product_name)
+```
+
+Unnesting `WITH ORDINALITY` is also supported. Currently, `WITH ORDINALITY` only supports `CROSS JOIN` but not `LEFT JOIN`.
+
+
+```sql
+-- Returns a new row for each element in a constant array and its position in the array
+SELECT * 
+FROM (VALUES ('order_1'), ('order_2'))
+    CROSS JOIN UNNEST(ARRAY['shirt', 'pants', 'hat']) 
+        WITH ORDINALITY AS t(product_name, index)
+
+id       product_name  index
+=======  ============  =====
+order_1  shirt             1
+order_1  pants             2
+order_1  hat               3
+order_2  shirt             1
+order_2  pants             2
+order_2  hat               3
+
+-- Returns a new row for each element and its position in the array
+-- assuming a Orders table with an array column `product_names`
+SELECT order_id, product_name, product_index
+FROM Orders 
+    CROSS JOIN UNNEST(product_names) 
+        WITH ORDINALITY AS t(product_name, product_index)
+```
+
+An unnest with ordinality will return each element and the position of the element in the data structure, 1-indexed. 
+The order of the elements for arrays is guaranteed. Since maps and multisets are unordered, the order of the elements is not guaranteed.
+
+```sql
+-- Returns a new row each key/value pair in the map.
+SELECT *
+FROM 
+    (VALUES('order_1'))
+        CROSS JOIN UNNEST(MAP['shirt', 2, 'pants', 1, 'hat', 1]) WITH ORDINALITY
+
+id       product_name  amount index
+=======  ============  =====  =====
+order_1  shirt             2      1
+order_1  pants             1      2
+order_1  hat               1      3
+
+-- Returns a new row for each instance of a element in a multiset
+-- If an element has been seen twice (multiplicity is 2), it will be returned twice
+WITH ProductMultiset AS
+    (SELECT COLLECT(product_name) AS product_multiset
+    FROM (
+            VALUES ('shirt'), ('pants'), ('hat'), ('shirt'), ('hat')
+          ) AS t(product_name)) -- produces { 'shirt': 2, 'pants': 1, 'hat': 2 } 
+SELECT id, product_name, ordinality
+FROM 
+    (VALUES ('order_1'), ('order_2')) AS t(id),
+    ProductMultiset
+         CROSS JOIN UNNEST(product_multiset) WITH
+         ORDINALITY AS u(product_name, ordinality);
+
+id       product_name  index
+=======  ============  =====
+order_1  shirt             1
+order_1  shirt             2
+order_1  pants             3
+order_1  hat               4
+order_1  hat               5
+order_2  shirt             1
+order_2  shirt             2
+order_2  pants             3
+order_2  hat               4
+order_1  hat               5
+```
+
+Table Function
+--------------
+
+Joins a table with the results of a table function. Each row of the left (outer) table is joined with all rows produced by the corresponding call of the table function. [User-defined table functions]({{< ref "docs/dev/table/functions/udfs" >}}#table-functions) must be registered before use.
+
+### INNER JOIN
+
+The row of the left (outer) table is dropped, if its table function call returns an empty result.
+
+```sql
+SELECT order_id, res
+FROM Orders,
+LATERAL table_func(order_id) t(res)
+```
+
+### LEFT OUTER JOIN
+
+If a table function call returns an empty result, the corresponding outer row is preserved, and the result padded with null values. Currently, a left outer join against a lateral table requires a TRUE literal in the ON clause.
+
+```sql
+SELECT order_id, res
+FROM Orders
+LEFT OUTER JOIN LATERAL table_func(order_id) t(res)
+  ON TRUE
+```
+
+{{< top >}}

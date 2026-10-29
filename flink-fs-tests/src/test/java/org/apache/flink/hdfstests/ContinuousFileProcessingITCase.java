@@ -18,36 +18,35 @@
 
 package org.apache.flink.hdfstests;
 
+import org.apache.flink.api.common.functions.OpenContext;
 import org.apache.flink.api.common.io.FilePathFilter;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
-import org.apache.flink.api.java.io.TextInputFormat;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.api.java.typeutils.TypeExtractor;
 import org.apache.flink.configuration.ConfigConstants;
-import org.apache.flink.configuration.Configuration;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
-import org.apache.flink.streaming.api.functions.sink.RichSinkFunction;
-import org.apache.flink.streaming.api.functions.source.ContinuousFileMonitoringFunction;
+import org.apache.flink.streaming.api.functions.sink.legacy.RichSinkFunction;
+import org.apache.flink.streaming.api.functions.source.ContinuousFileReaderOperator;
 import org.apache.flink.streaming.api.functions.source.ContinuousFileReaderOperatorFactory;
 import org.apache.flink.streaming.api.functions.source.FileProcessingMode;
 import org.apache.flink.streaming.api.functions.source.TimestampedFileInputSplit;
+import org.apache.flink.streaming.api.functions.source.legacy.ContinuousFileMonitoringFunction;
+import org.apache.flink.streaming.api.legacy.io.TextInputFormat;
 import org.apache.flink.test.util.AbstractTestBase;
 import org.apache.flink.util.ExceptionUtils;
 
 import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileUtil;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
-import org.junit.After;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 import java.io.File;
 import java.io.IOException;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -56,13 +55,14 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 
-import static org.junit.Assert.assertEquals;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
 
 /**
  * IT cases for the {@link ContinuousFileMonitoringFunction} and {@link
  * ContinuousFileReaderOperator}.
  */
-public class ContinuousFileProcessingITCase extends AbstractTestBase {
+class ContinuousFileProcessingITCase extends AbstractTestBase {
 
     private static final int NO_OF_FILES = 5;
     private static final int LINES_PER_FILE = 100;
@@ -80,8 +80,8 @@ public class ContinuousFileProcessingITCase extends AbstractTestBase {
 
     //						PREPARING FOR THE TESTS
 
-    @Before
-    public void createHDFS() throws IOException {
+    @BeforeEach
+    void createHDFS() throws IOException {
         baseDir = new File("./target/hdfs/hdfsTesting").getAbsoluteFile();
         FileUtil.fullyDelete(baseDir);
 
@@ -101,8 +101,8 @@ public class ContinuousFileProcessingITCase extends AbstractTestBase {
         hdfs = new org.apache.hadoop.fs.Path(hdfsURI).getFileSystem(hdConf);
     }
 
-    @After
-    public void destroyHDFS() {
+    @AfterEach
+    void destroyHDFS() {
         FileUtil.fullyDelete(baseDir);
         hdfsCluster.shutdown();
     }
@@ -110,7 +110,7 @@ public class ContinuousFileProcessingITCase extends AbstractTestBase {
     //						END OF PREPARATIONS
 
     @Test
-    public void testProgram() throws Exception {
+    void testProgram() throws Exception {
 
         /*
          * This test checks the interplay between the monitor and the reader
@@ -137,7 +137,7 @@ public class ContinuousFileProcessingITCase extends AbstractTestBase {
 
         // the monitor has always DOP 1
         DataStream<TimestampedFileInputSplit> splits = env.addSource(monitoringFunction);
-        Assert.assertEquals(1, splits.getParallelism());
+        assertThat(splits.getParallelism()).isOne();
 
         TypeInformation<String> typeInfo = TypeExtractor.getInputFormatTypes(format);
 
@@ -147,7 +147,7 @@ public class ContinuousFileProcessingITCase extends AbstractTestBase {
                         "FileSplitReader",
                         typeInfo,
                         new ContinuousFileReaderOperatorFactory<>(format));
-        Assert.assertEquals(PARALLELISM, content.getParallelism());
+        assertThat(content.getParallelism()).isEqualTo(PARALLELISM);
 
         // finally for the sink we set the parallelism to 1 so that we can verify the output
         TestingSinkFunction sink = new TestingSinkFunction();
@@ -200,7 +200,7 @@ public class ContinuousFileProcessingITCase extends AbstractTestBase {
 
             org.apache.hadoop.fs.Path file = new org.apache.hadoop.fs.Path(hdfsURI + "/file" + i);
             hdfs.rename(tmpFile.f0, file);
-            Assert.assertTrue(hdfs.exists(file));
+            assertThat(hdfs.exists(file)).isTrue();
         }
 
         jobFuture.get();
@@ -214,9 +214,9 @@ public class ContinuousFileProcessingITCase extends AbstractTestBase {
         private transient Comparator<String> comparator;
 
         @Override
-        public void open(Configuration parameters) throws Exception {
+        public void open(OpenContext openContext) throws Exception {
             // this sink can only work with DOP 1
-            assertEquals(1, getRuntimeContext().getNumberOfParallelSubtasks());
+            assertThat(getRuntimeContext().getTaskInfo().getNumberOfParallelSubtasks()).isOne();
 
             comparator =
                     new Comparator<String>() {
@@ -238,7 +238,7 @@ public class ContinuousFileProcessingITCase extends AbstractTestBase {
             }
 
             if (!content.add(value + "\n")) {
-                Assert.fail("Duplicate line: " + value);
+                fail("Duplicate line: " + value);
                 System.exit(0);
             }
 
@@ -251,18 +251,13 @@ public class ContinuousFileProcessingITCase extends AbstractTestBase {
         @Override
         public void close() {
             // check if the data that we collected are the ones they are supposed to be.
-            Assert.assertEquals(expectedContents.size(), actualContent.size());
+            assertThat(actualContent).hasSameSizeAs(expectedContents);
             for (Integer fileIdx : expectedContents.keySet()) {
-                Assert.assertTrue(actualContent.keySet().contains(fileIdx));
+                assertThat(actualContent).containsKey(fileIdx);
 
                 List<String> cntnt = new ArrayList<>(actualContent.get(fileIdx));
-                Collections.sort(cntnt, comparator);
-
-                StringBuilder cntntStr = new StringBuilder();
-                for (String line : cntnt) {
-                    cntntStr.append(line);
-                }
-                Assert.assertEquals(expectedContents.get(fileIdx), cntntStr.toString());
+                cntnt.sort(comparator);
+                assertThat(String.join("", cntnt)).isEqualTo(expectedContents.get(fileIdx));
             }
             expectedContents.clear();
         }

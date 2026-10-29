@@ -27,6 +27,7 @@ import org.apache.flink.table.types.logical.TimestampType;
 
 import static org.apache.flink.table.types.logical.LogicalTypeRoot.ARRAY;
 import static org.apache.flink.table.types.logical.LogicalTypeRoot.BIGINT;
+import static org.apache.flink.table.types.logical.LogicalTypeRoot.BITMAP;
 import static org.apache.flink.table.types.logical.LogicalTypeRoot.BOOLEAN;
 import static org.apache.flink.table.types.logical.LogicalTypeRoot.DECIMAL;
 import static org.apache.flink.table.types.logical.LogicalTypeRoot.INTEGER;
@@ -34,8 +35,12 @@ import static org.apache.flink.table.types.logical.LogicalTypeRoot.MAP;
 import static org.apache.flink.table.types.logical.LogicalTypeRoot.MULTISET;
 import static org.apache.flink.table.types.logical.LogicalTypeRoot.RAW;
 import static org.apache.flink.table.types.logical.LogicalTypeRoot.ROW;
+import static org.apache.flink.table.types.logical.LogicalTypeRoot.STRUCTURED_TYPE;
 import static org.apache.flink.table.types.logical.LogicalTypeRoot.TIMESTAMP_WITHOUT_TIME_ZONE;
 import static org.apache.flink.table.types.logical.LogicalTypeRoot.TIMESTAMP_WITH_LOCAL_TIME_ZONE;
+import static org.apache.flink.table.types.logical.LogicalTypeRoot.TIME_WITHOUT_TIME_ZONE;
+import static org.apache.flink.table.types.logical.LogicalTypeRoot.UUID;
+import static org.apache.flink.table.types.logical.LogicalTypeRoot.VARIANT;
 import static org.apache.flink.table.types.logical.utils.LogicalTypeChecks.isRowtimeAttribute;
 
 /** Utils for type. */
@@ -82,6 +87,10 @@ public class TypeCheckUtils {
         return type.getTypeRoot().getFamilies().contains(LogicalTypeFamily.BINARY_STRING);
     }
 
+    public static boolean isIntegerNumeric(LogicalType type) {
+        return type.getTypeRoot().getFamilies().contains(LogicalTypeFamily.INTEGER_NUMERIC);
+    }
+
     public static boolean isTimestamp(LogicalType type) {
         return type.getTypeRoot() == TIMESTAMP_WITHOUT_TIME_ZONE;
     }
@@ -126,8 +135,31 @@ public class TypeCheckUtils {
         return type.getTypeRoot() == ROW;
     }
 
+    public static boolean isStructuredType(LogicalType type) {
+        return type.getTypeRoot() == STRUCTURED_TYPE;
+    }
+
+    public static boolean isUuid(LogicalType type) {
+        return type.getTypeRoot() == UUID;
+    }
+
+    private static boolean isVariantType(LogicalType type) {
+        return type.getTypeRoot() == VARIANT;
+    }
+
+    private static boolean isBitmapType(LogicalType type) {
+        return type.getTypeRoot() == BITMAP;
+    }
+
     public static boolean isComparable(LogicalType type) {
-        return !isRaw(type) && !isMap(type) && !isMultiset(type) && !isRow(type) && !isArray(type);
+        return !isRaw(type)
+                && !isMap(type)
+                && !isMultiset(type)
+                && !isRow(type)
+                && !isArray(type)
+                && !isStructuredType(type)
+                && !isVariantType(type)
+                && !isBitmapType(type);
     }
 
     public static boolean isMutable(LogicalType type) {
@@ -141,6 +173,7 @@ public class TypeCheckUtils {
             case ROW:
             case STRUCTURED_TYPE:
             case RAW:
+            case BITMAP:
                 return true;
             case TIMESTAMP_WITH_TIME_ZONE:
                 throw new UnsupportedOperationException("Unsupported type: " + type);
@@ -175,5 +208,9 @@ public class TypeCheckUtils {
             default:
                 return true;
         }
+    }
+
+    public static boolean isTime(LogicalType type) {
+        return type.getTypeRoot() == TIME_WITHOUT_TIME_ZONE;
     }
 }

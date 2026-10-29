@@ -15,40 +15,36 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.planner.plan.rules.logical
 
-import org.apache.flink.api.common.typeinfo.TypeInformation
-import org.apache.flink.api.scala._
 import org.apache.flink.table.api._
 import org.apache.flink.table.planner.plan.optimize.program._
-import org.apache.flink.table.planner.plan.stats.FlinkStatistic
 import org.apache.flink.table.planner.utils.TableTestBase
 
-import com.google.common.collect.ImmutableSet
 import org.apache.calcite.plan.hep.HepMatchOrder
 import org.apache.calcite.rel.rules._
 import org.apache.calcite.tools.RuleSets
-import org.junit.{Before, Test}
+import org.junit.jupiter.api.{BeforeEach, Test}
 
-/**
-  * Test for [[FlinkAggregateJoinTransposeRule]].
-  */
+/** Test for [[FlinkAggregateJoinTransposeRule]]. */
 class FlinkAggregateJoinTransposeRuleTest extends TableTestBase {
   private val util = batchTestUtil()
 
-  @Before
+  @BeforeEach
   def setup(): Unit = {
     val program = new FlinkChainedProgram[BatchOptimizeContext]()
     program.addLast(
       "rules",
-      FlinkGroupProgramBuilder.newBuilder[BatchOptimizeContext]
+      FlinkGroupProgramBuilder
+        .newBuilder[BatchOptimizeContext]
         .addProgram(
           FlinkHepRuleSetProgramBuilder.newBuilder
             .setHepRulesExecutionType(HEP_RULES_EXECUTION_TYPE.RULE_COLLECTION)
             .setHepMatchOrder(HepMatchOrder.BOTTOM_UP)
-            .add(RuleSets.ofList(AggregateReduceGroupingRule.INSTANCE
-            )).build(), "reduce useless grouping")
+            .add(RuleSets.ofList(AggregateReduceGroupingRule.INSTANCE))
+            .build(),
+          "reduce useless grouping"
+        )
         .addProgram(
           FlinkHepRuleSetProgramBuilder.newBuilder
             .setHepRulesExecutionType(HEP_RULES_EXECUTION_TYPE.RULE_COLLECTION)
@@ -62,17 +58,26 @@ class FlinkAggregateJoinTransposeRuleTest extends TableTestBase {
               CoreRules.FILTER_MERGE,
               CoreRules.AGGREGATE_PROJECT_MERGE,
               FlinkAggregateJoinTransposeRule.EXTENDED
-            )).build(), "aggregate join transpose")
+            ))
+            .build(),
+          "aggregate join transpose"
+        )
         .build()
     )
     util.replaceBatchProgram(program)
 
     util.addTableSource[(Int, Int, String)]("T", 'a, 'b, 'c)
-    util.addTableSource("T2",
-      Array[TypeInformation[_]](Types.INT, Types.INT, Types.STRING),
-      Array("a2", "b2", "c2"),
-      FlinkStatistic.builder().uniqueKeys(ImmutableSet.of(ImmutableSet.of("b2"))).build()
-    )
+    util.tableEnv.executeSql(s"""
+                                |CREATE TABLE T2 (
+                                |  a2 INT,
+                                |  b2 INT PRIMARY KEY NOT ENFORCED,
+                                |  c2 STRING
+                                |) WITH (
+                                |  'connector' = 'values',
+                                |  'bounded' = 'true',
+                                |  'enable-projection-push-down' = 'false'
+                                |)
+                                |""".stripMargin)
   }
 
   @Test

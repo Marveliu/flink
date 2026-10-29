@@ -15,40 +15,36 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.planner.plan.batch.sql
 
-import org.apache.flink.api.scala._
 import org.apache.flink.table.api._
 import org.apache.flink.table.api.config.{ExecutionConfigOptions, OptimizerConfigOptions}
-import org.apache.flink.table.planner.plan.rules.physical.batch.BatchPhysicalSortMergeJoinRule
-import org.apache.flink.table.planner.plan.rules.physical.batch.BatchPhysicalSortRule.TABLE_EXEC_RANGE_SORT_ENABLED
 import org.apache.flink.table.planner.plan.utils.OperatorType
 import org.apache.flink.table.planner.runtime.utils.JavaUserDefinedScalarFunctions.NonDeterministicUdf
 import org.apache.flink.table.planner.runtime.utils.JavaUserDefinedTableFunctions.{NonDeterministicTableFunc, StringSplit}
 import org.apache.flink.table.planner.utils.TableTestBase
 import org.apache.flink.table.runtime.functions.aggregate.FirstValueAggFunction
 
-import org.junit.{Before, Test}
+import org.junit.jupiter.api.{BeforeEach, Test}
 
 class SubplanReuseTest extends TableTestBase {
 
   private val util = batchTestUtil()
 
-  @Before
+  @BeforeEach
   def before(): Unit = {
-    util.tableEnv.getConfig.getConfiguration.setBoolean(
-      OptimizerConfigOptions.TABLE_OPTIMIZER_REUSE_SUB_PLAN_ENABLED, true)
-    util.tableEnv.getConfig.getConfiguration.setBoolean(
-      OptimizerConfigOptions.TABLE_OPTIMIZER_REUSE_SOURCE_ENABLED, false)
+    util.tableEnv.getConfig
+      .set(OptimizerConfigOptions.TABLE_OPTIMIZER_REUSE_SUB_PLAN_ENABLED, Boolean.box(true))
+    util.tableEnv.getConfig
+      .set(OptimizerConfigOptions.TABLE_OPTIMIZER_REUSE_SOURCE_ENABLED, Boolean.box(false))
     util.addTableSource[(Int, Long, String)]("x", 'a, 'b, 'c)
     util.addTableSource[(Int, Long, String)]("y", 'd, 'e, 'f)
   }
 
   @Test
   def testDisableSubplanReuse(): Unit = {
-    util.tableEnv.getConfig.getConfiguration.setBoolean(
-      OptimizerConfigOptions.TABLE_OPTIMIZER_REUSE_SUB_PLAN_ENABLED, false)
+    util.tableEnv.getConfig
+      .set(OptimizerConfigOptions.TABLE_OPTIMIZER_REUSE_SUB_PLAN_ENABLED, Boolean.box(false))
     val sqlQuery =
       """
         |WITH r AS (
@@ -61,8 +57,8 @@ class SubplanReuseTest extends TableTestBase {
 
   @Test
   def testSubplanReuseWithDifferentRowType(): Unit = {
-    util.tableEnv.getConfig.getConfiguration.setBoolean(
-      OptimizerConfigOptions.TABLE_OPTIMIZER_REUSE_SOURCE_ENABLED, false)
+    util.tableEnv.getConfig
+      .set(OptimizerConfigOptions.TABLE_OPTIMIZER_REUSE_SOURCE_ENABLED, Boolean.box(false))
     // can not reuse because of different row-type
     val sqlQuery =
       """
@@ -75,8 +71,8 @@ class SubplanReuseTest extends TableTestBase {
 
   @Test
   def testEnableReuseTableSource(): Unit = {
-    util.tableEnv.getConfig.getConfiguration.setBoolean(
-      OptimizerConfigOptions.TABLE_OPTIMIZER_REUSE_SOURCE_ENABLED, true)
+    util.tableEnv.getConfig
+      .set(OptimizerConfigOptions.TABLE_OPTIMIZER_REUSE_SOURCE_ENABLED, Boolean.box(true))
     val sqlQuery =
       """
         |WITH t AS (SELECT x.a AS a, x.b AS b, y.d AS d, y.e AS e FROM x, y WHERE x.a = y.d)
@@ -87,8 +83,8 @@ class SubplanReuseTest extends TableTestBase {
 
   @Test
   def testDisableReuseTableSource(): Unit = {
-    util.tableEnv.getConfig.getConfiguration.setBoolean(
-      OptimizerConfigOptions.TABLE_OPTIMIZER_REUSE_SOURCE_ENABLED, false)
+    util.tableEnv.getConfig
+      .set(OptimizerConfigOptions.TABLE_OPTIMIZER_REUSE_SOURCE_ENABLED, Boolean.box(false))
     val sqlQuery =
       """
         |WITH t AS (SELECT * FROM x, y WHERE x.a = y.d)
@@ -100,10 +96,10 @@ class SubplanReuseTest extends TableTestBase {
   @Test
   def testSubplanReuseOnSourceWithLimit(): Unit = {
     // TODO re-check this plan after PushLimitIntoTableSourceScanRule is introduced
-    util.tableEnv.getConfig.getConfiguration.setBoolean(
-      OptimizerConfigOptions.TABLE_OPTIMIZER_REUSE_SOURCE_ENABLED, true)
-    util.tableEnv.getConfig.getConfiguration.setString(
-      ExecutionConfigOptions.TABLE_EXEC_DISABLED_OPERATORS, "HashJoin,SortMergeJoin")
+    util.tableEnv.getConfig
+      .set(OptimizerConfigOptions.TABLE_OPTIMIZER_REUSE_SOURCE_ENABLED, Boolean.box(true))
+    util.tableEnv.getConfig
+      .set(ExecutionConfigOptions.TABLE_EXEC_DISABLED_OPERATORS, "HashJoin,SortMergeJoin")
     val sqlQuery =
       """
         |WITH r AS (SELECT a, b FROM x LIMIT 10)
@@ -126,8 +122,8 @@ class SubplanReuseTest extends TableTestBase {
 
   @Test
   def testSubplanReuseOnCalc(): Unit = {
-    util.tableEnv.getConfig.getConfiguration.setString(
-      ExecutionConfigOptions.TABLE_EXEC_DISABLED_OPERATORS, "NestedLoopJoin,SortMergeJoin")
+    util.tableEnv.getConfig
+      .set(ExecutionConfigOptions.TABLE_EXEC_DISABLED_OPERATORS, "NestedLoopJoin,SortMergeJoin")
     val sqlQuery =
       """
         |WITH r AS (SELECT a, b, c FROM x WHERE c LIKE 'test%')
@@ -140,7 +136,7 @@ class SubplanReuseTest extends TableTestBase {
 
   @Test
   def testSubplanReuseOnCalcWithNonDeterministicProject(): Unit = {
-    util.tableEnv.registerFunction("random_udf", new NonDeterministicUdf())
+    util.addTemporarySystemFunction("random_udf", new NonDeterministicUdf())
 
     val sqlQuery =
       """
@@ -153,7 +149,7 @@ class SubplanReuseTest extends TableTestBase {
 
   @Test
   def testSubplanReuseOnCalcWithNonDeterministicUdf(): Unit = {
-    util.tableEnv.registerFunction("random_udf",  new NonDeterministicUdf())
+    util.addTemporarySystemFunction("random_udf", new NonDeterministicUdf())
 
     val sqlQuery =
       """
@@ -166,8 +162,8 @@ class SubplanReuseTest extends TableTestBase {
 
   @Test
   def testSubplanReuseOnExchange(): Unit = {
-    util.tableEnv.getConfig.getConfiguration.setString(
-      ExecutionConfigOptions.TABLE_EXEC_DISABLED_OPERATORS, "NestedLoopJoin,SortMergeJoin")
+    util.tableEnv.getConfig
+      .set(ExecutionConfigOptions.TABLE_EXEC_DISABLED_OPERATORS, "NestedLoopJoin,SortMergeJoin")
     val sqlQuery =
       """
         |WITH r AS (SELECT a, b, c FROM x WHERE c LIKE 'test%')
@@ -180,8 +176,8 @@ class SubplanReuseTest extends TableTestBase {
 
   @Test
   def testSubplanReuseOnHashAggregate(): Unit = {
-    util.tableEnv.getConfig.getConfiguration.setString(
-      ExecutionConfigOptions.TABLE_EXEC_DISABLED_OPERATORS, OperatorType.SortAgg.toString)
+    util.tableEnv.getConfig
+      .set(ExecutionConfigOptions.TABLE_EXEC_DISABLED_OPERATORS, OperatorType.SortAgg.toString)
     val sqlQuery =
       """
         |WITH r AS (SELECT c, SUM(a) a, SUM(b) b FROM x GROUP BY c)
@@ -192,8 +188,8 @@ class SubplanReuseTest extends TableTestBase {
 
   @Test
   def testSubplanReuseOnSortAggregate(): Unit = {
-    util.tableEnv.getConfig.getConfiguration.setString(
-      ExecutionConfigOptions.TABLE_EXEC_DISABLED_OPERATORS, OperatorType.HashAgg.toString)
+    util.tableEnv.getConfig
+      .set(ExecutionConfigOptions.TABLE_EXEC_DISABLED_OPERATORS, OperatorType.HashAgg.toString)
     val sqlQuery =
       """
         |WITH r AS (SELECT c, SUM(a) a, SUM(b) b FROM x GROUP BY c)
@@ -222,7 +218,6 @@ class SubplanReuseTest extends TableTestBase {
 
   @Test
   def testSubplanReuseOnSort(): Unit = {
-    util.tableEnv.getConfig.getConfiguration.setBoolean(TABLE_EXEC_RANGE_SORT_ENABLED, true)
     val sqlQuery =
       """
         |WITH r AS (SELECT c, SUM(a) a, SUM(b) b FROM x GROUP BY c ORDER BY a, b DESC)
@@ -233,8 +228,8 @@ class SubplanReuseTest extends TableTestBase {
 
   @Test
   def testSubplanReuseOnLimit(): Unit = {
-    util.tableEnv.getConfig.getConfiguration.setString(
-      ExecutionConfigOptions.TABLE_EXEC_DISABLED_OPERATORS, "HashJoin,SortMergeJoin")
+    util.tableEnv.getConfig
+      .set(ExecutionConfigOptions.TABLE_EXEC_DISABLED_OPERATORS, "HashJoin,SortMergeJoin")
     val sqlQuery =
       """
         |WITH r AS (SELECT a, b FROM x LIMIT 10)
@@ -276,10 +271,8 @@ class SubplanReuseTest extends TableTestBase {
 
   @Test
   def testSubplanReuseOnSortMergeJoin(): Unit = {
-    util.tableEnv.getConfig.getConfiguration.setString(
-      ExecutionConfigOptions.TABLE_EXEC_DISABLED_OPERATORS, "HashJoin,NestedLoopJoin")
-    util.tableEnv.getConfig.getConfiguration.setBoolean(
-      BatchPhysicalSortMergeJoinRule.TABLE_OPTIMIZER_SMJ_REMOVE_SORT_ENABLED, true)
+    util.tableEnv.getConfig
+      .set(ExecutionConfigOptions.TABLE_EXEC_DISABLED_OPERATORS, "HashJoin,NestedLoopJoin")
     val sqlQuery =
       """
         |WITH r AS (SELECT * FROM x, y WHERE a = d AND c LIKE 'He%')
@@ -290,8 +283,8 @@ class SubplanReuseTest extends TableTestBase {
 
   @Test
   def testSubplanReuseOnHashJoin(): Unit = {
-    util.tableEnv.getConfig.getConfiguration.setString(
-      ExecutionConfigOptions.TABLE_EXEC_DISABLED_OPERATORS, "NestedLoopJoin,SortMergeJoin")
+    util.tableEnv.getConfig
+      .set(ExecutionConfigOptions.TABLE_EXEC_DISABLED_OPERATORS, "NestedLoopJoin,SortMergeJoin")
     val sqlQuery =
       """
         |WITH r AS (SELECT * FROM x, y WHERE a = d AND c LIKE 'He%')
@@ -302,8 +295,8 @@ class SubplanReuseTest extends TableTestBase {
 
   @Test
   def testSubplanReuseOnNestedLoopJoin(): Unit = {
-    util.tableEnv.getConfig.getConfiguration.setString(
-      ExecutionConfigOptions.TABLE_EXEC_DISABLED_OPERATORS, "HashJoin,SortMergeJoin")
+    util.tableEnv.getConfig
+      .set(ExecutionConfigOptions.TABLE_EXEC_DISABLED_OPERATORS, "HashJoin,SortMergeJoin")
     val sqlQuery =
       """
         |WITH r AS (SELECT * FROM x, y WHERE a = d AND c LIKE 'He%')
@@ -314,7 +307,7 @@ class SubplanReuseTest extends TableTestBase {
 
   @Test
   def testSubplanReuseOnJoinNonDeterministicJoinCondition(): Unit = {
-    util.tableEnv.registerFunction("random_udf", new NonDeterministicUdf)
+    util.addTemporarySystemFunction("random_udf", new NonDeterministicUdf)
     val sqlQuery =
       """
         |WITH r AS (SELECT * FROM x FULL OUTER JOIN y ON random_udf(a) = random_udf(d) OR c = f
@@ -335,6 +328,52 @@ class SubplanReuseTest extends TableTestBase {
   }
 
   @Test
+  def testSubplanReuseOnSortedView(): Unit = {
+    util.tableEnv.executeSql("""
+                               |CREATE TABLE Source (
+                               |   a int,
+                               |   b bigint,
+                               |   c string,
+                               |   d string,
+                               |   e string
+                               |) WITH (
+                               |   'connector' = 'values',
+                               |   'bounded' = 'true'
+                               |)
+                               |""".stripMargin)
+    val query = "SELECT * FROM Source order by c"
+    val table = util.tableEnv.sqlQuery(query)
+    // Define a sorted view.
+    util.tableEnv.createTemporaryView("SortedView", table)
+    util.tableEnv.executeSql("""
+                               |CREATE TABLE Sink1 (
+                               |   a int,
+                               |   b bigint,
+                               |   c string
+                               |) WITH (
+                               |   'connector' = 'values',
+                               |   'bounded' = 'true'
+                               |)
+                               |""".stripMargin)
+    util.tableEnv.executeSql("""
+                               |CREATE TABLE Sink2 (
+                               |   a int,
+                               |   b bigint,
+                               |   c string,
+                               |   d string
+                               |) WITH (
+                               |   'connector' = 'values',
+                               |   'bounded' = 'true'
+                               |)
+                               |""".stripMargin)
+    val stmtSet = util.tableEnv.createStatementSet()
+    stmtSet.addInsertSql("INSERT INTO Sink1 select a, b, listagg(d) from SortedView group by a, b")
+    stmtSet.addInsertSql("INSERT INTO Sink2 select a, b, c, d from SortedView")
+
+    util.verifyExecPlan(stmtSet)
+  }
+
+  @Test
   def testSubplanReuseOnOverWindowWithNonDeterministicAggCall(): Unit = {
     // FirstValueAggFunction is not deterministic
     util.addTemporarySystemFunction(
@@ -351,9 +390,9 @@ class SubplanReuseTest extends TableTestBase {
 
   @Test
   def testSubplanReuseOnCorrelate(): Unit = {
-    util.addFunction("str_split", new StringSplit())
-    util.tableEnv.getConfig.getConfiguration.setString(
-      ExecutionConfigOptions.TABLE_EXEC_DISABLED_OPERATORS, "NestedLoopJoin,SortMergeJoin")
+    util.addTemporarySystemFunction("str_split", new StringSplit())
+    util.tableEnv.getConfig
+      .set(ExecutionConfigOptions.TABLE_EXEC_DISABLED_OPERATORS, "NestedLoopJoin,SortMergeJoin")
     val sqlQuery =
       """
         |WITH r AS (SELECT a, b, c, v FROM x, LATERAL TABLE(str_split(c, '-')) AS T(v))
@@ -366,7 +405,7 @@ class SubplanReuseTest extends TableTestBase {
 
   @Test
   def testSubplanReuseOnCorrelateWithNonDeterministicUDTF(): Unit = {
-    util.addFunction("TableFun", new NonDeterministicTableFunc)
+    util.addTemporarySystemFunction("TableFun", new NonDeterministicTableFunc)
 
     val sqlQuery =
       """
@@ -378,21 +417,21 @@ class SubplanReuseTest extends TableTestBase {
 
   @Test
   def testSubplanReuseWithDynamicFunction(): Unit = {
-    val sqlQuery = util.tableEnv.sqlQuery(
-      """
-        |(SELECT a AS random FROM x ORDER BY rand() LIMIT 1)
-        |INTERSECT
-        |(SELECT a AS random FROM x ORDER BY rand() LIMIT 1)
-        |INTERSECT
-        |(SELECT a AS random FROM x ORDER BY rand() LIMIT 1)
+    val sqlQuery = util.tableEnv.sqlQuery("""
+                                            |(SELECT a AS random FROM x ORDER BY rand() LIMIT 1)
+                                            |INTERSECT
+                                            |(SELECT a AS random FROM x ORDER BY rand() LIMIT 1)
+                                            |INTERSECT
+                                            |(SELECT a AS random FROM x ORDER BY rand() LIMIT 1)
       """.stripMargin)
     util.verifyExecPlan(sqlQuery)
   }
 
   @Test
   def testNestedSubplanReuse(): Unit = {
-    util.tableEnv.getConfig.getConfiguration.setString(
-      ExecutionConfigOptions.TABLE_EXEC_DISABLED_OPERATORS, "NestedLoopJoin,SortMergeJoin,SortAgg")
+    util.tableEnv.getConfig.set(
+      ExecutionConfigOptions.TABLE_EXEC_DISABLED_OPERATORS,
+      "NestedLoopJoin,SortMergeJoin,SortAgg")
     val sqlQuery =
       """
         |WITH v1 AS (
@@ -427,8 +466,8 @@ class SubplanReuseTest extends TableTestBase {
 
   @Test
   def testBreakupDeadlockOnHashJoin(): Unit = {
-    util.tableEnv.getConfig.getConfiguration.setString(
-      ExecutionConfigOptions.TABLE_EXEC_DISABLED_OPERATORS, "NestedLoopJoin,SortMergeJoin")
+    util.tableEnv.getConfig
+      .set(ExecutionConfigOptions.TABLE_EXEC_DISABLED_OPERATORS, "NestedLoopJoin,SortMergeJoin")
     val sqlQuery =
       """
         |WITH r AS (SELECT a FROM x LIMIT 10)
@@ -439,8 +478,8 @@ class SubplanReuseTest extends TableTestBase {
 
   @Test
   def testBreakupDeadlockOnNestedLoopJoin(): Unit = {
-    util.tableEnv.getConfig.getConfiguration.setString(
-      ExecutionConfigOptions.TABLE_EXEC_DISABLED_OPERATORS, "HashJoin,SortMergeJoin")
+    util.tableEnv.getConfig
+      .set(ExecutionConfigOptions.TABLE_EXEC_DISABLED_OPERATORS, "HashJoin,SortMergeJoin")
     val sqlQuery =
       """
         |WITH r AS (SELECT a FROM x LIMIT 10)
@@ -451,40 +490,235 @@ class SubplanReuseTest extends TableTestBase {
 
   @Test
   def testEnableReuseTableSourceOnNewSource(): Unit = {
-    util.tableEnv.getConfig.getConfiguration.setBoolean(
-      OptimizerConfigOptions.TABLE_OPTIMIZER_REUSE_SOURCE_ENABLED, true)
+    util.tableEnv.getConfig
+      .set(OptimizerConfigOptions.TABLE_OPTIMIZER_REUSE_SOURCE_ENABLED, Boolean.box(true))
     testReuseOnNewSource()
   }
 
   @Test
   def testDisableReuseTableSourceOnNewSource(): Unit = {
-    util.tableEnv.getConfig.getConfiguration.setBoolean(
-      OptimizerConfigOptions.TABLE_OPTIMIZER_REUSE_SOURCE_ENABLED, false)
+    util.tableEnv.getConfig
+      .set(OptimizerConfigOptions.TABLE_OPTIMIZER_REUSE_SOURCE_ENABLED, Boolean.box(false))
     testReuseOnNewSource()
   }
 
-  private def testReuseOnNewSource(): Unit = {
-    util.addTable(
+  @Test
+  def testReuseTableSourceWithProjectPushDownAndMetaDataKey1(): Unit = {
+    // In this case, use metaData key without alias name.
+    val ddl1 =
       s"""
-         |create table newX(
-         |  a int,
-         |  b bigint,
-         |  c varchar
-         |) with (
+         | CREATE TABLE reuseTable (
+         |  a bigint,
+         |  b varchar(64),
+         |  c bigint,
+         |  d STRING,
+         |  ts1 TIMESTAMP(3) METADATA,
+         |  ts2 TIMESTAMP(3) METADATA
+         | ) WITH (
+         |  'connector' = 'values',
+         |  'bounded' = 'true',
+         |  'readable-metadata' = 'ts1:TIMESTAMP(3), ts2:TIMESTAMP(3)'
+         | )
+         |""".stripMargin
+    util.tableEnv.executeSql(ddl1)
+
+    val ddl2 =
+      s"""
+         | CREATE TABLE sink1 (
+         |  a1 bigint,
+         |  b1 VARCHAR(32),
+         |  my_time1 timestamp,
+         |  d1 DECIMAL(20,2)
+         | ) WITH (
          |  'connector' = 'values',
          |  'bounded' = 'true'
-         |)
+         | )
+         |""".stripMargin
+    util.tableEnv.executeSql(ddl2)
+
+    val ddl3 =
+      s"""
+         | CREATE TABLE sink2 (
+         |  a2 bigint,
+         | `update_time` timestamp
+         | ) WITH (
+         | 'connector' = 'values',
+         | 'bounded' = 'true'
+         | )
+         |""".stripMargin
+    util.tableEnv.executeSql(ddl3)
+
+    val query1 =
+      s"""
+         | SELECT a, b, ts1, CAST(d AS DECIMAL(28,2)) AS d1
+         | FROM reuseTable
+         |""".stripMargin
+    val table = util.tableEnv.sqlQuery(query1)
+    util.tableEnv.createTemporaryView("view1", table)
+
+    val query2 =
+      s"""
+         | SELECT a, ts1 AS update_time
+         | FROM reuseTable
+         |""".stripMargin
+    val table2 = util.tableEnv.sqlQuery(query2)
+    util.tableEnv.createTemporaryView("view2", table2)
+
+    val stmtSet = util.tableEnv.createStatementSet()
+    stmtSet.addInsertSql("INSERT INTO sink1 SELECT a, b, ts1, d1 FROM view1")
+    stmtSet.addInsertSql("INSERT INTO sink2 SELECT a, update_time FROM view2")
+    util.verifyExecPlan(stmtSet)
+  }
+
+  @Test
+  def testReuseTableSourceWithProjectPushDownAndMetaDataKey(): Unit = {
+    // In this case, use metaData key with alias name.
+    val ddl1 =
+      s"""
+         | CREATE TABLE reuseTable (
+         |  a bigint,
+         |  b varchar(64),
+         |  c bigint,
+         |  d STRING,
+         |  my_time TIMESTAMP(3) METADATA FROM 'ts1',
+         |  unUse_time TIMESTAMP(3) METADATA FROM 'ts2'
+         | ) WITH (
+         |  'connector' = 'values',
+         |  'bounded' = 'true',
+         |  'readable-metadata' = 'ts1:TIMESTAMP(3), ts2:TIMESTAMP(3)'
+         | )
+         |""".stripMargin
+    util.tableEnv.executeSql(ddl1)
+
+    val ddl2 =
+      s"""
+         | CREATE TABLE sink1 (
+         |  a1 bigint,
+         |  b1 VARCHAR(32),
+         |  my_time1 timestamp,
+         |  d1 DECIMAL(20,2)
+         | ) WITH (
+         |  'connector' = 'values',
+         |  'bounded' = 'true'
+         | )
+         |""".stripMargin
+    util.tableEnv.executeSql(ddl2)
+
+    val ddl3 =
+      s"""
+         | CREATE TABLE sink2 (
+         |  a2 bigint,
+         | `update_time` timestamp
+         | ) WITH (
+         | 'connector' = 'values',
+         | 'bounded' = 'true'
+         | )
+         |""".stripMargin
+    util.tableEnv.executeSql(ddl3)
+
+    val query1 =
+      s"""
+         | SELECT a, b, my_time, CAST(d AS DECIMAL(28,2)) AS d1
+         | FROM reuseTable
+         |""".stripMargin
+    val table = util.tableEnv.sqlQuery(query1)
+    util.tableEnv.createTemporaryView("view1", table)
+
+    val query2 =
+      s"""
+         | SELECT a, my_time AS update_time
+         | FROM reuseTable
+         |""".stripMargin
+    val table2 = util.tableEnv.sqlQuery(query2)
+    util.tableEnv.createTemporaryView("view2", table2)
+
+    val stmtSet = util.tableEnv.createStatementSet()
+    stmtSet.addInsertSql("INSERT INTO sink1 SELECT a, b, my_time, d1 FROM view1")
+    stmtSet.addInsertSql("INSERT INTO sink2 SELECT a, update_time FROM view2")
+    util.verifyExecPlan(stmtSet)
+  }
+
+  @Test
+  def testSourceReuseWithEmptyFilterCondAndIgnoreEmptyFilter(): Unit = {
+    util.addTable(s"""
+                     |create table MyTable(
+                     |  a int,
+                     |  b bigint,
+                     |  c varchar
+                     |) with (
+                     |  'connector' = 'values',
+                     |  'bounded' = 'true'
+                     |)
        """.stripMargin)
-    util.addTable(
-      s"""
-         |create table newY(
-         |  d int,
-         |  e bigint,
-         |  f varchar
-         |) with (
-         |  'connector' = 'values',
-         |  'bounded' = 'true'
-         |)
+    val sqlQuery =
+      """
+        | SELECT * FROM MyTable T1, MyTable T2 WHERE T1.a = T2.a AND T1.a > 5
+      """.stripMargin
+    util.verifyExecPlan(sqlQuery)
+  }
+
+  @Test
+  def testSourceReuseWithEmptyFilterCondAndIgnoreEmptyFilterTrue(): Unit = {
+    util.tableEnv.getConfig
+      .set(OptimizerConfigOptions.TABLE_OPTIMIZER_REUSE_SOURCE_ENABLED, Boolean.box(true))
+    util.addTable(s"""
+                     |create table MyTable(
+                     |  a int,
+                     |  b bigint,
+                     |  c varchar
+                     |) with (
+                     |  'connector' = 'values',
+                     |  'bounded' = 'true'
+                     |)
+       """.stripMargin)
+    val sqlQuery =
+      """
+        | SELECT * FROM MyTable T1, MyTable T2 WHERE T1.a = T2.a AND T1.a > 5
+      """.stripMargin
+    util.verifyExecPlan(sqlQuery)
+  }
+
+  @Test
+  def testSourceReuseWithEmptyFilterCondAndIgnoreEmptyFilterTrue2(): Unit = {
+    util.tableEnv.getConfig
+      .set(OptimizerConfigOptions.TABLE_OPTIMIZER_REUSE_SOURCE_ENABLED, Boolean.box(true))
+    util.addTable(s"""
+                     |create table MyTable(
+                     |  a int,
+                     |  b bigint,
+                     |  c varchar
+                     |) with (
+                     |  'connector' = 'values',
+                     |  'bounded' = 'true'
+                     |)
+       """.stripMargin)
+    val sqlQuery =
+      """
+        | SELECT * FROM MyTable T1, MyTable T2 WHERE T1.a = T2.a AND T2.a < 10
+      """.stripMargin
+    util.verifyExecPlan(sqlQuery)
+  }
+
+  private def testReuseOnNewSource(): Unit = {
+    util.addTable(s"""
+                     |create table newX(
+                     |  a int,
+                     |  b bigint,
+                     |  c varchar
+                     |) with (
+                     |  'connector' = 'values',
+                     |  'bounded' = 'true'
+                     |)
+       """.stripMargin)
+    util.addTable(s"""
+                     |create table newY(
+                     |  d int,
+                     |  e bigint,
+                     |  f varchar
+                     |) with (
+                     |  'connector' = 'values',
+                     |  'bounded' = 'true'
+                     |)
        """.stripMargin)
     val sqlQuery =
       """

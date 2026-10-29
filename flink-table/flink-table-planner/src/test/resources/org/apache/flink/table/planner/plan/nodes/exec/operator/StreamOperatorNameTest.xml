@@ -24,24 +24,24 @@ LogicalSink(table=[default_catalog.default_database.MySink], fields=[c, a, b])
    +- LogicalTableScan(table=[[default_catalog, default_database, MyTable]])
 
 == Optimized Physical Plan ==
-Sink(table=[default_catalog.default_database.MySink], fields=[c, a, b])
+Sink(table=[default_catalog.default_database.MySink], fields=[c, a, b], upsertMaterialize=[true], conflictStrategy=[DEDUPLICATE])
 +- ChangelogNormalize(key=[a, b])
    +- Exchange(distribution=[hash[a, b]])
-      +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[c, a, b], metadata=[]]], fields=[c, a, b])
+      +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[c, a, b]]], fields=[c, a, b])
 
 == Optimized Execution Plan ==
-Sink(table=[default_catalog.default_database.MySink], fields=[c, a, b], upsertMaterialize=[true])
+Sink(table=[default_catalog.default_database.MySink], fields=[c, a, b], upsertMaterialize=[true], conflictStrategy=[DEDUPLICATE])
 +- ChangelogNormalize(key=[a, b])
    +- Exchange(distribution=[hash[a, b]])
-      +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[c, a, b], metadata=[]]], fields=[c, a, b])
+      +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[c, a, b]]], fields=[c, a, b])
 
 == Physical Execution Plan ==
 {
   "nodes" : [ {
     "id" : ,
-    "type" : "Source: TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[c, a, b], metadata=[]]], fields=[c, a, b])",
+    "type" : "Source: TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[c, a, b]]], fields=[c, a, b])",
     "pact" : "Data Source",
-    "contents" : "TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[c, a, b], metadata=[]]], fields=[c, a, b])",
+    "contents" : "TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[c, a, b]]], fields=[c, a, b])",
     "parallelism" : 1
   }, {
     "id" : ,
@@ -78,9 +78,9 @@ Sink(table=[default_catalog.default_database.MySink], fields=[c, a, b], upsertMa
     } ]
   }, {
     "id" : ,
-    "type" : "Sink: Sink(table=[default_catalog.default_database.MySink], fields=[c, a, b], upsertMaterialize=[true])",
+    "type" : "Sink: Sink(table=[default_catalog.default_database.MySink], fields=[c, a, b], upsertMaterialize=[true], conflictStrategy=[DEDUPLICATE])",
     "pact" : "Data Sink",
-    "contents" : "Sink(table=[default_catalog.default_database.MySink], fields=[c, a, b], upsertMaterialize=[true])",
+    "contents" : "Sink(table=[default_catalog.default_database.MySink], fields=[c, a, b], upsertMaterialize=[true], conflictStrategy=[DEDUPLICATE])",
     "parallelism" : 2,
     "predecessors" : [ {
       "id" : ,
@@ -99,16 +99,16 @@ LogicalSink(table=[default_catalog.default_database.MySink], fields=[c, a, b])
    +- LogicalTableScan(table=[[default_catalog, default_database, MyTable]])
 
 == Optimized Physical Plan ==
-Sink(table=[default_catalog.default_database.MySink], fields=[c, a, b])
+Sink(table=[default_catalog.default_database.MySink], fields=[c, a, b], upsertMaterialize=[true], conflictStrategy=[DEDUPLICATE])
 +- ChangelogNormalize(key=[a, b])
    +- Exchange(distribution=[hash[a, b]])
-      +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[c, a, b], metadata=[]]], fields=[c, a, b])
+      +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[c, a, b]]], fields=[c, a, b])
 
 == Optimized Execution Plan ==
-Sink(table=[default_catalog.default_database.MySink], fields=[c, a, b], upsertMaterialize=[true])
+Sink(table=[default_catalog.default_database.MySink], fields=[c, a, b], upsertMaterialize=[true], conflictStrategy=[DEDUPLICATE])
 +- ChangelogNormalize(key=[a, b])
    +- Exchange(distribution=[hash[a, b]])
-      +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[c, a, b], metadata=[]]], fields=[c, a, b])
+      +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[c, a, b]]], fields=[c, a, b])
 
 == Physical Execution Plan ==
 {
@@ -116,7 +116,7 @@ Sink(table=[default_catalog.default_database.MySink], fields=[c, a, b], upsertMa
     "id" : ,
     "type" : "Source: MyTable[]",
     "pact" : "Data Source",
-    "contents" : "[]:TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[c, a, b], metadata=[]]], fields=[c, a, b])",
+    "contents" : "[]:TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[c, a, b]]], fields=[c, a, b])",
     "parallelism" : 1
   }, {
     "id" : ,
@@ -155,7 +155,7 @@ Sink(table=[default_catalog.default_database.MySink], fields=[c, a, b], upsertMa
     "id" : ,
     "type" : "Sink: MySink[]",
     "pact" : "Data Sink",
-    "contents" : "[]:Sink(table=[default_catalog.default_database.MySink], fields=[c, a, b], upsertMaterialize=[true])",
+    "contents" : "[]:Sink(table=[default_catalog.default_database.MySink], fields=[c, a, b], upsertMaterialize=[true], conflictStrategy=[DEDUPLICATE])",
     "parallelism" : 2,
     "predecessors" : [ {
       "id" : ,
@@ -282,7 +282,7 @@ LogicalProject(a=[$0], b=[$1], c=[$2])
 
 == Optimized Physical Plan ==
 Calc(select=[a, b, c])
-+- Deduplicate(keep=[FirstRow], key=[a], order=[ROWTIME])
++- Rank(strategy=[AppendFastStrategy], rankType=[ROW_NUMBER], rankRange=[rankStart=1, rankEnd=1], partitionBy=[a], orderBy=[ROWTIME rowtime ASC], select=[a, b, c, rowtime])
    +- Exchange(distribution=[hash[a]])
       +- Calc(select=[a, b, c, rowtime])
          +- WatermarkAssigner(rowtime=[rowtime], watermark=[-(rowtime, 1000:INTERVAL SECOND)])
@@ -291,7 +291,7 @@ Calc(select=[a, b, c])
 
 == Optimized Execution Plan ==
 Calc(select=[a, b, c])
-+- Deduplicate(keep=[FirstRow], key=[a], order=[ROWTIME])
++- Deduplicate(keep=[FirstRow], key=[a], order=[ROWTIME], outputInsertOnly=[true])
    +- Exchange(distribution=[hash[a]])
       +- Calc(select=[a, b, c, rowtime])
          +- WatermarkAssigner(rowtime=[rowtime], watermark=[(rowtime - 1000:INTERVAL SECOND)])
@@ -341,9 +341,9 @@ Calc(select=[a, b, c])
     } ]
   }, {
     "id" : ,
-    "type" : "Deduplicate(keep=[FirstRow], key=[a], order=[ROWTIME])",
+    "type" : "Deduplicate(keep=[FirstRow], key=[a], order=[ROWTIME], outputInsertOnly=[true])",
     "pact" : "Operator",
-    "contents" : "Deduplicate(keep=[FirstRow], key=[a], order=[ROWTIME])",
+    "contents" : "Deduplicate(keep=[FirstRow], key=[a], order=[ROWTIME], outputInsertOnly=[true])",
     "parallelism" : 2,
     "predecessors" : [ {
       "id" : ,
@@ -377,7 +377,7 @@ LogicalProject(a=[$0], b=[$1], c=[$2])
 
 == Optimized Physical Plan ==
 Calc(select=[a, b, c])
-+- Deduplicate(keep=[FirstRow], key=[a], order=[ROWTIME])
++- Rank(strategy=[AppendFastStrategy], rankType=[ROW_NUMBER], rankRange=[rankStart=1, rankEnd=1], partitionBy=[a], orderBy=[ROWTIME rowtime ASC], select=[a, b, c, rowtime])
    +- Exchange(distribution=[hash[a]])
       +- Calc(select=[a, b, c, rowtime])
          +- WatermarkAssigner(rowtime=[rowtime], watermark=[-(rowtime, 1000:INTERVAL SECOND)])
@@ -386,7 +386,7 @@ Calc(select=[a, b, c])
 
 == Optimized Execution Plan ==
 Calc(select=[a, b, c])
-+- Deduplicate(keep=[FirstRow], key=[a], order=[ROWTIME])
++- Deduplicate(keep=[FirstRow], key=[a], order=[ROWTIME], outputInsertOnly=[true])
    +- Exchange(distribution=[hash[a]])
       +- Calc(select=[a, b, c, rowtime])
          +- WatermarkAssigner(rowtime=[rowtime], watermark=[(rowtime - 1000:INTERVAL SECOND)])
@@ -438,7 +438,7 @@ Calc(select=[a, b, c])
     "id" : ,
     "type" : "Deduplicate[]",
     "pact" : "Operator",
-    "contents" : "[]:Deduplicate(keep=[FirstRow], key=[a], order=[ROWTIME])",
+    "contents" : "[]:Deduplicate(keep=[FirstRow], key=[a], order=[ROWTIME], outputInsertOnly=[true])",
     "parallelism" : 2,
     "predecessors" : [ {
       "id" : ,
@@ -470,20 +470,20 @@ LogicalSink(table=[default_catalog.default_database.MySink], fields=[c, a, b])
 == Optimized Physical Plan ==
 Sink(table=[default_catalog.default_database.MySink], fields=[c, a, b])
 +- DropUpdateBefore
-   +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[c, a, b], metadata=[]]], fields=[c, a, b])
+   +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[c, a, b]]], fields=[c, a, b])
 
 == Optimized Execution Plan ==
 Sink(table=[default_catalog.default_database.MySink], fields=[c, a, b])
 +- DropUpdateBefore
-   +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[c, a, b], metadata=[]]], fields=[c, a, b])
+   +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[c, a, b]]], fields=[c, a, b])
 
 == Physical Execution Plan ==
 {
   "nodes" : [ {
     "id" : ,
-    "type" : "Source: TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[c, a, b], metadata=[]]], fields=[c, a, b])",
+    "type" : "Source: TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[c, a, b]]], fields=[c, a, b])",
     "pact" : "Data Source",
-    "contents" : "TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[c, a, b], metadata=[]]], fields=[c, a, b])",
+    "contents" : "TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[c, a, b]]], fields=[c, a, b])",
     "parallelism" : 1
   }, {
     "id" : ,
@@ -532,12 +532,12 @@ LogicalSink(table=[default_catalog.default_database.MySink], fields=[c, a, b])
 == Optimized Physical Plan ==
 Sink(table=[default_catalog.default_database.MySink], fields=[c, a, b])
 +- DropUpdateBefore
-   +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[c, a, b], metadata=[]]], fields=[c, a, b])
+   +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[c, a, b]]], fields=[c, a, b])
 
 == Optimized Execution Plan ==
 Sink(table=[default_catalog.default_database.MySink], fields=[c, a, b])
 +- DropUpdateBefore
-   +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[c, a, b], metadata=[]]], fields=[c, a, b])
+   +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[c, a, b]]], fields=[c, a, b])
 
 == Physical Execution Plan ==
 {
@@ -545,7 +545,7 @@ Sink(table=[default_catalog.default_database.MySink], fields=[c, a, b])
     "id" : ,
     "type" : "Source: MyTable[]",
     "pact" : "Data Source",
-    "contents" : "[]:TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[c, a, b], metadata=[]]], fields=[c, a, b])",
+    "contents" : "[]:TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[c, a, b]]], fields=[c, a, b])",
     "parallelism" : 1
   }, {
     "id" : ,
@@ -594,20 +594,20 @@ LogicalAggregate(group=[{0}], b=[MAX($1)])
 == Optimized Physical Plan ==
 GroupAggregate(groupBy=[a], select=[a, MAX(b) AS b])
 +- Exchange(distribution=[hash[a]])
-   +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, b], metadata=[]]], fields=[a, b])
+   +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, b]]], fields=[a, b])
 
 == Optimized Execution Plan ==
 GroupAggregate(groupBy=[a], select=[a, MAX(b) AS b])
 +- Exchange(distribution=[hash[a]])
-   +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, b], metadata=[]]], fields=[a, b])
+   +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, b]]], fields=[a, b])
 
 == Physical Execution Plan ==
 {
   "nodes" : [ {
     "id" : ,
-    "type" : "Source: TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, b], metadata=[]]], fields=[a, b])",
+    "type" : "Source: TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, b]]], fields=[a, b])",
     "pact" : "Data Source",
-    "contents" : "TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, b], metadata=[]]], fields=[a, b])",
+    "contents" : "TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, b]]], fields=[a, b])",
     "parallelism" : 1
   }, {
     "id" : ,
@@ -624,116 +624,6 @@ GroupAggregate(groupBy=[a], select=[a, MAX(b) AS b])
 }]]>
     </Resource>
   </TestCase>
-  <TestCase name="testWindowDeduplicate[isNameSimplifyEnabled=true]">
-    <Resource name="explain">
-      <![CDATA[== Abstract Syntax Tree ==
-LogicalProject(window_start=[$6], window_end=[$7], a=[$0], b=[$1], c=[$2])
-+- LogicalFilter(condition=[<=($9, 1)])
-   +- LogicalProject(a=[$0], b=[$1], c=[$2], d=[$3], rowtime=[$4], proctime=[$5], window_start=[$6], window_end=[$7], window_time=[$8], rownum=[ROW_NUMBER() OVER (PARTITION BY $0, $6, $7 ORDER BY $4 DESC NULLS LAST)])
-      +- LogicalTableFunctionScan(invocation=[TUMBLE($5, DESCRIPTOR($4), 900000:INTERVAL MINUTE)], rowType=[RecordType(BIGINT a, INTEGER b, VARCHAR(2147483647) c, BIGINT d, TIMESTAMP(3) *ROWTIME* rowtime, TIMESTAMP_LTZ(3) *PROCTIME* proctime, TIMESTAMP(3) window_start, TIMESTAMP(3) window_end, TIMESTAMP(3) *ROWTIME* window_time)])
-         +- LogicalProject(a=[$0], b=[$1], c=[$2], d=[$3], rowtime=[$4], proctime=[$5])
-            +- LogicalWatermarkAssigner(rowtime=[rowtime], watermark=[-($4, 1000:INTERVAL SECOND)])
-               +- LogicalProject(a=[$0], b=[$1], c=[$2], d=[$3], rowtime=[$4], proctime=[PROCTIME()])
-                  +- LogicalTableScan(table=[[default_catalog, default_database, MyTable]])
-
-== Optimized Physical Plan ==
-Calc(select=[window_start, window_end, a, b, c])
-+- WindowDeduplicate(window=[TUMBLE(win_start=[window_start], win_end=[window_end], size=[15 min])], keep=[LastRow], partitionKeys=[a], orderKey=[rowtime], order=[ROWTIME])
-   +- Exchange(distribution=[hash[a]])
-      +- Calc(select=[a, b, c, rowtime, window_start, window_end])
-         +- WindowTableFunction(window=[TUMBLE(time_col=[rowtime], size=[15 min])])
-            +- WatermarkAssigner(rowtime=[rowtime], watermark=[-(rowtime, 1000:INTERVAL SECOND)])
-               +- Calc(select=[a, b, c, d, rowtime, PROCTIME() AS proctime])
-                  +- TableSourceScan(table=[[default_catalog, default_database, MyTable]], fields=[a, b, c, d, rowtime])
-
-== Optimized Execution Plan ==
-Calc(select=[window_start, window_end, a, b, c])
-+- WindowDeduplicate(window=[TUMBLE(win_start=[window_start], win_end=[window_end], size=[15 min])], keep=[LastRow], partitionKeys=[a], orderKey=[rowtime], order=[ROWTIME])
-   +- Exchange(distribution=[hash[a]])
-      +- Calc(select=[a, b, c, rowtime, window_start, window_end])
-         +- WindowTableFunction(window=[TUMBLE(time_col=[rowtime], size=[15 min])])
-            +- WatermarkAssigner(rowtime=[rowtime], watermark=[(rowtime - 1000:INTERVAL SECOND)])
-               +- Calc(select=[a, b, c, d, rowtime, PROCTIME() AS proctime])
-                  +- TableSourceScan(table=[[default_catalog, default_database, MyTable]], fields=[a, b, c, d, rowtime])
-
-== Physical Execution Plan ==
-{
-  "nodes" : [ {
-    "id" : ,
-    "type" : "Source: MyTable[]",
-    "pact" : "Data Source",
-    "contents" : "[]:TableSourceScan(table=[[default_catalog, default_database, MyTable]], fields=[a, b, c, d, rowtime])",
-    "parallelism" : 1
-  }, {
-    "id" : ,
-    "type" : "Calc[]",
-    "pact" : "Operator",
-    "contents" : "[]:Calc(select=[a, b, c, d, rowtime, PROCTIME() AS proctime])",
-    "parallelism" : 1,
-    "predecessors" : [ {
-      "id" : ,
-      "ship_strategy" : "FORWARD",
-      "side" : "second"
-    } ]
-  }, {
-    "id" : ,
-    "type" : "WatermarkAssigner[]",
-    "pact" : "Operator",
-    "contents" : "[]:WatermarkAssigner(rowtime=[rowtime], watermark=[(rowtime - 1000:INTERVAL SECOND)])",
-    "parallelism" : 1,
-    "predecessors" : [ {
-      "id" : ,
-      "ship_strategy" : "FORWARD",
-      "side" : "second"
-    } ]
-  }, {
-    "id" : ,
-    "type" : "WindowTableFunction[]",
-    "pact" : "Operator",
-    "contents" : "[]:WindowTableFunction(window=[TUMBLE(time_col=[rowtime], size=[15 min])])",
-    "parallelism" : 1,
-    "predecessors" : [ {
-      "id" : ,
-      "ship_strategy" : "FORWARD",
-      "side" : "second"
-    } ]
-  }, {
-    "id" : ,
-    "type" : "Calc[]",
-    "pact" : "Operator",
-    "contents" : "[]:Calc(select=[a, b, c, rowtime, window_start, window_end])",
-    "parallelism" : 1,
-    "predecessors" : [ {
-      "id" : ,
-      "ship_strategy" : "FORWARD",
-      "side" : "second"
-    } ]
-  }, {
-    "id" : ,
-    "type" : "WindowDeduplicate[]",
-    "pact" : "Operator",
-    "contents" : "[]:WindowDeduplicate(window=[TUMBLE(win_start=[window_start], win_end=[window_end], size=[15 min])], keep=[LastRow], partitionKeys=[a], orderKey=[rowtime], order=[ROWTIME])",
-    "parallelism" : 2,
-    "predecessors" : [ {
-      "id" : ,
-      "ship_strategy" : "HASH",
-      "side" : "second"
-    } ]
-  }, {
-    "id" : ,
-    "type" : "Calc[]",
-    "pact" : "Operator",
-    "contents" : "[]:Calc(select=[window_start, window_end, a, b, c])",
-    "parallelism" : 2,
-    "predecessors" : [ {
-      "id" : ,
-      "ship_strategy" : "FORWARD",
-      "side" : "second"
-    } ]
-  } ]
-}]]>
-    </Resource>
-  </TestCase>
   <TestCase name="testGroupAggregate[isNameSimplifyEnabled=true]">
     <Resource name="explain">
       <![CDATA[== Abstract Syntax Tree ==
@@ -744,12 +634,12 @@ LogicalAggregate(group=[{0}], b=[MAX($1)])
 == Optimized Physical Plan ==
 GroupAggregate(groupBy=[a], select=[a, MAX(b) AS b])
 +- Exchange(distribution=[hash[a]])
-   +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, b], metadata=[]]], fields=[a, b])
+   +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, b]]], fields=[a, b])
 
 == Optimized Execution Plan ==
 GroupAggregate(groupBy=[a], select=[a, MAX(b) AS b])
 +- Exchange(distribution=[hash[a]])
-   +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, b], metadata=[]]], fields=[a, b])
+   +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, b]]], fields=[a, b])
 
 == Physical Execution Plan ==
 {
@@ -757,7 +647,7 @@ GroupAggregate(groupBy=[a], select=[a, MAX(b) AS b])
     "id" : ,
     "type" : "Source: MyTable[]",
     "pact" : "Data Source",
-    "contents" : "[]:TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, b], metadata=[]]], fields=[a, b])",
+    "contents" : "[]:TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, b]]], fields=[a, b])",
     "parallelism" : 1
   }, {
     "id" : ,
@@ -789,22 +679,22 @@ Calc(select=[b, w$end AS window_end, EXPR$2])
 +- GroupWindowAggregate(groupBy=[b], window=[TumblingGroupWindow('w$, rowtime, 900000)], properties=[w$start, w$end, w$rowtime, w$proctime], select=[b, COUNT(*) AS EXPR$2, start('w$) AS w$start, end('w$) AS w$end, rowtime('w$) AS w$rowtime, proctime('w$) AS w$proctime])
    +- Exchange(distribution=[hash[b]])
       +- WatermarkAssigner(rowtime=[rowtime], watermark=[-(rowtime, 1000:INTERVAL SECOND)])
-         +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[b, rowtime], metadata=[]]], fields=[b, rowtime])
+         +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[b, rowtime]]], fields=[b, rowtime])
 
 == Optimized Execution Plan ==
 Calc(select=[b, w$end AS window_end, EXPR$2])
 +- GroupWindowAggregate(groupBy=[b], window=[TumblingGroupWindow('w$, rowtime, 900000)], properties=[w$start, w$end, w$rowtime, w$proctime], select=[b, COUNT(*) AS EXPR$2, start('w$) AS w$start, end('w$) AS w$end, rowtime('w$) AS w$rowtime, proctime('w$) AS w$proctime])
    +- Exchange(distribution=[hash[b]])
       +- WatermarkAssigner(rowtime=[rowtime], watermark=[(rowtime - 1000:INTERVAL SECOND)])
-         +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[b, rowtime], metadata=[]]], fields=[b, rowtime])
+         +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[b, rowtime]]], fields=[b, rowtime])
 
 == Physical Execution Plan ==
 {
   "nodes" : [ {
     "id" : ,
-    "type" : "Source: TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[b, rowtime], metadata=[]]], fields=[b, rowtime])",
+    "type" : "Source: TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[b, rowtime]]], fields=[b, rowtime])",
     "pact" : "Data Source",
-    "contents" : "TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[b, rowtime], metadata=[]]], fields=[b, rowtime])",
+    "contents" : "TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[b, rowtime]]], fields=[b, rowtime])",
     "parallelism" : 1
   }, {
     "id" : ,
@@ -858,14 +748,14 @@ Calc(select=[b, w$end AS window_end, EXPR$2])
 +- GroupWindowAggregate(groupBy=[b], window=[TumblingGroupWindow('w$, rowtime, 900000)], properties=[w$start, w$end, w$rowtime, w$proctime], select=[b, COUNT(*) AS EXPR$2, start('w$) AS w$start, end('w$) AS w$end, rowtime('w$) AS w$rowtime, proctime('w$) AS w$proctime])
    +- Exchange(distribution=[hash[b]])
       +- WatermarkAssigner(rowtime=[rowtime], watermark=[-(rowtime, 1000:INTERVAL SECOND)])
-         +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[b, rowtime], metadata=[]]], fields=[b, rowtime])
+         +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[b, rowtime]]], fields=[b, rowtime])
 
 == Optimized Execution Plan ==
 Calc(select=[b, w$end AS window_end, EXPR$2])
 +- GroupWindowAggregate(groupBy=[b], window=[TumblingGroupWindow('w$, rowtime, 900000)], properties=[w$start, w$end, w$rowtime, w$proctime], select=[b, COUNT(*) AS EXPR$2, start('w$) AS w$start, end('w$) AS w$end, rowtime('w$) AS w$rowtime, proctime('w$) AS w$proctime])
    +- Exchange(distribution=[hash[b]])
       +- WatermarkAssigner(rowtime=[rowtime], watermark=[(rowtime - 1000:INTERVAL SECOND)])
-         +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[b, rowtime], metadata=[]]], fields=[b, rowtime])
+         +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[b, rowtime]]], fields=[b, rowtime])
 
 == Physical Execution Plan ==
 {
@@ -873,7 +763,7 @@ Calc(select=[b, w$end AS window_end, EXPR$2])
     "id" : ,
     "type" : "Source: MyTable[]",
     "pact" : "Data Source",
-    "contents" : "[]:TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[b, rowtime], metadata=[]]], fields=[b, rowtime])",
+    "contents" : "[]:TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[b, rowtime]]], fields=[b, rowtime])",
     "parallelism" : 1
   }, {
     "id" : ,
@@ -927,7 +817,7 @@ GlobalGroupAggregate(groupBy=[a], partialFinalType=[FINAL], select=[a, $SUM0(cou
          +- LocalGroupAggregate(groupBy=[a, $f2], partialFinalType=[PARTIAL], select=[a, $f2, COUNT(distinct$0 b) AS count$0, DISTINCT(b) AS distinct$0])
             +- Calc(select=[a, b, MOD(HASH_CODE(b), 1024) AS $f2])
                +- MiniBatchAssigner(interval=[1000ms], mode=[ProcTime])
-                  +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, b], metadata=[]]], fields=[a, b])
+                  +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, b]]], fields=[a, b])
 
 == Optimized Execution Plan ==
 GlobalGroupAggregate(groupBy=[a], partialFinalType=[FINAL], select=[a, $SUM0(count$0) AS $f1])
@@ -937,15 +827,15 @@ GlobalGroupAggregate(groupBy=[a], partialFinalType=[FINAL], select=[a, $SUM0(cou
          +- LocalGroupAggregate(groupBy=[a, $f2], partialFinalType=[PARTIAL], select=[a, $f2, COUNT(distinct$0 b) AS count$0, DISTINCT(b) AS distinct$0])
             +- Calc(select=[a, b, MOD(HASH_CODE(b), 1024) AS $f2])
                +- MiniBatchAssigner(interval=[1000ms], mode=[ProcTime])
-                  +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, b], metadata=[]]], fields=[a, b])
+                  +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, b]]], fields=[a, b])
 
 == Physical Execution Plan ==
 {
   "nodes" : [ {
     "id" : ,
-    "type" : "Source: TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, b], metadata=[]]], fields=[a, b])",
+    "type" : "Source: TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, b]]], fields=[a, b])",
     "pact" : "Data Source",
-    "contents" : "TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, b], metadata=[]]], fields=[a, b])",
+    "contents" : "TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, b]]], fields=[a, b])",
     "parallelism" : 1
   }, {
     "id" : ,
@@ -1021,7 +911,7 @@ GlobalGroupAggregate(groupBy=[a], partialFinalType=[FINAL], select=[a, $SUM0(cou
          +- LocalGroupAggregate(groupBy=[a, $f2], partialFinalType=[PARTIAL], select=[a, $f2, COUNT(distinct$0 b) AS count$0, DISTINCT(b) AS distinct$0])
             +- Calc(select=[a, b, MOD(HASH_CODE(b), 1024) AS $f2])
                +- MiniBatchAssigner(interval=[1000ms], mode=[ProcTime])
-                  +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, b], metadata=[]]], fields=[a, b])
+                  +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, b]]], fields=[a, b])
 
 == Optimized Execution Plan ==
 GlobalGroupAggregate(groupBy=[a], partialFinalType=[FINAL], select=[a, $SUM0(count$0) AS $f1])
@@ -1031,7 +921,7 @@ GlobalGroupAggregate(groupBy=[a], partialFinalType=[FINAL], select=[a, $SUM0(cou
          +- LocalGroupAggregate(groupBy=[a, $f2], partialFinalType=[PARTIAL], select=[a, $f2, COUNT(distinct$0 b) AS count$0, DISTINCT(b) AS distinct$0])
             +- Calc(select=[a, b, MOD(HASH_CODE(b), 1024) AS $f2])
                +- MiniBatchAssigner(interval=[1000ms], mode=[ProcTime])
-                  +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, b], metadata=[]]], fields=[a, b])
+                  +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, b]]], fields=[a, b])
 
 == Physical Execution Plan ==
 {
@@ -1039,7 +929,7 @@ GlobalGroupAggregate(groupBy=[a], partialFinalType=[FINAL], select=[a, $SUM0(cou
     "id" : ,
     "type" : "Source: MyTable[]",
     "pact" : "Data Source",
-    "contents" : "[]:TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, b], metadata=[]]], fields=[a, b])",
+    "contents" : "[]:TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, b]]], fields=[a, b])",
     "parallelism" : 1
   }, {
     "id" : ,
@@ -1100,306 +990,6 @@ GlobalGroupAggregate(groupBy=[a], partialFinalType=[FINAL], select=[a, $SUM0(cou
 }]]>
     </Resource>
   </TestCase>
-  <TestCase name="testIntervalJoin[isNameSimplifyEnabled=false]">
-    <Resource name="explain">
-      <![CDATA[== Abstract Syntax Tree ==
-LogicalProject(a=[$0], b=[$7])
-+- LogicalJoin(condition=[AND(=($0, $6), >=($5, -($11, 3600000:INTERVAL HOUR)), <=($5, +($11, 3600000:INTERVAL HOUR)))], joinType=[inner])
-   :- LogicalWatermarkAssigner(rowtime=[rowtime], watermark=[-($4, 1000:INTERVAL SECOND)])
-   :  +- LogicalProject(a=[$0], b=[$1], c=[$2], d=[$3], rowtime=[$4], proctime=[PROCTIME()])
-   :     +- LogicalTableScan(table=[[default_catalog, default_database, A]])
-   +- LogicalWatermarkAssigner(rowtime=[rowtime], watermark=[-($4, 1000:INTERVAL SECOND)])
-      +- LogicalProject(a=[$0], b=[$1], c=[$2], d=[$3], rowtime=[$4], proctime=[PROCTIME()])
-         +- LogicalTableScan(table=[[default_catalog, default_database, B]])
-
-== Optimized Physical Plan ==
-Calc(select=[a, b])
-+- IntervalJoin(joinType=[InnerJoin], windowBounds=[isRowTime=false, leftLowerBound=-3600000, leftUpperBound=3600000, leftTimeIndex=1, rightTimeIndex=2], where=[AND(=(a, a0), >=(proctime, -(proctime0, 3600000:INTERVAL HOUR)), <=(proctime, +(proctime0, 3600000:INTERVAL HOUR)))], select=[a, proctime, a0, b, proctime0])
-   :- Exchange(distribution=[hash[a]])
-   :  +- Calc(select=[a, proctime])
-   :     +- WatermarkAssigner(rowtime=[rowtime], watermark=[-(rowtime, 1000:INTERVAL SECOND)])
-   :        +- Calc(select=[a, PROCTIME() AS proctime, rowtime])
-   :           +- TableSourceScan(table=[[default_catalog, default_database, A, project=[a, rowtime], metadata=[]]], fields=[a, rowtime])
-   +- Exchange(distribution=[hash[a]])
-      +- Calc(select=[a, b, proctime])
-         +- WatermarkAssigner(rowtime=[rowtime], watermark=[-(rowtime, 1000:INTERVAL SECOND)])
-            +- Calc(select=[a, b, PROCTIME() AS proctime, rowtime])
-               +- TableSourceScan(table=[[default_catalog, default_database, B, project=[a, b, rowtime], metadata=[]]], fields=[a, b, rowtime])
-
-== Optimized Execution Plan ==
-Calc(select=[a, b])
-+- IntervalJoin(joinType=[InnerJoin], windowBounds=[isRowTime=false, leftLowerBound=-3600000, leftUpperBound=3600000, leftTimeIndex=1, rightTimeIndex=2], where=[((a = a0) AND (proctime >= (proctime0 - 3600000:INTERVAL HOUR)) AND (proctime <= (proctime0 + 3600000:INTERVAL HOUR)))], select=[a, proctime, a0, b, proctime0])
-   :- Exchange(distribution=[hash[a]])
-   :  +- Calc(select=[a, proctime])
-   :     +- WatermarkAssigner(rowtime=[rowtime], watermark=[(rowtime - 1000:INTERVAL SECOND)])
-   :        +- Calc(select=[a, PROCTIME() AS proctime, rowtime])
-   :           +- TableSourceScan(table=[[default_catalog, default_database, A, project=[a, rowtime], metadata=[]]], fields=[a, rowtime])
-   +- Exchange(distribution=[hash[a]])
-      +- Calc(select=[a, b, proctime])
-         +- WatermarkAssigner(rowtime=[rowtime], watermark=[(rowtime - 1000:INTERVAL SECOND)])
-            +- Calc(select=[a, b, PROCTIME() AS proctime, rowtime])
-               +- TableSourceScan(table=[[default_catalog, default_database, B, project=[a, b, rowtime], metadata=[]]], fields=[a, b, rowtime])
-
-== Physical Execution Plan ==
-{
-  "nodes" : [ {
-    "id" : ,
-    "type" : "Source: TableSourceScan(table=[[default_catalog, default_database, A, project=[a, rowtime], metadata=[]]], fields=[a, rowtime])",
-    "pact" : "Data Source",
-    "contents" : "TableSourceScan(table=[[default_catalog, default_database, A, project=[a, rowtime], metadata=[]]], fields=[a, rowtime])",
-    "parallelism" : 1
-  }, {
-    "id" : ,
-    "type" : "Calc(select=[a, PROCTIME() AS proctime, rowtime])",
-    "pact" : "Operator",
-    "contents" : "Calc(select=[a, PROCTIME() AS proctime, rowtime])",
-    "parallelism" : 1,
-    "predecessors" : [ {
-      "id" : ,
-      "ship_strategy" : "FORWARD",
-      "side" : "second"
-    } ]
-  }, {
-    "id" : ,
-    "type" : "WatermarkAssigner(rowtime=[rowtime], watermark=[(rowtime - 1000:INTERVAL SECOND)])",
-    "pact" : "Operator",
-    "contents" : "WatermarkAssigner(rowtime=[rowtime], watermark=[(rowtime - 1000:INTERVAL SECOND)])",
-    "parallelism" : 1,
-    "predecessors" : [ {
-      "id" : ,
-      "ship_strategy" : "FORWARD",
-      "side" : "second"
-    } ]
-  }, {
-    "id" : ,
-    "type" : "Calc(select=[a, proctime])",
-    "pact" : "Operator",
-    "contents" : "Calc(select=[a, proctime])",
-    "parallelism" : 1,
-    "predecessors" : [ {
-      "id" : ,
-      "ship_strategy" : "FORWARD",
-      "side" : "second"
-    } ]
-  }, {
-    "id" : ,
-    "type" : "Source: TableSourceScan(table=[[default_catalog, default_database, B, project=[a, b, rowtime], metadata=[]]], fields=[a, b, rowtime])",
-    "pact" : "Data Source",
-    "contents" : "TableSourceScan(table=[[default_catalog, default_database, B, project=[a, b, rowtime], metadata=[]]], fields=[a, b, rowtime])",
-    "parallelism" : 1
-  }, {
-    "id" : ,
-    "type" : "Calc(select=[a, b, PROCTIME() AS proctime, rowtime])",
-    "pact" : "Operator",
-    "contents" : "Calc(select=[a, b, PROCTIME() AS proctime, rowtime])",
-    "parallelism" : 1,
-    "predecessors" : [ {
-      "id" : ,
-      "ship_strategy" : "FORWARD",
-      "side" : "second"
-    } ]
-  }, {
-    "id" : ,
-    "type" : "WatermarkAssigner(rowtime=[rowtime], watermark=[(rowtime - 1000:INTERVAL SECOND)])",
-    "pact" : "Operator",
-    "contents" : "WatermarkAssigner(rowtime=[rowtime], watermark=[(rowtime - 1000:INTERVAL SECOND)])",
-    "parallelism" : 1,
-    "predecessors" : [ {
-      "id" : ,
-      "ship_strategy" : "FORWARD",
-      "side" : "second"
-    } ]
-  }, {
-    "id" : ,
-    "type" : "Calc(select=[a, b, proctime])",
-    "pact" : "Operator",
-    "contents" : "Calc(select=[a, b, proctime])",
-    "parallelism" : 1,
-    "predecessors" : [ {
-      "id" : ,
-      "ship_strategy" : "FORWARD",
-      "side" : "second"
-    } ]
-  }, {
-    "id" : ,
-    "type" : "IntervalJoin(joinType=[InnerJoin], windowBounds=[isRowTime=false, leftLowerBound=-3600000, leftUpperBound=3600000, leftTimeIndex=1, rightTimeIndex=2], where=[((a = a0) AND (proctime >= (proctime0 - 3600000:INTERVAL HOUR)) AND (proctime <= (proctime0 + 3600000:INTERVAL HOUR)))], select=[a, proctime, a0, b, proctime0])",
-    "pact" : "Operator",
-    "contents" : "IntervalJoin(joinType=[InnerJoin], windowBounds=[isRowTime=false, leftLowerBound=-3600000, leftUpperBound=3600000, leftTimeIndex=1, rightTimeIndex=2], where=[((a = a0) AND (proctime >= (proctime0 - 3600000:INTERVAL HOUR)) AND (proctime <= (proctime0 + 3600000:INTERVAL HOUR)))], select=[a, proctime, a0, b, proctime0])",
-    "parallelism" : 2,
-    "predecessors" : [ {
-      "id" : ,
-      "ship_strategy" : "HASH",
-      "side" : "second"
-    }, {
-      "id" : ,
-      "ship_strategy" : "HASH",
-      "side" : "second"
-    } ]
-  }, {
-    "id" : ,
-    "type" : "Calc(select=[a, b])",
-    "pact" : "Operator",
-    "contents" : "Calc(select=[a, b])",
-    "parallelism" : 2,
-    "predecessors" : [ {
-      "id" : ,
-      "ship_strategy" : "FORWARD",
-      "side" : "second"
-    } ]
-  } ]
-}]]>
-    </Resource>
-  </TestCase>
-  <TestCase name="testIntervalJoin[isNameSimplifyEnabled=true]">
-    <Resource name="explain">
-      <![CDATA[== Abstract Syntax Tree ==
-LogicalProject(a=[$0], b=[$7])
-+- LogicalJoin(condition=[AND(=($0, $6), >=($5, -($11, 3600000:INTERVAL HOUR)), <=($5, +($11, 3600000:INTERVAL HOUR)))], joinType=[inner])
-   :- LogicalWatermarkAssigner(rowtime=[rowtime], watermark=[-($4, 1000:INTERVAL SECOND)])
-   :  +- LogicalProject(a=[$0], b=[$1], c=[$2], d=[$3], rowtime=[$4], proctime=[PROCTIME()])
-   :     +- LogicalTableScan(table=[[default_catalog, default_database, A]])
-   +- LogicalWatermarkAssigner(rowtime=[rowtime], watermark=[-($4, 1000:INTERVAL SECOND)])
-      +- LogicalProject(a=[$0], b=[$1], c=[$2], d=[$3], rowtime=[$4], proctime=[PROCTIME()])
-         +- LogicalTableScan(table=[[default_catalog, default_database, B]])
-
-== Optimized Physical Plan ==
-Calc(select=[a, b])
-+- IntervalJoin(joinType=[InnerJoin], windowBounds=[isRowTime=false, leftLowerBound=-3600000, leftUpperBound=3600000, leftTimeIndex=1, rightTimeIndex=2], where=[AND(=(a, a0), >=(proctime, -(proctime0, 3600000:INTERVAL HOUR)), <=(proctime, +(proctime0, 3600000:INTERVAL HOUR)))], select=[a, proctime, a0, b, proctime0])
-   :- Exchange(distribution=[hash[a]])
-   :  +- Calc(select=[a, proctime])
-   :     +- WatermarkAssigner(rowtime=[rowtime], watermark=[-(rowtime, 1000:INTERVAL SECOND)])
-   :        +- Calc(select=[a, PROCTIME() AS proctime, rowtime])
-   :           +- TableSourceScan(table=[[default_catalog, default_database, A, project=[a, rowtime], metadata=[]]], fields=[a, rowtime])
-   +- Exchange(distribution=[hash[a]])
-      +- Calc(select=[a, b, proctime])
-         +- WatermarkAssigner(rowtime=[rowtime], watermark=[-(rowtime, 1000:INTERVAL SECOND)])
-            +- Calc(select=[a, b, PROCTIME() AS proctime, rowtime])
-               +- TableSourceScan(table=[[default_catalog, default_database, B, project=[a, b, rowtime], metadata=[]]], fields=[a, b, rowtime])
-
-== Optimized Execution Plan ==
-Calc(select=[a, b])
-+- IntervalJoin(joinType=[InnerJoin], windowBounds=[isRowTime=false, leftLowerBound=-3600000, leftUpperBound=3600000, leftTimeIndex=1, rightTimeIndex=2], where=[((a = a0) AND (proctime >= (proctime0 - 3600000:INTERVAL HOUR)) AND (proctime <= (proctime0 + 3600000:INTERVAL HOUR)))], select=[a, proctime, a0, b, proctime0])
-   :- Exchange(distribution=[hash[a]])
-   :  +- Calc(select=[a, proctime])
-   :     +- WatermarkAssigner(rowtime=[rowtime], watermark=[(rowtime - 1000:INTERVAL SECOND)])
-   :        +- Calc(select=[a, PROCTIME() AS proctime, rowtime])
-   :           +- TableSourceScan(table=[[default_catalog, default_database, A, project=[a, rowtime], metadata=[]]], fields=[a, rowtime])
-   +- Exchange(distribution=[hash[a]])
-      +- Calc(select=[a, b, proctime])
-         +- WatermarkAssigner(rowtime=[rowtime], watermark=[(rowtime - 1000:INTERVAL SECOND)])
-            +- Calc(select=[a, b, PROCTIME() AS proctime, rowtime])
-               +- TableSourceScan(table=[[default_catalog, default_database, B, project=[a, b, rowtime], metadata=[]]], fields=[a, b, rowtime])
-
-== Physical Execution Plan ==
-{
-  "nodes" : [ {
-    "id" : ,
-    "type" : "Source: A[]",
-    "pact" : "Data Source",
-    "contents" : "[]:TableSourceScan(table=[[default_catalog, default_database, A, project=[a, rowtime], metadata=[]]], fields=[a, rowtime])",
-    "parallelism" : 1
-  }, {
-    "id" : ,
-    "type" : "Calc[]",
-    "pact" : "Operator",
-    "contents" : "[]:Calc(select=[a, PROCTIME() AS proctime, rowtime])",
-    "parallelism" : 1,
-    "predecessors" : [ {
-      "id" : ,
-      "ship_strategy" : "FORWARD",
-      "side" : "second"
-    } ]
-  }, {
-    "id" : ,
-    "type" : "WatermarkAssigner[]",
-    "pact" : "Operator",
-    "contents" : "[]:WatermarkAssigner(rowtime=[rowtime], watermark=[(rowtime - 1000:INTERVAL SECOND)])",
-    "parallelism" : 1,
-    "predecessors" : [ {
-      "id" : ,
-      "ship_strategy" : "FORWARD",
-      "side" : "second"
-    } ]
-  }, {
-    "id" : ,
-    "type" : "Calc[]",
-    "pact" : "Operator",
-    "contents" : "[]:Calc(select=[a, proctime])",
-    "parallelism" : 1,
-    "predecessors" : [ {
-      "id" : ,
-      "ship_strategy" : "FORWARD",
-      "side" : "second"
-    } ]
-  }, {
-    "id" : ,
-    "type" : "Source: B[]",
-    "pact" : "Data Source",
-    "contents" : "[]:TableSourceScan(table=[[default_catalog, default_database, B, project=[a, b, rowtime], metadata=[]]], fields=[a, b, rowtime])",
-    "parallelism" : 1
-  }, {
-    "id" : ,
-    "type" : "Calc[]",
-    "pact" : "Operator",
-    "contents" : "[]:Calc(select=[a, b, PROCTIME() AS proctime, rowtime])",
-    "parallelism" : 1,
-    "predecessors" : [ {
-      "id" : ,
-      "ship_strategy" : "FORWARD",
-      "side" : "second"
-    } ]
-  }, {
-    "id" : ,
-    "type" : "WatermarkAssigner[]",
-    "pact" : "Operator",
-    "contents" : "[]:WatermarkAssigner(rowtime=[rowtime], watermark=[(rowtime - 1000:INTERVAL SECOND)])",
-    "parallelism" : 1,
-    "predecessors" : [ {
-      "id" : ,
-      "ship_strategy" : "FORWARD",
-      "side" : "second"
-    } ]
-  }, {
-    "id" : ,
-    "type" : "Calc[]",
-    "pact" : "Operator",
-    "contents" : "[]:Calc(select=[a, b, proctime])",
-    "parallelism" : 1,
-    "predecessors" : [ {
-      "id" : ,
-      "ship_strategy" : "FORWARD",
-      "side" : "second"
-    } ]
-  }, {
-    "id" : ,
-    "type" : "IntervalJoin[]",
-    "pact" : "Operator",
-    "contents" : "[]:IntervalJoin(joinType=[InnerJoin], windowBounds=[isRowTime=false, leftLowerBound=-3600000, leftUpperBound=3600000, leftTimeIndex=1, rightTimeIndex=2], where=[((a = a0) AND (proctime >= (proctime0 - 3600000:INTERVAL HOUR)) AND (proctime <= (proctime0 + 3600000:INTERVAL HOUR)))], select=[a, proctime, a0, b, proctime0])",
-    "parallelism" : 2,
-    "predecessors" : [ {
-      "id" : ,
-      "ship_strategy" : "HASH",
-      "side" : "second"
-    }, {
-      "id" : ,
-      "ship_strategy" : "HASH",
-      "side" : "second"
-    } ]
-  }, {
-    "id" : ,
-    "type" : "Calc[]",
-    "pact" : "Operator",
-    "contents" : "[]:Calc(select=[a, b])",
-    "parallelism" : 2,
-    "predecessors" : [ {
-      "id" : ,
-      "ship_strategy" : "FORWARD",
-      "side" : "second"
-    } ]
-  } ]
-}]]>
-    </Resource>
-  </TestCase>
   <TestCase name="testIntervalJoinNegativeWindow[isNameSimplifyEnabled=false]">
     <Resource name="explain">
       <![CDATA[== Abstract Syntax Tree ==
@@ -1419,12 +1009,12 @@ Calc(select=[a, b])
    :  +- Calc(select=[a, proctime])
    :     +- WatermarkAssigner(rowtime=[rowtime], watermark=[-(rowtime, 1000:INTERVAL SECOND)])
    :        +- Calc(select=[a, PROCTIME() AS proctime, rowtime])
-   :           +- TableSourceScan(table=[[default_catalog, default_database, A, project=[a, rowtime], metadata=[]]], fields=[a, rowtime])
+   :           +- TableSourceScan(table=[[default_catalog, default_database, A, project=[a, rowtime]]], fields=[a, rowtime])
    +- Exchange(distribution=[hash[a]])
       +- Calc(select=[a, b, proctime])
          +- WatermarkAssigner(rowtime=[rowtime], watermark=[-(rowtime, 1000:INTERVAL SECOND)])
             +- Calc(select=[a, b, PROCTIME() AS proctime, rowtime])
-               +- TableSourceScan(table=[[default_catalog, default_database, B, project=[a, b, rowtime], metadata=[]]], fields=[a, b, rowtime])
+               +- TableSourceScan(table=[[default_catalog, default_database, B, project=[a, b, rowtime]]], fields=[a, b, rowtime])
 
 == Optimized Execution Plan ==
 Calc(select=[a, b])
@@ -1433,20 +1023,20 @@ Calc(select=[a, b])
    :  +- Calc(select=[a, proctime])
    :     +- WatermarkAssigner(rowtime=[rowtime], watermark=[(rowtime - 1000:INTERVAL SECOND)])
    :        +- Calc(select=[a, PROCTIME() AS proctime, rowtime])
-   :           +- TableSourceScan(table=[[default_catalog, default_database, A, project=[a, rowtime], metadata=[]]], fields=[a, rowtime])
+   :           +- TableSourceScan(table=[[default_catalog, default_database, A, project=[a, rowtime]]], fields=[a, rowtime])
    +- Exchange(distribution=[hash[a]])
       +- Calc(select=[a, b, proctime])
          +- WatermarkAssigner(rowtime=[rowtime], watermark=[(rowtime - 1000:INTERVAL SECOND)])
             +- Calc(select=[a, b, PROCTIME() AS proctime, rowtime])
-               +- TableSourceScan(table=[[default_catalog, default_database, B, project=[a, b, rowtime], metadata=[]]], fields=[a, b, rowtime])
+               +- TableSourceScan(table=[[default_catalog, default_database, B, project=[a, b, rowtime]]], fields=[a, b, rowtime])
 
 == Physical Execution Plan ==
 {
   "nodes" : [ {
     "id" : ,
-    "type" : "Source: TableSourceScan(table=[[default_catalog, default_database, A, project=[a, rowtime], metadata=[]]], fields=[a, rowtime])",
+    "type" : "Source: TableSourceScan(table=[[default_catalog, default_database, A, project=[a, rowtime]]], fields=[a, rowtime])",
     "pact" : "Data Source",
-    "contents" : "TableSourceScan(table=[[default_catalog, default_database, A, project=[a, rowtime], metadata=[]]], fields=[a, rowtime])",
+    "contents" : "TableSourceScan(table=[[default_catalog, default_database, A, project=[a, rowtime]]], fields=[a, rowtime])",
     "parallelism" : 1
   }, {
     "id" : ,
@@ -1483,9 +1073,9 @@ Calc(select=[a, b])
     } ]
   }, {
     "id" : ,
-    "type" : "Source: TableSourceScan(table=[[default_catalog, default_database, B, project=[a, b, rowtime], metadata=[]]], fields=[a, b, rowtime])",
+    "type" : "Source: TableSourceScan(table=[[default_catalog, default_database, B, project=[a, b, rowtime]]], fields=[a, b, rowtime])",
     "pact" : "Data Source",
-    "contents" : "TableSourceScan(table=[[default_catalog, default_database, B, project=[a, b, rowtime], metadata=[]]], fields=[a, b, rowtime])",
+    "contents" : "TableSourceScan(table=[[default_catalog, default_database, B, project=[a, b, rowtime]]], fields=[a, b, rowtime])",
     "parallelism" : 1
   }, {
     "id" : ,
@@ -1580,12 +1170,12 @@ Calc(select=[a, b])
    :  +- Calc(select=[a, proctime])
    :     +- WatermarkAssigner(rowtime=[rowtime], watermark=[-(rowtime, 1000:INTERVAL SECOND)])
    :        +- Calc(select=[a, PROCTIME() AS proctime, rowtime])
-   :           +- TableSourceScan(table=[[default_catalog, default_database, A, project=[a, rowtime], metadata=[]]], fields=[a, rowtime])
+   :           +- TableSourceScan(table=[[default_catalog, default_database, A, project=[a, rowtime]]], fields=[a, rowtime])
    +- Exchange(distribution=[hash[a]])
       +- Calc(select=[a, b, proctime])
          +- WatermarkAssigner(rowtime=[rowtime], watermark=[-(rowtime, 1000:INTERVAL SECOND)])
             +- Calc(select=[a, b, PROCTIME() AS proctime, rowtime])
-               +- TableSourceScan(table=[[default_catalog, default_database, B, project=[a, b, rowtime], metadata=[]]], fields=[a, b, rowtime])
+               +- TableSourceScan(table=[[default_catalog, default_database, B, project=[a, b, rowtime]]], fields=[a, b, rowtime])
 
 == Optimized Execution Plan ==
 Calc(select=[a, b])
@@ -1594,12 +1184,12 @@ Calc(select=[a, b])
    :  +- Calc(select=[a, proctime])
    :     +- WatermarkAssigner(rowtime=[rowtime], watermark=[(rowtime - 1000:INTERVAL SECOND)])
    :        +- Calc(select=[a, PROCTIME() AS proctime, rowtime])
-   :           +- TableSourceScan(table=[[default_catalog, default_database, A, project=[a, rowtime], metadata=[]]], fields=[a, rowtime])
+   :           +- TableSourceScan(table=[[default_catalog, default_database, A, project=[a, rowtime]]], fields=[a, rowtime])
    +- Exchange(distribution=[hash[a]])
       +- Calc(select=[a, b, proctime])
          +- WatermarkAssigner(rowtime=[rowtime], watermark=[(rowtime - 1000:INTERVAL SECOND)])
             +- Calc(select=[a, b, PROCTIME() AS proctime, rowtime])
-               +- TableSourceScan(table=[[default_catalog, default_database, B, project=[a, b, rowtime], metadata=[]]], fields=[a, b, rowtime])
+               +- TableSourceScan(table=[[default_catalog, default_database, B, project=[a, b, rowtime]]], fields=[a, b, rowtime])
 
 == Physical Execution Plan ==
 {
@@ -1607,7 +1197,7 @@ Calc(select=[a, b])
     "id" : ,
     "type" : "Source: A[]",
     "pact" : "Data Source",
-    "contents" : "[]:TableSourceScan(table=[[default_catalog, default_database, A, project=[a, rowtime], metadata=[]]], fields=[a, rowtime])",
+    "contents" : "[]:TableSourceScan(table=[[default_catalog, default_database, A, project=[a, rowtime]]], fields=[a, rowtime])",
     "parallelism" : 1
   }, {
     "id" : ,
@@ -1646,7 +1236,7 @@ Calc(select=[a, b])
     "id" : ,
     "type" : "Source: B[]",
     "pact" : "Data Source",
-    "contents" : "[]:TableSourceScan(table=[[default_catalog, default_database, B, project=[a, b, rowtime], metadata=[]]], fields=[a, b, rowtime])",
+    "contents" : "[]:TableSourceScan(table=[[default_catalog, default_database, B, project=[a, b, rowtime]]], fields=[a, b, rowtime])",
     "parallelism" : 1
   }, {
     "id" : ,
@@ -1714,6 +1304,306 @@ Calc(select=[a, b])
       "ship_strategy" : "FORWARD",
       "side" : "second"
     }, {
+      "id" : ,
+      "ship_strategy" : "FORWARD",
+      "side" : "second"
+    } ]
+  } ]
+}]]>
+    </Resource>
+  </TestCase>
+  <TestCase name="testIntervalJoin[isNameSimplifyEnabled=false]">
+    <Resource name="explain">
+      <![CDATA[== Abstract Syntax Tree ==
+LogicalProject(a=[$0], b=[$7])
++- LogicalJoin(condition=[AND(=($0, $6), >=($5, -($11, 3600000:INTERVAL HOUR)), <=($5, +($11, 3600000:INTERVAL HOUR)))], joinType=[inner])
+   :- LogicalWatermarkAssigner(rowtime=[rowtime], watermark=[-($4, 1000:INTERVAL SECOND)])
+   :  +- LogicalProject(a=[$0], b=[$1], c=[$2], d=[$3], rowtime=[$4], proctime=[PROCTIME()])
+   :     +- LogicalTableScan(table=[[default_catalog, default_database, A]])
+   +- LogicalWatermarkAssigner(rowtime=[rowtime], watermark=[-($4, 1000:INTERVAL SECOND)])
+      +- LogicalProject(a=[$0], b=[$1], c=[$2], d=[$3], rowtime=[$4], proctime=[PROCTIME()])
+         +- LogicalTableScan(table=[[default_catalog, default_database, B]])
+
+== Optimized Physical Plan ==
+Calc(select=[a, b])
++- IntervalJoin(joinType=[InnerJoin], windowBounds=[isRowTime=false, leftLowerBound=-3600000, leftUpperBound=3600000, leftTimeIndex=1, rightTimeIndex=2], where=[AND(=(a, a0), >=(proctime, -(proctime0, 3600000:INTERVAL HOUR)), <=(proctime, +(proctime0, 3600000:INTERVAL HOUR)))], select=[a, proctime, a0, b, proctime0])
+   :- Exchange(distribution=[hash[a]])
+   :  +- Calc(select=[a, proctime])
+   :     +- WatermarkAssigner(rowtime=[rowtime], watermark=[-(rowtime, 1000:INTERVAL SECOND)])
+   :        +- Calc(select=[a, PROCTIME() AS proctime, rowtime])
+   :           +- TableSourceScan(table=[[default_catalog, default_database, A, project=[a, rowtime]]], fields=[a, rowtime])
+   +- Exchange(distribution=[hash[a]])
+      +- Calc(select=[a, b, proctime])
+         +- WatermarkAssigner(rowtime=[rowtime], watermark=[-(rowtime, 1000:INTERVAL SECOND)])
+            +- Calc(select=[a, b, PROCTIME() AS proctime, rowtime])
+               +- TableSourceScan(table=[[default_catalog, default_database, B, project=[a, b, rowtime]]], fields=[a, b, rowtime])
+
+== Optimized Execution Plan ==
+Calc(select=[a, b])
++- IntervalJoin(joinType=[InnerJoin], windowBounds=[isRowTime=false, leftLowerBound=-3600000, leftUpperBound=3600000, leftTimeIndex=1, rightTimeIndex=2], where=[((a = a0) AND (proctime >= (proctime0 - 3600000:INTERVAL HOUR)) AND (proctime <= (proctime0 + 3600000:INTERVAL HOUR)))], select=[a, proctime, a0, b, proctime0])
+   :- Exchange(distribution=[hash[a]])
+   :  +- Calc(select=[a, proctime])
+   :     +- WatermarkAssigner(rowtime=[rowtime], watermark=[(rowtime - 1000:INTERVAL SECOND)])
+   :        +- Calc(select=[a, PROCTIME() AS proctime, rowtime])
+   :           +- TableSourceScan(table=[[default_catalog, default_database, A, project=[a, rowtime]]], fields=[a, rowtime])
+   +- Exchange(distribution=[hash[a]])
+      +- Calc(select=[a, b, proctime])
+         +- WatermarkAssigner(rowtime=[rowtime], watermark=[(rowtime - 1000:INTERVAL SECOND)])
+            +- Calc(select=[a, b, PROCTIME() AS proctime, rowtime])
+               +- TableSourceScan(table=[[default_catalog, default_database, B, project=[a, b, rowtime]]], fields=[a, b, rowtime])
+
+== Physical Execution Plan ==
+{
+  "nodes" : [ {
+    "id" : ,
+    "type" : "Source: TableSourceScan(table=[[default_catalog, default_database, A, project=[a, rowtime]]], fields=[a, rowtime])",
+    "pact" : "Data Source",
+    "contents" : "TableSourceScan(table=[[default_catalog, default_database, A, project=[a, rowtime]]], fields=[a, rowtime])",
+    "parallelism" : 1
+  }, {
+    "id" : ,
+    "type" : "Calc(select=[a, PROCTIME() AS proctime, rowtime])",
+    "pact" : "Operator",
+    "contents" : "Calc(select=[a, PROCTIME() AS proctime, rowtime])",
+    "parallelism" : 1,
+    "predecessors" : [ {
+      "id" : ,
+      "ship_strategy" : "FORWARD",
+      "side" : "second"
+    } ]
+  }, {
+    "id" : ,
+    "type" : "WatermarkAssigner(rowtime=[rowtime], watermark=[(rowtime - 1000:INTERVAL SECOND)])",
+    "pact" : "Operator",
+    "contents" : "WatermarkAssigner(rowtime=[rowtime], watermark=[(rowtime - 1000:INTERVAL SECOND)])",
+    "parallelism" : 1,
+    "predecessors" : [ {
+      "id" : ,
+      "ship_strategy" : "FORWARD",
+      "side" : "second"
+    } ]
+  }, {
+    "id" : ,
+    "type" : "Calc(select=[a, proctime])",
+    "pact" : "Operator",
+    "contents" : "Calc(select=[a, proctime])",
+    "parallelism" : 1,
+    "predecessors" : [ {
+      "id" : ,
+      "ship_strategy" : "FORWARD",
+      "side" : "second"
+    } ]
+  }, {
+    "id" : ,
+    "type" : "Source: TableSourceScan(table=[[default_catalog, default_database, B, project=[a, b, rowtime]]], fields=[a, b, rowtime])",
+    "pact" : "Data Source",
+    "contents" : "TableSourceScan(table=[[default_catalog, default_database, B, project=[a, b, rowtime]]], fields=[a, b, rowtime])",
+    "parallelism" : 1
+  }, {
+    "id" : ,
+    "type" : "Calc(select=[a, b, PROCTIME() AS proctime, rowtime])",
+    "pact" : "Operator",
+    "contents" : "Calc(select=[a, b, PROCTIME() AS proctime, rowtime])",
+    "parallelism" : 1,
+    "predecessors" : [ {
+      "id" : ,
+      "ship_strategy" : "FORWARD",
+      "side" : "second"
+    } ]
+  }, {
+    "id" : ,
+    "type" : "WatermarkAssigner(rowtime=[rowtime], watermark=[(rowtime - 1000:INTERVAL SECOND)])",
+    "pact" : "Operator",
+    "contents" : "WatermarkAssigner(rowtime=[rowtime], watermark=[(rowtime - 1000:INTERVAL SECOND)])",
+    "parallelism" : 1,
+    "predecessors" : [ {
+      "id" : ,
+      "ship_strategy" : "FORWARD",
+      "side" : "second"
+    } ]
+  }, {
+    "id" : ,
+    "type" : "Calc(select=[a, b, proctime])",
+    "pact" : "Operator",
+    "contents" : "Calc(select=[a, b, proctime])",
+    "parallelism" : 1,
+    "predecessors" : [ {
+      "id" : ,
+      "ship_strategy" : "FORWARD",
+      "side" : "second"
+    } ]
+  }, {
+    "id" : ,
+    "type" : "IntervalJoin(joinType=[InnerJoin], windowBounds=[isRowTime=false, leftLowerBound=-3600000, leftUpperBound=3600000, leftTimeIndex=1, rightTimeIndex=2], where=[((a = a0) AND (proctime >= (proctime0 - 3600000:INTERVAL HOUR)) AND (proctime <= (proctime0 + 3600000:INTERVAL HOUR)))], select=[a, proctime, a0, b, proctime0])",
+    "pact" : "Operator",
+    "contents" : "IntervalJoin(joinType=[InnerJoin], windowBounds=[isRowTime=false, leftLowerBound=-3600000, leftUpperBound=3600000, leftTimeIndex=1, rightTimeIndex=2], where=[((a = a0) AND (proctime >= (proctime0 - 3600000:INTERVAL HOUR)) AND (proctime <= (proctime0 + 3600000:INTERVAL HOUR)))], select=[a, proctime, a0, b, proctime0])",
+    "parallelism" : 2,
+    "predecessors" : [ {
+      "id" : ,
+      "ship_strategy" : "HASH",
+      "side" : "second"
+    }, {
+      "id" : ,
+      "ship_strategy" : "HASH",
+      "side" : "second"
+    } ]
+  }, {
+    "id" : ,
+    "type" : "Calc(select=[a, b])",
+    "pact" : "Operator",
+    "contents" : "Calc(select=[a, b])",
+    "parallelism" : 2,
+    "predecessors" : [ {
+      "id" : ,
+      "ship_strategy" : "FORWARD",
+      "side" : "second"
+    } ]
+  } ]
+}]]>
+    </Resource>
+  </TestCase>
+  <TestCase name="testIntervalJoin[isNameSimplifyEnabled=true]">
+    <Resource name="explain">
+      <![CDATA[== Abstract Syntax Tree ==
+LogicalProject(a=[$0], b=[$7])
++- LogicalJoin(condition=[AND(=($0, $6), >=($5, -($11, 3600000:INTERVAL HOUR)), <=($5, +($11, 3600000:INTERVAL HOUR)))], joinType=[inner])
+   :- LogicalWatermarkAssigner(rowtime=[rowtime], watermark=[-($4, 1000:INTERVAL SECOND)])
+   :  +- LogicalProject(a=[$0], b=[$1], c=[$2], d=[$3], rowtime=[$4], proctime=[PROCTIME()])
+   :     +- LogicalTableScan(table=[[default_catalog, default_database, A]])
+   +- LogicalWatermarkAssigner(rowtime=[rowtime], watermark=[-($4, 1000:INTERVAL SECOND)])
+      +- LogicalProject(a=[$0], b=[$1], c=[$2], d=[$3], rowtime=[$4], proctime=[PROCTIME()])
+         +- LogicalTableScan(table=[[default_catalog, default_database, B]])
+
+== Optimized Physical Plan ==
+Calc(select=[a, b])
++- IntervalJoin(joinType=[InnerJoin], windowBounds=[isRowTime=false, leftLowerBound=-3600000, leftUpperBound=3600000, leftTimeIndex=1, rightTimeIndex=2], where=[AND(=(a, a0), >=(proctime, -(proctime0, 3600000:INTERVAL HOUR)), <=(proctime, +(proctime0, 3600000:INTERVAL HOUR)))], select=[a, proctime, a0, b, proctime0])
+   :- Exchange(distribution=[hash[a]])
+   :  +- Calc(select=[a, proctime])
+   :     +- WatermarkAssigner(rowtime=[rowtime], watermark=[-(rowtime, 1000:INTERVAL SECOND)])
+   :        +- Calc(select=[a, PROCTIME() AS proctime, rowtime])
+   :           +- TableSourceScan(table=[[default_catalog, default_database, A, project=[a, rowtime]]], fields=[a, rowtime])
+   +- Exchange(distribution=[hash[a]])
+      +- Calc(select=[a, b, proctime])
+         +- WatermarkAssigner(rowtime=[rowtime], watermark=[-(rowtime, 1000:INTERVAL SECOND)])
+            +- Calc(select=[a, b, PROCTIME() AS proctime, rowtime])
+               +- TableSourceScan(table=[[default_catalog, default_database, B, project=[a, b, rowtime]]], fields=[a, b, rowtime])
+
+== Optimized Execution Plan ==
+Calc(select=[a, b])
++- IntervalJoin(joinType=[InnerJoin], windowBounds=[isRowTime=false, leftLowerBound=-3600000, leftUpperBound=3600000, leftTimeIndex=1, rightTimeIndex=2], where=[((a = a0) AND (proctime >= (proctime0 - 3600000:INTERVAL HOUR)) AND (proctime <= (proctime0 + 3600000:INTERVAL HOUR)))], select=[a, proctime, a0, b, proctime0])
+   :- Exchange(distribution=[hash[a]])
+   :  +- Calc(select=[a, proctime])
+   :     +- WatermarkAssigner(rowtime=[rowtime], watermark=[(rowtime - 1000:INTERVAL SECOND)])
+   :        +- Calc(select=[a, PROCTIME() AS proctime, rowtime])
+   :           +- TableSourceScan(table=[[default_catalog, default_database, A, project=[a, rowtime]]], fields=[a, rowtime])
+   +- Exchange(distribution=[hash[a]])
+      +- Calc(select=[a, b, proctime])
+         +- WatermarkAssigner(rowtime=[rowtime], watermark=[(rowtime - 1000:INTERVAL SECOND)])
+            +- Calc(select=[a, b, PROCTIME() AS proctime, rowtime])
+               +- TableSourceScan(table=[[default_catalog, default_database, B, project=[a, b, rowtime]]], fields=[a, b, rowtime])
+
+== Physical Execution Plan ==
+{
+  "nodes" : [ {
+    "id" : ,
+    "type" : "Source: A[]",
+    "pact" : "Data Source",
+    "contents" : "[]:TableSourceScan(table=[[default_catalog, default_database, A, project=[a, rowtime]]], fields=[a, rowtime])",
+    "parallelism" : 1
+  }, {
+    "id" : ,
+    "type" : "Calc[]",
+    "pact" : "Operator",
+    "contents" : "[]:Calc(select=[a, PROCTIME() AS proctime, rowtime])",
+    "parallelism" : 1,
+    "predecessors" : [ {
+      "id" : ,
+      "ship_strategy" : "FORWARD",
+      "side" : "second"
+    } ]
+  }, {
+    "id" : ,
+    "type" : "WatermarkAssigner[]",
+    "pact" : "Operator",
+    "contents" : "[]:WatermarkAssigner(rowtime=[rowtime], watermark=[(rowtime - 1000:INTERVAL SECOND)])",
+    "parallelism" : 1,
+    "predecessors" : [ {
+      "id" : ,
+      "ship_strategy" : "FORWARD",
+      "side" : "second"
+    } ]
+  }, {
+    "id" : ,
+    "type" : "Calc[]",
+    "pact" : "Operator",
+    "contents" : "[]:Calc(select=[a, proctime])",
+    "parallelism" : 1,
+    "predecessors" : [ {
+      "id" : ,
+      "ship_strategy" : "FORWARD",
+      "side" : "second"
+    } ]
+  }, {
+    "id" : ,
+    "type" : "Source: B[]",
+    "pact" : "Data Source",
+    "contents" : "[]:TableSourceScan(table=[[default_catalog, default_database, B, project=[a, b, rowtime]]], fields=[a, b, rowtime])",
+    "parallelism" : 1
+  }, {
+    "id" : ,
+    "type" : "Calc[]",
+    "pact" : "Operator",
+    "contents" : "[]:Calc(select=[a, b, PROCTIME() AS proctime, rowtime])",
+    "parallelism" : 1,
+    "predecessors" : [ {
+      "id" : ,
+      "ship_strategy" : "FORWARD",
+      "side" : "second"
+    } ]
+  }, {
+    "id" : ,
+    "type" : "WatermarkAssigner[]",
+    "pact" : "Operator",
+    "contents" : "[]:WatermarkAssigner(rowtime=[rowtime], watermark=[(rowtime - 1000:INTERVAL SECOND)])",
+    "parallelism" : 1,
+    "predecessors" : [ {
+      "id" : ,
+      "ship_strategy" : "FORWARD",
+      "side" : "second"
+    } ]
+  }, {
+    "id" : ,
+    "type" : "Calc[]",
+    "pact" : "Operator",
+    "contents" : "[]:Calc(select=[a, b, proctime])",
+    "parallelism" : 1,
+    "predecessors" : [ {
+      "id" : ,
+      "ship_strategy" : "FORWARD",
+      "side" : "second"
+    } ]
+  }, {
+    "id" : ,
+    "type" : "IntervalJoin[]",
+    "pact" : "Operator",
+    "contents" : "[]:IntervalJoin(joinType=[InnerJoin], windowBounds=[isRowTime=false, leftLowerBound=-3600000, leftUpperBound=3600000, leftTimeIndex=1, rightTimeIndex=2], where=[((a = a0) AND (proctime >= (proctime0 - 3600000:INTERVAL HOUR)) AND (proctime <= (proctime0 + 3600000:INTERVAL HOUR)))], select=[a, proctime, a0, b, proctime0])",
+    "parallelism" : 2,
+    "predecessors" : [ {
+      "id" : ,
+      "ship_strategy" : "HASH",
+      "side" : "second"
+    }, {
+      "id" : ,
+      "ship_strategy" : "HASH",
+      "side" : "second"
+    } ]
+  }, {
+    "id" : ,
+    "type" : "Calc[]",
+    "pact" : "Operator",
+    "contents" : "[]:Calc(select=[a, b])",
+    "parallelism" : 2,
+    "predecessors" : [ {
       "id" : ,
       "ship_strategy" : "FORWARD",
       "side" : "second"
@@ -1834,132 +1724,12 @@ Join(joinType=[InnerJoin], where=[(a = d0)], select=[a, b, c, d, a0, b0, c0, d0]
 }]]>
     </Resource>
   </TestCase>
-  <TestCase name="testLegacySourceSink[isNameSimplifyEnabled=false]">
-    <Resource name="explain">
-      <![CDATA[== Abstract Syntax Tree ==
-LogicalLegacySink(name=[`default_catalog`.`default_database`.`MySink`], fields=[name, id, amount, price])
-+- LogicalProject(name=[$0], id=[$1], amount=[$2], price=[$3])
-   +- LogicalTableScan(table=[[default_catalog, default_database, MySource, source: [filterPushedDown=[false], filter=[]]]])
-
-== Optimized Physical Plan ==
-LegacySink(name=[`default_catalog`.`default_database`.`MySink`], fields=[name, id, amount, price])
-+- LegacyTableSourceScan(table=[[default_catalog, default_database, MySource, source: [filterPushedDown=[false], filter=[]]]], fields=[name, id, amount, price])
-
-== Optimized Execution Plan ==
-LegacySink(name=[`default_catalog`.`default_database`.`MySink`], fields=[name, id, amount, price])
-+- LegacyTableSourceScan(table=[[default_catalog, default_database, MySource, source: [filterPushedDown=[false], filter=[]]]], fields=[name, id, amount, price])
-
-== Physical Execution Plan ==
-{
-  "nodes" : [ {
-    "id" : ,
-    "type" : "Source: Collection Source",
-    "pact" : "Data Source",
-    "contents" : "Source: Collection Source",
-    "parallelism" : 1
-  }, {
-    "id" : ,
-    "type" : "SourceConversion(table=[default_catalog.default_database.MySource, source: [filterPushedDown=[false], filter=[]]], fields=[name, id, amount, price])",
-    "pact" : "Operator",
-    "contents" : "SourceConversion(table=[default_catalog.default_database.MySource, source: [filterPushedDown=[false], filter=[]]], fields=[name, id, amount, price])",
-    "parallelism" : 1,
-    "predecessors" : [ {
-      "id" : ,
-      "ship_strategy" : "FORWARD",
-      "side" : "second"
-    } ]
-  }, {
-    "id" : ,
-    "type" : "SinkConversion To Row",
-    "pact" : "Operator",
-    "contents" : "SinkConversion To Row",
-    "parallelism" : 1,
-    "predecessors" : [ {
-      "id" : ,
-      "ship_strategy" : "FORWARD",
-      "side" : "second"
-    } ]
-  }, {
-    "id" : ,
-    "type" : "Sink: TestingAppendTableSink",
-    "pact" : "Data Sink",
-    "contents" : "Sink: TestingAppendTableSink",
-    "parallelism" : 1,
-    "predecessors" : [ {
-      "id" : ,
-      "ship_strategy" : "FORWARD",
-      "side" : "second"
-    } ]
-  } ]
-}]]>
-    </Resource>
-  </TestCase>
-  <TestCase name="testLegacySourceSink[isNameSimplifyEnabled=true]">
-    <Resource name="explain">
-      <![CDATA[== Abstract Syntax Tree ==
-LogicalLegacySink(name=[`default_catalog`.`default_database`.`MySink`], fields=[name, id, amount, price])
-+- LogicalProject(name=[$0], id=[$1], amount=[$2], price=[$3])
-   +- LogicalTableScan(table=[[default_catalog, default_database, MySource, source: [filterPushedDown=[false], filter=[]]]])
-
-== Optimized Physical Plan ==
-LegacySink(name=[`default_catalog`.`default_database`.`MySink`], fields=[name, id, amount, price])
-+- LegacyTableSourceScan(table=[[default_catalog, default_database, MySource, source: [filterPushedDown=[false], filter=[]]]], fields=[name, id, amount, price])
-
-== Optimized Execution Plan ==
-LegacySink(name=[`default_catalog`.`default_database`.`MySink`], fields=[name, id, amount, price])
-+- LegacyTableSourceScan(table=[[default_catalog, default_database, MySource, source: [filterPushedDown=[false], filter=[]]]], fields=[name, id, amount, price])
-
-== Physical Execution Plan ==
-{
-  "nodes" : [ {
-    "id" : ,
-    "type" : "Source: Collection Source",
-    "pact" : "Data Source",
-    "contents" : "Source: Collection Source",
-    "parallelism" : 1
-  }, {
-    "id" : ,
-    "type" : "SourceConversion[]",
-    "pact" : "Operator",
-    "contents" : "[]:SourceConversion(table=[default_catalog.default_database.MySource, source: [filterPushedDown=[false], filter=[]]], fields=[name, id, amount, price])",
-    "parallelism" : 1,
-    "predecessors" : [ {
-      "id" : ,
-      "ship_strategy" : "FORWARD",
-      "side" : "second"
-    } ]
-  }, {
-    "id" : ,
-    "type" : "SinkConversion[]",
-    "pact" : "Operator",
-    "contents" : "[]:SinkConversion To Row",
-    "parallelism" : 1,
-    "predecessors" : [ {
-      "id" : ,
-      "ship_strategy" : "FORWARD",
-      "side" : "second"
-    } ]
-  }, {
-    "id" : ,
-    "type" : "Sink: TestingAppendTableSink",
-    "pact" : "Data Sink",
-    "contents" : "Sink: TestingAppendTableSink",
-    "parallelism" : 1,
-    "predecessors" : [ {
-      "id" : ,
-      "ship_strategy" : "FORWARD",
-      "side" : "second"
-    } ]
-  } ]
-}]]>
-    </Resource>
-  </TestCase>
   <TestCase name="testLocalGlobalWindowAggregate[isNameSimplifyEnabled=false]">
     <Resource name="explain">
       <![CDATA[== Abstract Syntax Tree ==
 LogicalAggregate(group=[{0, 1, 2}], EXPR$3=[COUNT()], EXPR$4=[SUM($3)])
 +- LogicalProject(b=[$1], window_start=[$6], window_end=[$7], a=[$0])
-   +- LogicalTableFunctionScan(invocation=[TUMBLE($5, DESCRIPTOR($4), 5000:INTERVAL SECOND)], rowType=[RecordType(BIGINT a, INTEGER b, VARCHAR(2147483647) c, BIGINT d, TIMESTAMP(3) *ROWTIME* rowtime, TIMESTAMP_LTZ(3) *PROCTIME* proctime, TIMESTAMP(3) window_start, TIMESTAMP(3) window_end, TIMESTAMP(3) *ROWTIME* window_time)])
+   +- LogicalTableFunctionScan(invocation=[TUMBLE(TABLE(#0), DESCRIPTOR(_UTF-16LE'rowtime'), 5000:INTERVAL SECOND)], rowType=[RecordType(BIGINT a, INTEGER b, VARCHAR(2147483647) c, BIGINT d, TIMESTAMP(3) *ROWTIME* rowtime, TIMESTAMP_LTZ(3) *PROCTIME* proctime, TIMESTAMP(3) window_start, TIMESTAMP(3) window_end, TIMESTAMP(3) *ROWTIME* window_time)])
       +- LogicalProject(a=[$0], b=[$1], c=[$2], d=[$3], rowtime=[$4], proctime=[$5])
          +- LogicalWatermarkAssigner(rowtime=[rowtime], watermark=[-($4, 1000:INTERVAL SECOND)])
             +- LogicalProject(a=[$0], b=[$1], c=[$2], d=[$3], rowtime=[$4], proctime=[PROCTIME()])
@@ -1972,7 +1742,7 @@ Calc(select=[b, window_start, window_end, EXPR$3, EXPR$4])
       +- LocalWindowAggregate(groupBy=[b], window=[TUMBLE(time_col=[rowtime], size=[5 s])], select=[b, COUNT(*) AS count1$0, SUM(a) AS sum$1, slice_end('w$) AS $slice_end])
          +- Calc(select=[b, a, rowtime])
             +- WatermarkAssigner(rowtime=[rowtime], watermark=[-(rowtime, 1000:INTERVAL SECOND)])
-               +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, b, rowtime], metadata=[]]], fields=[a, b, rowtime])
+               +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, b, rowtime]]], fields=[a, b, rowtime])
 
 == Optimized Execution Plan ==
 Calc(select=[b, window_start, window_end, EXPR$3, EXPR$4])
@@ -1981,15 +1751,15 @@ Calc(select=[b, window_start, window_end, EXPR$3, EXPR$4])
       +- LocalWindowAggregate(groupBy=[b], window=[TUMBLE(time_col=[rowtime], size=[5 s])], select=[b, COUNT(*) AS count1$0, SUM(a) AS sum$1, slice_end('w$) AS $slice_end])
          +- Calc(select=[b, a, rowtime])
             +- WatermarkAssigner(rowtime=[rowtime], watermark=[(rowtime - 1000:INTERVAL SECOND)])
-               +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, b, rowtime], metadata=[]]], fields=[a, b, rowtime])
+               +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, b, rowtime]]], fields=[a, b, rowtime])
 
 == Physical Execution Plan ==
 {
   "nodes" : [ {
     "id" : ,
-    "type" : "Source: TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, b, rowtime], metadata=[]]], fields=[a, b, rowtime])",
+    "type" : "Source: TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, b, rowtime]]], fields=[a, b, rowtime])",
     "pact" : "Data Source",
-    "contents" : "TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, b, rowtime], metadata=[]]], fields=[a, b, rowtime])",
+    "contents" : "TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, b, rowtime]]], fields=[a, b, rowtime])",
     "parallelism" : 1
   }, {
     "id" : ,
@@ -2055,7 +1825,7 @@ Calc(select=[b, window_start, window_end, EXPR$3, EXPR$4])
       <![CDATA[== Abstract Syntax Tree ==
 LogicalAggregate(group=[{0, 1, 2}], EXPR$3=[COUNT()], EXPR$4=[SUM($3)])
 +- LogicalProject(b=[$1], window_start=[$6], window_end=[$7], a=[$0])
-   +- LogicalTableFunctionScan(invocation=[TUMBLE($5, DESCRIPTOR($4), 5000:INTERVAL SECOND)], rowType=[RecordType(BIGINT a, INTEGER b, VARCHAR(2147483647) c, BIGINT d, TIMESTAMP(3) *ROWTIME* rowtime, TIMESTAMP_LTZ(3) *PROCTIME* proctime, TIMESTAMP(3) window_start, TIMESTAMP(3) window_end, TIMESTAMP(3) *ROWTIME* window_time)])
+   +- LogicalTableFunctionScan(invocation=[TUMBLE(TABLE(#0), DESCRIPTOR(_UTF-16LE'rowtime'), 5000:INTERVAL SECOND)], rowType=[RecordType(BIGINT a, INTEGER b, VARCHAR(2147483647) c, BIGINT d, TIMESTAMP(3) *ROWTIME* rowtime, TIMESTAMP_LTZ(3) *PROCTIME* proctime, TIMESTAMP(3) window_start, TIMESTAMP(3) window_end, TIMESTAMP(3) *ROWTIME* window_time)])
       +- LogicalProject(a=[$0], b=[$1], c=[$2], d=[$3], rowtime=[$4], proctime=[$5])
          +- LogicalWatermarkAssigner(rowtime=[rowtime], watermark=[-($4, 1000:INTERVAL SECOND)])
             +- LogicalProject(a=[$0], b=[$1], c=[$2], d=[$3], rowtime=[$4], proctime=[PROCTIME()])
@@ -2068,7 +1838,7 @@ Calc(select=[b, window_start, window_end, EXPR$3, EXPR$4])
       +- LocalWindowAggregate(groupBy=[b], window=[TUMBLE(time_col=[rowtime], size=[5 s])], select=[b, COUNT(*) AS count1$0, SUM(a) AS sum$1, slice_end('w$) AS $slice_end])
          +- Calc(select=[b, a, rowtime])
             +- WatermarkAssigner(rowtime=[rowtime], watermark=[-(rowtime, 1000:INTERVAL SECOND)])
-               +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, b, rowtime], metadata=[]]], fields=[a, b, rowtime])
+               +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, b, rowtime]]], fields=[a, b, rowtime])
 
 == Optimized Execution Plan ==
 Calc(select=[b, window_start, window_end, EXPR$3, EXPR$4])
@@ -2077,7 +1847,7 @@ Calc(select=[b, window_start, window_end, EXPR$3, EXPR$4])
       +- LocalWindowAggregate(groupBy=[b], window=[TUMBLE(time_col=[rowtime], size=[5 s])], select=[b, COUNT(*) AS count1$0, SUM(a) AS sum$1, slice_end('w$) AS $slice_end])
          +- Calc(select=[b, a, rowtime])
             +- WatermarkAssigner(rowtime=[rowtime], watermark=[(rowtime - 1000:INTERVAL SECOND)])
-               +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, b, rowtime], metadata=[]]], fields=[a, b, rowtime])
+               +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, b, rowtime]]], fields=[a, b, rowtime])
 
 == Physical Execution Plan ==
 {
@@ -2085,7 +1855,7 @@ Calc(select=[b, window_start, window_end, EXPR$3, EXPR$4])
     "id" : ,
     "type" : "Source: MyTable[]",
     "pact" : "Data Source",
-    "contents" : "[]:TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, b, rowtime], metadata=[]]], fields=[a, b, rowtime])",
+    "contents" : "[]:TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, b, rowtime]]], fields=[a, b, rowtime])",
     "parallelism" : 1
   }, {
     "id" : ,
@@ -2160,14 +1930,14 @@ LogicalProject(a=[$0], b=[$1], c=[$2], d=[$3], rowtime=[$4], proctime=[$5], id=[
 
 == Optimized Physical Plan ==
 Calc(select=[a, b, c, d, rowtime, PROCTIME_MATERIALIZE(proctime) AS proctime, id, name, age])
-+- LookupJoin(table=[default_catalog.default_database.LookupTable], joinType=[InnerJoin], async=[false], lookup=[id=b], select=[a, b, c, d, rowtime, proctime, id, name, age])
++- LookupJoin(table=[default_catalog.default_database.LookupTable], joinType=[InnerJoin], lookup=[id=b], select=[a, b, c, d, rowtime, proctime, id, name, age])
    +- WatermarkAssigner(rowtime=[rowtime], watermark=[-(rowtime, 1000:INTERVAL SECOND)])
       +- Calc(select=[a, b, c, d, rowtime, PROCTIME() AS proctime])
          +- TableSourceScan(table=[[default_catalog, default_database, MyTable]], fields=[a, b, c, d, rowtime])
 
 == Optimized Execution Plan ==
 Calc(select=[a, b, c, d, rowtime, PROCTIME_MATERIALIZE(proctime) AS proctime, id, name, age])
-+- LookupJoin(table=[default_catalog.default_database.LookupTable], joinType=[InnerJoin], async=[false], lookup=[id=b], select=[a, b, c, d, rowtime, proctime, id, name, age])
++- LookupJoin(table=[default_catalog.default_database.LookupTable], joinType=[InnerJoin], lookup=[id=b], select=[a, b, c, d, rowtime, proctime, id, name, age])
    +- WatermarkAssigner(rowtime=[rowtime], watermark=[(rowtime - 1000:INTERVAL SECOND)])
       +- Calc(select=[a, b, c, d, rowtime, PROCTIME() AS proctime])
          +- TableSourceScan(table=[[default_catalog, default_database, MyTable]], fields=[a, b, c, d, rowtime])
@@ -2204,9 +1974,9 @@ Calc(select=[a, b, c, d, rowtime, PROCTIME_MATERIALIZE(proctime) AS proctime, id
     } ]
   }, {
     "id" : ,
-    "type" : "LookupJoin(table=[default_catalog.default_database.LookupTable], joinType=[InnerJoin], async=[false], lookup=[id=b], select=[a, b, c, d, rowtime, proctime, id, name, age])",
+    "type" : "LookupJoin(table=[default_catalog.default_database.LookupTable], joinType=[InnerJoin], lookup=[id=b], select=[a, b, c, d, rowtime, proctime, id, name, age])",
     "pact" : "Operator",
-    "contents" : "LookupJoin(table=[default_catalog.default_database.LookupTable], joinType=[InnerJoin], async=[false], lookup=[id=b], select=[a, b, c, d, rowtime, proctime, id, name, age])",
+    "contents" : "LookupJoin(table=[default_catalog.default_database.LookupTable], joinType=[InnerJoin], lookup=[id=b], select=[a, b, c, d, rowtime, proctime, id, name, age])",
     "parallelism" : 1,
     "predecessors" : [ {
       "id" : ,
@@ -2242,14 +2012,14 @@ LogicalProject(a=[$0], b=[$1], c=[$2], d=[$3], rowtime=[$4], proctime=[$5], id=[
 
 == Optimized Physical Plan ==
 Calc(select=[a, b, c, d, rowtime, PROCTIME_MATERIALIZE(proctime) AS proctime, id, name, age])
-+- LookupJoin(table=[default_catalog.default_database.LookupTable], joinType=[InnerJoin], async=[false], lookup=[id=b], select=[a, b, c, d, rowtime, proctime, id, name, age])
++- LookupJoin(table=[default_catalog.default_database.LookupTable], joinType=[InnerJoin], lookup=[id=b], select=[a, b, c, d, rowtime, proctime, id, name, age])
    +- WatermarkAssigner(rowtime=[rowtime], watermark=[-(rowtime, 1000:INTERVAL SECOND)])
       +- Calc(select=[a, b, c, d, rowtime, PROCTIME() AS proctime])
          +- TableSourceScan(table=[[default_catalog, default_database, MyTable]], fields=[a, b, c, d, rowtime])
 
 == Optimized Execution Plan ==
 Calc(select=[a, b, c, d, rowtime, PROCTIME_MATERIALIZE(proctime) AS proctime, id, name, age])
-+- LookupJoin(table=[default_catalog.default_database.LookupTable], joinType=[InnerJoin], async=[false], lookup=[id=b], select=[a, b, c, d, rowtime, proctime, id, name, age])
++- LookupJoin(table=[default_catalog.default_database.LookupTable], joinType=[InnerJoin], lookup=[id=b], select=[a, b, c, d, rowtime, proctime, id, name, age])
    +- WatermarkAssigner(rowtime=[rowtime], watermark=[(rowtime - 1000:INTERVAL SECOND)])
       +- Calc(select=[a, b, c, d, rowtime, PROCTIME() AS proctime])
          +- TableSourceScan(table=[[default_catalog, default_database, MyTable]], fields=[a, b, c, d, rowtime])
@@ -2288,7 +2058,7 @@ Calc(select=[a, b, c, d, rowtime, PROCTIME_MATERIALIZE(proctime) AS proctime, id
     "id" : ,
     "type" : "LookupJoin[]",
     "pact" : "Operator",
-    "contents" : "[]:LookupJoin(table=[default_catalog.default_database.LookupTable], joinType=[InnerJoin], async=[false], lookup=[id=b], select=[a, b, c, d, rowtime, proctime, id, name, age])",
+    "contents" : "[]:LookupJoin(table=[default_catalog.default_database.LookupTable], joinType=[InnerJoin], lookup=[id=b], select=[a, b, c, d, rowtime, proctime, id, name, age])",
     "parallelism" : 1,
     "predecessors" : [ {
       "id" : ,
@@ -2378,6 +2148,74 @@ Match(orderBy=[proctime ASC], measures=[FINAL(A".a) AS aid, FINAL(l.a) AS bid, F
 }]]>
     </Resource>
   </TestCase>
+  <TestCase name="testMatch[isNameSimplifyEnabled=true]">
+    <Resource name="explain">
+      <![CDATA[== Abstract Syntax Tree ==
+LogicalProject(aid=[$0], bid=[$1], cid=[$2])
++- LogicalMatch(partition=[[]], order=[[5 ASC-nulls-first]], outputFields=[[aid, bid, cid]], allRows=[false], after=[FLAG(SKIP TO NEXT ROW)], pattern=[((_UTF-16LE'A"', _UTF-16LE'l'), _UTF-16LE'C')], isStrictStarts=[false], isStrictEnds=[false], subsets=[[]], patternDefinitions=[[=(LAST(*.$0, 0), 1), =(LAST(*.$1, 0), 2), =(LAST(*.$2, 0), _UTF-16LE'c')]], inputFields=[[a, b, c, d, rowtime, proctime]])
+   +- LogicalWatermarkAssigner(rowtime=[rowtime], watermark=[-($4, 1000:INTERVAL SECOND)])
+      +- LogicalProject(a=[$0], b=[$1], c=[$2], d=[$3], rowtime=[$4], proctime=[PROCTIME()])
+         +- LogicalTableScan(table=[[default_catalog, default_database, MyTable]])
+
+== Optimized Physical Plan ==
+Match(orderBy=[proctime ASC], measures=[FINAL(A".a) AS aid, FINAL(l.a) AS bid, FINAL(C.a) AS cid], rowsPerMatch=[ONE ROW PER MATCH], after=[SKIP TO NEXT ROW], pattern=[((_UTF-16LE'A"', _UTF-16LE'l'), _UTF-16LE'C')], define=[{A"==(LAST(*.$0, 0), 1), l==(LAST(*.$1, 0), 2), C==(LAST(*.$2, 0), _UTF-16LE'c')}])
++- Exchange(distribution=[single])
+   +- WatermarkAssigner(rowtime=[rowtime], watermark=[-(rowtime, 1000:INTERVAL SECOND)])
+      +- Calc(select=[a, b, c, d, rowtime, PROCTIME() AS proctime])
+         +- TableSourceScan(table=[[default_catalog, default_database, MyTable]], fields=[a, b, c, d, rowtime])
+
+== Optimized Execution Plan ==
+Match(orderBy=[proctime ASC], measures=[FINAL(A".a) AS aid, FINAL(l.a) AS bid, FINAL(C.a) AS cid], rowsPerMatch=[ONE ROW PER MATCH], after=[SKIP TO NEXT ROW], pattern=[((_UTF-16LE'A"', _UTF-16LE'l'), _UTF-16LE'C')], define=[{A"==(LAST(*.$0, 0), 1), l==(LAST(*.$1, 0), 2), C==(LAST(*.$2, 0), _UTF-16LE'c')}])
++- Exchange(distribution=[single])
+   +- WatermarkAssigner(rowtime=[rowtime], watermark=[(rowtime - 1000:INTERVAL SECOND)])
+      +- Calc(select=[a, b, c, d, rowtime, PROCTIME() AS proctime])
+         +- TableSourceScan(table=[[default_catalog, default_database, MyTable]], fields=[a, b, c, d, rowtime])
+
+== Physical Execution Plan ==
+{
+  "nodes" : [ {
+    "id" : ,
+    "type" : "Source: MyTable[]",
+    "pact" : "Data Source",
+    "contents" : "[]:TableSourceScan(table=[[default_catalog, default_database, MyTable]], fields=[a, b, c, d, rowtime])",
+    "parallelism" : 1
+  }, {
+    "id" : ,
+    "type" : "Calc[]",
+    "pact" : "Operator",
+    "contents" : "[]:Calc(select=[a, b, c, d, rowtime, PROCTIME() AS proctime])",
+    "parallelism" : 1,
+    "predecessors" : [ {
+      "id" : ,
+      "ship_strategy" : "FORWARD",
+      "side" : "second"
+    } ]
+  }, {
+    "id" : ,
+    "type" : "WatermarkAssigner[]",
+    "pact" : "Operator",
+    "contents" : "[]:WatermarkAssigner(rowtime=[rowtime], watermark=[(rowtime - 1000:INTERVAL SECOND)])",
+    "parallelism" : 1,
+    "predecessors" : [ {
+      "id" : ,
+      "ship_strategy" : "FORWARD",
+      "side" : "second"
+    } ]
+  }, {
+    "id" : ,
+    "type" : "Match[]",
+    "pact" : "Operator",
+    "contents" : "[]:Match(orderBy=[proctime ASC], measures=[FINAL(A\".a) AS aid, FINAL(l.a) AS bid, FINAL(C.a) AS cid], rowsPerMatch=[ONE ROW PER MATCH], after=[SKIP TO NEXT ROW], pattern=[((_UTF-16LE'A\"', _UTF-16LE'l'), _UTF-16LE'C')], define=[{A\"==(LAST(*.$0, 0), 1), l==(LAST(*.$1, 0), 2), C==(LAST(*.$2, 0), _UTF-16LE'c')}])",
+    "parallelism" : 1,
+    "predecessors" : [ {
+      "id" : ,
+      "ship_strategy" : "GLOBAL",
+      "side" : "second"
+    } ]
+  } ]
+}]]>
+    </Resource>
+  </TestCase>
   <TestCase name="testOverAggregate[isNameSimplifyEnabled=false]">
     <Resource name="explain">
       <![CDATA[== Abstract Syntax Tree ==
@@ -2391,22 +2229,22 @@ Calc(select=[b, w0$o0 AS $1])
 +- OverAggregate(partitionBy=[b], orderBy=[rowtime ASC], window=[ ROWS BETWEEN 2 PRECEDING AND CURRENT ROW], select=[a, b, rowtime, COUNT(a) AS w0$o0])
    +- Exchange(distribution=[hash[b]])
       +- WatermarkAssigner(rowtime=[rowtime], watermark=[-(rowtime, 1000:INTERVAL SECOND)])
-         +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, b, rowtime], metadata=[]]], fields=[a, b, rowtime])
+         +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, b, rowtime]]], fields=[a, b, rowtime])
 
 == Optimized Execution Plan ==
 Calc(select=[b, w0$o0 AS $1])
 +- OverAggregate(partitionBy=[b], orderBy=[rowtime ASC], window=[ ROWS BETWEEN 2 PRECEDING AND CURRENT ROW], select=[a, b, rowtime, COUNT(a) AS w0$o0])
    +- Exchange(distribution=[hash[b]])
       +- WatermarkAssigner(rowtime=[rowtime], watermark=[(rowtime - 1000:INTERVAL SECOND)])
-         +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, b, rowtime], metadata=[]]], fields=[a, b, rowtime])
+         +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, b, rowtime]]], fields=[a, b, rowtime])
 
 == Physical Execution Plan ==
 {
   "nodes" : [ {
     "id" : ,
-    "type" : "Source: TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, b, rowtime], metadata=[]]], fields=[a, b, rowtime])",
+    "type" : "Source: TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, b, rowtime]]], fields=[a, b, rowtime])",
     "pact" : "Data Source",
-    "contents" : "TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, b, rowtime], metadata=[]]], fields=[a, b, rowtime])",
+    "contents" : "TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, b, rowtime]]], fields=[a, b, rowtime])",
     "parallelism" : 1
   }, {
     "id" : ,
@@ -2458,14 +2296,14 @@ Calc(select=[b, w0$o0 AS $1])
 +- OverAggregate(partitionBy=[b], orderBy=[rowtime ASC], window=[ ROWS BETWEEN 2 PRECEDING AND CURRENT ROW], select=[a, b, rowtime, COUNT(a) AS w0$o0])
    +- Exchange(distribution=[hash[b]])
       +- WatermarkAssigner(rowtime=[rowtime], watermark=[-(rowtime, 1000:INTERVAL SECOND)])
-         +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, b, rowtime], metadata=[]]], fields=[a, b, rowtime])
+         +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, b, rowtime]]], fields=[a, b, rowtime])
 
 == Optimized Execution Plan ==
 Calc(select=[b, w0$o0 AS $1])
 +- OverAggregate(partitionBy=[b], orderBy=[rowtime ASC], window=[ ROWS BETWEEN 2 PRECEDING AND CURRENT ROW], select=[a, b, rowtime, COUNT(a) AS w0$o0])
    +- Exchange(distribution=[hash[b]])
       +- WatermarkAssigner(rowtime=[rowtime], watermark=[(rowtime - 1000:INTERVAL SECOND)])
-         +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, b, rowtime], metadata=[]]], fields=[a, b, rowtime])
+         +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, b, rowtime]]], fields=[a, b, rowtime])
 
 == Physical Execution Plan ==
 {
@@ -2473,7 +2311,7 @@ Calc(select=[b, w0$o0 AS $1])
     "id" : ,
     "type" : "Source: MyTable[]",
     "pact" : "Data Source",
-    "contents" : "[]:TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, b, rowtime], metadata=[]]], fields=[a, b, rowtime])",
+    "contents" : "[]:TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, b, rowtime]]], fields=[a, b, rowtime])",
     "parallelism" : 1
   }, {
     "id" : ,
@@ -2650,8 +2488,9 @@ Calc(select=[a, w0$o0])
     <Resource name="explain">
       <![CDATA[== Abstract Syntax Tree ==
 LogicalProject(f0=[$0], f1=[$1])
-+- LogicalTableAggregate(group=[{}], tableAggregate=[[*org.apache.flink.table.planner.utils.Top3*($0)]])
-   +- LogicalTableScan(table=[[default_catalog, default_database, MySource]])
++- LogicalProject(f0=[$0], f1=[$1])
+   +- LogicalTableAggregate(group=[{}], tableAggregate=[[*org.apache.flink.table.planner.utils.Top3*($0)]])
+      +- LogicalTableScan(table=[[default_catalog, default_database, MySource]])
 
 == Optimized Physical Plan ==
 GroupTableAggregate(select=[*org.apache.flink.table.planner.utils.Top3*(f0) AS (f0, f1)])
@@ -2701,8 +2540,9 @@ GroupTableAggregate(select=[*org.apache.flink.table.planner.utils.Top3*(f0) AS (
     <Resource name="explain">
       <![CDATA[== Abstract Syntax Tree ==
 LogicalProject(f0=[$0], f1=[$1])
-+- LogicalTableAggregate(group=[{}], tableAggregate=[[*org.apache.flink.table.planner.utils.Top3*($0)]])
-   +- LogicalTableScan(table=[[default_catalog, default_database, MySource]])
++- LogicalProject(f0=[$0], f1=[$1])
+   +- LogicalTableAggregate(group=[{}], tableAggregate=[[*org.apache.flink.table.planner.utils.Top3*($0)]])
+      +- LogicalTableScan(table=[[default_catalog, default_database, MySource]])
 
 == Optimized Physical Plan ==
 GroupTableAggregate(select=[*org.apache.flink.table.planner.utils.Top3*(f0) AS (f0, f1)])
@@ -2757,7 +2597,7 @@ LogicalProject(EXPR$0=[*($0, $5)])
       :- LogicalWatermarkAssigner(rowtime=[rowtime], watermark=[$2])
       :  +- LogicalProject(amount=[$0], currency=[$1], rowtime=[$2], proctime=[PROCTIME()])
       :     +- LogicalTableScan(table=[[default_catalog, default_database, Orders]])
-      +- LogicalTableFunctionScan(invocation=[Rates($cor0.rowtime)], rowType=[RecordType:peek_no_expand(VARCHAR(2147483647) currency, INTEGER rate, TIMESTAMP(3) *ROWTIME* rowtime)])
+      +- LogicalTableFunctionScan(invocation=[Rates($cor0.rowtime)], rowType=[RecordType(VARCHAR(2147483647) currency, INTEGER rate, TIMESTAMP(3) *ROWTIME* rowtime)])
 
 == Optimized Physical Plan ==
 Calc(select=[*(amount, rate) AS EXPR$0])
@@ -2854,7 +2694,7 @@ LogicalProject(EXPR$0=[*($0, $5)])
       :- LogicalWatermarkAssigner(rowtime=[rowtime], watermark=[$2])
       :  +- LogicalProject(amount=[$0], currency=[$1], rowtime=[$2], proctime=[PROCTIME()])
       :     +- LogicalTableScan(table=[[default_catalog, default_database, Orders]])
-      +- LogicalTableFunctionScan(invocation=[Rates($cor0.rowtime)], rowType=[RecordType:peek_no_expand(VARCHAR(2147483647) currency, INTEGER rate, TIMESTAMP(3) *ROWTIME* rowtime)])
+      +- LogicalTableFunctionScan(invocation=[Rates($cor0.rowtime)], rowType=[RecordType(VARCHAR(2147483647) currency, INTEGER rate, TIMESTAMP(3) *ROWTIME* rowtime)])
 
 == Optimized Physical Plan ==
 Calc(select=[*(amount, rate) AS EXPR$0])
@@ -2942,74 +2782,6 @@ Calc(select=[(amount * rate) AS EXPR$0])
 }]]>
     </Resource>
   </TestCase>
-  <TestCase name="testMatch[isNameSimplifyEnabled=true]">
-    <Resource name="explain">
-      <![CDATA[== Abstract Syntax Tree ==
-LogicalProject(aid=[$0], bid=[$1], cid=[$2])
-+- LogicalMatch(partition=[[]], order=[[5 ASC-nulls-first]], outputFields=[[aid, bid, cid]], allRows=[false], after=[FLAG(SKIP TO NEXT ROW)], pattern=[((_UTF-16LE'A"', _UTF-16LE'l'), _UTF-16LE'C')], isStrictStarts=[false], isStrictEnds=[false], subsets=[[]], patternDefinitions=[[=(LAST(*.$0, 0), 1), =(LAST(*.$1, 0), 2), =(LAST(*.$2, 0), _UTF-16LE'c')]], inputFields=[[a, b, c, d, rowtime, proctime]])
-   +- LogicalWatermarkAssigner(rowtime=[rowtime], watermark=[-($4, 1000:INTERVAL SECOND)])
-      +- LogicalProject(a=[$0], b=[$1], c=[$2], d=[$3], rowtime=[$4], proctime=[PROCTIME()])
-         +- LogicalTableScan(table=[[default_catalog, default_database, MyTable]])
-
-== Optimized Physical Plan ==
-Match(orderBy=[proctime ASC], measures=[FINAL(A".a) AS aid, FINAL(l.a) AS bid, FINAL(C.a) AS cid], rowsPerMatch=[ONE ROW PER MATCH], after=[SKIP TO NEXT ROW], pattern=[((_UTF-16LE'A"', _UTF-16LE'l'), _UTF-16LE'C')], define=[{A"==(LAST(*.$0, 0), 1), l==(LAST(*.$1, 0), 2), C==(LAST(*.$2, 0), _UTF-16LE'c')}])
-+- Exchange(distribution=[single])
-   +- WatermarkAssigner(rowtime=[rowtime], watermark=[-(rowtime, 1000:INTERVAL SECOND)])
-      +- Calc(select=[a, b, c, d, rowtime, PROCTIME() AS proctime])
-         +- TableSourceScan(table=[[default_catalog, default_database, MyTable]], fields=[a, b, c, d, rowtime])
-
-== Optimized Execution Plan ==
-Match(orderBy=[proctime ASC], measures=[FINAL(A".a) AS aid, FINAL(l.a) AS bid, FINAL(C.a) AS cid], rowsPerMatch=[ONE ROW PER MATCH], after=[SKIP TO NEXT ROW], pattern=[((_UTF-16LE'A"', _UTF-16LE'l'), _UTF-16LE'C')], define=[{A"==(LAST(*.$0, 0), 1), l==(LAST(*.$1, 0), 2), C==(LAST(*.$2, 0), _UTF-16LE'c')}])
-+- Exchange(distribution=[single])
-   +- WatermarkAssigner(rowtime=[rowtime], watermark=[(rowtime - 1000:INTERVAL SECOND)])
-      +- Calc(select=[a, b, c, d, rowtime, PROCTIME() AS proctime])
-         +- TableSourceScan(table=[[default_catalog, default_database, MyTable]], fields=[a, b, c, d, rowtime])
-
-== Physical Execution Plan ==
-{
-  "nodes" : [ {
-    "id" : ,
-    "type" : "Source: MyTable[]",
-    "pact" : "Data Source",
-    "contents" : "[]:TableSourceScan(table=[[default_catalog, default_database, MyTable]], fields=[a, b, c, d, rowtime])",
-    "parallelism" : 1
-  }, {
-    "id" : ,
-    "type" : "Calc[]",
-    "pact" : "Operator",
-    "contents" : "[]:Calc(select=[a, b, c, d, rowtime, PROCTIME() AS proctime])",
-    "parallelism" : 1,
-    "predecessors" : [ {
-      "id" : ,
-      "ship_strategy" : "FORWARD",
-      "side" : "second"
-    } ]
-  }, {
-    "id" : ,
-    "type" : "WatermarkAssigner[]",
-    "pact" : "Operator",
-    "contents" : "[]:WatermarkAssigner(rowtime=[rowtime], watermark=[(rowtime - 1000:INTERVAL SECOND)])",
-    "parallelism" : 1,
-    "predecessors" : [ {
-      "id" : ,
-      "ship_strategy" : "FORWARD",
-      "side" : "second"
-    } ]
-  }, {
-    "id" : ,
-    "type" : "Match[]",
-    "pact" : "Operator",
-    "contents" : "[]:Match(orderBy=[proctime ASC], measures=[FINAL(A\".a) AS aid, FINAL(l.a) AS bid, FINAL(C.a) AS cid], rowsPerMatch=[ONE ROW PER MATCH], after=[SKIP TO NEXT ROW], pattern=[((_UTF-16LE'A\"', _UTF-16LE'l'), _UTF-16LE'C')], define=[{A\"==(LAST(*.$0, 0), 1), l==(LAST(*.$1, 0), 2), C==(LAST(*.$2, 0), _UTF-16LE'c')}])",
-    "parallelism" : 1,
-    "predecessors" : [ {
-      "id" : ,
-      "ship_strategy" : "GLOBAL",
-      "side" : "second"
-    } ]
-  } ]
-}]]>
-    </Resource>
-  </TestCase>
   <TestCase name="testTemporalSortOnEventTime[isNameSimplifyEnabled=false]">
     <Resource name="explain">
       <![CDATA[== Abstract Syntax Tree ==
@@ -3025,22 +2797,22 @@ Calc(select=[a])
 +- TemporalSort(orderBy=[rowtime ASC, c ASC])
    +- Exchange(distribution=[single])
       +- WatermarkAssigner(rowtime=[rowtime], watermark=[-(rowtime, 1000:INTERVAL SECOND)])
-         +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, rowtime, c], metadata=[]]], fields=[a, rowtime, c])
+         +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, rowtime, c]]], fields=[a, rowtime, c])
 
 == Optimized Execution Plan ==
 Calc(select=[a])
 +- TemporalSort(orderBy=[rowtime ASC, c ASC])
    +- Exchange(distribution=[single])
       +- WatermarkAssigner(rowtime=[rowtime], watermark=[(rowtime - 1000:INTERVAL SECOND)])
-         +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, rowtime, c], metadata=[]]], fields=[a, rowtime, c])
+         +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, rowtime, c]]], fields=[a, rowtime, c])
 
 == Physical Execution Plan ==
 {
   "nodes" : [ {
     "id" : ,
-    "type" : "Source: TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, rowtime, c], metadata=[]]], fields=[a, rowtime, c])",
+    "type" : "Source: TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, rowtime, c]]], fields=[a, rowtime, c])",
     "pact" : "Data Source",
-    "contents" : "TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, rowtime, c], metadata=[]]], fields=[a, rowtime, c])",
+    "contents" : "TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, rowtime, c]]], fields=[a, rowtime, c])",
     "parallelism" : 1
   }, {
     "id" : ,
@@ -3094,14 +2866,14 @@ Calc(select=[a])
 +- TemporalSort(orderBy=[rowtime ASC, c ASC])
    +- Exchange(distribution=[single])
       +- WatermarkAssigner(rowtime=[rowtime], watermark=[-(rowtime, 1000:INTERVAL SECOND)])
-         +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, rowtime, c], metadata=[]]], fields=[a, rowtime, c])
+         +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, rowtime, c]]], fields=[a, rowtime, c])
 
 == Optimized Execution Plan ==
 Calc(select=[a])
 +- TemporalSort(orderBy=[rowtime ASC, c ASC])
    +- Exchange(distribution=[single])
       +- WatermarkAssigner(rowtime=[rowtime], watermark=[(rowtime - 1000:INTERVAL SECOND)])
-         +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, rowtime, c], metadata=[]]], fields=[a, rowtime, c])
+         +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, rowtime, c]]], fields=[a, rowtime, c])
 
 == Physical Execution Plan ==
 {
@@ -3109,7 +2881,7 @@ Calc(select=[a])
     "id" : ,
     "type" : "Source: MyTable[]",
     "pact" : "Data Source",
-    "contents" : "[]:TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, rowtime, c], metadata=[]]], fields=[a, rowtime, c])",
+    "contents" : "[]:TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, rowtime, c]]], fields=[a, rowtime, c])",
     "parallelism" : 1
   }, {
     "id" : ,
@@ -3164,7 +2936,7 @@ Calc(select=[a])
    +- Exchange(distribution=[single])
       +- WatermarkAssigner(rowtime=[rowtime], watermark=[-(rowtime, 1000:INTERVAL SECOND)])
          +- Calc(select=[a, PROCTIME() AS proctime, c, rowtime])
-            +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, c, rowtime], metadata=[]]], fields=[a, c, rowtime])
+            +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, c, rowtime]]], fields=[a, c, rowtime])
 
 == Optimized Execution Plan ==
 Calc(select=[a])
@@ -3172,15 +2944,15 @@ Calc(select=[a])
    +- Exchange(distribution=[single])
       +- WatermarkAssigner(rowtime=[rowtime], watermark=[(rowtime - 1000:INTERVAL SECOND)])
          +- Calc(select=[a, PROCTIME() AS proctime, c, rowtime])
-            +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, c, rowtime], metadata=[]]], fields=[a, c, rowtime])
+            +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, c, rowtime]]], fields=[a, c, rowtime])
 
 == Physical Execution Plan ==
 {
   "nodes" : [ {
     "id" : ,
-    "type" : "Source: TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, c, rowtime], metadata=[]]], fields=[a, c, rowtime])",
+    "type" : "Source: TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, c, rowtime]]], fields=[a, c, rowtime])",
     "pact" : "Data Source",
-    "contents" : "TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, c, rowtime], metadata=[]]], fields=[a, c, rowtime])",
+    "contents" : "TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, c, rowtime]]], fields=[a, c, rowtime])",
     "parallelism" : 1
   }, {
     "id" : ,
@@ -3246,7 +3018,7 @@ Calc(select=[a])
    +- Exchange(distribution=[single])
       +- WatermarkAssigner(rowtime=[rowtime], watermark=[-(rowtime, 1000:INTERVAL SECOND)])
          +- Calc(select=[a, PROCTIME() AS proctime, c, rowtime])
-            +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, c, rowtime], metadata=[]]], fields=[a, c, rowtime])
+            +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, c, rowtime]]], fields=[a, c, rowtime])
 
 == Optimized Execution Plan ==
 Calc(select=[a])
@@ -3254,7 +3026,7 @@ Calc(select=[a])
    +- Exchange(distribution=[single])
       +- WatermarkAssigner(rowtime=[rowtime], watermark=[(rowtime - 1000:INTERVAL SECOND)])
          +- Calc(select=[a, PROCTIME() AS proctime, c, rowtime])
-            +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, c, rowtime], metadata=[]]], fields=[a, c, rowtime])
+            +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, c, rowtime]]], fields=[a, c, rowtime])
 
 == Physical Execution Plan ==
 {
@@ -3262,7 +3034,7 @@ Calc(select=[a])
     "id" : ,
     "type" : "Source: MyTable[]",
     "pact" : "Data Source",
-    "contents" : "[]:TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, c, rowtime], metadata=[]]], fields=[a, c, rowtime])",
+    "contents" : "[]:TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, c, rowtime]]], fields=[a, c, rowtime])",
     "parallelism" : 1
   }, {
     "id" : ,
@@ -3317,7 +3089,7 @@ Calc(select=[a])
       <![CDATA[== Abstract Syntax Tree ==
 LogicalAggregate(group=[{0, 1, 2}], EXPR$3=[COUNT()], EXPR$4=[SUM($3)])
 +- LogicalProject(b=[$1], window_start=[$6], window_end=[$7], a=[$0])
-   +- LogicalTableFunctionScan(invocation=[TUMBLE($5, DESCRIPTOR($4), 5000:INTERVAL SECOND)], rowType=[RecordType(BIGINT a, INTEGER b, VARCHAR(2147483647) c, BIGINT d, TIMESTAMP(3) *ROWTIME* rowtime, TIMESTAMP_LTZ(3) *PROCTIME* proctime, TIMESTAMP(3) window_start, TIMESTAMP(3) window_end, TIMESTAMP(3) *ROWTIME* window_time)])
+   +- LogicalTableFunctionScan(invocation=[TUMBLE(TABLE(#0), DESCRIPTOR(_UTF-16LE'rowtime'), 5000:INTERVAL SECOND)], rowType=[RecordType(BIGINT a, INTEGER b, VARCHAR(2147483647) c, BIGINT d, TIMESTAMP(3) *ROWTIME* rowtime, TIMESTAMP_LTZ(3) *PROCTIME* proctime, TIMESTAMP(3) window_start, TIMESTAMP(3) window_end, TIMESTAMP(3) *ROWTIME* window_time)])
       +- LogicalProject(a=[$0], b=[$1], c=[$2], d=[$3], rowtime=[$4], proctime=[$5])
          +- LogicalWatermarkAssigner(rowtime=[rowtime], watermark=[-($4, 1000:INTERVAL SECOND)])
             +- LogicalProject(a=[$0], b=[$1], c=[$2], d=[$3], rowtime=[$4], proctime=[PROCTIME()])
@@ -3329,7 +3101,7 @@ Calc(select=[b, window_start, window_end, EXPR$3, EXPR$4])
    +- Exchange(distribution=[hash[b]])
       +- Calc(select=[b, a, rowtime])
          +- WatermarkAssigner(rowtime=[rowtime], watermark=[-(rowtime, 1000:INTERVAL SECOND)])
-            +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, b, rowtime], metadata=[]]], fields=[a, b, rowtime])
+            +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, b, rowtime]]], fields=[a, b, rowtime])
 
 == Optimized Execution Plan ==
 Calc(select=[b, window_start, window_end, EXPR$3, EXPR$4])
@@ -3337,15 +3109,15 @@ Calc(select=[b, window_start, window_end, EXPR$3, EXPR$4])
    +- Exchange(distribution=[hash[b]])
       +- Calc(select=[b, a, rowtime])
          +- WatermarkAssigner(rowtime=[rowtime], watermark=[(rowtime - 1000:INTERVAL SECOND)])
-            +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, b, rowtime], metadata=[]]], fields=[a, b, rowtime])
+            +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, b, rowtime]]], fields=[a, b, rowtime])
 
 == Physical Execution Plan ==
 {
   "nodes" : [ {
     "id" : ,
-    "type" : "Source: TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, b, rowtime], metadata=[]]], fields=[a, b, rowtime])",
+    "type" : "Source: TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, b, rowtime]]], fields=[a, b, rowtime])",
     "pact" : "Data Source",
-    "contents" : "TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, b, rowtime], metadata=[]]], fields=[a, b, rowtime])",
+    "contents" : "TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, b, rowtime]]], fields=[a, b, rowtime])",
     "parallelism" : 1
   }, {
     "id" : ,
@@ -3400,7 +3172,7 @@ Calc(select=[b, window_start, window_end, EXPR$3, EXPR$4])
       <![CDATA[== Abstract Syntax Tree ==
 LogicalAggregate(group=[{0, 1, 2}], EXPR$3=[COUNT()], EXPR$4=[SUM($3)])
 +- LogicalProject(b=[$1], window_start=[$6], window_end=[$7], a=[$0])
-   +- LogicalTableFunctionScan(invocation=[TUMBLE($5, DESCRIPTOR($4), 5000:INTERVAL SECOND)], rowType=[RecordType(BIGINT a, INTEGER b, VARCHAR(2147483647) c, BIGINT d, TIMESTAMP(3) *ROWTIME* rowtime, TIMESTAMP_LTZ(3) *PROCTIME* proctime, TIMESTAMP(3) window_start, TIMESTAMP(3) window_end, TIMESTAMP(3) *ROWTIME* window_time)])
+   +- LogicalTableFunctionScan(invocation=[TUMBLE(TABLE(#0), DESCRIPTOR(_UTF-16LE'rowtime'), 5000:INTERVAL SECOND)], rowType=[RecordType(BIGINT a, INTEGER b, VARCHAR(2147483647) c, BIGINT d, TIMESTAMP(3) *ROWTIME* rowtime, TIMESTAMP_LTZ(3) *PROCTIME* proctime, TIMESTAMP(3) window_start, TIMESTAMP(3) window_end, TIMESTAMP(3) *ROWTIME* window_time)])
       +- LogicalProject(a=[$0], b=[$1], c=[$2], d=[$3], rowtime=[$4], proctime=[$5])
          +- LogicalWatermarkAssigner(rowtime=[rowtime], watermark=[-($4, 1000:INTERVAL SECOND)])
             +- LogicalProject(a=[$0], b=[$1], c=[$2], d=[$3], rowtime=[$4], proctime=[PROCTIME()])
@@ -3412,7 +3184,7 @@ Calc(select=[b, window_start, window_end, EXPR$3, EXPR$4])
    +- Exchange(distribution=[hash[b]])
       +- Calc(select=[b, a, rowtime])
          +- WatermarkAssigner(rowtime=[rowtime], watermark=[-(rowtime, 1000:INTERVAL SECOND)])
-            +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, b, rowtime], metadata=[]]], fields=[a, b, rowtime])
+            +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, b, rowtime]]], fields=[a, b, rowtime])
 
 == Optimized Execution Plan ==
 Calc(select=[b, window_start, window_end, EXPR$3, EXPR$4])
@@ -3420,7 +3192,7 @@ Calc(select=[b, window_start, window_end, EXPR$3, EXPR$4])
    +- Exchange(distribution=[hash[b]])
       +- Calc(select=[b, a, rowtime])
          +- WatermarkAssigner(rowtime=[rowtime], watermark=[(rowtime - 1000:INTERVAL SECOND)])
-            +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, b, rowtime], metadata=[]]], fields=[a, b, rowtime])
+            +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, b, rowtime]]], fields=[a, b, rowtime])
 
 == Physical Execution Plan ==
 {
@@ -3428,7 +3200,7 @@ Calc(select=[b, window_start, window_end, EXPR$3, EXPR$4])
     "id" : ,
     "type" : "Source: MyTable[]",
     "pact" : "Data Source",
-    "contents" : "[]:TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, b, rowtime], metadata=[]]], fields=[a, b, rowtime])",
+    "contents" : "[]:TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, b, rowtime]]], fields=[a, b, rowtime])",
     "parallelism" : 1
   }, {
     "id" : ,
@@ -3484,7 +3256,7 @@ Calc(select=[b, window_start, window_end, EXPR$3, EXPR$4])
 LogicalProject(window_start=[$6], window_end=[$7], a=[$0], b=[$1], c=[$2])
 +- LogicalFilter(condition=[<=($9, 1)])
    +- LogicalProject(a=[$0], b=[$1], c=[$2], d=[$3], rowtime=[$4], proctime=[$5], window_start=[$6], window_end=[$7], window_time=[$8], rownum=[ROW_NUMBER() OVER (PARTITION BY $0, $6, $7 ORDER BY $4 DESC NULLS LAST)])
-      +- LogicalTableFunctionScan(invocation=[TUMBLE($5, DESCRIPTOR($4), 900000:INTERVAL MINUTE)], rowType=[RecordType(BIGINT a, INTEGER b, VARCHAR(2147483647) c, BIGINT d, TIMESTAMP(3) *ROWTIME* rowtime, TIMESTAMP_LTZ(3) *PROCTIME* proctime, TIMESTAMP(3) window_start, TIMESTAMP(3) window_end, TIMESTAMP(3) *ROWTIME* window_time)])
+      +- LogicalTableFunctionScan(invocation=[TUMBLE(TABLE(#0), DESCRIPTOR(_UTF-16LE'rowtime'), 900000:INTERVAL MINUTE)], rowType=[RecordType(BIGINT a, INTEGER b, VARCHAR(2147483647) c, BIGINT d, TIMESTAMP(3) *ROWTIME* rowtime, TIMESTAMP_LTZ(3) *PROCTIME* proctime, TIMESTAMP(3) window_start, TIMESTAMP(3) window_end, TIMESTAMP(3) *ROWTIME* window_time)])
          +- LogicalProject(a=[$0], b=[$1], c=[$2], d=[$3], rowtime=[$4], proctime=[$5])
             +- LogicalWatermarkAssigner(rowtime=[rowtime], watermark=[-($4, 1000:INTERVAL SECOND)])
                +- LogicalProject(a=[$0], b=[$1], c=[$2], d=[$3], rowtime=[$4], proctime=[PROCTIME()])
@@ -3588,6 +3360,116 @@ Calc(select=[window_start, window_end, a, b, c])
 }]]>
     </Resource>
   </TestCase>
+  <TestCase name="testWindowDeduplicate[isNameSimplifyEnabled=true]">
+    <Resource name="explain">
+      <![CDATA[== Abstract Syntax Tree ==
+LogicalProject(window_start=[$6], window_end=[$7], a=[$0], b=[$1], c=[$2])
++- LogicalFilter(condition=[<=($9, 1)])
+   +- LogicalProject(a=[$0], b=[$1], c=[$2], d=[$3], rowtime=[$4], proctime=[$5], window_start=[$6], window_end=[$7], window_time=[$8], rownum=[ROW_NUMBER() OVER (PARTITION BY $0, $6, $7 ORDER BY $4 DESC NULLS LAST)])
+      +- LogicalTableFunctionScan(invocation=[TUMBLE(TABLE(#0), DESCRIPTOR(_UTF-16LE'rowtime'), 900000:INTERVAL MINUTE)], rowType=[RecordType(BIGINT a, INTEGER b, VARCHAR(2147483647) c, BIGINT d, TIMESTAMP(3) *ROWTIME* rowtime, TIMESTAMP_LTZ(3) *PROCTIME* proctime, TIMESTAMP(3) window_start, TIMESTAMP(3) window_end, TIMESTAMP(3) *ROWTIME* window_time)])
+         +- LogicalProject(a=[$0], b=[$1], c=[$2], d=[$3], rowtime=[$4], proctime=[$5])
+            +- LogicalWatermarkAssigner(rowtime=[rowtime], watermark=[-($4, 1000:INTERVAL SECOND)])
+               +- LogicalProject(a=[$0], b=[$1], c=[$2], d=[$3], rowtime=[$4], proctime=[PROCTIME()])
+                  +- LogicalTableScan(table=[[default_catalog, default_database, MyTable]])
+
+== Optimized Physical Plan ==
+Calc(select=[window_start, window_end, a, b, c])
++- WindowDeduplicate(window=[TUMBLE(win_start=[window_start], win_end=[window_end], size=[15 min])], keep=[LastRow], partitionKeys=[a], orderKey=[rowtime], order=[ROWTIME])
+   +- Exchange(distribution=[hash[a]])
+      +- Calc(select=[a, b, c, rowtime, window_start, window_end])
+         +- WindowTableFunction(window=[TUMBLE(time_col=[rowtime], size=[15 min])])
+            +- WatermarkAssigner(rowtime=[rowtime], watermark=[-(rowtime, 1000:INTERVAL SECOND)])
+               +- Calc(select=[a, b, c, d, rowtime, PROCTIME() AS proctime])
+                  +- TableSourceScan(table=[[default_catalog, default_database, MyTable]], fields=[a, b, c, d, rowtime])
+
+== Optimized Execution Plan ==
+Calc(select=[window_start, window_end, a, b, c])
++- WindowDeduplicate(window=[TUMBLE(win_start=[window_start], win_end=[window_end], size=[15 min])], keep=[LastRow], partitionKeys=[a], orderKey=[rowtime], order=[ROWTIME])
+   +- Exchange(distribution=[hash[a]])
+      +- Calc(select=[a, b, c, rowtime, window_start, window_end])
+         +- WindowTableFunction(window=[TUMBLE(time_col=[rowtime], size=[15 min])])
+            +- WatermarkAssigner(rowtime=[rowtime], watermark=[(rowtime - 1000:INTERVAL SECOND)])
+               +- Calc(select=[a, b, c, d, rowtime, PROCTIME() AS proctime])
+                  +- TableSourceScan(table=[[default_catalog, default_database, MyTable]], fields=[a, b, c, d, rowtime])
+
+== Physical Execution Plan ==
+{
+  "nodes" : [ {
+    "id" : ,
+    "type" : "Source: MyTable[]",
+    "pact" : "Data Source",
+    "contents" : "[]:TableSourceScan(table=[[default_catalog, default_database, MyTable]], fields=[a, b, c, d, rowtime])",
+    "parallelism" : 1
+  }, {
+    "id" : ,
+    "type" : "Calc[]",
+    "pact" : "Operator",
+    "contents" : "[]:Calc(select=[a, b, c, d, rowtime, PROCTIME() AS proctime])",
+    "parallelism" : 1,
+    "predecessors" : [ {
+      "id" : ,
+      "ship_strategy" : "FORWARD",
+      "side" : "second"
+    } ]
+  }, {
+    "id" : ,
+    "type" : "WatermarkAssigner[]",
+    "pact" : "Operator",
+    "contents" : "[]:WatermarkAssigner(rowtime=[rowtime], watermark=[(rowtime - 1000:INTERVAL SECOND)])",
+    "parallelism" : 1,
+    "predecessors" : [ {
+      "id" : ,
+      "ship_strategy" : "FORWARD",
+      "side" : "second"
+    } ]
+  }, {
+    "id" : ,
+    "type" : "WindowTableFunction[]",
+    "pact" : "Operator",
+    "contents" : "[]:WindowTableFunction(window=[TUMBLE(time_col=[rowtime], size=[15 min])])",
+    "parallelism" : 1,
+    "predecessors" : [ {
+      "id" : ,
+      "ship_strategy" : "FORWARD",
+      "side" : "second"
+    } ]
+  }, {
+    "id" : ,
+    "type" : "Calc[]",
+    "pact" : "Operator",
+    "contents" : "[]:Calc(select=[a, b, c, rowtime, window_start, window_end])",
+    "parallelism" : 1,
+    "predecessors" : [ {
+      "id" : ,
+      "ship_strategy" : "FORWARD",
+      "side" : "second"
+    } ]
+  }, {
+    "id" : ,
+    "type" : "WindowDeduplicate[]",
+    "pact" : "Operator",
+    "contents" : "[]:WindowDeduplicate(window=[TUMBLE(win_start=[window_start], win_end=[window_end], size=[15 min])], keep=[LastRow], partitionKeys=[a], orderKey=[rowtime], order=[ROWTIME])",
+    "parallelism" : 2,
+    "predecessors" : [ {
+      "id" : ,
+      "ship_strategy" : "HASH",
+      "side" : "second"
+    } ]
+  }, {
+    "id" : ,
+    "type" : "Calc[]",
+    "pact" : "Operator",
+    "contents" : "[]:Calc(select=[window_start, window_end, a, b, c])",
+    "parallelism" : 2,
+    "predecessors" : [ {
+      "id" : ,
+      "ship_strategy" : "FORWARD",
+      "side" : "second"
+    } ]
+  } ]
+}]]>
+    </Resource>
+  </TestCase>
   <TestCase name="testWindowJoin[isNameSimplifyEnabled=false]">
     <Resource name="explain">
       <![CDATA[== Abstract Syntax Tree ==
@@ -3596,7 +3478,7 @@ LogicalProject(a=[$0], window_start=[$1], window_end=[$2], cnt=[$3], uv=[$4], a0
    :- LogicalProject(a=[$0], window_start=[$1], window_end=[$2], cnt=[$4], uv=[$5])
    :  +- LogicalAggregate(group=[{0, 1, 2, 3}], cnt=[COUNT()], uv=[COUNT(DISTINCT $4)])
    :     +- LogicalProject(a=[$0], window_start=[$6], window_end=[$7], window_time=[$8], c=[$2])
-   :        +- LogicalTableFunctionScan(invocation=[TUMBLE($5, DESCRIPTOR($4), 900000:INTERVAL MINUTE)], rowType=[RecordType(BIGINT a, INTEGER b, VARCHAR(2147483647) c, BIGINT d, TIMESTAMP(3) *ROWTIME* rowtime, TIMESTAMP_LTZ(3) *PROCTIME* proctime, TIMESTAMP(3) window_start, TIMESTAMP(3) window_end, TIMESTAMP(3) *ROWTIME* window_time)])
+   :        +- LogicalTableFunctionScan(invocation=[TUMBLE(TABLE(#0), DESCRIPTOR(_UTF-16LE'rowtime'), 900000:INTERVAL MINUTE)], rowType=[RecordType(BIGINT a, INTEGER b, VARCHAR(2147483647) c, BIGINT d, TIMESTAMP(3) *ROWTIME* rowtime, TIMESTAMP_LTZ(3) *PROCTIME* proctime, TIMESTAMP(3) window_start, TIMESTAMP(3) window_end, TIMESTAMP(3) *ROWTIME* window_time)])
    :           +- LogicalProject(a=[$0], b=[$1], c=[$2], d=[$3], rowtime=[$4], proctime=[$5])
    :              +- LogicalWatermarkAssigner(rowtime=[rowtime], watermark=[-($4, 1000:INTERVAL SECOND)])
    :                 +- LogicalProject(a=[$0], b=[$1], c=[$2], d=[$3], rowtime=[$4], proctime=[PROCTIME()])
@@ -3604,7 +3486,7 @@ LogicalProject(a=[$0], window_start=[$1], window_end=[$2], cnt=[$3], uv=[$4], a0
    +- LogicalProject(a=[$0], window_start=[$1], window_end=[$2], cnt=[$4], uv=[$5])
       +- LogicalAggregate(group=[{0, 1, 2, 3}], cnt=[COUNT()], uv=[COUNT(DISTINCT $4)])
          +- LogicalProject(a=[$0], window_start=[$6], window_end=[$7], window_time=[$8], c=[$2])
-            +- LogicalTableFunctionScan(invocation=[TUMBLE($5, DESCRIPTOR($4), 900000:INTERVAL MINUTE)], rowType=[RecordType(BIGINT a, INTEGER b, VARCHAR(2147483647) c, BIGINT d, TIMESTAMP(3) *ROWTIME* rowtime, TIMESTAMP_LTZ(3) *PROCTIME* proctime, TIMESTAMP(3) window_start, TIMESTAMP(3) window_end, TIMESTAMP(3) *ROWTIME* window_time)])
+            +- LogicalTableFunctionScan(invocation=[TUMBLE(TABLE(#0), DESCRIPTOR(_UTF-16LE'rowtime'), 900000:INTERVAL MINUTE)], rowType=[RecordType(BIGINT a, INTEGER b, VARCHAR(2147483647) c, BIGINT d, TIMESTAMP(3) *ROWTIME* rowtime, TIMESTAMP_LTZ(3) *PROCTIME* proctime, TIMESTAMP(3) window_start, TIMESTAMP(3) window_end, TIMESTAMP(3) *ROWTIME* window_time)])
                +- LogicalProject(a=[$0], b=[$1], c=[$2], d=[$3], rowtime=[$4], proctime=[$5])
                   +- LogicalWatermarkAssigner(rowtime=[rowtime], watermark=[-($4, 1000:INTERVAL SECOND)])
                      +- LogicalProject(a=[$0], b=[$1], c=[$2], d=[$3], rowtime=[$4], proctime=[PROCTIME()])
@@ -3619,14 +3501,14 @@ Calc(select=[a, window_start, window_end, cnt, uv, a0, cnt0, uv0])
    :        +- Exchange(distribution=[hash[a]])
    :           +- LocalWindowAggregate(groupBy=[a], window=[TUMBLE(time_col=[rowtime], size=[15 min])], select=[a, COUNT(*) AS count1$0, COUNT(distinct$0 c) AS count$1, DISTINCT(c) AS distinct$0, slice_end('w$) AS $slice_end])
    :              +- WatermarkAssigner(rowtime=[rowtime], watermark=[-(rowtime, 1000:INTERVAL SECOND)])
-   :                 +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, c, rowtime], metadata=[]]], fields=[a, c, rowtime])
+   :                 +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, c, rowtime]]], fields=[a, c, rowtime])
    +- Exchange(distribution=[hash[a]])
       +- Calc(select=[a, window_start, window_end, cnt, uv])
          +- GlobalWindowAggregate(groupBy=[a], window=[TUMBLE(slice_end=[$slice_end], size=[15 min])], select=[a, COUNT(count1$0) AS cnt, COUNT(distinct$0 count$1) AS uv, start('w$) AS window_start, end('w$) AS window_end, rowtime('w$) AS window_time])
             +- Exchange(distribution=[hash[a]])
                +- LocalWindowAggregate(groupBy=[a], window=[TUMBLE(time_col=[rowtime], size=[15 min])], select=[a, COUNT(*) AS count1$0, COUNT(distinct$0 c) AS count$1, DISTINCT(c) AS distinct$0, slice_end('w$) AS $slice_end])
                   +- WatermarkAssigner(rowtime=[rowtime], watermark=[-(rowtime, 1000:INTERVAL SECOND)])
-                     +- TableSourceScan(table=[[default_catalog, default_database, MyTable2, project=[a, c, rowtime], metadata=[]]], fields=[a, c, rowtime])
+                     +- TableSourceScan(table=[[default_catalog, default_database, MyTable2, project=[a, c, rowtime]]], fields=[a, c, rowtime])
 
 == Optimized Execution Plan ==
 Calc(select=[a, window_start, window_end, cnt, uv, a0, cnt0, uv0])
@@ -3637,22 +3519,22 @@ Calc(select=[a, window_start, window_end, cnt, uv, a0, cnt0, uv0])
    :        +- Exchange(distribution=[hash[a]])
    :           +- LocalWindowAggregate(groupBy=[a], window=[TUMBLE(time_col=[rowtime], size=[15 min])], select=[a, COUNT(*) AS count1$0, COUNT(distinct$0 c) AS count$1, DISTINCT(c) AS distinct$0, slice_end('w$) AS $slice_end])
    :              +- WatermarkAssigner(rowtime=[rowtime], watermark=[(rowtime - 1000:INTERVAL SECOND)])
-   :                 +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, c, rowtime], metadata=[]]], fields=[a, c, rowtime])
+   :                 +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, c, rowtime]]], fields=[a, c, rowtime])
    +- Exchange(distribution=[hash[a]])
       +- Calc(select=[a, window_start, window_end, cnt, uv])
          +- GlobalWindowAggregate(groupBy=[a], window=[TUMBLE(slice_end=[$slice_end], size=[15 min])], select=[a, COUNT(count1$0) AS cnt, COUNT(distinct$0 count$1) AS uv, start('w$) AS window_start, end('w$) AS window_end, rowtime('w$) AS window_time])
             +- Exchange(distribution=[hash[a]])
                +- LocalWindowAggregate(groupBy=[a], window=[TUMBLE(time_col=[rowtime], size=[15 min])], select=[a, COUNT(*) AS count1$0, COUNT(distinct$0 c) AS count$1, DISTINCT(c) AS distinct$0, slice_end('w$) AS $slice_end])
                   +- WatermarkAssigner(rowtime=[rowtime], watermark=[(rowtime - 1000:INTERVAL SECOND)])
-                     +- TableSourceScan(table=[[default_catalog, default_database, MyTable2, project=[a, c, rowtime], metadata=[]]], fields=[a, c, rowtime])
+                     +- TableSourceScan(table=[[default_catalog, default_database, MyTable2, project=[a, c, rowtime]]], fields=[a, c, rowtime])
 
 == Physical Execution Plan ==
 {
   "nodes" : [ {
     "id" : ,
-    "type" : "Source: TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, c, rowtime], metadata=[]]], fields=[a, c, rowtime])",
+    "type" : "Source: TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, c, rowtime]]], fields=[a, c, rowtime])",
     "pact" : "Data Source",
-    "contents" : "TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, c, rowtime], metadata=[]]], fields=[a, c, rowtime])",
+    "contents" : "TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, c, rowtime]]], fields=[a, c, rowtime])",
     "parallelism" : 1
   }, {
     "id" : ,
@@ -3700,9 +3582,9 @@ Calc(select=[a, window_start, window_end, cnt, uv, a0, cnt0, uv0])
     } ]
   }, {
     "id" : ,
-    "type" : "Source: TableSourceScan(table=[[default_catalog, default_database, MyTable2, project=[a, c, rowtime], metadata=[]]], fields=[a, c, rowtime])",
+    "type" : "Source: TableSourceScan(table=[[default_catalog, default_database, MyTable2, project=[a, c, rowtime]]], fields=[a, c, rowtime])",
     "pact" : "Data Source",
-    "contents" : "TableSourceScan(table=[[default_catalog, default_database, MyTable2, project=[a, c, rowtime], metadata=[]]], fields=[a, c, rowtime])",
+    "contents" : "TableSourceScan(table=[[default_catalog, default_database, MyTable2, project=[a, c, rowtime]]], fields=[a, c, rowtime])",
     "parallelism" : 1
   }, {
     "id" : ,
@@ -3786,7 +3668,7 @@ LogicalProject(a=[$0], window_start=[$1], window_end=[$2], cnt=[$3], uv=[$4], a0
    :- LogicalProject(a=[$0], window_start=[$1], window_end=[$2], cnt=[$4], uv=[$5])
    :  +- LogicalAggregate(group=[{0, 1, 2, 3}], cnt=[COUNT()], uv=[COUNT(DISTINCT $4)])
    :     +- LogicalProject(a=[$0], window_start=[$6], window_end=[$7], window_time=[$8], c=[$2])
-   :        +- LogicalTableFunctionScan(invocation=[TUMBLE($5, DESCRIPTOR($4), 900000:INTERVAL MINUTE)], rowType=[RecordType(BIGINT a, INTEGER b, VARCHAR(2147483647) c, BIGINT d, TIMESTAMP(3) *ROWTIME* rowtime, TIMESTAMP_LTZ(3) *PROCTIME* proctime, TIMESTAMP(3) window_start, TIMESTAMP(3) window_end, TIMESTAMP(3) *ROWTIME* window_time)])
+   :        +- LogicalTableFunctionScan(invocation=[TUMBLE(TABLE(#0), DESCRIPTOR(_UTF-16LE'rowtime'), 900000:INTERVAL MINUTE)], rowType=[RecordType(BIGINT a, INTEGER b, VARCHAR(2147483647) c, BIGINT d, TIMESTAMP(3) *ROWTIME* rowtime, TIMESTAMP_LTZ(3) *PROCTIME* proctime, TIMESTAMP(3) window_start, TIMESTAMP(3) window_end, TIMESTAMP(3) *ROWTIME* window_time)])
    :           +- LogicalProject(a=[$0], b=[$1], c=[$2], d=[$3], rowtime=[$4], proctime=[$5])
    :              +- LogicalWatermarkAssigner(rowtime=[rowtime], watermark=[-($4, 1000:INTERVAL SECOND)])
    :                 +- LogicalProject(a=[$0], b=[$1], c=[$2], d=[$3], rowtime=[$4], proctime=[PROCTIME()])
@@ -3794,7 +3676,7 @@ LogicalProject(a=[$0], window_start=[$1], window_end=[$2], cnt=[$3], uv=[$4], a0
    +- LogicalProject(a=[$0], window_start=[$1], window_end=[$2], cnt=[$4], uv=[$5])
       +- LogicalAggregate(group=[{0, 1, 2, 3}], cnt=[COUNT()], uv=[COUNT(DISTINCT $4)])
          +- LogicalProject(a=[$0], window_start=[$6], window_end=[$7], window_time=[$8], c=[$2])
-            +- LogicalTableFunctionScan(invocation=[TUMBLE($5, DESCRIPTOR($4), 900000:INTERVAL MINUTE)], rowType=[RecordType(BIGINT a, INTEGER b, VARCHAR(2147483647) c, BIGINT d, TIMESTAMP(3) *ROWTIME* rowtime, TIMESTAMP_LTZ(3) *PROCTIME* proctime, TIMESTAMP(3) window_start, TIMESTAMP(3) window_end, TIMESTAMP(3) *ROWTIME* window_time)])
+            +- LogicalTableFunctionScan(invocation=[TUMBLE(TABLE(#0), DESCRIPTOR(_UTF-16LE'rowtime'), 900000:INTERVAL MINUTE)], rowType=[RecordType(BIGINT a, INTEGER b, VARCHAR(2147483647) c, BIGINT d, TIMESTAMP(3) *ROWTIME* rowtime, TIMESTAMP_LTZ(3) *PROCTIME* proctime, TIMESTAMP(3) window_start, TIMESTAMP(3) window_end, TIMESTAMP(3) *ROWTIME* window_time)])
                +- LogicalProject(a=[$0], b=[$1], c=[$2], d=[$3], rowtime=[$4], proctime=[$5])
                   +- LogicalWatermarkAssigner(rowtime=[rowtime], watermark=[-($4, 1000:INTERVAL SECOND)])
                      +- LogicalProject(a=[$0], b=[$1], c=[$2], d=[$3], rowtime=[$4], proctime=[PROCTIME()])
@@ -3809,14 +3691,14 @@ Calc(select=[a, window_start, window_end, cnt, uv, a0, cnt0, uv0])
    :        +- Exchange(distribution=[hash[a]])
    :           +- LocalWindowAggregate(groupBy=[a], window=[TUMBLE(time_col=[rowtime], size=[15 min])], select=[a, COUNT(*) AS count1$0, COUNT(distinct$0 c) AS count$1, DISTINCT(c) AS distinct$0, slice_end('w$) AS $slice_end])
    :              +- WatermarkAssigner(rowtime=[rowtime], watermark=[-(rowtime, 1000:INTERVAL SECOND)])
-   :                 +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, c, rowtime], metadata=[]]], fields=[a, c, rowtime])
+   :                 +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, c, rowtime]]], fields=[a, c, rowtime])
    +- Exchange(distribution=[hash[a]])
       +- Calc(select=[a, window_start, window_end, cnt, uv])
          +- GlobalWindowAggregate(groupBy=[a], window=[TUMBLE(slice_end=[$slice_end], size=[15 min])], select=[a, COUNT(count1$0) AS cnt, COUNT(distinct$0 count$1) AS uv, start('w$) AS window_start, end('w$) AS window_end, rowtime('w$) AS window_time])
             +- Exchange(distribution=[hash[a]])
                +- LocalWindowAggregate(groupBy=[a], window=[TUMBLE(time_col=[rowtime], size=[15 min])], select=[a, COUNT(*) AS count1$0, COUNT(distinct$0 c) AS count$1, DISTINCT(c) AS distinct$0, slice_end('w$) AS $slice_end])
                   +- WatermarkAssigner(rowtime=[rowtime], watermark=[-(rowtime, 1000:INTERVAL SECOND)])
-                     +- TableSourceScan(table=[[default_catalog, default_database, MyTable2, project=[a, c, rowtime], metadata=[]]], fields=[a, c, rowtime])
+                     +- TableSourceScan(table=[[default_catalog, default_database, MyTable2, project=[a, c, rowtime]]], fields=[a, c, rowtime])
 
 == Optimized Execution Plan ==
 Calc(select=[a, window_start, window_end, cnt, uv, a0, cnt0, uv0])
@@ -3827,14 +3709,14 @@ Calc(select=[a, window_start, window_end, cnt, uv, a0, cnt0, uv0])
    :        +- Exchange(distribution=[hash[a]])
    :           +- LocalWindowAggregate(groupBy=[a], window=[TUMBLE(time_col=[rowtime], size=[15 min])], select=[a, COUNT(*) AS count1$0, COUNT(distinct$0 c) AS count$1, DISTINCT(c) AS distinct$0, slice_end('w$) AS $slice_end])
    :              +- WatermarkAssigner(rowtime=[rowtime], watermark=[(rowtime - 1000:INTERVAL SECOND)])
-   :                 +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, c, rowtime], metadata=[]]], fields=[a, c, rowtime])
+   :                 +- TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, c, rowtime]]], fields=[a, c, rowtime])
    +- Exchange(distribution=[hash[a]])
       +- Calc(select=[a, window_start, window_end, cnt, uv])
          +- GlobalWindowAggregate(groupBy=[a], window=[TUMBLE(slice_end=[$slice_end], size=[15 min])], select=[a, COUNT(count1$0) AS cnt, COUNT(distinct$0 count$1) AS uv, start('w$) AS window_start, end('w$) AS window_end, rowtime('w$) AS window_time])
             +- Exchange(distribution=[hash[a]])
                +- LocalWindowAggregate(groupBy=[a], window=[TUMBLE(time_col=[rowtime], size=[15 min])], select=[a, COUNT(*) AS count1$0, COUNT(distinct$0 c) AS count$1, DISTINCT(c) AS distinct$0, slice_end('w$) AS $slice_end])
                   +- WatermarkAssigner(rowtime=[rowtime], watermark=[(rowtime - 1000:INTERVAL SECOND)])
-                     +- TableSourceScan(table=[[default_catalog, default_database, MyTable2, project=[a, c, rowtime], metadata=[]]], fields=[a, c, rowtime])
+                     +- TableSourceScan(table=[[default_catalog, default_database, MyTable2, project=[a, c, rowtime]]], fields=[a, c, rowtime])
 
 == Physical Execution Plan ==
 {
@@ -3842,7 +3724,7 @@ Calc(select=[a, window_start, window_end, cnt, uv, a0, cnt0, uv0])
     "id" : ,
     "type" : "Source: MyTable[]",
     "pact" : "Data Source",
-    "contents" : "[]:TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, c, rowtime], metadata=[]]], fields=[a, c, rowtime])",
+    "contents" : "[]:TableSourceScan(table=[[default_catalog, default_database, MyTable, project=[a, c, rowtime]]], fields=[a, c, rowtime])",
     "parallelism" : 1
   }, {
     "id" : ,
@@ -3892,7 +3774,7 @@ Calc(select=[a, window_start, window_end, cnt, uv, a0, cnt0, uv0])
     "id" : ,
     "type" : "Source: MyTable2[]",
     "pact" : "Data Source",
-    "contents" : "[]:TableSourceScan(table=[[default_catalog, default_database, MyTable2, project=[a, c, rowtime], metadata=[]]], fields=[a, c, rowtime])",
+    "contents" : "[]:TableSourceScan(table=[[default_catalog, default_database, MyTable2, project=[a, c, rowtime]]], fields=[a, c, rowtime])",
     "parallelism" : 1
   }, {
     "id" : ,
@@ -3968,123 +3850,13 @@ Calc(select=[a, window_start, window_end, cnt, uv, a0, cnt0, uv0])
 }]]>
     </Resource>
   </TestCase>
-  <TestCase name="testWindowRank[isNameSimplifyEnabled=true]">
-    <Resource name="explain">
-      <![CDATA[== Abstract Syntax Tree ==
-LogicalProject(window_start=[$6], window_end=[$7], a=[$0], b=[$1], c=[$2])
-+- LogicalFilter(condition=[<=($9, 3)])
-   +- LogicalProject(a=[$0], b=[$1], c=[$2], d=[$3], rowtime=[$4], proctime=[$5], window_start=[$6], window_end=[$7], window_time=[$8], rownum=[ROW_NUMBER() OVER (PARTITION BY $0, $6, $7 ORDER BY $1 DESC NULLS LAST)])
-      +- LogicalTableFunctionScan(invocation=[TUMBLE($5, DESCRIPTOR($4), 900000:INTERVAL MINUTE)], rowType=[RecordType(BIGINT a, INTEGER b, VARCHAR(2147483647) c, BIGINT d, TIMESTAMP(3) *ROWTIME* rowtime, TIMESTAMP_LTZ(3) *PROCTIME* proctime, TIMESTAMP(3) window_start, TIMESTAMP(3) window_end, TIMESTAMP(3) *ROWTIME* window_time)])
-         +- LogicalProject(a=[$0], b=[$1], c=[$2], d=[$3], rowtime=[$4], proctime=[$5])
-            +- LogicalWatermarkAssigner(rowtime=[rowtime], watermark=[-($4, 1000:INTERVAL SECOND)])
-               +- LogicalProject(a=[$0], b=[$1], c=[$2], d=[$3], rowtime=[$4], proctime=[PROCTIME()])
-                  +- LogicalTableScan(table=[[default_catalog, default_database, MyTable]])
-
-== Optimized Physical Plan ==
-Calc(select=[window_start, window_end, a, b, c])
-+- WindowRank(window=[TUMBLE(win_start=[window_start], win_end=[window_end], size=[15 min])], rankType=[ROW_NUMBER], rankRange=[rankStart=1, rankEnd=3], partitionBy=[a], orderBy=[b DESC], select=[a, b, c, window_start, window_end])
-   +- Exchange(distribution=[hash[a]])
-      +- Calc(select=[a, b, c, window_start, window_end])
-         +- WindowTableFunction(window=[TUMBLE(time_col=[rowtime], size=[15 min])])
-            +- WatermarkAssigner(rowtime=[rowtime], watermark=[-(rowtime, 1000:INTERVAL SECOND)])
-               +- Calc(select=[a, b, c, d, rowtime, PROCTIME() AS proctime])
-                  +- TableSourceScan(table=[[default_catalog, default_database, MyTable]], fields=[a, b, c, d, rowtime])
-
-== Optimized Execution Plan ==
-Calc(select=[window_start, window_end, a, b, c])
-+- WindowRank(window=[TUMBLE(win_start=[window_start], win_end=[window_end], size=[15 min])], rankType=[ROW_NUMBER], rankRange=[rankStart=1, rankEnd=3], partitionBy=[a], orderBy=[b DESC], select=[a, b, c, window_start, window_end])
-   +- Exchange(distribution=[hash[a]])
-      +- Calc(select=[a, b, c, window_start, window_end])
-         +- WindowTableFunction(window=[TUMBLE(time_col=[rowtime], size=[15 min])])
-            +- WatermarkAssigner(rowtime=[rowtime], watermark=[(rowtime - 1000:INTERVAL SECOND)])
-               +- Calc(select=[a, b, c, d, rowtime, PROCTIME() AS proctime])
-                  +- TableSourceScan(table=[[default_catalog, default_database, MyTable]], fields=[a, b, c, d, rowtime])
-
-== Physical Execution Plan ==
-{
-  "nodes" : [ {
-    "id" : ,
-    "type" : "Source: MyTable[]",
-    "pact" : "Data Source",
-    "contents" : "[]:TableSourceScan(table=[[default_catalog, default_database, MyTable]], fields=[a, b, c, d, rowtime])",
-    "parallelism" : 1
-  }, {
-    "id" : ,
-    "type" : "Calc[]",
-    "pact" : "Operator",
-    "contents" : "[]:Calc(select=[a, b, c, d, rowtime, PROCTIME() AS proctime])",
-    "parallelism" : 1,
-    "predecessors" : [ {
-      "id" : ,
-      "ship_strategy" : "FORWARD",
-      "side" : "second"
-    } ]
-  }, {
-    "id" : ,
-    "type" : "WatermarkAssigner[]",
-    "pact" : "Operator",
-    "contents" : "[]:WatermarkAssigner(rowtime=[rowtime], watermark=[(rowtime - 1000:INTERVAL SECOND)])",
-    "parallelism" : 1,
-    "predecessors" : [ {
-      "id" : ,
-      "ship_strategy" : "FORWARD",
-      "side" : "second"
-    } ]
-  }, {
-    "id" : ,
-    "type" : "WindowTableFunction[]",
-    "pact" : "Operator",
-    "contents" : "[]:WindowTableFunction(window=[TUMBLE(time_col=[rowtime], size=[15 min])])",
-    "parallelism" : 1,
-    "predecessors" : [ {
-      "id" : ,
-      "ship_strategy" : "FORWARD",
-      "side" : "second"
-    } ]
-  }, {
-    "id" : ,
-    "type" : "Calc[]",
-    "pact" : "Operator",
-    "contents" : "[]:Calc(select=[a, b, c, window_start, window_end])",
-    "parallelism" : 1,
-    "predecessors" : [ {
-      "id" : ,
-      "ship_strategy" : "FORWARD",
-      "side" : "second"
-    } ]
-  }, {
-    "id" : ,
-    "type" : "WindowRank[]",
-    "pact" : "Operator",
-    "contents" : "[]:WindowRank(window=[TUMBLE(win_start=[window_start], win_end=[window_end], size=[15 min])], rankType=[ROW_NUMBER], rankRange=[rankStart=1, rankEnd=3], partitionBy=[a], orderBy=[b DESC], select=[a, b, c, window_start, window_end])",
-    "parallelism" : 2,
-    "predecessors" : [ {
-      "id" : ,
-      "ship_strategy" : "HASH",
-      "side" : "second"
-    } ]
-  }, {
-    "id" : ,
-    "type" : "Calc[]",
-    "pact" : "Operator",
-    "contents" : "[]:Calc(select=[window_start, window_end, a, b, c])",
-    "parallelism" : 2,
-    "predecessors" : [ {
-      "id" : ,
-      "ship_strategy" : "FORWARD",
-      "side" : "second"
-    } ]
-  } ]
-}]]>
-    </Resource>
-  </TestCase>
   <TestCase name="testWindowRank[isNameSimplifyEnabled=false]">
     <Resource name="explain">
       <![CDATA[== Abstract Syntax Tree ==
 LogicalProject(window_start=[$6], window_end=[$7], a=[$0], b=[$1], c=[$2])
 +- LogicalFilter(condition=[<=($9, 3)])
    +- LogicalProject(a=[$0], b=[$1], c=[$2], d=[$3], rowtime=[$4], proctime=[$5], window_start=[$6], window_end=[$7], window_time=[$8], rownum=[ROW_NUMBER() OVER (PARTITION BY $0, $6, $7 ORDER BY $1 DESC NULLS LAST)])
-      +- LogicalTableFunctionScan(invocation=[TUMBLE($5, DESCRIPTOR($4), 900000:INTERVAL MINUTE)], rowType=[RecordType(BIGINT a, INTEGER b, VARCHAR(2147483647) c, BIGINT d, TIMESTAMP(3) *ROWTIME* rowtime, TIMESTAMP_LTZ(3) *PROCTIME* proctime, TIMESTAMP(3) window_start, TIMESTAMP(3) window_end, TIMESTAMP(3) *ROWTIME* window_time)])
+      +- LogicalTableFunctionScan(invocation=[TUMBLE(TABLE(#0), DESCRIPTOR(_UTF-16LE'rowtime'), 900000:INTERVAL MINUTE)], rowType=[RecordType(BIGINT a, INTEGER b, VARCHAR(2147483647) c, BIGINT d, TIMESTAMP(3) *ROWTIME* rowtime, TIMESTAMP_LTZ(3) *PROCTIME* proctime, TIMESTAMP(3) window_start, TIMESTAMP(3) window_end, TIMESTAMP(3) *ROWTIME* window_time)])
          +- LogicalProject(a=[$0], b=[$1], c=[$2], d=[$3], rowtime=[$4], proctime=[$5])
             +- LogicalWatermarkAssigner(rowtime=[rowtime], watermark=[-($4, 1000:INTERVAL SECOND)])
                +- LogicalProject(a=[$0], b=[$1], c=[$2], d=[$3], rowtime=[$4], proctime=[PROCTIME()])
@@ -4178,6 +3950,116 @@ Calc(select=[window_start, window_end, a, b, c])
     "type" : "Calc(select=[window_start, window_end, a, b, c])",
     "pact" : "Operator",
     "contents" : "Calc(select=[window_start, window_end, a, b, c])",
+    "parallelism" : 2,
+    "predecessors" : [ {
+      "id" : ,
+      "ship_strategy" : "FORWARD",
+      "side" : "second"
+    } ]
+  } ]
+}]]>
+    </Resource>
+  </TestCase>
+  <TestCase name="testWindowRank[isNameSimplifyEnabled=true]">
+    <Resource name="explain">
+      <![CDATA[== Abstract Syntax Tree ==
+LogicalProject(window_start=[$6], window_end=[$7], a=[$0], b=[$1], c=[$2])
++- LogicalFilter(condition=[<=($9, 3)])
+   +- LogicalProject(a=[$0], b=[$1], c=[$2], d=[$3], rowtime=[$4], proctime=[$5], window_start=[$6], window_end=[$7], window_time=[$8], rownum=[ROW_NUMBER() OVER (PARTITION BY $0, $6, $7 ORDER BY $1 DESC NULLS LAST)])
+      +- LogicalTableFunctionScan(invocation=[TUMBLE(TABLE(#0), DESCRIPTOR(_UTF-16LE'rowtime'), 900000:INTERVAL MINUTE)], rowType=[RecordType(BIGINT a, INTEGER b, VARCHAR(2147483647) c, BIGINT d, TIMESTAMP(3) *ROWTIME* rowtime, TIMESTAMP_LTZ(3) *PROCTIME* proctime, TIMESTAMP(3) window_start, TIMESTAMP(3) window_end, TIMESTAMP(3) *ROWTIME* window_time)])
+         +- LogicalProject(a=[$0], b=[$1], c=[$2], d=[$3], rowtime=[$4], proctime=[$5])
+            +- LogicalWatermarkAssigner(rowtime=[rowtime], watermark=[-($4, 1000:INTERVAL SECOND)])
+               +- LogicalProject(a=[$0], b=[$1], c=[$2], d=[$3], rowtime=[$4], proctime=[PROCTIME()])
+                  +- LogicalTableScan(table=[[default_catalog, default_database, MyTable]])
+
+== Optimized Physical Plan ==
+Calc(select=[window_start, window_end, a, b, c])
++- WindowRank(window=[TUMBLE(win_start=[window_start], win_end=[window_end], size=[15 min])], rankType=[ROW_NUMBER], rankRange=[rankStart=1, rankEnd=3], partitionBy=[a], orderBy=[b DESC], select=[a, b, c, window_start, window_end])
+   +- Exchange(distribution=[hash[a]])
+      +- Calc(select=[a, b, c, window_start, window_end])
+         +- WindowTableFunction(window=[TUMBLE(time_col=[rowtime], size=[15 min])])
+            +- WatermarkAssigner(rowtime=[rowtime], watermark=[-(rowtime, 1000:INTERVAL SECOND)])
+               +- Calc(select=[a, b, c, d, rowtime, PROCTIME() AS proctime])
+                  +- TableSourceScan(table=[[default_catalog, default_database, MyTable]], fields=[a, b, c, d, rowtime])
+
+== Optimized Execution Plan ==
+Calc(select=[window_start, window_end, a, b, c])
++- WindowRank(window=[TUMBLE(win_start=[window_start], win_end=[window_end], size=[15 min])], rankType=[ROW_NUMBER], rankRange=[rankStart=1, rankEnd=3], partitionBy=[a], orderBy=[b DESC], select=[a, b, c, window_start, window_end])
+   +- Exchange(distribution=[hash[a]])
+      +- Calc(select=[a, b, c, window_start, window_end])
+         +- WindowTableFunction(window=[TUMBLE(time_col=[rowtime], size=[15 min])])
+            +- WatermarkAssigner(rowtime=[rowtime], watermark=[(rowtime - 1000:INTERVAL SECOND)])
+               +- Calc(select=[a, b, c, d, rowtime, PROCTIME() AS proctime])
+                  +- TableSourceScan(table=[[default_catalog, default_database, MyTable]], fields=[a, b, c, d, rowtime])
+
+== Physical Execution Plan ==
+{
+  "nodes" : [ {
+    "id" : ,
+    "type" : "Source: MyTable[]",
+    "pact" : "Data Source",
+    "contents" : "[]:TableSourceScan(table=[[default_catalog, default_database, MyTable]], fields=[a, b, c, d, rowtime])",
+    "parallelism" : 1
+  }, {
+    "id" : ,
+    "type" : "Calc[]",
+    "pact" : "Operator",
+    "contents" : "[]:Calc(select=[a, b, c, d, rowtime, PROCTIME() AS proctime])",
+    "parallelism" : 1,
+    "predecessors" : [ {
+      "id" : ,
+      "ship_strategy" : "FORWARD",
+      "side" : "second"
+    } ]
+  }, {
+    "id" : ,
+    "type" : "WatermarkAssigner[]",
+    "pact" : "Operator",
+    "contents" : "[]:WatermarkAssigner(rowtime=[rowtime], watermark=[(rowtime - 1000:INTERVAL SECOND)])",
+    "parallelism" : 1,
+    "predecessors" : [ {
+      "id" : ,
+      "ship_strategy" : "FORWARD",
+      "side" : "second"
+    } ]
+  }, {
+    "id" : ,
+    "type" : "WindowTableFunction[]",
+    "pact" : "Operator",
+    "contents" : "[]:WindowTableFunction(window=[TUMBLE(time_col=[rowtime], size=[15 min])])",
+    "parallelism" : 1,
+    "predecessors" : [ {
+      "id" : ,
+      "ship_strategy" : "FORWARD",
+      "side" : "second"
+    } ]
+  }, {
+    "id" : ,
+    "type" : "Calc[]",
+    "pact" : "Operator",
+    "contents" : "[]:Calc(select=[a, b, c, window_start, window_end])",
+    "parallelism" : 1,
+    "predecessors" : [ {
+      "id" : ,
+      "ship_strategy" : "FORWARD",
+      "side" : "second"
+    } ]
+  }, {
+    "id" : ,
+    "type" : "WindowRank[]",
+    "pact" : "Operator",
+    "contents" : "[]:WindowRank(window=[TUMBLE(win_start=[window_start], win_end=[window_end], size=[15 min])], rankType=[ROW_NUMBER], rankRange=[rankStart=1, rankEnd=3], partitionBy=[a], orderBy=[b DESC], select=[a, b, c, window_start, window_end])",
+    "parallelism" : 2,
+    "predecessors" : [ {
+      "id" : ,
+      "ship_strategy" : "HASH",
+      "side" : "second"
+    } ]
+  }, {
+    "id" : ,
+    "type" : "Calc[]",
+    "pact" : "Operator",
+    "contents" : "[]:Calc(select=[window_start, window_end, a, b, c])",
     "parallelism" : 2,
     "predecessors" : [ {
       "id" : ,

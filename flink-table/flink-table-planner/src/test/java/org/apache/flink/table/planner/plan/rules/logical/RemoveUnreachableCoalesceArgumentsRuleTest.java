@@ -25,18 +25,21 @@ import org.apache.flink.table.planner.factories.TableFactoryHarness;
 import org.apache.flink.table.planner.utils.StreamTableTestUtil;
 import org.apache.flink.table.planner.utils.TableTestBase;
 
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 import static org.apache.flink.table.api.DataTypes.STRING;
 
-/** Test rule {@link RemoveUnreachableCoalesceArgumentsRule}. */
-public class RemoveUnreachableCoalesceArgumentsRuleTest extends TableTestBase {
+/**
+ * Tests that {@code COALESCE} arguments appearing after the first {@code NOT NULL} argument are
+ * pruned from the plan, since they can never be reached.
+ */
+class RemoveUnreachableCoalesceArgumentsRuleTest extends TableTestBase {
 
     private StreamTableTestUtil util;
 
-    @Before
-    public void before() {
+    @BeforeEach
+    void before() {
         util = streamTestUtil(TableConfig.getDefault());
 
         final TableDescriptor sourceDescriptor =
@@ -54,33 +57,56 @@ public class RemoveUnreachableCoalesceArgumentsRuleTest extends TableTestBase {
     }
 
     @Test
-    public void testOnlyLastNonNull() {
+    void testOnlyLastNonNull() {
         util.verifyRelPlan("SELECT COALESCE(f0, f1) FROM T");
     }
 
     @Test
-    public void testAllNullable() {
+    void testAllNullable() {
         util.verifyRelPlan("SELECT COALESCE(f0, f2) FROM T");
     }
 
     @Test
-    public void testDropLastConstant() {
+    void testDropLastConstant() {
         util.verifyRelPlan("SELECT COALESCE(f0, f1, '-') FROM T");
     }
 
     @Test
-    public void testDropCoalesce() {
+    void testDropCoalesce() {
         util.verifyRelPlan("SELECT COALESCE(f1, '-') FROM T");
     }
 
     @Test
-    public void testFilterCoalesce() {
+    void testFilterCoalesce() {
         util.verifyRelPlan("SELECT * FROM T WHERE COALESCE(f0, f1, '-') = 'abc'");
     }
 
     @Test
-    public void testJoinCoalesce() {
+    void testJoinCoalesce() {
         util.verifyRelPlan(
                 "SELECT * FROM T t1 LEFT JOIN T t2 ON COALESCE(t1.f0, '-', t1.f2) = t2.f0");
+    }
+
+    @Test
+    void testMultipleCoalesces() {
+        util.verifyRelPlan(
+                "SELECT COALESCE(1),\n"
+                        + "COALESCE(1, 2),\n"
+                        + "COALESCE(cast(NULL as int), 2),\n"
+                        + "COALESCE(1, cast(NULL as int)),\n"
+                        + "COALESCE(cast(NULL as int), cast(NULL as int), 3),\n"
+                        + "COALESCE(4, cast(NULL as int), cast(NULL as int), cast(NULL as int)),\n"
+                        + "COALESCE('1'),\n"
+                        + "COALESCE('1', '23'),\n"
+                        + "COALESCE(cast(NULL as varchar), '2'),\n"
+                        + "COALESCE('1', cast(NULL as varchar)),\n"
+                        + "COALESCE(cast(NULL as varchar), cast(NULL as varchar), '3'),\n"
+                        + "COALESCE('4', cast(NULL as varchar), cast(NULL as varchar), cast(NULL as varchar)),\n"
+                        + "COALESCE(1.0),\n"
+                        + "COALESCE(1.0, 2),\n"
+                        + "COALESCE(cast(NULL as double), 2.0),\n"
+                        + "COALESCE(cast(NULL as double), 2.0, 3.0),\n"
+                        + "COALESCE(2.0, cast(NULL as double), 3.0),\n"
+                        + "COALESCE(cast(NULL as double), cast(NULL as double))");
     }
 }

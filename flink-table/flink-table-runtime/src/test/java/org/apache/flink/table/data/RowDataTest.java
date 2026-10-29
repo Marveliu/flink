@@ -30,12 +30,27 @@ import org.apache.flink.table.runtime.typeutils.ArrayDataSerializer;
 import org.apache.flink.table.runtime.typeutils.MapDataSerializer;
 import org.apache.flink.table.runtime.typeutils.RawValueDataSerializer;
 import org.apache.flink.table.runtime.typeutils.RowDataSerializer;
+import org.apache.flink.table.types.logical.ArrayType;
+import org.apache.flink.table.types.logical.BigIntType;
+import org.apache.flink.table.types.logical.BinaryType;
+import org.apache.flink.table.types.logical.BooleanType;
+import org.apache.flink.table.types.logical.CharType;
+import org.apache.flink.table.types.logical.DecimalType;
+import org.apache.flink.table.types.logical.DoubleType;
+import org.apache.flink.table.types.logical.FloatType;
 import org.apache.flink.table.types.logical.IntType;
+import org.apache.flink.table.types.logical.MapType;
+import org.apache.flink.table.types.logical.MultisetType;
 import org.apache.flink.table.types.logical.RowType;
+import org.apache.flink.table.types.logical.SmallIntType;
+import org.apache.flink.table.types.logical.TimestampType;
+import org.apache.flink.table.types.logical.TinyIntType;
+import org.apache.flink.table.types.logical.VarCharType;
 import org.apache.flink.types.RowKind;
+import org.apache.flink.types.bitmap.Bitmap;
 
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
 import java.sql.Timestamp;
@@ -46,7 +61,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.HamcrestCondition.matching;
 
 /** Test for {@link RowData}s. */
-public class RowDataTest {
+class RowDataTest {
+
+    private static final int NUM_FIELDS = 19;
 
     private StringData str;
     private RawValueData<String> generic;
@@ -59,9 +76,10 @@ public class RowDataTest {
     private RawValueDataSerializer<String> genericSerializer;
     private TimestampData timestamp1;
     private TimestampData timestamp2;
+    private Bitmap bitmap;
 
-    @Before
-    public void before() {
+    @BeforeEach
+    void before() {
         str = StringData.fromString("haha");
         generic = RawValueData.fromObject("haha");
         genericSerializer = new RawValueDataSerializer<>(StringSerializer.INSTANCE);
@@ -86,29 +104,30 @@ public class RowDataTest {
         timestamp1 = TimestampData.fromEpochMillis(123L);
         timestamp2 =
                 TimestampData.fromLocalDateTime(LocalDateTime.of(1969, 1, 1, 0, 0, 0, 123456789));
+        bitmap = Bitmap.fromArray(new int[] {1, 2, 3});
     }
 
     @Test
-    public void testBinaryRow() {
+    void testBinaryRow() {
         BinaryRowData binaryRow = getBinaryRow();
         testGetters(binaryRow);
         testSetters(binaryRow);
     }
 
     @Test
-    public void testNestedRow() {
+    void testNestedRow() {
         BinaryRowData row = new BinaryRowData(1);
         BinaryRowWriter writer = new BinaryRowWriter(row);
         writer.writeRow(0, getBinaryRow(), null);
         writer.complete();
 
-        RowData nestedRow = row.getRow(0, 18);
+        RowData nestedRow = row.getRow(0, NUM_FIELDS);
         testGetters(nestedRow);
         testSetters(nestedRow);
     }
 
     private BinaryRowData getBinaryRow() {
-        BinaryRowData row = new BinaryRowData(18);
+        BinaryRowData row = new BinaryRowData(NUM_FIELDS);
         BinaryRowWriter writer = new BinaryRowWriter(row);
         writer.writeBoolean(0, true);
         writer.writeByte(1, (byte) 1);
@@ -132,12 +151,13 @@ public class RowDataTest {
         writer.writeBinary(15, bytes);
         writer.writeTimestamp(16, timestamp1, 3);
         writer.writeTimestamp(17, timestamp2, 9);
+        writer.writeBitmap(18, bitmap);
         return row;
     }
 
     @Test
-    public void testGenericRow() {
-        GenericRowData row = new GenericRowData(18);
+    void testGenericRow() {
+        GenericRowData row = new GenericRowData(NUM_FIELDS);
         row.setField(0, true);
         row.setField(1, (byte) 1);
         row.setField(2, (short) 2);
@@ -156,12 +176,13 @@ public class RowDataTest {
         row.setField(15, bytes);
         row.setField(16, timestamp1);
         row.setField(17, timestamp2);
+        row.setField(18, bitmap);
         testGetters(row);
     }
 
     @Test
     public void testBoxedWrapperRow() {
-        BoxedWrapperRowData row = new BoxedWrapperRowData(18);
+        BoxedWrapperRowData row = new BoxedWrapperRowData(NUM_FIELDS);
         row.setBoolean(0, true);
         row.setByte(1, (byte) 1);
         row.setShort(2, (short) 2);
@@ -179,20 +200,22 @@ public class RowDataTest {
         row.setNonPrimitiveValue(15, bytes);
         row.setNonPrimitiveValue(16, timestamp1);
         row.setNonPrimitiveValue(17, timestamp2);
+        row.setNonPrimitiveValue(18, bitmap);
         testGetters(row);
         testSetters(row);
     }
 
     @Test
     public void testJoinedRow() {
-        GenericRowData row1 = new GenericRowData(5);
+        int row1FieldNum = 5;
+        GenericRowData row1 = new GenericRowData(row1FieldNum);
         row1.setField(0, true);
         row1.setField(1, (byte) 1);
         row1.setField(2, (short) 2);
         row1.setField(3, 3);
         row1.setField(4, (long) 4);
 
-        GenericRowData row2 = new GenericRowData(13);
+        GenericRowData row2 = new GenericRowData(NUM_FIELDS - row1FieldNum);
         row2.setField(0, (float) 5);
         row2.setField(1, (double) 6);
         row2.setField(2, (char) 7);
@@ -206,11 +229,136 @@ public class RowDataTest {
         row2.setField(10, bytes);
         row2.setField(11, timestamp1);
         row2.setField(12, timestamp2);
+        row2.setField(13, bitmap);
         testGetters(new JoinedRowData(row1, row2));
     }
 
+    @Test
+    void testFieldGetters() {
+        RowData row = getBinaryRow();
+
+        assertThat(RowData.createFieldGetter(new BooleanType(), 0).getFieldOrNull(row))
+                .isEqualTo(true);
+        assertThat(RowData.createFieldGetter(new SmallIntType(), 1).getFieldOrNull(row))
+                .isEqualTo((short) 1);
+        assertThat(RowData.createFieldGetter(new TinyIntType(), 2).getFieldOrNull(row))
+                .isEqualTo((byte) 2);
+        assertThat(RowData.createFieldGetter(new IntType(), 3).getFieldOrNull(row)).isEqualTo(3);
+        assertThat(RowData.createFieldGetter(new BigIntType(), 4).getFieldOrNull(row))
+                .isEqualTo(4L);
+        assertThat(RowData.createFieldGetter(new FloatType(), 5).getFieldOrNull(row)).isEqualTo(5f);
+        assertThat(RowData.createFieldGetter(new DoubleType(), 6).getFieldOrNull(row))
+                .isEqualTo(6d);
+        assertThat(RowData.createFieldGetter(new CharType(1), 8).getFieldOrNull(row))
+                .isEqualTo(str);
+        assertThat(RowData.createFieldGetter(new VarCharType(4), 8).getFieldOrNull(row))
+                .isEqualTo(str);
+        assertThat(RowData.createFieldGetter(new DecimalType(5, 0), 10).getFieldOrNull(row))
+                .isEqualTo(decimal1);
+        assertThat(RowData.createFieldGetter(new DecimalType(20, 0), 11).getFieldOrNull(row))
+                .isEqualTo(decimal2);
+        assertThat(RowData.createFieldGetter(new ArrayType(new IntType()), 12).getFieldOrNull(row))
+                .isEqualTo(array);
+        assertThat(
+                        RowData.createFieldGetter(new MapType(new IntType(), new IntType()), 13)
+                                .getFieldOrNull(row))
+                .isEqualTo(map);
+        assertThat(
+                        RowData.createFieldGetter(new MultisetType(new IntType()), 13)
+                                .getFieldOrNull(row))
+                .isEqualTo(map);
+        assertThat(
+                        RowData.createFieldGetter(RowType.of(new IntType(), new IntType()), 14)
+                                .getFieldOrNull(row))
+                .isEqualTo(underRow);
+        assertThat(RowData.createFieldGetter(new BinaryType(3), 15).getFieldOrNull(row))
+                .isEqualTo(bytes);
+        assertThat(RowData.createFieldGetter(new TimestampType(3), 16).getFieldOrNull(row))
+                .isEqualTo(timestamp1);
+        assertThat(RowData.createFieldGetter(new TimestampType(9), 17).getFieldOrNull(row))
+                .isEqualTo(timestamp2);
+    }
+
+    @Test
+    void testFieldGettersWithNullableTypes() {
+        testFieldGettersWithNull(true);
+    }
+
+    @Test
+    void testFieldGettersWithNonNullableTypes() {
+        testFieldGettersWithNull(false);
+    }
+
+    private void testFieldGettersWithNull(boolean nullable) {
+        RowData row = getNullBinaryRow();
+        assertThat(RowData.createFieldGetter(new BooleanType(nullable), 0).getFieldOrNull(row))
+                .isNull();
+        assertThat(RowData.createFieldGetter(new SmallIntType(nullable), 1).getFieldOrNull(row))
+                .isNull();
+        assertThat(RowData.createFieldGetter(new TinyIntType(nullable), 2).getFieldOrNull(row))
+                .isNull();
+        assertThat(RowData.createFieldGetter(new IntType(nullable), 3).getFieldOrNull(row))
+                .isNull();
+        assertThat(RowData.createFieldGetter(new BigIntType(nullable), 4).getFieldOrNull(row))
+                .isNull();
+        assertThat(RowData.createFieldGetter(new FloatType(nullable), 5).getFieldOrNull(row))
+                .isNull();
+        assertThat(RowData.createFieldGetter(new DoubleType(nullable), 6).getFieldOrNull(row))
+                .isNull();
+        assertThat(RowData.createFieldGetter(new CharType(nullable, 1), 8).getFieldOrNull(row))
+                .isNull();
+        assertThat(RowData.createFieldGetter(new VarCharType(nullable, 4), 8).getFieldOrNull(row))
+                .isNull();
+        assertThat(
+                        RowData.createFieldGetter(new DecimalType(nullable, 5, 0), 10)
+                                .getFieldOrNull(row))
+                .isNull();
+        assertThat(
+                        RowData.createFieldGetter(new DecimalType(nullable, 20, 0), 11)
+                                .getFieldOrNull(row))
+                .isNull();
+        assertThat(
+                        RowData.createFieldGetter(
+                                        new ArrayType(nullable, new IntType(nullable)), 12)
+                                .getFieldOrNull(row))
+                .isNull();
+        assertThat(
+                        RowData.createFieldGetter(
+                                        new MapType(
+                                                nullable,
+                                                new IntType(nullable),
+                                                new IntType(nullable)),
+                                        13)
+                                .getFieldOrNull(row))
+                .isNull();
+        assertThat(
+                        RowData.createFieldGetter(
+                                        new MultisetType(nullable, new IntType(nullable)), 13)
+                                .getFieldOrNull(row))
+                .isNull();
+        assertThat(
+                        RowData.createFieldGetter(
+                                        RowType.of(
+                                                nullable,
+                                                new IntType(nullable),
+                                                new IntType(nullable)),
+                                        14)
+                                .getFieldOrNull(row))
+                .isNull();
+        assertThat(RowData.createFieldGetter(new BinaryType(nullable, 3), 15).getFieldOrNull(row))
+                .isNull();
+        assertThat(
+                        RowData.createFieldGetter(new TimestampType(nullable, 3), 16)
+                                .getFieldOrNull(row))
+                .isNull();
+        assertThat(
+                        RowData.createFieldGetter(new TimestampType(nullable, 9), 17)
+                                .getFieldOrNull(row))
+                .isNull();
+    }
+
     private void testGetters(RowData row) {
-        assertThat(row.getArity()).isEqualTo(18);
+        assertThat(row.getArity()).isEqualTo(NUM_FIELDS);
 
         // test header
         assertThat(row.getRowKind()).isEqualTo(RowKind.INSERT);
@@ -236,6 +384,7 @@ public class RowDataTest {
         assertThat(row.getBinary(15)).isEqualTo(bytes);
         assertThat(row.getTimestamp(16, 3)).isEqualTo(timestamp1);
         assertThat(row.getTimestamp(17, 9)).isEqualTo(timestamp2);
+        assertThat(row.getBitmap(18)).isEqualTo(bitmap);
     }
 
     private void testSetters(RowData row) {
@@ -283,5 +432,14 @@ public class RowDataTest {
         assertThat(row.isNullAt(0)).isFalse();
         setter.setNullAt(0);
         assertThat(row.isNullAt(0)).isTrue();
+    }
+
+    private static BinaryRowData getNullBinaryRow() {
+        BinaryRowData row = new BinaryRowData(18);
+        BinaryRowWriter binaryRowWriter = new BinaryRowWriter(row);
+        for (int i = 0; i < row.getArity(); i++) {
+            binaryRowWriter.setNullAt(i);
+        }
+        return row;
     }
 }

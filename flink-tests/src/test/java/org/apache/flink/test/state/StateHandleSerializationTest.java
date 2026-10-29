@@ -20,48 +20,44 @@ package org.apache.flink.test.state;
 
 import org.apache.flink.runtime.state.StateObject;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 import org.reflections.Reflections;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
 import java.util.Set;
 
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.fail;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.fail;
 
 /**
  * This test validates that all subclasses of {@link StateObject} have a proper serial version UID.
  */
-public class StateHandleSerializationTest {
+class StateHandleSerializationTest {
 
     @Test
-    public void ensureStateHandlesHaveSerialVersionUID() {
-        try {
-            Reflections reflections = new Reflections("org.apache.flink");
+    void ensureStateHandlesHaveSerialVersionUID() {
+        Reflections reflections = new Reflections("org.apache.flink");
 
-            // check all state handles
+        // check all state handles
 
-            @SuppressWarnings("unchecked")
-            Set<Class<?>> stateHandleImplementations =
-                    (Set<Class<?>>) (Set<?>) reflections.getSubTypesOf(StateObject.class);
+        @SuppressWarnings("unchecked")
+        Set<Class<?>> stateHandleImplementations =
+                (Set<Class<?>>) (Set<?>) reflections.getSubTypesOf(StateObject.class);
 
-            for (Class<?> clazz : stateHandleImplementations) {
-                validataSerialVersionUID(clazz);
-            }
-        } catch (Exception e) {
-            e.printStackTrace();
-            fail(e.getMessage());
+        for (Class<?> clazz : stateHandleImplementations) {
+            validataSerialVersionUID(clazz);
         }
     }
 
     private static void validataSerialVersionUID(Class<?> clazz) {
         // all non-interface types must have a serial version UID
         if (!clazz.isInterface()) {
-            assertFalse(
-                    "Anonymous state handle classes have problematic serialization behavior: "
-                            + clazz,
-                    clazz.isAnonymousClass());
+            assertThat(clazz.isAnonymousClass())
+                    .as(
+                            "Anonymous state handle classes have problematic serialization behavior: "
+                                    + clazz)
+                    .isFalse();
 
             try {
                 Field versionUidField = clazz.getDeclaredField("serialVersionUID");

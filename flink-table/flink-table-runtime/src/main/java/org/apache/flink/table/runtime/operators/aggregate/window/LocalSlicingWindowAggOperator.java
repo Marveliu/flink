@@ -21,7 +21,6 @@ package org.apache.flink.table.runtime.operators.aggregate.window;
 import org.apache.flink.core.memory.ManagedMemoryUseCase;
 import org.apache.flink.runtime.execution.Environment;
 import org.apache.flink.streaming.api.operators.AbstractStreamOperator;
-import org.apache.flink.streaming.api.operators.ChainingStrategy;
 import org.apache.flink.streaming.api.operators.OneInputStreamOperator;
 import org.apache.flink.streaming.api.operators.TimestampedCollector;
 import org.apache.flink.streaming.api.watermark.Watermark;
@@ -29,13 +28,13 @@ import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.runtime.keyselector.RowDataKeySelector;
 import org.apache.flink.table.runtime.operators.aggregate.window.buffers.WindowBuffer;
-import org.apache.flink.table.runtime.operators.window.slicing.ClockService;
-import org.apache.flink.table.runtime.operators.window.slicing.SliceAssigner;
+import org.apache.flink.table.runtime.operators.window.tvf.common.ClockService;
+import org.apache.flink.table.runtime.operators.window.tvf.slicing.SliceAssigner;
 
 import java.time.ZoneId;
 import java.util.TimeZone;
 
-import static org.apache.flink.table.runtime.util.TimeWindowUtil.getNextTriggerWatermark;
+import static org.apache.flink.table.runtime.util.TimeWindowUtil.getNextTriggerWatermarkWithOffset;
 
 /**
  * The operator used for local window aggregation.
@@ -81,7 +80,6 @@ public class LocalSlicingWindowAggOperator extends AbstractStreamOperator<RowDat
             SliceAssigner sliceAssigner,
             WindowBuffer.LocalFactory windowBufferFactory,
             ZoneId shiftTimezone) {
-        chainingStrategy = ChainingStrategy.ALWAYS;
         this.keySelector = keySelector;
         this.sliceAssigner = sliceAssigner;
         this.windowInterval = sliceAssigner.getSliceEndInterval();
@@ -124,8 +122,12 @@ public class LocalSlicingWindowAggOperator extends AbstractStreamOperator<RowDat
                 // we only need to call advanceProgress() when current watermark may trigger window
                 windowBuffer.advanceProgress(currentWatermark);
                 nextTriggerWatermark =
-                        getNextTriggerWatermark(
-                                currentWatermark, windowInterval, shiftTimezone, useDayLightSaving);
+                        getNextTriggerWatermarkWithOffset(
+                                currentWatermark,
+                                windowInterval,
+                                sliceAssigner.getWindowOffset(),
+                                shiftTimezone,
+                                useDayLightSaving);
             }
         }
         super.processWatermark(mark);
@@ -154,6 +156,7 @@ public class LocalSlicingWindowAggOperator extends AbstractStreamOperator<RowDat
                         getOperatorConfig()
                                 .getManagedMemoryFractionOperatorUseCaseOfSlot(
                                         ManagedMemoryUseCase.OPERATOR,
+                                        environment.getJobConfiguration(),
                                         environment.getTaskManagerInfo().getConfiguration(),
                                         environment.getUserCodeClassLoader().asClassLoader()));
     }

@@ -15,25 +15,23 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.planner.codegen
 
-import java.util
-
-import org.apache.calcite.rex.RexNode
 import org.apache.flink.table.data.RowData
 import org.apache.flink.table.data.utils.JoinedRowData
 import org.apache.flink.table.planner.codegen.CodeGenUtils._
-import org.apache.flink.table.planner.codegen.OperatorCodeGenerator.{INPUT_SELECTION, generateCollect}
+import org.apache.flink.table.planner.codegen.OperatorCodeGenerator.{generateCollect, INPUT_SELECTION}
 import org.apache.flink.table.runtime.operators.CodeGenOperatorFactory
 import org.apache.flink.table.runtime.operators.join.FlinkJoinType
 import org.apache.flink.table.runtime.typeutils.AbstractRowDataSerializer
 import org.apache.flink.table.runtime.util.{LazyMemorySegmentPool, ResettableExternalBuffer}
 import org.apache.flink.table.types.logical.RowType
 
-/**
-  * Code gen for nested loop join.
-  */
+import org.apache.calcite.rex.RexNode
+
+import java.util
+
+/** Code gen for nested loop join. */
 class NestedLoopJoinCodeGenerator(
     ctx: CodeGeneratorContext,
     singleRowJoin: Boolean,
@@ -56,15 +54,16 @@ class NestedLoopJoinCodeGenerator(
 
   def gen(): CodeGenOperatorFactory[RowData] = {
     val exprGenerator = new ExprCodeGenerator(ctx, joinType.isOuter)
-        .bindInput(leftType).bindSecondInput(rightType)
+      .bindInput(leftType)
+      .bindSecondInput(rightType)
 
     // we use ResettableExternalBuffer to prevent OOM
-    val buffer = newName("resettableExternalBuffer")
-    val iter = newName("iter")
+    val buffer = newName(ctx, "resettableExternalBuffer")
+    val iter = newName(ctx, "iter")
 
     // input row might not be binary row, need a serializer
-    val isFirstRow = newName("isFirstRow")
-    val isBinaryRow = newName("isBinaryRow")
+    val isFirstRow = newName(ctx, "isFirstRow")
+    val isBinaryRow = newName(ctx, "isBinaryRow")
 
     if (singleRowJoin) {
       ctx.addReusableMember(s"$ROW_DATA $buildRow = null;")
@@ -72,7 +71,7 @@ class NestedLoopJoinCodeGenerator(
       ctx.addReusableMember(s"boolean $isFirstRow = true;")
       ctx.addReusableMember(s"boolean $isBinaryRow = false;")
 
-      val serializer = newName("serializer")
+      val serializer = newName(ctx, "serializer")
       def initSerializer(i: Int): Unit = {
         ctx.addReusableOpenStatement(
           s"""
@@ -84,7 +83,7 @@ class NestedLoopJoinCodeGenerator(
       if (leftIsBuild) initSerializer(1) else initSerializer(2)
 
       addReusableResettableExternalBuffer(buffer, serializer)
-      ctx.addReusableCloseStatement(s"$buffer.close();")
+      ctx.addReusableCloseStatement(s"if ($buffer != null) $buffer.close();")
 
       val iterTerm = classOf[ResettableExternalBuffer#BufferIterator].getCanonicalName
       ctx.addReusableMember(s"$iterTerm $iter = null;")
@@ -107,14 +106,13 @@ class NestedLoopJoinCodeGenerator(
         genJoinProcessAndEndCode(condExpr, iter, buffer)
       }
 
-    val buildEnd = newName("buildEnd")
+    val buildEnd = newName(ctx, "buildEnd")
     ctx.addReusableMember(s"private transient boolean $buildEnd = false;")
-    buildEndCode =
-        (if (singleRowJoin) buildEndCode else s"$buffer.complete(); \n $buildEndCode") +
-            s"\n $buildEnd = true;"
+    buildEndCode = (if (singleRowJoin) buildEndCode else s"$buffer.complete(); \n $buildEndCode") +
+      s"\n $buildEnd = true;"
 
     // build first or second
-    val (processCode1, endInputCode1, processCode2, endInputCode2)  =
+    val (processCode1, endInputCode1, processCode2, endInputCode2) =
       if (leftIsBuild) {
         (buildProcessCode, buildEndCode, probeProcessCode, probeEndCode)
       } else {
@@ -129,33 +127,34 @@ class NestedLoopJoinCodeGenerator(
       processCode2,
       leftType,
       rightType,
-      nextSelectionCode = Some(
-        s"""
-           |if ($buildEnd) {
-           |  return $INPUT_SELECTION.${if (leftIsBuild) "SECOND" else "FIRST"};
-           |} else {
-           |  return $INPUT_SELECTION.${if (leftIsBuild) "FIRST" else "SECOND"};
-           |}
+      nextSelectionCode =
+        Some(s"""
+                |if ($buildEnd) {
+                |  return $INPUT_SELECTION.${if (leftIsBuild) "SECOND" else "FIRST"};
+                |} else {
+                |  return $INPUT_SELECTION.${if (leftIsBuild) "FIRST" else "SECOND"};
+                |}
          """.stripMargin),
       endInputCode1 = Some(endInputCode1),
-      endInputCode2 = Some(endInputCode2))
+      endInputCode2 = Some(endInputCode2)
+    )
     new CodeGenOperatorFactory[RowData](genOp)
   }
 
-  /**
-    * Deal with inner join, left outer join, right outer join and full outer join.
-    */
+  /** Deal with inner join, left outer join, right outer join and full outer join. */
   private def genJoinProcessAndEndCode(
-      condExpr: GeneratedExpression, iter: String, buffer: String): (String, String, String) = {
-    val joinedRowTerm = newName("joinedRow")
+      condExpr: GeneratedExpression,
+      iter: String,
+      buffer: String): (String, String, String) = {
+    val joinedRowTerm = newName(ctx, "joinedRow")
     def joinedRow(row1: String, row2: String): String = {
       s"$joinedRowTerm.replace($row1, $row2)"
     }
 
-    val buildMatched = newName("buildMatched")
-    val probeMatched = newName("probeMatched")
-    val buildNullRow = newName("buildNullRow")
-    val probeNullRow = newName("probeNullRow")
+    val buildMatched = newName(ctx, "buildMatched")
+    val probeMatched = newName(ctx, "probeMatched")
+    val buildNullRow = newName(ctx, "buildNullRow")
+    val probeNullRow = newName(ctx, "probeNullRow")
 
     val isFull = joinType == FlinkJoinType.FULL
     val probeOuter = joinType.isOuter
@@ -187,7 +186,7 @@ class NestedLoopJoinCodeGenerator(
          |}
        """.stripMargin
 
-    val iterCnt = newName("iteratorCount")
+    val iterCnt = newName(ctx, "iteratorCount")
     val joinBuildAndProbe = {
       s"""
          |${ctx.reusePerRecordCode()}
@@ -201,11 +200,10 @@ class NestedLoopJoinCodeGenerator(
          |
          |  // set build outer matched flag
          |  ${if (singleRowJoin) {
-                if (isFull) s"$buildMatched = true;" else ""
-              } else {
-                if (isFull) s"$buildMatched.set($iterCnt);" else ""
-              }
-            }
+          if (isFull) s"$buildMatched = true;" else ""
+        } else {
+          if (isFull) s"$buildMatched.set($iterCnt);" else ""
+        }}
          |}
          |""".stripMargin
     }
@@ -237,16 +235,14 @@ class NestedLoopJoinCodeGenerator(
          |""".stripMargin
 
     val buildEndCode =
-        s"""
-           |LOG.info("Finish build phase.");
-           |${
-              if (!singleRowJoin && isFull) {
-                s"$buildMatched = new $bitSetTerm($buffer.size());"
-              } else {
-                ""
-              }
-             }
-           |""".stripMargin
+      s"""
+         |LOG.info("Finish build phase.");
+         |${if (!singleRowJoin && isFull) {
+          s"$buildMatched = new $bitSetTerm($buffer.size());"
+        } else {
+          ""
+        }}
+         |""".stripMargin
 
     val buildOuterEmit = generateCollect(
       if (leftIsBuild) joinedRow(buildRow, probeNullRow) else joinedRow(probeNullRow, buildRow))
@@ -259,7 +255,7 @@ class NestedLoopJoinCodeGenerator(
            |}
          """.stripMargin
       } else {
-        val iterCnt = newName("iteratorCount")
+        val iterCnt = newName(ctx, "iteratorCount")
         s"""
            |${resetIterator(iter, buffer)}
            |int $iterCnt = -1;
@@ -276,21 +272,20 @@ class NestedLoopJoinCodeGenerator(
       ""
     }
 
-    probeEndCode =
-        s"""
-           |$probeEndCode
-           |LOG.info("Finish probe phase.");
+    probeEndCode = s"""
+                      |$probeEndCode
+                      |LOG.info("Finish probe phase.");
        """.stripMargin
 
     (processCode, buildEndCode, probeEndCode)
   }
 
-  /**
-    * Deal with semi join and anti join.
-    */
+  /** Deal with semi join and anti join. */
   private def genSemiJoinProcessAndEndCode(
-      condExpr: GeneratedExpression, iter: String, buffer: String): (String, String, String) = {
-    val probeMatched = newName("probeMatched")
+      condExpr: GeneratedExpression,
+      iter: String,
+      buffer: String): (String, String, String) = {
+    val probeMatched = newName(ctx, "probeMatched")
     val goJoin = if (singleRowJoin) {
       s"""
          |if ($buildRow != null) {
@@ -318,19 +313,20 @@ class NestedLoopJoinCodeGenerator(
          |""".stripMargin
     }
 
-    (s"""
-        |boolean $probeMatched = false;
-        |${ctx.reuseInputUnboxingCode(probeRow)}
-        |$goJoin
-        |if (${if (joinType == FlinkJoinType.ANTI) "!" else ""}$probeMatched) {
-        |  ${generateCollect(probeRow)}
-        |}
-        |""".stripMargin, "", "")
+    (
+      s"""
+         |boolean $probeMatched = false;
+         |${ctx.reuseInputUnboxingCode(probeRow)}
+         |$goJoin
+         |if (${if (joinType == FlinkJoinType.ANTI) "!" else ""}$probeMatched) {
+         |  ${generateCollect(probeRow)}
+         |}
+         |""".stripMargin,
+      "",
+      "")
   }
 
-  /**
-    * Reset or new a iterator.
-    */
+  /** Reset or new a iterator. */
   def resetIterator(iter: String, buffer: String): String = {
     s"""
        |if ($iter == null) {
@@ -341,8 +337,7 @@ class NestedLoopJoinCodeGenerator(
        |""".stripMargin
   }
 
-  private def addReusableResettableExternalBuffer(
-      fieldTerm: String, serializer: String): Unit = {
+  private def addReusableResettableExternalBuffer(fieldTerm: String, serializer: String): Unit = {
     val memManager = "getContainingTask().getEnvironment().getMemoryManager()"
     val ioManager = "getContainingTask().getEnvironment().getIOManager()"
 
@@ -361,5 +356,3 @@ class NestedLoopJoinCodeGenerator(
     ctx.addReusableOpenStatement(open)
   }
 }
-
-

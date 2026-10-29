@@ -21,6 +21,7 @@ package org.apache.flink.table.planner.runtime.utils;
 import org.apache.flink.table.annotation.DataTypeHint;
 import org.apache.flink.table.annotation.InputGroup;
 import org.apache.flink.table.data.TimestampData;
+import org.apache.flink.table.functions.AsyncScalarFunction;
 import org.apache.flink.table.functions.FunctionContext;
 import org.apache.flink.table.functions.ScalarFunction;
 import org.apache.flink.table.functions.python.PythonEnv;
@@ -29,8 +30,10 @@ import org.apache.flink.table.functions.python.PythonFunctionKind;
 import org.apache.flink.types.Row;
 
 import java.sql.Timestamp;
+import java.time.LocalDateTime;
 import java.util.Random;
 import java.util.TimeZone;
+import java.util.concurrent.CompletableFuture;
 
 import static org.assertj.core.api.Assertions.fail;
 
@@ -120,14 +123,18 @@ public class JavaUserDefinedScalarFunctions {
 
     /** Non-deterministic scalar function. */
     public static class NonDeterministicUdf extends ScalarFunction {
-        Random random = new Random();
+        Random random = new Random(42); // seed for tests
 
         public int eval() {
             return random.nextInt();
         }
 
-        public int eval(int v) {
+        public int eval(@DataTypeHint("INT") int v) {
             return v + random.nextInt();
+        }
+
+        public String eval(String v) {
+            return v + "-" + random.nextInt();
         }
 
         @Override
@@ -148,6 +155,10 @@ public class JavaUserDefinedScalarFunctions {
             return i + j;
         }
 
+        public int eval() {
+            return 0;
+        }
+
         public String eval(String a) {
             return a;
         }
@@ -165,6 +176,120 @@ public class JavaUserDefinedScalarFunctions {
         @Override
         public PythonEnv getPythonEnv() {
             return new PythonEnv(PythonEnv.ExecType.PROCESS);
+        }
+    }
+
+    /** Test for non-deterministic Python Scalar Function. */
+    public static class NonDeterministicPythonScalarFunction extends ScalarFunction
+            implements PythonFunction {
+        private final String name;
+
+        public NonDeterministicPythonScalarFunction(String name) {
+            this.name = name;
+        }
+
+        public int eval(Integer i, Integer j) {
+            return i + j;
+        }
+
+        public int eval() {
+            return 0;
+        }
+
+        @Override
+        public boolean isDeterministic() {
+            return false;
+        }
+
+        @Override
+        public String toString() {
+            return name;
+        }
+
+        @Override
+        public byte[] getSerializedPythonFunction() {
+            return new byte[0];
+        }
+
+        @Override
+        public PythonEnv getPythonEnv() {
+            return new PythonEnv(PythonEnv.ExecType.PROCESS);
+        }
+    }
+
+    /** Test Python scalar function with explicitly configured parallelism. */
+    public static class ParallelPythonScalarFunction extends PythonScalarFunction {
+        private final int parallelism;
+
+        public ParallelPythonScalarFunction(String name, int parallelism) {
+            super(name);
+            this.parallelism = parallelism;
+        }
+
+        @Override
+        public int getParallelism() {
+            return parallelism;
+        }
+    }
+
+    /** Python scalar fixture with execution options. */
+    public static class ResourcePythonScalarFunction extends ParallelPythonScalarFunction {
+        private final PythonFunctionKind kind;
+        private final int maxArrowBatchSize;
+
+        public ResourcePythonScalarFunction(
+                String name, int parallelism, PythonFunctionKind kind, int maxArrowBatchSize) {
+            super(name, parallelism);
+            this.kind = kind;
+            this.maxArrowBatchSize = maxArrowBatchSize;
+        }
+
+        @Override
+        public PythonFunctionKind getPythonFunctionKind() {
+            return kind;
+        }
+
+        @Override
+        public int getMaxArrowBatchSize() {
+            return maxArrowBatchSize;
+        }
+    }
+
+    /** Async Python fixture with explicit concurrency. */
+    public static class ParallelAsyncPythonScalarFunction extends AsyncPythonScalarFunction {
+        private final int parallelism;
+
+        public ParallelAsyncPythonScalarFunction(String name, int parallelism) {
+            super(name);
+            this.parallelism = parallelism;
+        }
+
+        @Override
+        public int getParallelism() {
+            return parallelism;
+        }
+    }
+
+    /** Vectorized row fixture with execution options. */
+    public static class ResourceRowPythonScalarFunction extends RowPandasScalarFunction {
+        private final int parallelism;
+        private final int maxArrowBatchSize;
+
+        public ResourceRowPythonScalarFunction(
+                String name, int parallelism, int maxArrowBatchSize) {
+            super(name);
+            this.parallelism = parallelism;
+            this.maxArrowBatchSize = maxArrowBatchSize;
+        }
+
+        @Override
+        public int getParallelism() {
+            return parallelism;
+        }
+
+        @Override
+        public int getMaxArrowBatchSize() {
+            return maxArrowBatchSize;
         }
     }
 
@@ -291,6 +416,59 @@ public class JavaUserDefinedScalarFunctions {
         @Override
         public PythonFunctionKind getPythonFunctionKind() {
             return PythonFunctionKind.PANDAS;
+        }
+    }
+
+    /** A Python UDF that returns current timestamp with any input. */
+    public static class PythonTimestampScalarFunction extends ScalarFunction
+            implements PythonFunction {
+
+        @DataTypeHint("TIMESTAMP(3)")
+        public LocalDateTime eval(@DataTypeHint(inputGroup = InputGroup.ANY) Object... o) {
+            return LocalDateTime.now();
+        }
+
+        @Override
+        public byte[] getSerializedPythonFunction() {
+            return new byte[0];
+        }
+
+        @Override
+        public PythonEnv getPythonEnv() {
+            return null;
+        }
+    }
+
+    /** Test for Async Python Scalar Function. */
+    public static class AsyncPythonScalarFunction extends AsyncScalarFunction
+            implements PythonFunction {
+        private final String name;
+
+        public AsyncPythonScalarFunction(String name) {
+            this.name = name;
+        }
+
+        public void eval(CompletableFuture<Integer> future, Integer i, Integer j) {
+            future.complete(i + j);
+        }
+
+        public void eval(CompletableFuture<String> future, String a) {
+            future.complete(a);
+        }
+
+        @Override
+        public String toString() {
+            return name;
+        }
+
+        @Override
+        public byte[] getSerializedPythonFunction() {
+            return new byte[0];
+        }
+
+        @Override
+        public PythonEnv getPythonEnv() {
+            return new PythonEnv(PythonEnv.ExecType.PROCESS);
         }
     }
 }

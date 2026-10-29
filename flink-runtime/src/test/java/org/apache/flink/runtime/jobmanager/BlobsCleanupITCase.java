@@ -19,6 +19,7 @@
 package org.apache.flink.runtime.jobmanager;
 
 import org.apache.flink.api.common.JobID;
+import org.apache.flink.api.common.JobStatus;
 import org.apache.flink.api.common.JobSubmissionResult;
 import org.apache.flink.api.common.time.Deadline;
 import org.apache.flink.configuration.BlobServerOptions;
@@ -29,7 +30,6 @@ import org.apache.flink.core.fs.Path;
 import org.apache.flink.runtime.blob.BlobClient;
 import org.apache.flink.runtime.blob.PermanentBlobKey;
 import org.apache.flink.runtime.client.JobSubmissionException;
-import org.apache.flink.runtime.clusterframework.ApplicationStatus;
 import org.apache.flink.runtime.jobgraph.JobGraph;
 import org.apache.flink.runtime.jobgraph.JobGraphBuilder;
 import org.apache.flink.runtime.jobgraph.JobVertex;
@@ -61,6 +61,7 @@ import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 
+import static org.apache.flink.configuration.RestartStrategyOptions.RestartStrategyType.FIXED_DELAY;
 import static org.hamcrest.Matchers.hasSize;
 import static org.hamcrest.Matchers.is;
 import static org.junit.Assert.assertNotNull;
@@ -88,12 +89,12 @@ public class BlobsCleanupITCase extends TestLogger {
         blobBaseDir = TEMPORARY_FOLDER.newFolder();
 
         Configuration cfg = new Configuration();
-        cfg.setString(BlobServerOptions.STORAGE_DIRECTORY, blobBaseDir.getAbsolutePath());
-        cfg.setString(RestartStrategyOptions.RESTART_STRATEGY, "fixeddelay");
-        cfg.setInteger(RestartStrategyOptions.RESTART_STRATEGY_FIXED_DELAY_ATTEMPTS, 1);
+        cfg.set(BlobServerOptions.STORAGE_DIRECTORY, blobBaseDir.getAbsolutePath());
+        cfg.set(RestartStrategyOptions.RESTART_STRATEGY, FIXED_DELAY.getMainValue());
+        cfg.set(RestartStrategyOptions.RESTART_STRATEGY_FIXED_DELAY_ATTEMPTS, 1);
         // BLOBs are deleted from BlobCache between 1s and 2s after last reference
         // -> the BlobCache may still have the BLOB or not (let's test both cases randomly)
-        cfg.setLong(BlobServerOptions.CLEANUP_INTERVAL, 1L);
+        cfg.set(BlobServerOptions.CLEANUP_INTERVAL, 1L);
 
         configuration = new UnmodifiableConfiguration(cfg);
 
@@ -117,7 +118,7 @@ public class BlobsCleanupITCase extends TestLogger {
 
     /** Specifies which test case to run in {@link #testBlobServerCleanup(TestCase)}. */
     private enum TestCase {
-        JOB_FINISHES_SUCESSFULLY,
+        JOB_FINISHES_SUCCESSFULLY,
         JOB_IS_CANCELLED,
         JOB_FAILS,
         JOB_SUBMISSION_FAILS
@@ -126,7 +127,7 @@ public class BlobsCleanupITCase extends TestLogger {
     /** Test cleanup for a job that finishes ordinarily. */
     @Test
     public void testBlobServerCleanupFinishedJob() throws Exception {
-        testBlobServerCleanup(TestCase.JOB_FINISHES_SUCESSFULLY);
+        testBlobServerCleanup(TestCase.JOB_FINISHES_SUCCESSFULLY);
     }
 
     /** Test cleanup for a job which is cancelled after submission. */
@@ -206,14 +207,14 @@ public class BlobsCleanupITCase extends TestLogger {
                 // then the tasks will fail again and the restart strategy will finalise the job
                 final JobResult jobResult = resultFuture.get();
                 assertThat(jobResult.isSuccess(), is(false));
-                assertThat(jobResult.getApplicationStatus(), is(ApplicationStatus.FAILED));
+                assertThat(jobResult.getJobStatus().orElse(null), is(JobStatus.FAILED));
             } else if (testCase == TestCase.JOB_IS_CANCELLED) {
 
                 miniCluster.cancelJob(jid);
 
                 final JobResult jobResult = resultFuture.get();
                 assertThat(jobResult.isSuccess(), is(false));
-                assertThat(jobResult.getApplicationStatus(), is(ApplicationStatus.CANCELED));
+                assertThat(jobResult.getJobStatus().orElse(null), is(JobStatus.CANCELED));
             } else {
                 final JobResult jobResult = resultFuture.get();
                 Throwable cause =

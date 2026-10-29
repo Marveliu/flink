@@ -15,19 +15,18 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.planner.plan.rules.logical.subquery
 
-import org.apache.flink.api.scala._
 import org.apache.flink.table.api._
 import org.apache.flink.table.planner.runtime.utils.JavaUserDefinedTableFunctions.StringSplit
 
-import org.junit.Test
+import org.assertj.core.api.Assertions.{assertThatExceptionOfType, assertThatThrownBy}
+import org.junit.jupiter.api.Test
 
 /**
-  * Tests for [[org.apache.flink.table.planner.plan.rules.logical.FlinkSubQueryRemoveRule]],
-  * this class only tests IN and EXISTS queries.
-  */
+ * Tests for [[org.apache.flink.table.planner.plan.rules.logical.FlinkSubQueryRemoveRule]], this
+ * class only tests IN and EXISTS queries.
+ */
 class SubQuerySemiJoinTest extends SubQueryTestBase {
   util.addTableSource[(Int, Long, String)]("l", 'a, 'b, 'c)
   util.addTableSource[(Int, Long, String)]("r", 'd, 'e, 'f)
@@ -35,12 +34,12 @@ class SubQuerySemiJoinTest extends SubQueryTestBase {
   util.addTableSource[(Int, Long)]("x", 'a, 'b)
   util.addTableSource[(Int, Long)]("y", 'c, 'd)
   util.addTableSource[(Int, Long)]("z", 'e, 'f)
-  util.addFunction("table_func", new StringSplit)
+  util.addTemporarySystemFunction("table_func", new StringSplit)
 
   @Test
   def testInOnWhere_NotSubQuery(): Unit = {
     val sqlQuery = "SELECT * FROM l WHERE a IN (1, 2, 3, 4)"
-    util.verifyRelPlanNotExpected(sqlQuery, "joinType=[semi]")
+    util.verifyRelPlan(sqlQuery)
   }
 
   @Test
@@ -117,13 +116,13 @@ class SubQuerySemiJoinTest extends SubQueryTestBase {
 
   @Test
   def testInWithUncorrelatedOnWhere_UnsupportedCondition1(): Unit = {
-    thrown.expect(classOf[TableException])
-    // correlate variable id is unstable, ignore here
-    thrown.expectMessage("unexpected correlate variable $cor")
-
     // these queries will not be converted to joinType=[semi]
     val sqlQuery = "SELECT * FROM x WHERE a IN (SELECT c FROM y WHERE x.b IN (SELECT e FROM z))"
-    util.verifyRelPlanNotExpected(sqlQuery, "joinType=[semi]")
+
+    assertThatThrownBy(() => util.verifyRelPlanNotExpected(sqlQuery, "joinType=[semi]"))
+      // correlate variable id is unstable, ignore here
+      .hasMessageContaining("unexpected correlate variable $cor")
+      .isInstanceOf[TableException]
   }
 
   @Test
@@ -207,13 +206,11 @@ class SubQuerySemiJoinTest extends SubQueryTestBase {
     util.addTableSource[(Int)]("t1", 'i)
     util.addTableSource[(Int)]("t2", 'j)
 
-    // TODO some bugs in SubQueryRemoveRule
-    thrown.expect(classOf[RuntimeException])
-
     // TODO Calcite does not support project with correlated expressions.
     val sqlQuery = "SELECT b FROM l WHERE" +
       " (CASE WHEN a IN (SELECT i FROM t1 WHERE l.a = t1.i) THEN 1 ELSE 2 END) IN (SELECT d FROM r)"
-    util.verifyRelPlanNotExpected(sqlQuery, "joinType=[semi]")
+
+    util.verifyRelPlan(sqlQuery)
   }
 
   @Test
@@ -246,13 +243,13 @@ class SubQuerySemiJoinTest extends SubQueryTestBase {
 
   @Test
   def testInWithUncorrelatedOnWhere_ScalarQuery5(): Unit = {
-    thrown.expect(classOf[TableException])
-    // correlate variable id is unstable, ignore here
-    thrown.expectMessage("unexpected correlate variable $cor")
-
     val sqlQuery = "SELECT b FROM x WHERE a IN (SELECT c FROM y WHERE d > " +
       "(SELECT 0.5 * SUM(e) FROM z WHERE x.a = z.e AND z.f < 100))"
-    util.verifyRelPlanNotExpected(sqlQuery, "joinType=[semi]")
+
+    assertThatThrownBy(() => util.verifyRelPlanNotExpected(sqlQuery, "joinType=[semi]"))
+      // correlate variable id is unstable, ignore here
+      .hasMessageContaining("unexpected correlate variable $cor")
+      .isInstanceOf[TableException]
   }
 
   @Test
@@ -475,13 +472,15 @@ class SubQuerySemiJoinTest extends SubQueryTestBase {
     util.verifyRelPlanNotExpected(sqlQuery4, "joinType=[semi]")
   }
 
-  @Test(expected = classOf[AssertionError])
+  @Test
   def testInWithCorrelatedOnWhere_UnsupportedCondition2(): Unit = {
     // TODO java.lang.RuntimeException: While invoking method
     // 'public RelDecorrelator$Frame RelDecorrelator.decorrelateRel(LogicalProject)'
     val sqlQuery = "SELECT * FROM l WHERE a IN (SELECT d FROM r WHERE l.b IN (SELECT j FROM t) " +
       "AND l.c = r.f)"
-    util.verifyRelPlanNotExpected(sqlQuery, "joinType=[semi]")
+
+    assertThatExceptionOfType(classOf[AssertionError])
+      .isThrownBy(() => util.verifyRelPlanNotExpected(sqlQuery, "joinType=[semi]"))
   }
 
   @Test
@@ -571,15 +570,15 @@ class SubQuerySemiJoinTest extends SubQueryTestBase {
 
   @Test
   def testInWithCorrelatedOnWhere_ScalarQuery4(): Unit = {
-    thrown.expect(classOf[TableException])
-    // correlate variable id is unstable, ignore here
-    thrown.expectMessage("unexpected correlate variable $cor")
-
     // nested correlation can not be converted joinType=[semi] now
     val sqlQuery = "SELECT a FROM x WHERE " +
       "(SELECT MAX(d) FROM y WHERE c IN (SELECT e FROM z WHERE x.b = z.f))" +
       " IN (SELECT f FROM z WHERE z.e = x.a)"
-    util.verifyRelPlanNotExpected(sqlQuery, "joinType=[semi]")
+
+    assertThatThrownBy(() => util.verifyRelPlanNotExpected(sqlQuery, "joinType=[semi]"))
+      // correlate variable id is unstable, ignore here
+      .hasMessageContaining("unexpected correlate variable $cor")
+      .isInstanceOf[TableException]
   }
 
   @Test
@@ -603,13 +602,14 @@ class SubQuerySemiJoinTest extends SubQueryTestBase {
     util.verifyRelPlan(sqlQuery)
   }
 
-  @Test(expected = classOf[AssertionError])
+  @Test
   def testInWithCorrelatedOnWhere_ScalarQuery8(): Unit = {
     // nested correlation can not be converted joinType=[semi] now
     // TODO There are some bugs when decorrelating in RelDecorrelator
     val sqlQuery = "SELECT b FROM x WHERE a IN (SELECT c FROM y WHERE x.b = y.d AND c > " +
       "(SELECT 0.5 * SUM(e) FROM z WHERE x.a = z.e AND z.f < 100))"
-    util.verifyRelPlanNotExpected(sqlQuery, "joinType=[semi]")
+    assertThatExceptionOfType(classOf[AssertionError])
+      .isThrownBy(() => util.verifyRelPlanNotExpected(sqlQuery, "joinType=[semi]"))
   }
 
   @Test
@@ -832,29 +832,29 @@ class SubQuerySemiJoinTest extends SubQueryTestBase {
 
   @Test
   def testInWithCorrelatedOnWhere_Union1(): Unit = {
-    thrown.expect(classOf[TableException])
-    // correlate variable id is unstable, ignore here
-    thrown.expectMessage("unexpected correlate variable $cor")
-
     // UNION with correlation can not be converted to semi-join
     val sqlQuery = "SELECT a FROM l WHERE b IN " +
       "(SELECT e FROM r WHERE l.a = r.d AND d > 10 " +
       "UNION " +
       "SELECT i FROM t WHERE i < 100)"
-    util.verifyRelPlanNotExpected(sqlQuery, "joinType=[semi]")
+
+    assertThatThrownBy(() => util.verifyRelPlanNotExpected(sqlQuery, "joinType=[semi]"))
+      // correlate variable id is unstable, ignore here
+      .hasMessageContaining("unexpected correlate variable $cor")
+      .isInstanceOf[TableException]
   }
 
   @Test
   def testInWithCorrelatedOnWhere_Union2(): Unit = {
-    thrown.expect(classOf[TableException])
-    // correlate variable id is unstable, ignore here
-    thrown.expectMessage("unexpected correlate variable $cor")
-
     val sqlQuery = "SELECT a FROM l WHERE b IN " +
       "(SELECT e FROM r WHERE l.a = r.d AND d > 10 " +
       "UNION " +
       "SELECT i FROM t WHERE l.c = t.k AND i < 100)"
-    util.verifyRelPlanNotExpected(sqlQuery, "joinType=[semi]")
+
+    assertThatThrownBy(() => util.verifyRelPlanNotExpected(sqlQuery, "joinType=[semi]"))
+      // correlate variable id is unstable, ignore here
+      .hasMessageContaining("unexpected correlate variable $cor")
+      .isInstanceOf[TableException]
   }
 
   @Test
@@ -962,25 +962,9 @@ class SubQuerySemiJoinTest extends SubQueryTestBase {
 
   @Test
   def testInWithCorrelatedOnHaving(): Unit = {
-    // TODO There are some bugs when converting SqlNode to RelNode:
     val sqlQuery = "SELECT SUM(a) AS s FROM x GROUP BY b " +
       "HAVING MAX(a) IN (SELECT d FROM y WHERE y.d = x.b)"
-
-    // the logical plan is:
-    //
-    // LogicalProject(s=[$1])
-    //  LogicalFilter(condition=[IN($2, {
-    //   LogicalProject(d=[$1])
-    //    LogicalFilter(condition=[=($1, $cor0.b)])
-    //     LogicalTableScan(table=[[builtin, default, r]])
-    //  })])
-    //   LogicalAggregate(group=[{0}], s=[SUM($1)], agg#1=[MAX($1)])
-    //    LogicalProject(b=[$1], a=[$0])
-    //     LogicalTableScan(table=[[builtin, default, l]])
-    //
-    // LogicalFilter lost variablesSet information.
-
-    util.verifyRelPlanNotExpected(sqlQuery, "joinType=[semi]")
+    util.verifyRelPlan(sqlQuery)
   }
 
   @Test
@@ -992,38 +976,37 @@ class SubQuerySemiJoinTest extends SubQueryTestBase {
 
   @Test
   def testInWithCorrelatedOnLateralTable2(): Unit = {
-    thrown.expect(classOf[TableException])
-    // correlate variable id is unstable, ignore here
-    thrown.expectMessage("unexpected correlate variable $cor")
-
     val sqlQuery = "SELECT * FROM l WHERE c IN (" +
       "SELECT f1 FROM r, LATERAL TABLE(table_func(f)) AS T(f1) " +
       "WHERE d IN (SELECT i FROM t WHERE l.b = t.j))"
-    util.verifyRelPlanNotExpected(sqlQuery, "joinType=[semi]")
+
+    assertThatThrownBy(() => util.verifyRelPlanNotExpected(sqlQuery, "joinType=[semi]"))
+      // correlate variable id is unstable, ignore here
+      .hasMessageContaining("unexpected correlate variable $cor")
+      .isInstanceOf[TableException]
   }
 
   @Test
   def testInWithCorrelatedOnLateralTable3(): Unit = {
-    thrown.expect(classOf[TableException])
-    // correlate variable id is unstable, ignore here
-    thrown.expectMessage("unexpected correlate variable $cor")
-
     val sqlQuery = "SELECT * FROM l WHERE c IN (" +
       "SELECT f1 FROM (SELECT * FROM r WHERE d IN (" +
       "SELECT i FROM t WHERE t.j = l.b)) m, LATERAL TABLE(table_func(f)) AS T(f1))"
-    util.verifyRelPlanNotExpected(sqlQuery, "joinType=[semi]")
+
+    assertThatThrownBy(() => util.verifyRelPlanNotExpected(sqlQuery, "joinType=[semi]"))
+      // correlate variable id is unstable, ignore here
+      .hasMessageContaining("unexpected correlate variable $cor")
+      .isInstanceOf[TableException]
   }
 
   @Test
   def testInWithCorrelatedOnLateralTable4(): Unit = {
-    thrown.expect(classOf[TableException])
-    // correlate variable id is unstable, ignore here
-    thrown.expectMessage("unexpected correlate variable $cor")
-
     val sqlQuery = "SELECT * FROM l WHERE c IN (" +
       "SELECT f1 FROM (SELECT * FROM r LEFT JOIN LATERAL TABLE(table_func(f)) AS T(f1) ON TRUE " +
       "WHERE d IN (SELECT i FROM t WHERE l.b = t.j)))"
-    util.verifyRelPlanNotExpected(sqlQuery, "joinType=[semi]")
+    assertThatThrownBy(() => util.verifyRelPlanNotExpected(sqlQuery, "joinType=[semi]"))
+      // correlate variable id is unstable, ignore here
+      .hasMessageContaining("unexpected correlate variable $cor")
+      .isInstanceOf[TableException]
   }
 
   @Test
@@ -1258,12 +1241,13 @@ class SubQuerySemiJoinTest extends SubQueryTestBase {
     util.verifyRelPlanNotExpected(sqlQuery4, "joinType=[semi]")
   }
 
-  @Test(expected = classOf[AssertionError])
+  @Test
   def testExistsWithCorrelatedOnWhere_UnsupportedCondition2(): Unit = {
     val sqlQuery = "SELECT * FROM l WHERE EXISTS " +
       " (SELECT * FROM (SELECT * FROM r WHERE r.d = l.a AND r.e > 100) s " +
       "LEFT JOIN t ON s.f = t.k AND l.b = t.j)"
-    util.verifyRelPlanNotExpected(sqlQuery, "joinType=[semi]")
+    assertThatExceptionOfType(classOf[AssertionError])
+      .isThrownBy(() => util.verifyRelPlanNotExpected(sqlQuery, "joinType=[semi]"))
   }
 
   @Test
@@ -1319,6 +1303,51 @@ class SubQuerySemiJoinTest extends SubQueryTestBase {
     val sqlQuery = "SELECT * FROM l WHERE EXISTS " +
       "(SELECT MAX(r.e) OVER() FROM r WHERE l.c <> r.f GROUP BY r.e)"
     util.verifyRelPlanNotExpected(sqlQuery, "joinType=[semi]")
+  }
+
+  @Test
+  def testExistsWithCorrelatedOnWhere_Having1(): Unit = {
+    // Correlated WHERE plus HAVING on a single aggregate output.
+    // Regression for SubQueryDecorrelator: the non-correlated HAVING predicate must be
+    // re-indexed against the rewritten Aggregate (which receives the correlated column
+    // injected into its group key).
+    val sqlQuery = "SELECT * FROM l WHERE EXISTS " +
+      "(SELECT 1 FROM r WHERE l.a = r.d GROUP BY r.f HAVING SUM(r.e) >= 3)"
+    util.verifyRelPlan(sqlQuery)
+  }
+
+  @Test
+  def testExistsWithCorrelatedOnWhere_Having2(): Unit = {
+    // Compound HAVING with multiple aggregate refs.
+    val sqlQuery = "SELECT * FROM l WHERE EXISTS " +
+      "(SELECT 1 FROM r WHERE l.a = r.d GROUP BY r.f HAVING SUM(r.e) >= 3 AND MAX(r.e) < 100)"
+    util.verifyRelPlan(sqlQuery)
+  }
+
+  @Test
+  def testExistsWithCorrelatedOnWhere_Having3(): Unit = {
+    // HAVING that mixes an aggregate ref with COUNT(*).
+    val sqlQuery = "SELECT * FROM l WHERE EXISTS " +
+      "(SELECT 1 FROM r WHERE l.a = r.d GROUP BY r.f HAVING SUM(r.e) >= 3 AND COUNT(*) > 1)"
+    util.verifyRelPlan(sqlQuery)
+  }
+
+  @Test
+  def testExistsWithCorrelatedOnWhere_Having4(): Unit = {
+    // Multiple correlated WHERE columns combined with a HAVING on aggregate output.
+    val sqlQuery = "SELECT * FROM l WHERE EXISTS " +
+      "(SELECT 1 FROM r WHERE l.a = r.d AND l.b = r.e GROUP BY r.f HAVING COUNT(r.d) >= 2)"
+    util.verifyRelPlan(sqlQuery)
+  }
+
+  @Test
+  def testExistsWithCorrelatedOnWhere_Aggregate_LocalWhere(): Unit = {
+    // Mixed correlated + local WHERE, no HAVING. Guards against an over-eager fix:
+    // the local predicate `r.e > 10` sits below the Aggregate, so its RexInputRef must
+    // remain stable through decorrelation.
+    val sqlQuery = "SELECT * FROM l WHERE EXISTS " +
+      "(SELECT 1 FROM r WHERE l.a = r.d AND r.e > 10 GROUP BY r.f)"
+    util.verifyRelPlan(sqlQuery)
   }
 
   @Test
@@ -1433,29 +1462,27 @@ class SubQuerySemiJoinTest extends SubQueryTestBase {
 
   @Test
   def testExistsWithCorrelatedOnWhere_Union1(): Unit = {
-    thrown.expect(classOf[TableException])
-    // correlate variable id is unstable, ignore here
-    thrown.expectMessage("unexpected correlate variable $cor")
-
     // UNION with correlation is not supported
     val sqlQuery = "SELECT a FROM l WHERE EXISTS " +
       "(SELECT e FROM r WHERE l.a = r.d AND d > 10 " +
       "UNION " +
       "SELECT i FROM t WHERE i < 100)"
-    util.verifyRelPlanNotExpected(sqlQuery, "joinType=[semi]")
+    assertThatThrownBy(() => util.verifyRelPlanNotExpected(sqlQuery, "joinType=[semi]"))
+      // correlate variable id is unstable, ignore here
+      .hasMessageContaining("unexpected correlate variable $cor")
+      .isInstanceOf[TableException]
   }
 
   @Test
   def testExistsWithCorrelatedOnWhere_Union2(): Unit = {
-    thrown.expect(classOf[TableException])
-    // correlate variable id is unstable, ignore here
-    thrown.expectMessage("unexpected correlate variable $cor")
-
     val sqlQuery = "SELECT a FROM l WHERE EXISTS " +
       "(SELECT e FROM r WHERE l.a = r.d AND d > 10 " +
       "UNION " +
       "SELECT i FROM t WHERE l.c = t.k AND i < 100)"
-    util.verifyRelPlanNotExpected(sqlQuery, "joinType=[semi]")
+    assertThatThrownBy(() => util.verifyRelPlanNotExpected(sqlQuery, "joinType=[semi]"))
+      // correlate variable id is unstable, ignore here
+      .hasMessageContaining("unexpected correlate variable $cor")
+      .isInstanceOf[TableException]
   }
 
   @Test
@@ -1501,11 +1528,11 @@ class SubQuerySemiJoinTest extends SubQueryTestBase {
     // SQL from Calcite Test
     // however, parse result is not correct
     val sqlQuery =
-    """
-      |SELECT * FROM (SELECT 2 + a d2, 3 + b d3 FROM l) e
-      |    WHERE EXISTS (SELECT 1 FROM (SELECT d + 1 d1 FROM r) d
-      |    WHERE d1 = e.d2 AND EXISTS (SELECT 2 FROM (SELECT i + 4 d4, i + 5 d5, i + 6 d6 FROM t)
-      |    WHERE d4 = d.d1 AND d5 = d.d1 AND d6 = e.d3))
+      """
+        |SELECT * FROM (SELECT 2 + a d2, 3 + b d3 FROM l) e
+        |    WHERE EXISTS (SELECT 1 FROM (SELECT d + 1 d1 FROM r) d
+        |    WHERE d1 = e.d2 AND EXISTS (SELECT 2 FROM (SELECT i + 4 d4, i + 5 d5, i + 6 d6 FROM t)
+        |    WHERE d4 = d.d1 AND d5 = d.d1 AND d6 = e.d3))
     """.stripMargin
     util.verifyRelPlanNotExpected(sqlQuery, "joinType=[semi]")
   }
@@ -1577,28 +1604,9 @@ class SubQuerySemiJoinTest extends SubQueryTestBase {
 
   @Test
   def testExistsWithCorrelatedOnHaving(): Unit = {
-    // TODO There are some bugs when converting SqlNode to RelNode:
-    val sqlQuery1 =
+    val sqlQuery =
       "SELECT SUM(a) AS s FROM x GROUP BY b HAVING EXISTS (SELECT * FROM y WHERE y.d = x.b)"
-
-    // the logical plan is:
-    //
-    // LogicalProject(s=[$1])
-    //  LogicalFilter(condition=[IN($2, {
-    //   LogicalProject(d=[$1])
-    //    LogicalFilter(condition=[=($1, $cor0.b)])
-    //     LogicalTableScan(table=[[builtin, default, r]])
-    //  })])
-    //   LogicalAggregate(group=[{0}], s=[SUM($1)], agg#1=[MAX($1)])
-    //    LogicalProject(b=[$1], a=[$0])
-    //     LogicalTableScan(table=[[builtin, default, l]])
-    //
-    // LogicalFilter lost variablesSet information.
-
-    util.verifyRelPlanNotExpected(sqlQuery1, "joinType=[semi]")
-
-    val sqlQuery2 = "SELECT MAX(a) FROM x GROUP BY 1 HAVING EXISTS (SELECT 1 FROM y WHERE d < b)"
-    util.verifyRelPlanNotExpected(sqlQuery2, "joinType=[semi]")
+    util.verifyRelPlan(sqlQuery)
   }
 
   @Test
@@ -1610,38 +1618,36 @@ class SubQuerySemiJoinTest extends SubQueryTestBase {
 
   @Test
   def testExistsWithCorrelatedOnLateralTable2(): Unit = {
-    thrown.expect(classOf[TableException])
-    // correlate variable id is unstable, ignore here
-    thrown.expectMessage("unexpected correlate variable $cor")
-
     val sqlQuery = "SELECT * FROM l WHERE EXISTS (" +
       "SELECT * FROM r, LATERAL TABLE(table_func(f)) AS T(f1) " +
       "WHERE EXISTS (SELECT * FROM t WHERE l.b = t.j))"
-    util.verifyRelPlanNotExpected(sqlQuery, "joinType=[semi]")
+    assertThatThrownBy(() => util.verifyRelPlanNotExpected(sqlQuery, "joinType=[semi]"))
+      // correlate variable id is unstable, ignore here
+      .hasMessageContaining("unexpected correlate variable $cor")
+      .isInstanceOf[TableException]
   }
 
   @Test
   def testExistsWithCorrelatedOnLateralTable3(): Unit = {
-    thrown.expect(classOf[TableException])
-    // correlate variable id is unstable, ignore here
-    thrown.expectMessage("unexpected correlate variable $cor")
-
     val sqlQuery = "SELECT * FROM l WHERE EXISTS (" +
       "SELECT * FROM (SELECT * FROM r WHERE EXISTS (" +
       "SELECT * FROM t WHERE t.j = l.b)) m, LATERAL TABLE(table_func(f)) AS T(f1))"
-    util.verifyRelPlanNotExpected(sqlQuery, "joinType=[semi]")
+
+    assertThatThrownBy(() => util.verifyRelPlanNotExpected(sqlQuery, "joinType=[semi]"))
+      // correlate variable id is unstable, ignore here
+      .hasMessageContaining("unexpected correlate variable $cor")
+      .isInstanceOf[TableException]
   }
 
   @Test
   def testExistsWithCorrelatedOnLateralTable4(): Unit = {
-    thrown.expect(classOf[TableException])
-    // correlate variable id is unstable, ignore here
-    thrown.expectMessage("unexpected correlate variable $cor")
-
     val sqlQuery = "SELECT * FROM l WHERE EXISTS (" +
       "SELECT * FROM (SELECT * FROM r LEFT JOIN LATERAL TABLE(table_func(f)) AS T(f1) ON TRUE " +
       "WHERE EXISTS (SELECT i FROM t WHERE l.b = t.j)))"
-    util.verifyRelPlanNotExpected(sqlQuery, "joinType=[semi]")
+    assertThatThrownBy(() => util.verifyRelPlanNotExpected(sqlQuery, "joinType=[semi]"))
+      // correlate variable id is unstable, ignore here
+      .hasMessageContaining("unexpected correlate variable $cor")
+      .isInstanceOf[TableException]
   }
 
   @Test
@@ -1662,17 +1668,13 @@ class SubQuerySemiJoinTest extends SubQueryTestBase {
   def testInExists3(): Unit = {
     util.addTableSource[(Int, Long, String)]("t2", 'l, 'm, 'n)
 
-    // TODO some bugs in SubQueryRemoveRule
-    //  the result RelNode (LogicalJoin(condition=[=($1, $8)], joinType=[left]))
-    //  after SubQueryRemoveRule is unexpected
-    thrown.expect(classOf[AssertionError])
-
     // TODO Calcite does not support project with correlated expressions.
     val sqlQuery = "SELECT c FROM l WHERE (" +
       " (CASE WHEN EXISTS (SELECT * FROM t WHERE l.a = t.i) THEN 1 ELSE 2 END), " +
       " (CASE WHEN b IN (SELECT m FROM t2) THEN 3 ELSE 4 END)) " +
       " IN (SELECT d, e FROM r)"
-    util.verifyRelPlanNotExpected(sqlQuery, "joinType=[semi]")
+
+    util.verifyRelPlan(sqlQuery)
   }
 
 }

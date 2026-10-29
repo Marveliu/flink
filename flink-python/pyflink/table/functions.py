@@ -15,17 +15,16 @@
 #  See the License for the specific language governing permissions and
 # limitations under the License.
 ################################################################################
-import sys
 import time
 from abc import abstractmethod
 from decimal import Decimal
 
+from pyflink.common.constants import MAX_LONG_VALUE, MIN_LONG_VALUE
 from pyflink.table import AggregateFunction, MapView, ListView
-
-MAX_LONG_VALUE = sys.maxsize
-MIN_LONG_VALUE = -MAX_LONG_VALUE - 1
+from pyflink.util.api_stability_decorators import Internal
 
 
+@Internal()
 class AvgAggFunction(AggregateFunction):
 
     def get_value(self, accumulator):
@@ -56,6 +55,7 @@ class AvgAggFunction(AggregateFunction):
                 accumulator[1] += acc[1]
 
 
+@Internal()
 class Count1AggFunction(AggregateFunction):
 
     def get_value(self, accumulator):
@@ -75,6 +75,7 @@ class Count1AggFunction(AggregateFunction):
             accumulator[0] += acc[0]
 
 
+@Internal()
 class CountAggFunction(AggregateFunction):
 
     def get_value(self, accumulator):
@@ -96,6 +97,7 @@ class CountAggFunction(AggregateFunction):
             accumulator[0] += acc[0]
 
 
+@Internal()
 class FirstValueAggFunction(AggregateFunction):
 
     def get_value(self, accumulator):
@@ -116,6 +118,7 @@ class FirstValueAggFunction(AggregateFunction):
         raise NotImplementedError("This function does not support merge.")
 
 
+@Internal()
 class FirstValueWithRetractAggFunction(AggregateFunction):
 
     def get_value(self, accumulator):
@@ -203,6 +206,7 @@ class FirstValueWithRetractAggFunction(AggregateFunction):
         raise NotImplementedError("This function does not support merge.")
 
 
+@Internal()
 class LastValueAggFunction(AggregateFunction):
 
     def get_value(self, accumulator):
@@ -223,6 +227,7 @@ class LastValueAggFunction(AggregateFunction):
         raise NotImplementedError("This function does not support merge.")
 
 
+@Internal()
 class LastValueWithRetractAggFunction(AggregateFunction):
 
     def get_value(self, accumulator):
@@ -311,6 +316,7 @@ class LastValueWithRetractAggFunction(AggregateFunction):
         raise NotImplementedError("This function does not support merge.")
 
 
+@Internal()
 class ListAggFunction(AggregateFunction):
 
     def get_value(self, accumulator):
@@ -333,6 +339,7 @@ class ListAggFunction(AggregateFunction):
         raise NotImplementedError("This function does not support retraction.")
 
 
+@Internal()
 class ListAggWithRetractAggFunction(AggregateFunction):
 
     def get_value(self, accumulator):
@@ -385,6 +392,7 @@ class ListAggWithRetractAggFunction(AggregateFunction):
                 accumulator[1].add_all(new_retract_buffer)
 
 
+@Internal()
 class ListAggWsWithRetractAggFunction(AggregateFunction):
 
     def get_value(self, accumulator):
@@ -440,6 +448,7 @@ class ListAggWsWithRetractAggFunction(AggregateFunction):
                 accumulator[1].add_all(retract_buffer)
 
 
+@Internal()
 class MaxAggFunction(AggregateFunction):
 
     def get_value(self, accumulator):
@@ -463,6 +472,7 @@ class MaxAggFunction(AggregateFunction):
                     accumulator[0] = acc[0]
 
 
+@Internal()
 class MaxWithRetractAggFunction(AggregateFunction):
 
     def get_value(self, accumulator):
@@ -569,6 +579,7 @@ class MaxWithRetractAggFunction(AggregateFunction):
             self.update_max(acc)
 
 
+@Internal()
 class MinAggFunction(AggregateFunction):
 
     def get_value(self, accumulator):
@@ -593,6 +604,7 @@ class MinAggFunction(AggregateFunction):
                     accumulator[0] = acc[0]
 
 
+@Internal()
 class MinWithRetractAggFunction(AggregateFunction):
 
     def get_value(self, accumulator):
@@ -699,6 +711,7 @@ class MinWithRetractAggFunction(AggregateFunction):
             self.update_min(acc)
 
 
+@Internal()
 class Sum0AggFunction(AggregateFunction):
 
     def get_value(self, accumulator):
@@ -721,6 +734,7 @@ class Sum0AggFunction(AggregateFunction):
             accumulator[0] += acc[0]
 
 
+@Internal()
 class IntSum0AggFunction(Sum0AggFunction):
 
     def create_accumulator(self):
@@ -728,6 +742,7 @@ class IntSum0AggFunction(Sum0AggFunction):
         return [0]
 
 
+@Internal()
 class FloatSum0AggFunction(Sum0AggFunction):
 
     def create_accumulator(self):
@@ -735,6 +750,7 @@ class FloatSum0AggFunction(Sum0AggFunction):
         return [0.0]
 
 
+@Internal()
 class DecimalSum0AggFunction(Sum0AggFunction):
 
     def create_accumulator(self):
@@ -742,6 +758,7 @@ class DecimalSum0AggFunction(Sum0AggFunction):
         return [Decimal('0')]
 
 
+@Internal()
 class SumAggFunction(AggregateFunction):
 
     def get_value(self, accumulator):
@@ -770,6 +787,7 @@ class SumAggFunction(AggregateFunction):
                     accumulator[0] += acc[0]
 
 
+@Internal()
 class SumWithRetractAggFunction(AggregateFunction):
 
     def get_value(self, accumulator):
@@ -797,3 +815,75 @@ class SumWithRetractAggFunction(AggregateFunction):
             if acc[0] is not None:
                 accumulator[0] += acc[0]
                 accumulator[1] += acc[1]
+
+
+@Internal()
+class WelfordM2AggFunction(AggregateFunction):
+    def create_accumulator(self):
+        # [n, mean , m2]
+        return [0, 0.0, 0.0]
+
+    def get_value(self, accumulator):
+        if accumulator[0] <= 0 or accumulator[2] <= 0:
+            return None
+        else:
+            return accumulator[2]
+
+    def accumulate(self, accumulator, *args):
+        if args[0] is None:
+            return
+
+        accumulator[0] += 1
+        if accumulator[0] <= 0:
+            return
+
+        val = float(args[0])
+        delta = val - accumulator[1]
+        accumulator[1] += delta / accumulator[0]
+        delta2 = val - accumulator[1]
+        accumulator[2] += delta * delta2
+
+    def retract(self, accumulator, *args):
+        if args[0] is None:
+            return
+
+        accumulator[0] -= 1
+        if accumulator[0] <= 0:
+            if accumulator[0] == 0:
+                accumulator[1] = 0.0
+                accumulator[2] = 0.0
+            return
+
+        val = float(args[0])
+        delta2 = val - accumulator[1]
+        accumulator[1] -= delta2 / accumulator[0]
+        delta = val - accumulator[1]
+        accumulator[2] -= delta * delta2
+
+    def merge(self, accumulator, accumulators):
+        negative_sum = 0
+        for acc in accumulators:
+            if acc[0] <= 0:
+                negative_sum += acc[0]
+                continue
+
+            if accumulator[0] == 0:
+                accumulator[0] = acc[0]
+                accumulator[1] = acc[1]
+                accumulator[2] = acc[2]
+                continue
+
+            new_n = accumulator[0] + acc[0]
+            delta_mean = acc[1] - accumulator[1]
+            new_mean = accumulator[1] + acc[0] / new_n * delta_mean
+            new_m2 = accumulator[2] + acc[2] + accumulator[0] * acc[
+                0] / new_n * delta_mean * delta_mean
+
+            accumulator[0] = new_n
+            accumulator[1] = new_mean
+            accumulator[2] = new_m2
+
+        accumulator[0] += negative_sum
+        if accumulator[0] <= 0:
+            accumulator[1] = 0.0
+            accumulator[2] = 0.0

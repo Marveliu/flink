@@ -23,13 +23,14 @@ import org.apache.flink.api.common.functions.FilterFunction;
 import org.apache.flink.api.common.functions.JoinFunction;
 import org.apache.flink.api.common.functions.ReduceFunction;
 import org.apache.flink.api.common.operators.base.JoinOperatorBase.JoinHint;
-import org.apache.flink.api.java.DataSet;
-import org.apache.flink.api.java.ExecutionEnvironment;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.api.java.typeutils.TupleTypeInfo;
+import org.apache.flink.streaming.api.datastream.DataStream;
+import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
+import org.apache.flink.streaming.api.windowing.assigners.GlobalWindows;
 import org.apache.flink.types.IntValue;
+import org.apache.flink.util.CollectionUtil;
 
-import org.junit.Assert;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -40,7 +41,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Random;
 
-import static org.hamcrest.Matchers.is;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * These programs demonstrate the effects of user defined functions which modify input objects or
@@ -70,7 +71,7 @@ public class OverwriteObjects {
     public void run() throws Exception {
         LOG.info("Random seed = {}", RANDOM_SEED);
 
-        final ExecutionEnvironment env = ExecutionEnvironment.getExecutionEnvironment();
+        final StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
 
         for (int parallelism = MAX_PARALLELISM; parallelism > 0; parallelism--) {
             LOG.info("Parallelism = {}", parallelism);
@@ -80,13 +81,12 @@ public class OverwriteObjects {
             testReduce(env);
             testGroupedReduce(env);
             testJoin(env);
-            testCross(env);
         }
     }
 
     // --------------------------------------------------------------------------------------------
 
-    public void testReduce(ExecutionEnvironment env) throws Exception {
+    public void testReduce(StreamExecutionEnvironment env) throws Exception {
         /*
          * Test ChainedAllReduceDriver
          */
@@ -96,20 +96,30 @@ public class OverwriteObjects {
         env.getConfig().enableObjectReuse();
 
         Tuple2<IntValue, IntValue> enabledResult =
-                getDataSet(env).reduce(new OverwriteObjectsReduce(false)).collect().get(0);
+                CollectionUtil.iteratorToList(
+                                getDataStream(env)
+                                        .windowAll(GlobalWindows.create())
+                                        .reduce(new OverwriteObjectsReduce(false))
+                                        .executeAndCollect())
+                        .get(0);
 
         env.getConfig().disableObjectReuse();
 
         Tuple2<IntValue, IntValue> disabledResult =
-                getDataSet(env).reduce(new OverwriteObjectsReduce(false)).collect().get(0);
+                CollectionUtil.iteratorToList(
+                                getDataStream(env)
+                                        .windowAll(GlobalWindows.create())
+                                        .reduce(new OverwriteObjectsReduce(false))
+                                        .executeAndCollect())
+                        .get(0);
 
-        Assert.assertEquals(NUMBER_OF_ELEMENTS, enabledResult.f1.getValue());
-        Assert.assertEquals(NUMBER_OF_ELEMENTS, disabledResult.f1.getValue());
+        assertThat(enabledResult.f1.getValue()).isEqualTo(NUMBER_OF_ELEMENTS);
+        assertThat(disabledResult.f1.getValue()).isEqualTo(NUMBER_OF_ELEMENTS);
 
-        Assert.assertEquals(disabledResult, enabledResult);
+        assertThat(enabledResult).isEqualTo(disabledResult);
     }
 
-    public void testGroupedReduce(ExecutionEnvironment env) throws Exception {
+    public void testGroupedReduce(StreamExecutionEnvironment env) throws Exception {
         /*
          * Test ReduceCombineDriver and ReduceDriver
          */
@@ -119,18 +129,26 @@ public class OverwriteObjects {
         env.getConfig().enableObjectReuse();
 
         List<Tuple2<IntValue, IntValue>> enabledResult =
-                getDataSet(env).groupBy(0).reduce(new OverwriteObjectsReduce(true)).collect();
+                CollectionUtil.iteratorToList(
+                        getDataStream(env)
+                                .keyBy(x -> x.f0)
+                                .reduce(new OverwriteObjectsReduce(true))
+                                .executeAndCollect());
 
         Collections.sort(enabledResult, comparator);
 
         env.getConfig().disableObjectReuse();
 
         List<Tuple2<IntValue, IntValue>> disabledResult =
-                getDataSet(env).groupBy(0).reduce(new OverwriteObjectsReduce(true)).collect();
+                CollectionUtil.iteratorToList(
+                        getDataStream(env)
+                                .keyBy(x -> x.f0)
+                                .reduce(new OverwriteObjectsReduce(true))
+                                .executeAndCollect());
 
         Collections.sort(disabledResult, comparator);
 
-        Assert.assertThat(disabledResult, is(enabledResult));
+        assertThat(disabledResult).isEqualTo(enabledResult);
     }
 
     private class OverwriteObjectsReduce implements ReduceFunction<Tuple2<IntValue, IntValue>> {
@@ -149,7 +167,7 @@ public class OverwriteObjects {
 
     // --------------------------------------------------------------------------------------------
 
-    public void testJoin(ExecutionEnvironment env) throws Exception {
+    public void testJoin(StreamExecutionEnvironment env) throws Exception {
         /*
          * Test JoinDriver, LeftOuterJoinDriver, RightOuterJoinDriver, and FullOuterJoinDriver
          */
@@ -170,125 +188,32 @@ public class OverwriteObjects {
             env.getConfig().enableObjectReuse();
 
             enabledResult =
-                    getDataSet(env)
-                            .join(getDataSet(env), joinHint)
-                            .where(0)
-                            .equalTo(0)
-                            .with(new OverwriteObjectsJoin())
-                            .collect();
+                    CollectionUtil.iteratorToList(
+                            getDataStream(env)
+                                    .join(getDataStream(env))
+                                    .where(x -> x.f0)
+                                    .equalTo(x -> x.f0)
+                                    .window(GlobalWindows.create())
+                                    .apply(new OverwriteObjectsJoin())
+                                    .executeAndCollect());
 
             Collections.sort(enabledResult, comparator);
 
             env.getConfig().disableObjectReuse();
 
             disabledResult =
-                    getDataSet(env)
-                            .join(getDataSet(env), joinHint)
-                            .where(0)
-                            .equalTo(0)
-                            .with(new OverwriteObjectsJoin())
-                            .collect();
+                    CollectionUtil.iteratorToList(
+                            getDataStream(env)
+                                    .join(getDataStream(env))
+                                    .where(x -> x.f0)
+                                    .equalTo(x -> x.f0)
+                                    .window(GlobalWindows.create())
+                                    .apply(new OverwriteObjectsJoin())
+                                    .executeAndCollect());
 
             Collections.sort(disabledResult, comparator);
 
-            Assert.assertEquals("JoinHint=" + joinHint, disabledResult, enabledResult);
-
-            // Left outer join
-
-            if (joinHint != JoinHint.BROADCAST_HASH_FIRST) {
-                LOG.info("Testing left outer join with JoinHint = {}", joinHint);
-
-                env.getConfig().enableObjectReuse();
-
-                enabledResult =
-                        getDataSet(env)
-                                .leftOuterJoin(getFilteredDataSet(env), joinHint)
-                                .where(0)
-                                .equalTo(0)
-                                .with(new OverwriteObjectsJoin())
-                                .collect();
-
-                Collections.sort(enabledResult, comparator);
-
-                env.getConfig().disableObjectReuse();
-
-                disabledResult =
-                        getDataSet(env)
-                                .leftOuterJoin(getFilteredDataSet(env), joinHint)
-                                .where(0)
-                                .equalTo(0)
-                                .with(new OverwriteObjectsJoin())
-                                .collect();
-
-                Collections.sort(disabledResult, comparator);
-
-                Assert.assertThat("JoinHint=" + joinHint, disabledResult, is(enabledResult));
-            }
-
-            // Right outer join
-
-            if (joinHint != JoinHint.BROADCAST_HASH_SECOND) {
-                LOG.info("Testing right outer join with JoinHint = {}", joinHint);
-
-                env.getConfig().enableObjectReuse();
-
-                enabledResult =
-                        getDataSet(env)
-                                .rightOuterJoin(getFilteredDataSet(env), joinHint)
-                                .where(0)
-                                .equalTo(0)
-                                .with(new OverwriteObjectsJoin())
-                                .collect();
-
-                Collections.sort(enabledResult, comparator);
-
-                env.getConfig().disableObjectReuse();
-
-                disabledResult =
-                        getDataSet(env)
-                                .rightOuterJoin(getFilteredDataSet(env), joinHint)
-                                .where(0)
-                                .equalTo(0)
-                                .with(new OverwriteObjectsJoin())
-                                .collect();
-
-                Collections.sort(disabledResult, comparator);
-
-                Assert.assertThat("JoinHint=" + joinHint, disabledResult, is(enabledResult));
-            }
-
-            // Full outer join
-
-            if (joinHint != JoinHint.BROADCAST_HASH_FIRST
-                    && joinHint != JoinHint.BROADCAST_HASH_SECOND) {
-                LOG.info("Testing full outer join with JoinHint = {}", joinHint);
-
-                env.getConfig().enableObjectReuse();
-
-                enabledResult =
-                        getDataSet(env)
-                                .fullOuterJoin(getFilteredDataSet(env), joinHint)
-                                .where(0)
-                                .equalTo(0)
-                                .with(new OverwriteObjectsJoin())
-                                .collect();
-
-                Collections.sort(enabledResult, comparator);
-
-                env.getConfig().disableObjectReuse();
-
-                disabledResult =
-                        getDataSet(env)
-                                .fullOuterJoin(getFilteredDataSet(env), joinHint)
-                                .where(0)
-                                .equalTo(0)
-                                .with(new OverwriteObjectsJoin())
-                                .collect();
-
-                Collections.sort(disabledResult, comparator);
-
-                Assert.assertThat("JoinHint=" + joinHint, disabledResult, is(enabledResult));
-            }
+            assertThat(enabledResult).as("JoinHint=" + joinHint).isEqualTo(disabledResult);
         }
     }
 
@@ -304,49 +229,6 @@ public class OverwriteObjects {
                 Tuple2<IntValue, IntValue> a, Tuple2<IntValue, IntValue> b) throws Exception {
             return scrambler.scramble(a, b);
         }
-    }
-
-    // --------------------------------------------------------------------------------------------
-
-    public void testCross(ExecutionEnvironment env) throws Exception {
-        /*
-         * Test CrossDriver
-         */
-
-        LOG.info("Testing cross");
-
-        DataSet<Tuple2<IntValue, IntValue>> small = getDataSet(env, 100, 20);
-        DataSet<Tuple2<IntValue, IntValue>> large = getDataSet(env, 10000, 2000);
-
-        // test NESTEDLOOP_BLOCKED_OUTER_FIRST and NESTEDLOOP_BLOCKED_OUTER_SECOND with object reuse
-        // enabled
-
-        env.getConfig().enableObjectReuse();
-
-        List<Tuple2<IntValue, IntValue>> enabledResultWithHuge =
-                small.crossWithHuge(large).with(new OverwriteObjectsCross()).collect();
-
-        List<Tuple2<IntValue, IntValue>> enabledResultWithTiny =
-                small.crossWithTiny(large).with(new OverwriteObjectsCross()).collect();
-
-        Assert.assertThat(enabledResultWithHuge, is(enabledResultWithTiny));
-
-        // test NESTEDLOOP_BLOCKED_OUTER_FIRST and NESTEDLOOP_BLOCKED_OUTER_SECOND with object reuse
-        // disabled
-
-        env.getConfig().disableObjectReuse();
-
-        List<Tuple2<IntValue, IntValue>> disabledResultWithHuge =
-                small.crossWithHuge(large).with(new OverwriteObjectsCross()).collect();
-
-        List<Tuple2<IntValue, IntValue>> disabledResultWithTiny =
-                small.crossWithTiny(large).with(new OverwriteObjectsCross()).collect();
-
-        Assert.assertThat(disabledResultWithHuge, is(disabledResultWithTiny));
-
-        // verify match between object reuse enabled and disabled
-        Assert.assertThat(disabledResultWithHuge, is(enabledResultWithHuge));
-        Assert.assertThat(disabledResultWithTiny, is(enabledResultWithTiny));
     }
 
     private class OverwriteObjectsCross
@@ -365,20 +247,21 @@ public class OverwriteObjects {
 
     // --------------------------------------------------------------------------------------------
 
-    private DataSet<Tuple2<IntValue, IntValue>> getDataSet(
-            ExecutionEnvironment env, int numberOfElements, int keyRange) {
+    private DataStream<Tuple2<IntValue, IntValue>> getDataStream(
+            StreamExecutionEnvironment env, int numberOfElements, int keyRange) {
         return env.fromCollection(
                 new TupleIntValueIntValueIterator(numberOfElements, keyRange),
                 TupleTypeInfo.<Tuple2<IntValue, IntValue>>getBasicAndBasicValueTupleTypeInfo(
                         IntValue.class, IntValue.class));
     }
 
-    private DataSet<Tuple2<IntValue, IntValue>> getDataSet(ExecutionEnvironment env) {
-        return getDataSet(env, NUMBER_OF_ELEMENTS, KEY_RANGE);
+    private DataStream<Tuple2<IntValue, IntValue>> getDataStream(StreamExecutionEnvironment env) {
+        return getDataStream(env, NUMBER_OF_ELEMENTS, KEY_RANGE);
     }
 
-    private DataSet<Tuple2<IntValue, IntValue>> getFilteredDataSet(ExecutionEnvironment env) {
-        return getDataSet(env)
+    private DataStream<Tuple2<IntValue, IntValue>> getFilteredDataStream(
+            StreamExecutionEnvironment env) {
+        return getDataStream(env)
                 .filter(
                         new FilterFunction<Tuple2<IntValue, IntValue>>() {
                             @Override

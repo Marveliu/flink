@@ -49,6 +49,7 @@ import org.apache.flink.table.types.logical.TimestampKind;
 import org.apache.flink.table.types.logical.TimestampType;
 import org.apache.flink.table.types.logical.VarBinaryType;
 import org.apache.flink.table.types.logical.VarCharType;
+import org.apache.flink.table.types.logical.VariantType;
 import org.apache.flink.table.types.logical.ZonedTimestampType;
 
 import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.core.JsonParser;
@@ -61,7 +62,7 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 
-import static org.apache.flink.table.planner.plan.nodes.exec.serde.JsonSerdeUtil.loadClass;
+import static org.apache.flink.table.planner.plan.nodes.exec.serde.CompiledPlanSerdeUtil.loadClass;
 import static org.apache.flink.table.planner.plan.nodes.exec.serde.LogicalTypeJsonSerializer.FIELD_NAME_ATTRIBUTES;
 import static org.apache.flink.table.planner.plan.nodes.exec.serde.LogicalTypeJsonSerializer.FIELD_NAME_ATTRIBUTE_DESCRIPTION;
 import static org.apache.flink.table.planner.plan.nodes.exec.serde.LogicalTypeJsonSerializer.FIELD_NAME_ATTRIBUTE_NAME;
@@ -164,6 +165,8 @@ final class LogicalTypeJsonDeserializer extends StdDeserializer<LogicalType> {
                 return deserializeStructuredType(logicalTypeNode, serdeContext);
             case SYMBOL:
                 return new SymbolType<>();
+            case VARIANT:
+                return new VariantType();
             case RAW:
                 return deserializeSpecializedRaw(logicalTypeNode, serdeContext);
             default:
@@ -333,14 +336,15 @@ final class LogicalTypeJsonDeserializer extends StdDeserializer<LogicalType> {
             identifier = null;
         }
 
+        final String className;
         final Class<?> implementationClass;
         if (logicalTypeNode.has(FIELD_NAME_IMPLEMENTATION_CLASS)) {
+            className = logicalTypeNode.get(FIELD_NAME_IMPLEMENTATION_CLASS).asText();
             implementationClass =
-                    loadClass(
-                            logicalTypeNode.get(FIELD_NAME_IMPLEMENTATION_CLASS).asText(),
-                            serdeContext,
-                            "structured type");
+                    StructuredType.resolveClass(serdeContext.getClassLoader(), className)
+                            .orElse(null);
         } else {
+            className = null;
             implementationClass = null;
         }
 
@@ -349,8 +353,10 @@ final class LogicalTypeJsonDeserializer extends StdDeserializer<LogicalType> {
             builder = StructuredType.newBuilder(identifier, implementationClass);
         } else if (identifier != null) {
             builder = StructuredType.newBuilder(identifier);
-        } else {
+        } else if (implementationClass != null) {
             builder = StructuredType.newBuilder(implementationClass);
+        } else {
+            builder = StructuredType.newBuilder(className);
         }
 
         if (logicalTypeNode.has(FIELD_NAME_DESCRIPTION)) {

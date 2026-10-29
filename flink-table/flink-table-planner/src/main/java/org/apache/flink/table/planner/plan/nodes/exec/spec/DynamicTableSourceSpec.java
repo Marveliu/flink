@@ -19,14 +19,17 @@
 package org.apache.flink.table.planner.plan.nodes.exec.spec;
 
 import org.apache.flink.table.api.TableException;
+import org.apache.flink.table.catalog.Catalog;
 import org.apache.flink.table.catalog.ContextResolvedTable;
 import org.apache.flink.table.connector.source.DynamicTableSource;
 import org.apache.flink.table.connector.source.LookupTableSource;
 import org.apache.flink.table.connector.source.ScanTableSource;
+import org.apache.flink.table.connector.source.VectorSearchTableSource;
 import org.apache.flink.table.factories.DynamicTableSourceFactory;
 import org.apache.flink.table.factories.FactoryUtil;
 import org.apache.flink.table.module.Module;
 import org.apache.flink.table.planner.calcite.FlinkContext;
+import org.apache.flink.table.planner.calcite.FlinkTypeFactory;
 import org.apache.flink.table.planner.plan.abilities.source.SourceAbilityContext;
 import org.apache.flink.table.planner.plan.abilities.source.SourceAbilitySpec;
 import org.apache.flink.table.types.logical.RowType;
@@ -66,22 +69,34 @@ public class DynamicTableSourceSpec extends DynamicTableSpecBase {
         this.sourceAbilities = sourceAbilities;
     }
 
-    private DynamicTableSource getTableSource(FlinkContext flinkContext) {
+    private DynamicTableSource getTableSource(FlinkContext context, FlinkTypeFactory typeFactory) {
         if (tableSource == null) {
-            final DynamicTableSourceFactory factory =
-                    flinkContext
-                            .getModuleManager()
+            DynamicTableSourceFactory factory =
+                    context.getModuleManager()
                             .getFactory(Module::getTableSourceFactory)
                             .orElse(null);
+
+            if (factory == null) {
+                // try to get DynamicTableSourceFactory from Catalog,
+                // we need it for we can only get DynamicTableSourceFactory from catalog in Hive
+                // table
+                Catalog catalog =
+                        context.getCatalogManager()
+                                .getCatalog(contextResolvedTable.getIdentifier().getCatalogName())
+                                .orElse(null);
+                factory =
+                        FactoryUtil.getDynamicTableFactory(DynamicTableSourceFactory.class, catalog)
+                                .orElse(null);
+            }
 
             tableSource =
                     FactoryUtil.createDynamicTableSource(
                             factory,
                             contextResolvedTable.getIdentifier(),
                             contextResolvedTable.getResolvedTable(),
-                            loadOptionsFromCatalogTable(contextResolvedTable, flinkContext),
-                            flinkContext.getTableConfig().getConfiguration(),
-                            flinkContext.getClassLoader(),
+                            loadOptionsFromCatalogTable(contextResolvedTable, context),
+                            context.getTableConfig(),
+                            context.getClassLoader(),
                             contextResolvedTable.isTemporary());
 
             if (sourceAbilities != null) {
@@ -89,12 +104,12 @@ public class DynamicTableSourceSpec extends DynamicTableSpecBase {
                         (RowType)
                                 contextResolvedTable
                                         .getResolvedSchema()
-                                        .toSourceRowDataType()
+                                        .toPhysicalRowDataType()
                                         .getLogicalType();
                 for (SourceAbilitySpec spec : sourceAbilities) {
-                    SourceAbilityContext context =
-                            new SourceAbilityContext(flinkContext, newProducedType);
-                    spec.apply(tableSource, context);
+                    SourceAbilityContext sourceAbilityContext =
+                            new SourceAbilityContext(context, typeFactory, newProducedType);
+                    spec.apply(tableSource, sourceAbilityContext);
                     if (spec.getProducedType().isPresent()) {
                         newProducedType = spec.getProducedType().get();
                     }
@@ -104,8 +119,8 @@ public class DynamicTableSourceSpec extends DynamicTableSpecBase {
         return tableSource;
     }
 
-    public ScanTableSource getScanTableSource(FlinkContext flinkContext) {
-        DynamicTableSource tableSource = getTableSource(flinkContext);
+    public ScanTableSource getScanTableSource(FlinkContext context, FlinkTypeFactory typeFactory) {
+        DynamicTableSource tableSource = getTableSource(context, typeFactory);
         if (tableSource instanceof ScanTableSource) {
             return (ScanTableSource) tableSource;
         } else {
@@ -116,14 +131,28 @@ public class DynamicTableSourceSpec extends DynamicTableSpecBase {
         }
     }
 
-    public LookupTableSource getLookupTableSource(FlinkContext flinkContext) {
-        DynamicTableSource tableSource = getTableSource(flinkContext);
+    public LookupTableSource getLookupTableSource(
+            FlinkContext context, FlinkTypeFactory typeFactory) {
+        DynamicTableSource tableSource = getTableSource(context, typeFactory);
         if (tableSource instanceof LookupTableSource) {
             return (LookupTableSource) tableSource;
         } else {
             throw new TableException(
                     String.format(
                             "%s is not a LookupTableSource.\nPlease check it.",
+                            tableSource.getClass().getName()));
+        }
+    }
+
+    public VectorSearchTableSource getVectorSearchTableSource(
+            FlinkContext context, FlinkTypeFactory typeFactory) {
+        DynamicTableSource tableSource = getTableSource(context, typeFactory);
+        if (tableSource instanceof VectorSearchTableSource) {
+            return (VectorSearchTableSource) tableSource;
+        } else {
+            throw new TableException(
+                    String.format(
+                            "%s is not a VectorSearchTableSource.\nPlease check it.",
                             tableSource.getClass().getName()));
         }
     }

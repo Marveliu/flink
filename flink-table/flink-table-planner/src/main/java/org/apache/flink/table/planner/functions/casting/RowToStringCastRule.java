@@ -19,6 +19,7 @@
 package org.apache.flink.table.planner.functions.casting;
 
 import org.apache.flink.table.data.ArrayData;
+import org.apache.flink.table.planner.codegen.CodeGeneratorContext;
 import org.apache.flink.table.types.logical.LogicalType;
 import org.apache.flink.table.types.logical.LogicalTypeFamily;
 import org.apache.flink.table.types.logical.LogicalTypeRoot;
@@ -56,54 +57,52 @@ class RowToStringCastRule extends AbstractNullAwareCodeGeneratorCastRule<ArrayDa
 
     isNull$0 = _myInputIsNull;
     if (!isNull$0) {
-        builder$1.setLength(0);
-        builder$1.append("(");
-        int f0Value$3 = -1;
-        boolean f0IsNull$4 = _myInput.isNullAt(0);
-        if (!f0IsNull$4) {
-            f0Value$3 = _myInput.getInt(0);
-            isNull$2 = f0IsNull$4;
+        builder$0.setLength(0);
+        builder$0.append("(");
+        int f0Value$2 = -1;
+        boolean f0IsNull$3 = _myInput.isNullAt(0);
+        if (!f0IsNull$3) {
+            f0Value$2 = _myInput.getInt(0);
+            isNull$2 = false;
             if (!isNull$2) {
-                result$3 = org.apache.flink.table.data.binary.BinaryStringData.fromString("" + f0Value$3);
+                result$3 = org.apache.flink.table.data.binary.BinaryStringData.fromString("" + f0Value$2);
                 isNull$2 = result$3 == null;
             } else {
                 result$3 = org.apache.flink.table.data.binary.BinaryStringData.EMPTY_UTF8;
             }
-            builder$1.append(result$3);
+            builder$0.append(result$3);
         } else {
-            builder$1.append("NULL");
+            builder$0.append("NULL");
         }
-        builder$1.append(", ");
-        org.apache.flink.table.data.binary.BinaryStringData f1Value$5 = org.apache.flink.table.data.binary.BinaryStringData.EMPTY_UTF8;
-        boolean f1IsNull$6 = _myInput.isNullAt(1);
-        if (!f1IsNull$6) {
-            f1Value$5 = ((org.apache.flink.table.data.binary.BinaryStringData) _myInput.getString(1));
-            builder$1.append(f1Value$5);
+        builder$0.append(", ");
+        org.apache.flink.table.data.binary.BinaryStringData f1Value$4 = org.apache.flink.table.data.binary.BinaryStringData.EMPTY_UTF8;
+        boolean f1IsNull$5 = _myInput.isNullAt(1);
+        if (!f1IsNull$5) {
+            f1Value$4 = ((org.apache.flink.table.data.binary.BinaryStringData) _myInput.getString(1));
+            builder$0.append(f1Value$4);
         } else {
-            builder$1.append("NULL");
+            builder$0.append("NULL");
         }
-        builder$1.append(")");
-        java.lang.String resultString$2;
-        resultString$2 = builder$1.toString();
-        if (builder$1.length() > 12) {
-            resultString$2 = builder$1.substring(0, java.lang.Math.min(builder$1.length(), 12));
+        builder$0.append(")");
+        java.lang.String resultString$1;
+        if (builder$0.length() > 12) {
+            resultString$1 = builder$0.substring(0, 12);
         } else {
-            if (resultString$2.length() < 12) {
-                int padLength$7;
-                padLength$7 = 12 - resultString$2.length();
-                java.lang.StringBuilder sbPadding$8;
-                sbPadding$8 = new java.lang.StringBuilder();
-                for (int i$9 = 0; i$9 < padLength$7; i$9++) {
-                    sbPadding$8.append(" ");
-                }
-                resultString$2 = resultString$2 + sbPadding$8.toString();
+            resultString$1 = builder$0.toString();
+            if (builder$0.length() < 12) {
+                int padLength$6;
+                padLength$6 = 12 - builder$0.length();
+                resultString$1 = resultString$1 + " ".repeat(padLength$6);
             }
         }
-        result$1 = org.apache.flink.table.data.binary.BinaryStringData.fromString(resultString$2);
+        result$1 = org.apache.flink.table.data.binary.BinaryStringData.fromString(resultString$1);
         isNull$0 = result$1 == null;
     } else {
         result$1 = org.apache.flink.table.data.binary.BinaryStringData.EMPTY_UTF8;
     }
+
+    returnTerm = result$1
+    isNullTerm = isNull$0
 
     */
     @Override
@@ -114,12 +113,13 @@ class RowToStringCastRule extends AbstractNullAwareCodeGeneratorCastRule<ArrayDa
             LogicalType inputLogicalType,
             LogicalType targetLogicalType) {
         final List<LogicalType> fields = LogicalTypeChecks.getFieldTypes(inputLogicalType);
+        CodeGeneratorContext codeGeneratorContext = context.getCodeGeneratorContext();
 
-        final String builderTerm = newName("builder");
+        final String builderTerm = newName(codeGeneratorContext, "builder");
         context.declareClassField(
                 className(StringBuilder.class), builderTerm, constructorCall(StringBuilder.class));
 
-        final String resultStringTerm = newName("resultString");
+        final String resultStringTerm = newName(codeGeneratorContext, "resultString");
         final int length = LogicalTypeChecks.getLength(targetLogicalType);
         final LogicalType targetTypeForElementCast =
                 targetLogicalType.is(LogicalTypeFamily.CHARACTER_STRING)
@@ -135,8 +135,9 @@ class RowToStringCastRule extends AbstractNullAwareCodeGeneratorCastRule<ArrayDa
             final int fieldIndex = i;
             final LogicalType fieldType = fields.get(fieldIndex);
 
-            final String fieldTerm = newName("f" + fieldIndex + "Value");
-            final String fieldIsNullTerm = newName("f" + fieldIndex + "IsNull");
+            final String fieldTerm = newName(codeGeneratorContext, "f" + fieldIndex + "Value");
+            final String fieldIsNullTerm =
+                    newName(codeGeneratorContext, "f" + fieldIndex + "IsNull");
 
             final CastCodeBlock codeBlock =
                     // Null check is done at the row access level
@@ -188,7 +189,8 @@ class RowToStringCastRule extends AbstractNullAwareCodeGeneratorCastRule<ArrayDa
                         context.legacyBehaviour(),
                         length,
                         resultStringTerm,
-                        builderTerm)
+                        builderTerm,
+                        context.getCodeGeneratorContext())
                 // Assign the result value
                 .assignStmt(
                         returnVariable,

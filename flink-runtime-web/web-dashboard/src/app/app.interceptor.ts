@@ -16,36 +16,84 @@
  * limitations under the License.
  */
 
-import { HttpEvent, HttpHandler, HttpInterceptor, HttpRequest } from '@angular/common/http';
-import { Injectable, Injector } from '@angular/core';
+import {
+  HttpEvent,
+  HttpHandler,
+  HttpInterceptor,
+  HttpRequest,
+  HttpResponse,
+  HttpResponseBase,
+  HttpStatusCode
+} from '@angular/common/http';
+import { Injectable } from '@angular/core';
 import { Observable, throwError } from 'rxjs';
-import { catchError } from 'rxjs/operators';
+import { catchError, tap } from 'rxjs/operators';
 
-import { NzNotificationService } from 'ng-zorro-antd/notification';
-
-import { StatusService } from 'services';
+import { EXPECTED_NOT_FOUND, StatusService } from '@flink-runtime-web/services';
+import { NzNotificationService, NzNotificationDataOptions } from 'ng-zorro-antd/notification';
 
 @Injectable()
 export class AppInterceptor implements HttpInterceptor {
-  constructor(private readonly injector: Injector) {}
+  constructor(
+    private readonly statusService: StatusService,
+    private readonly notificationService: NzNotificationService
+  ) {}
 
   intercept(req: HttpRequest<unknown>, next: HttpHandler): Observable<HttpEvent<unknown>> {
     // Error response from below url should be ignored
     const ignoreErrorUrlEndsList = ['checkpoints/config', 'checkpoints'];
-    const ignoreErrorMessage = ['File not found.'];
+    const ignoreErrorMessage = ['File not found.', 'Resource not found.'];
+    const option: NzNotificationDataOptions = {
+      nzDuration: 0,
+      nzStyle: { width: 'auto', 'white-space': 'pre-wrap' }
+    };
 
-    return next.handle(req).pipe(
+    return next.handle(req.clone({ withCredentials: true })).pipe(
+      tap(event => {
+        if (event instanceof HttpResponse) {
+          if (this.statusService.networkFailureCount > 0) {
+            this.statusService.networkFailureCount = 0;
+          }
+          if (this.statusService.networkErrorNotificationId) {
+            this.notificationService.remove(this.statusService.networkErrorNotificationId);
+          }
+        }
+      }),
       catchError(res => {
+        if (
+          res instanceof HttpResponseBase &&
+          (res.status == HttpStatusCode.MovedPermanently ||
+            res.status == HttpStatusCode.TemporaryRedirect ||
+            res.status == HttpStatusCode.SeeOther) &&
+          res.headers.has('Location')
+        ) {
+          window.location.href = String(res.headers.get('Location'));
+        }
+
         const errorMessage = res && res.error && res.error.errors && res.error.errors[0];
+        const expectedNotFound = res.status === HttpStatusCode.NotFound && req.context.get(EXPECTED_NOT_FOUND);
         if (
           errorMessage &&
+          !expectedNotFound &&
           ignoreErrorUrlEndsList.every(url => !res.url.endsWith(url)) &&
           ignoreErrorMessage.every(message => errorMessage !== message)
         ) {
-          this.injector.get<StatusService>(StatusService).listOfErrorMessage.push(errorMessage);
-          this.injector
-            .get<NzNotificationService>(NzNotificationService)
-            .info('Server Response Message:', errorMessage);
+          this.statusService.listOfErrorMessage.push(errorMessage);
+          this.notificationService.info('Server Response Message:', errorMessage.replaceAll(' at ', '\n at '), option);
+          this.statusService.markAppForCheck();
+        } else if (res.status === 0 || res.status >= 500) {
+          this.statusService.networkFailureCount += 1;
+          if (
+            this.statusService.networkFailureCount >= this.statusService.networkFailureThreshold &&
+            !this.statusService.networkErrorNotificationId
+          ) {
+            const ref = this.notificationService.warning('Network Error:', 'Connection lost or server error.', option);
+            this.statusService.networkErrorNotificationId = ref.messageId;
+            ref.onClose.subscribe(() => {
+              this.statusService.networkErrorNotificationId = null;
+              this.statusService.networkFailureCount = 0;
+            });
+          }
         }
         return throwError(res);
       })

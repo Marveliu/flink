@@ -36,10 +36,10 @@ import org.apache.flink.runtime.jobmanager.scheduler.SlotSharingGroup;
 import org.apache.flink.runtime.jobmaster.JobResult;
 import org.apache.flink.runtime.testutils.MiniClusterResourceConfiguration;
 import org.apache.flink.test.util.MiniClusterWithClientResource;
-import org.apache.flink.util.TestLogger;
+import org.apache.flink.util.TestLoggerExtension;
 
-import org.junit.Assert;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -48,8 +48,14 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 
+import static org.apache.flink.configuration.ConfigurationUtils.getBooleanConfigOption;
+import static org.apache.flink.configuration.ConfigurationUtils.getIntConfigOption;
+import static org.apache.flink.runtime.util.JobVertexConnectionUtils.connectNewDataSetAsInput;
+import static org.assertj.core.api.Assertions.assertThat;
+
 /** Manually test the throughput of the network stack. */
-public class NetworkStackThroughputITCase extends TestLogger {
+@ExtendWith(TestLoggerExtension.class)
+class NetworkStackThroughputITCase {
 
     private static final Logger LOG = LoggerFactory.getLogger(NetworkStackThroughputITCase.class);
 
@@ -88,8 +94,11 @@ public class NetworkStackThroughputITCase extends TestLogger {
                 // Determine the amount of data to send per subtask
                 int dataVolumeGb =
                         getTaskConfiguration()
-                                .getInteger(
-                                        NetworkStackThroughputITCase.DATA_VOLUME_GB_CONFIG_KEY, 1);
+                                .get(
+                                        getIntConfigOption(
+                                                NetworkStackThroughputITCase
+                                                        .DATA_VOLUME_GB_CONFIG_KEY),
+                                        1);
 
                 long dataMbPerSubtask = (dataVolumeGb * 10) / getCurrentNumberOfSubtasks();
                 long numRecordsToEmit =
@@ -105,7 +114,8 @@ public class NetworkStackThroughputITCase extends TestLogger {
                                 dataMbPerSubtask / 1024.0));
 
                 boolean isSlow =
-                        getTaskConfiguration().getBoolean(IS_SLOW_SENDER_CONFIG_KEY, false);
+                        getTaskConfiguration()
+                                .get(getBooleanConfigOption(IS_SLOW_SENDER_CONFIG_KEY), false);
 
                 int numRecords = 0;
                 SpeedTestRecord record = new SpeedTestRecord();
@@ -180,7 +190,8 @@ public class NetworkStackThroughputITCase extends TestLogger {
 
             try {
                 boolean isSlow =
-                        getTaskConfiguration().getBoolean(IS_SLOW_RECEIVER_CONFIG_KEY, false);
+                        getTaskConfiguration()
+                                .get(getBooleanConfigOption(IS_SLOW_RECEIVER_CONFIG_KEY), false);
 
                 int numRecords = 0;
                 while (reader.next() != null) {
@@ -225,7 +236,7 @@ public class NetworkStackThroughputITCase extends TestLogger {
     // ------------------------------------------------------------------------
 
     @Test
-    public void testThroughput() throws Exception {
+    void testThroughput() throws Exception {
         Object[][] configParams =
                 new Object[][] {
                     new Object[] {1, false, false, false, 4, 2},
@@ -298,7 +309,7 @@ public class NetworkStackThroughputITCase extends TestLogger {
         final JobResult jobResult =
                 client.submitJob(jobGraph).thenCompose(client::requestJobResult).get();
 
-        Assert.assertFalse(jobResult.getSerializedThrowable().isPresent());
+        assertThat(jobResult.getSerializedThrowable()).isEmpty();
 
         final long dataVolumeMbit = dataVolumeGb * 8192;
         final long runtimeSecs =
@@ -327,8 +338,10 @@ public class NetworkStackThroughputITCase extends TestLogger {
 
         producer.setInvokableClass(SpeedTestProducer.class);
         producer.setParallelism(numSubtasks);
-        producer.getConfiguration().setInteger(DATA_VOLUME_GB_CONFIG_KEY, dataVolumeGb);
-        producer.getConfiguration().setBoolean(IS_SLOW_SENDER_CONFIG_KEY, isSlowSender);
+        producer.getConfiguration()
+                .set(getIntConfigOption(DATA_VOLUME_GB_CONFIG_KEY), dataVolumeGb);
+        producer.getConfiguration()
+                .set(getBooleanConfigOption(IS_SLOW_SENDER_CONFIG_KEY), isSlowSender);
 
         jobVertices.add(producer);
 
@@ -347,18 +360,28 @@ public class NetworkStackThroughputITCase extends TestLogger {
 
         consumer.setInvokableClass(SpeedTestConsumer.class);
         consumer.setParallelism(numSubtasks);
-        consumer.getConfiguration().setBoolean(IS_SLOW_RECEIVER_CONFIG_KEY, isSlowReceiver);
+        consumer.getConfiguration()
+                .set(getBooleanConfigOption(IS_SLOW_RECEIVER_CONFIG_KEY), isSlowReceiver);
 
         jobVertices.add(consumer);
 
         if (useForwarder) {
-            forwarder.connectNewDataSetAsInput(
-                    producer, DistributionPattern.ALL_TO_ALL, ResultPartitionType.PIPELINED);
-            consumer.connectNewDataSetAsInput(
-                    forwarder, DistributionPattern.ALL_TO_ALL, ResultPartitionType.PIPELINED);
+            connectNewDataSetAsInput(
+                    forwarder,
+                    producer,
+                    DistributionPattern.ALL_TO_ALL,
+                    ResultPartitionType.PIPELINED);
+            connectNewDataSetAsInput(
+                    consumer,
+                    forwarder,
+                    DistributionPattern.ALL_TO_ALL,
+                    ResultPartitionType.PIPELINED);
         } else {
-            consumer.connectNewDataSetAsInput(
-                    producer, DistributionPattern.ALL_TO_ALL, ResultPartitionType.PIPELINED);
+            connectNewDataSetAsInput(
+                    consumer,
+                    producer,
+                    DistributionPattern.ALL_TO_ALL,
+                    ResultPartitionType.PIPELINED);
         }
 
         return JobGraphTestUtils.streamingJobGraph(jobVertices.toArray(new JobVertex[0]));

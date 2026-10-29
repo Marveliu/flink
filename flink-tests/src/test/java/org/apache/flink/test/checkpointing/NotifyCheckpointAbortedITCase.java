@@ -20,19 +20,28 @@ package org.apache.flink.test.checkpointing;
 
 import org.apache.flink.api.common.ExecutionConfig;
 import org.apache.flink.api.common.JobID;
+import org.apache.flink.api.common.eventtime.WatermarkStrategy;
 import org.apache.flink.api.common.functions.MapFunction;
 import org.apache.flink.api.common.state.ValueState;
 import org.apache.flink.api.common.state.ValueStateDescriptor;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
+import org.apache.flink.api.connector.source.ReaderOutput;
+import org.apache.flink.api.connector.source.SourceReader;
+import org.apache.flink.api.connector.source.SourceReaderContext;
+import org.apache.flink.api.connector.source.SplitEnumerator;
+import org.apache.flink.api.connector.source.SplitEnumeratorContext;
 import org.apache.flink.api.java.functions.KeySelector;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.client.program.ClusterClient;
-import org.apache.flink.configuration.CheckpointingOptions;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.HighAvailabilityOptions;
+import org.apache.flink.configuration.IllegalConfigurationException;
 import org.apache.flink.configuration.ReadableConfig;
+import org.apache.flink.configuration.StateRecoveryOptions;
+import org.apache.flink.core.execution.CheckpointingMode;
 import org.apache.flink.core.fs.CloseableRegistry;
 import org.apache.flink.core.fs.Path;
+import org.apache.flink.core.io.InputStatus;
 import org.apache.flink.core.testutils.OneShotLatch;
 import org.apache.flink.runtime.checkpoint.CheckpointOptions;
 import org.apache.flink.runtime.checkpoint.CheckpointRecoveryFactory;
@@ -40,13 +49,13 @@ import org.apache.flink.runtime.checkpoint.CheckpointsCleaner;
 import org.apache.flink.runtime.checkpoint.CompletedCheckpoint;
 import org.apache.flink.runtime.checkpoint.PerJobCheckpointRecoveryFactory;
 import org.apache.flink.runtime.checkpoint.StandaloneCompletedCheckpointStore;
-import org.apache.flink.runtime.execution.Environment;
 import org.apache.flink.runtime.highavailability.HighAvailabilityServices;
 import org.apache.flink.runtime.highavailability.HighAvailabilityServicesFactory;
 import org.apache.flink.runtime.highavailability.nonha.embedded.EmbeddedHaServicesWithLeadershipControl;
 import org.apache.flink.runtime.jobgraph.JobGraph;
 import org.apache.flink.runtime.operators.testutils.ExpectedTestException;
 import org.apache.flink.runtime.state.BackendBuildingException;
+import org.apache.flink.runtime.state.CheckpointStorage;
 import org.apache.flink.runtime.state.CheckpointStreamFactory;
 import org.apache.flink.runtime.state.DefaultOperatorStateBackend;
 import org.apache.flink.runtime.state.DefaultOperatorStateBackendBuilder;
@@ -58,66 +67,80 @@ import org.apache.flink.runtime.state.SnapshotResources;
 import org.apache.flink.runtime.state.SnapshotResult;
 import org.apache.flink.runtime.state.SnapshotStrategy;
 import org.apache.flink.runtime.state.SnapshotStrategyRunner;
-import org.apache.flink.runtime.state.StateBackend;
-import org.apache.flink.runtime.state.filesystem.FsStateBackend;
+import org.apache.flink.runtime.state.StateBackendFactory;
+import org.apache.flink.runtime.state.hashmap.HashMapStateBackend;
+import org.apache.flink.runtime.state.storage.FileSystemCheckpointStorage;
 import org.apache.flink.runtime.testutils.MiniClusterResourceConfiguration;
-import org.apache.flink.streaming.api.CheckpointingMode;
 import org.apache.flink.streaming.api.checkpoint.CheckpointedFunction;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
-import org.apache.flink.streaming.api.functions.sink.SinkFunction;
-import org.apache.flink.streaming.api.functions.source.SourceFunction;
+import org.apache.flink.streaming.api.functions.sink.legacy.SinkFunction;
 import org.apache.flink.streaming.api.operators.StreamMap;
 import org.apache.flink.streaming.api.operators.StreamSink;
+import org.apache.flink.streaming.util.StateBackendUtils;
 import org.apache.flink.test.util.MiniClusterWithClientResource;
-import org.apache.flink.util.TestLogger;
+import org.apache.flink.test.util.source.AbstractTestSource;
+import org.apache.flink.test.util.source.SingleSplitEnumerator;
+import org.apache.flink.test.util.source.TestSourceReader;
+import org.apache.flink.test.util.source.TestSplit;
+import org.apache.flink.testutils.junit.extensions.parameterized.Parameter;
+import org.apache.flink.testutils.junit.extensions.parameterized.ParameterizedTestExtension;
+import org.apache.flink.testutils.junit.extensions.parameterized.Parameters;
+import org.apache.flink.testutils.junit.utils.TempDirUtils;
+import org.apache.flink.util.TestLoggerExtension;
 
-import org.junit.After;
-import org.junit.Before;
-import org.junit.ClassRule;
-import org.junit.Test;
-import org.junit.rules.TemporaryFolder;
-import org.junit.runner.RunWith;
-import org.junit.runners.Parameterized;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.TestTemplate;
+import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.api.io.TempDir;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nonnull;
 
+import java.io.IOException;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.HashMap;
+import java.util.List;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.apache.flink.runtime.state.SnapshotExecutionType.ASYNCHRONOUS;
-import static org.junit.Assert.assertEquals;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /** Integrated tests to verify the logic to notify checkpoint aborted via RPC message. */
-@RunWith(Parameterized.class)
-public class NotifyCheckpointAbortedITCase extends TestLogger {
+@ExtendWith({TestLoggerExtension.class, ParameterizedTestExtension.class})
+class NotifyCheckpointAbortedITCase {
+    private static final Logger LOG = LoggerFactory.getLogger(NotifyCheckpointAbortedITCase.class);
 
     private static final long DECLINE_CHECKPOINT_ID = 2L;
-    private static final long TEST_TIMEOUT = 100000;
+    private static final OneShotLatch DECLINE_CHECKPOINT_WAIT_LATCH = new OneShotLatch();
     private static final String DECLINE_SINK_NAME = "DeclineSink";
     private static MiniClusterWithClientResource cluster;
 
     private static Path checkpointPath;
 
-    @Parameterized.Parameter public boolean unalignedCheckpointEnabled;
+    @Parameter private boolean unalignedCheckpointEnabled;
 
-    @Parameterized.Parameters(name = "unalignedCheckpointEnabled ={0}")
-    public static Collection<Boolean> parameter() {
+    @Parameters(name = "unalignedCheckpointEnabled ={0}")
+    private static Collection<Boolean> parameter() {
         return Arrays.asList(true, false);
     }
 
-    @ClassRule public static final TemporaryFolder TEMPORARY_FOLDER = new TemporaryFolder();
+    @TempDir private java.nio.file.Path temporaryFolder;
 
-    @Before
-    public void setup() throws Exception {
+    @BeforeEach
+    void setup() throws Exception {
         Configuration configuration = new Configuration();
-        configuration.setBoolean(CheckpointingOptions.LOCAL_RECOVERY, true);
-        configuration.setString(HighAvailabilityOptions.HA_MODE, TestingHAFactory.class.getName());
+        configuration.set(StateRecoveryOptions.LOCAL_RECOVERY, true);
+        configuration.set(HighAvailabilityOptions.HA_MODE, TestingHAFactory.class.getName());
 
-        checkpointPath = new Path(TEMPORARY_FOLDER.newFolder().toURI());
+        checkpointPath = new Path(TempDirUtils.newFolder(temporaryFolder).toURI());
         cluster =
                 new MiniClusterWithClientResource(
                         new MiniClusterResourceConfiguration.Builder()
@@ -133,8 +156,8 @@ public class NotifyCheckpointAbortedITCase extends TestLogger {
         TestingCompletedCheckpointStore.reset();
     }
 
-    @After
-    public void shutdown() {
+    @AfterEach
+    void shutdown() {
         if (cluster != null) {
             cluster.after();
             cluster = null;
@@ -150,19 +173,21 @@ public class NotifyCheckpointAbortedITCase extends TestLogger {
      *
      * <p>The job graph looks like: NormalSource --> keyBy --> NormalMap --> DeclineSink
      */
-    @Test(timeout = TEST_TIMEOUT)
-    public void testNotifyCheckpointAborted() throws Exception {
+    @TestTemplate
+    @Timeout(value = 2, unit = TimeUnit.MINUTES)
+    void testNotifyCheckpointAborted() throws Exception {
         final StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
         env.enableCheckpointing(200, CheckpointingMode.EXACTLY_ONCE);
         env.getCheckpointConfig().enableUnalignedCheckpoints(unalignedCheckpointEnabled);
-        env.getCheckpointConfig().setTolerableCheckpointFailureNumber(1);
+        env.getCheckpointConfig().setTolerableCheckpointFailureNumber(2);
         env.disableOperatorChaining();
         env.setParallelism(1);
 
-        final StateBackend failingStateBackend = new DeclineSinkFailingStateBackend(checkpointPath);
-        env.setStateBackend(failingStateBackend);
+        StateBackendUtils.configureStateBackendWithFactory(
+                env,
+                "org.apache.flink.test.checkpointing.NotifyCheckpointAbortedITCase$DeclineSinkFailingStateBackendFactory");
 
-        env.addSource(new NormalSource())
+        env.fromSource(new NormalSource(), WatermarkStrategy.noWatermarks(), "NormalSource")
                 .name("NormalSource")
                 .keyBy((KeySelector<Tuple2<Integer, Integer>, Integer>) value -> value.f0)
                 .transform("NormalMap", TypeInformation.of(Integer.class), new NormalMap())
@@ -175,23 +200,23 @@ public class NotifyCheckpointAbortedITCase extends TestLogger {
         clusterClient.submitJob(jobGraph).get();
 
         TestingCompletedCheckpointStore.addCheckpointLatch.await();
-        log.info("The checkpoint to abort is ready to add to checkpoint store.");
+        LOG.info("The checkpoint to abort is ready to add to checkpoint store.");
         TestingCompletedCheckpointStore.abortCheckpointLatch.trigger();
 
-        log.info("Verifying whether all operators have been notified of checkpoint-1 aborted.");
+        LOG.info("Verifying whether all operators have been notified of checkpoint-1 aborted.");
         verifyAllOperatorsNotifyAborted();
-        log.info("Verified that all operators have been notified of checkpoint-1 aborted.");
+        LOG.info("Verified that all operators have been notified of checkpoint-1 aborted.");
         resetAllOperatorsNotifyAbortedLatches();
         verifyAllOperatorsNotifyAbortedTimes(1);
 
-        NormalSource.waitLatch.trigger();
-        log.info("Verifying whether all operators have been notified of checkpoint-2 aborted.");
+        DECLINE_CHECKPOINT_WAIT_LATCH.trigger();
+        LOG.info("Verifying whether all operators have been notified of checkpoint-2 aborted.");
         verifyAllOperatorsNotifyAborted();
-        log.info("Verified that all operators have been notified of checkpoint-2 aborted.");
+        LOG.info("Verified that all operators have been notified of checkpoint-2 aborted.");
         verifyAllOperatorsNotifyAbortedTimes(2);
 
         clusterClient.cancel(jobID).get();
-        log.info("Test is verified successfully as expected.");
+        LOG.info("Test is verified successfully as expected.");
     }
 
     private void verifyAllOperatorsNotifyAborted() throws InterruptedException {
@@ -205,51 +230,54 @@ public class NotifyCheckpointAbortedITCase extends TestLogger {
     }
 
     private void verifyAllOperatorsNotifyAbortedTimes(int expectedTimes) {
-        assertEquals(expectedTimes, NormalMap.notifiedAbortedTimes.get());
-        assertEquals(expectedTimes, DeclineSink.notifiedAbortedTimes.get());
+        assertThat(NormalMap.notifiedAbortedTimes).hasValue(expectedTimes);
+        assertThat(DeclineSink.notifiedAbortedTimes).hasValue(expectedTimes);
     }
 
-    /** Normal source function. */
-    private static class NormalSource
-            implements SourceFunction<Tuple2<Integer, Integer>>, CheckpointedFunction {
-        private static final long serialVersionUID = 1L;
-        protected volatile boolean running;
-        private static final OneShotLatch waitLatch = new OneShotLatch();
+    /** Source V2 implementation using AbstractTestSource that replaces the legacy NormalSource. */
+    private static final class NormalSource extends AbstractTestSource<Tuple2<Integer, Integer>> {
 
-        NormalSource() {
-            this.running = true;
-        }
-
-        @Override
-        public void run(SourceContext<Tuple2<Integer, Integer>> ctx) throws Exception {
-            while (running) {
-                synchronized (ctx.getCheckpointLock()) {
-                    ctx.collect(
-                            Tuple2.of(
-                                    ThreadLocalRandom.current().nextInt(),
-                                    ThreadLocalRandom.current().nextInt()));
-                }
-                Thread.sleep(10);
-            }
-        }
-
-        @Override
-        public void cancel() {
-            this.running = false;
-        }
-
-        @Override
-        public void snapshotState(FunctionSnapshotContext context) throws Exception {
-            if (context.getCheckpointId() == DECLINE_CHECKPOINT_ID) {
-                waitLatch.await();
-            }
-        }
-
-        @Override
-        public void initializeState(FunctionInitializationContext context) throws Exception {}
-
+        // let the test reset the latch just like before
         static void reset() {
-            waitLatch.reset();
+            DECLINE_CHECKPOINT_WAIT_LATCH.reset();
+        }
+
+        @Override
+        public SourceReader<Tuple2<Integer, Integer>, TestSplit> createReader(
+                SourceReaderContext ctx) {
+            return new TestSourceReader<Tuple2<Integer, Integer>>(ctx) {
+
+                private final ThreadLocalRandom rnd = ThreadLocalRandom.current();
+
+                @Override
+                public InputStatus pollNext(ReaderOutput<Tuple2<Integer, Integer>> out) {
+                    out.collect(Tuple2.of(rnd.nextInt(), rnd.nextInt()));
+
+                    try {
+                        Thread.sleep(10);
+                    } catch (InterruptedException ignored) {
+                    }
+                    return InputStatus.MORE_AVAILABLE;
+                }
+
+                @Override
+                public List<TestSplit> snapshotState(long checkpointId) {
+                    if (checkpointId == DECLINE_CHECKPOINT_ID) {
+                        try {
+                            DECLINE_CHECKPOINT_WAIT_LATCH.await();
+                        } catch (InterruptedException ignored) {
+                            Thread.currentThread().interrupt();
+                        }
+                    }
+                    return Collections.emptyList();
+                }
+            };
+        }
+
+        @Override
+        public SplitEnumerator<TestSplit, Void> createEnumerator(
+                SplitEnumeratorContext<TestSplit> ctx) {
+            return new SingleSplitEnumerator(ctx);
         }
     }
 
@@ -287,7 +315,11 @@ public class NotifyCheckpointAbortedITCase extends TestLogger {
         }
 
         @Override
-        public void snapshotState(FunctionSnapshotContext context) {}
+        public void snapshotState(FunctionSnapshotContext context) throws InterruptedException {
+            if (context.getCheckpointId() == DECLINE_CHECKPOINT_ID) {
+                DECLINE_CHECKPOINT_WAIT_LATCH.await();
+            }
+        }
 
         @Override
         public void initializeState(FunctionInitializationContext context) throws Exception {
@@ -327,7 +359,11 @@ public class NotifyCheckpointAbortedITCase extends TestLogger {
             implements SnapshotStrategy<OperatorStateHandle, SnapshotResources> {
 
         @Override
-        public SnapshotResources syncPrepareResources(long checkpointId) {
+        public SnapshotResources syncPrepareResources(long checkpointId)
+                throws InterruptedException {
+            if (checkpointId == DECLINE_CHECKPOINT_ID) {
+                DECLINE_CHECKPOINT_WAIT_LATCH.await();
+            }
             return null;
         }
 
@@ -370,15 +406,27 @@ public class NotifyCheckpointAbortedITCase extends TestLogger {
         }
     }
 
+    public static class DeclineSinkFailingStateBackendFactory
+            implements StateBackendFactory<DeclineSinkFailingStateBackend> {
+        @Override
+        public DeclineSinkFailingStateBackend createFromConfig(
+                ReadableConfig config, ClassLoader classLoader)
+                throws IllegalConfigurationException, IOException {
+            return new DeclineSinkFailingStateBackend(checkpointPath);
+        }
+    }
+
     /**
      * The state backend to create {@link DeclineSinkFailingOperatorStateBackend} at {@link
      * DeclineSink}.
      */
-    private static class DeclineSinkFailingStateBackend extends FsStateBackend {
+    private static class DeclineSinkFailingStateBackend extends HashMapStateBackend {
         private static final long serialVersionUID = 1L;
+        private final CheckpointStorage checkpointStorage;
 
         public DeclineSinkFailingStateBackend(Path checkpointDataUri) {
-            super(checkpointDataUri);
+            super();
+            checkpointStorage = new FileSystemCheckpointStorage(checkpointDataUri);
         }
 
         @Override
@@ -389,15 +437,11 @@ public class NotifyCheckpointAbortedITCase extends TestLogger {
 
         @Override
         public OperatorStateBackend createOperatorStateBackend(
-                Environment env,
-                String operatorIdentifier,
-                @Nonnull Collection<OperatorStateHandle> stateHandles,
-                CloseableRegistry cancelStreamRegistry)
-                throws BackendBuildingException {
-            if (operatorIdentifier.contains(DECLINE_SINK_NAME)) {
+                OperatorStateBackendParameters parameters) throws BackendBuildingException {
+            if (parameters.getOperatorIdentifier().contains(DECLINE_SINK_NAME)) {
                 CloseableRegistry registryForBackend = new CloseableRegistry();
                 return new DeclineSinkFailingOperatorStateBackend(
-                        env.getExecutionConfig(),
+                        parameters.getEnv().getExecutionConfig(),
                         registryForBackend,
                         new SnapshotStrategyRunner<>(
                                 "StuckAsyncSnapshotStrategy",
@@ -406,11 +450,11 @@ public class NotifyCheckpointAbortedITCase extends TestLogger {
                                 ASYNCHRONOUS));
             } else {
                 return new DefaultOperatorStateBackendBuilder(
-                                env.getUserCodeClassLoader().asClassLoader(),
-                                env.getExecutionConfig(),
+                                parameters.getEnv().getUserCodeClassLoader().asClassLoader(),
+                                parameters.getEnv().getExecutionConfig(),
                                 false,
-                                stateHandles,
-                                cancelStreamRegistry)
+                                parameters.getStateHandles(),
+                                parameters.getCancelStreamRegistry())
                         .build();
             }
         }

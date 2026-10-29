@@ -1,0 +1,297 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.apache.flink.types.variant;
+
+import org.apache.flink.annotation.PublicEvolving;
+
+import java.io.Serializable;
+import java.math.BigDecimal;
+import java.time.Instant;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.LocalTime;
+import java.util.List;
+import java.util.UUID;
+
+/**
+ * Variant represent a semi-structured data.
+ *
+ * <p>Instances are serializable so that they can be held as member variables of user-defined
+ * functions or passed into their constructors.
+ *
+ * <p>{@link #toJson()} returns valid JSON or fails. {@link #toString()} is for debugging and can be
+ * lossy.
+ */
+@PublicEvolving
+public interface Variant extends Serializable {
+
+    /** Pinned so interface changes don't alter the UID and break restore of VARIANT state. */
+    long serialVersionUID = 1L;
+
+    /** Returns true if the variant is a primitive typed value, such as INT, DOUBLE, STRING, etc. */
+    boolean isPrimitive();
+
+    /** Returns true if this variant is an Array, false otherwise. */
+    boolean isArray();
+
+    /** Returns true if this variant is an Object, false otherwise. */
+    boolean isObject();
+
+    /** Check If this variant is null. */
+    boolean isNull();
+
+    /** Get the type of variant. */
+    Type getType();
+
+    /**
+     * Get the scalar value of variant as boolean, if the variant type is {@link Type#BOOLEAN}.
+     *
+     * @throws VariantTypeException If this variant is not a scalar value or is not {@link
+     *     Type#BOOLEAN}.
+     */
+    boolean getBoolean() throws VariantTypeException;
+
+    /**
+     * Get the scalar value of variant as byte, if the variant type is {@link Type#TINYINT}.
+     *
+     * @throws VariantTypeException If this variant is not a scalar value or is not {@link
+     *     Type#TINYINT}.
+     */
+    byte getByte() throws VariantTypeException;
+
+    /**
+     * Get the scalar value of variant as short, if the variant type is {@link Type#SMALLINT}.
+     *
+     * @throws VariantTypeException If this variant is not a scalar value or is not {@link
+     *     Type#SMALLINT}.
+     */
+    short getShort() throws VariantTypeException;
+
+    /**
+     * Get the scalar value of variant as int, if the variant type is {@link Type#INT}.
+     *
+     * @throws VariantTypeException if this variant is not a scalar value or is not {@link
+     *     Type#INT}.
+     */
+    int getInt() throws VariantTypeException;
+
+    /**
+     * Get the scalar value of variant as long, if the variant type is {@link Type#BIGINT}.
+     *
+     * @throws VariantTypeException If this variant is not a scalar value or is not {@link
+     *     Type#BIGINT}.
+     */
+    long getLong() throws VariantTypeException;
+
+    /**
+     * Get the scalar value of variant as float, if the variant type is {@link Type#FLOAT}.
+     *
+     * @throws VariantTypeException If this variant is not a scalar value or is not {@link
+     *     Type#FLOAT}.
+     */
+    float getFloat() throws VariantTypeException;
+
+    /**
+     * Get the scalar value of variant as {@link BigDecimal}, if the variant type is {@link
+     * Type#DECIMAL}.
+     *
+     * @throws VariantTypeException If this variant is not a scalar value or is not {@link
+     *     Type#DECIMAL}.
+     */
+    BigDecimal getDecimal() throws VariantTypeException;
+
+    /**
+     * Get the scalar value of variant as double, if the variant type is {@link Type#DOUBLE}.
+     *
+     * @throws VariantTypeException If this variant is not a scalar value or is not {@link
+     *     Type#DOUBLE}.
+     */
+    double getDouble() throws VariantTypeException;
+
+    /**
+     * Get the scalar value of variant as string, if the variant type is {@link Type#STRING}.
+     *
+     * @throws VariantTypeException If this variant is not a scalar value or is not {@link
+     *     Type#STRING}.
+     */
+    String getString() throws VariantTypeException;
+
+    /**
+     * Get the scalar value of variant as {@link LocalDate}, if the variant type is {@link
+     * Type#DATE}.
+     *
+     * @throws VariantTypeException If this variant is not a scalar value or is not {@link
+     *     Type#DATE}.
+     */
+    LocalDate getDate() throws VariantTypeException;
+
+    /**
+     * Get the scalar value of variant as {@link LocalDateTime}, if the variant type is {@link
+     * Type#TIMESTAMP} or {@link Type#TIMESTAMP_NS}. The returned value has microsecond or
+     * nanosecond precision, matching the variant's actual type.
+     *
+     * @throws VariantTypeException If this variant is not a scalar value or is not {@link
+     *     Type#TIMESTAMP} or {@link Type#TIMESTAMP_NS}.
+     */
+    LocalDateTime getDateTime() throws VariantTypeException;
+
+    /**
+     * Get the scalar value of variant as {@link Instant}, if the variant type is {@link
+     * Type#TIMESTAMP_LTZ} or {@link Type#TIMESTAMP_LTZ_NS}. The returned value has microsecond or
+     * nanosecond precision, matching the variant's actual type.
+     *
+     * @throws VariantTypeException If this variant is not a scalar value or is not {@link
+     *     Type#TIMESTAMP_LTZ} or {@link Type#TIMESTAMP_LTZ_NS}.
+     */
+    Instant getInstant() throws VariantTypeException;
+
+    /**
+     * Get the scalar value of variant as {@link LocalTime}, if the variant type is {@link
+     * Type#TIME}. The returned value has microsecond precision.
+     *
+     * @throws VariantTypeException If this variant is not a scalar value or is not {@link
+     *     Type#TIME}.
+     */
+    LocalTime getTime() throws VariantTypeException;
+
+    /**
+     * Get the scalar value of variant as byte array, if the variant type is {@link Type#BYTES}.
+     *
+     * @throws VariantTypeException If this variant is not a scalar value or is not {@link
+     *     Type#BYTES}.
+     */
+    byte[] getBytes() throws VariantTypeException;
+
+    /**
+     * Get the scalar value of variant as UUID, if the variant type is {@link Type#UUID}.
+     *
+     * @throws VariantTypeException If this variant is not a scalar value or is not {@link
+     *     Type#UUID}.
+     */
+    UUID getUuid() throws VariantTypeException;
+
+    /**
+     * Get the scalar value of variant.
+     *
+     * @throws VariantTypeException If this variant is not a scalar value.
+     */
+    Object get() throws VariantTypeException;
+
+    /**
+     * Get the scalar value of variant.
+     *
+     * @throws VariantTypeException If this variant is not a scalar value.
+     */
+    <T> T getAs() throws VariantTypeException;
+
+    /**
+     * Access value of the specified element of an array variant. If index is out of range, null is
+     * returned.
+     *
+     * <p>NOTE: if the element value has been explicitly set as <code>null</code> (which is
+     * different from removal!), a variant that @{@link Variant#isNull()} returns true will be
+     * returned, not null.
+     *
+     * @throws VariantTypeException If this variant is not an array.
+     */
+    Variant getElement(int index) throws VariantTypeException;
+
+    /**
+     * Get the size of an array variant.
+     *
+     * @return Number of elements if this variant is an array
+     * @throws VariantTypeException If this variant is not an array.
+     */
+    int getArraySize() throws VariantTypeException;
+
+    /**
+     * Access value of the specified field of an object variant. If there is no field with the
+     * specified name, null is returned.
+     *
+     * <p>NOTE: if the property value has been explicitly set as <code>null</code>, a variant
+     * that @{@link Variant#isNull()} returns true will be returned, not null.
+     *
+     * @throws VariantTypeException If this variant is not an object.
+     */
+    Variant getField(String fieldName) throws VariantTypeException;
+
+    /**
+     * Get the field names of an object variant only at top level. Doesn't include the nested
+     * fields.
+     *
+     * @return List of field names if this variant is an object
+     * @throws VariantTypeException If this variant is not an object.
+     */
+    List<String> getFieldNames() throws VariantTypeException;
+
+    /**
+     * Returns the variant as valid JSON.
+     *
+     * <p>It fails for a value that JSON cannot represent, such as a NaN or infinite {@code FLOAT}
+     * or {@code DOUBLE}, and for a node it cannot decode, such as a type written by a newer
+     * version. For example, an array holding 1 and NaN fails. Use {@link #toString()} to inspect
+     * such a variant.
+     *
+     * @throws VariantTypeException if the variant contains a value that cannot be represented as
+     *     valid JSON (e.g. NaN for double types)
+     */
+    String toJson();
+
+    /**
+     * Returns the variant as JSON for debugging. Unlike {@link #toJson()} it never fails, so the
+     * result can be lossy:
+     *
+     * <ul>
+     *   <li>NaN and infinity become strings. An array holding 1 and NaN returns {@code [1,"NaN"]}.
+     *   <li>A node whose type this version does not know becomes {@code "<UNKNOWN>"}.
+     *   <li>Any other node that cannot be decoded becomes {@code "<INVALID>"}.
+     * </ul>
+     */
+    @Override
+    String toString();
+
+    /** The type of variant. */
+    @PublicEvolving
+    enum Type {
+        OBJECT,
+        ARRAY,
+        NULL,
+        BOOLEAN,
+        TINYINT,
+        SMALLINT,
+        INT,
+        BIGINT,
+        FLOAT,
+        DOUBLE,
+        DECIMAL,
+        STRING,
+        DATE,
+        TIME,
+        TIMESTAMP,
+        TIMESTAMP_LTZ,
+        TIMESTAMP_NS,
+        TIMESTAMP_LTZ_NS,
+        BYTES,
+        UUID
+    }
+
+    static VariantBuilder newBuilder() {
+        return new BinaryVariantBuilder();
+    }
+}

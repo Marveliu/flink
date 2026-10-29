@@ -18,18 +18,18 @@
 
 package org.apache.flink.table.runtime.hashtable;
 
+import org.apache.flink.core.memory.AbstractPagedInputView;
+import org.apache.flink.core.memory.AbstractPagedOutputView;
 import org.apache.flink.core.memory.MemorySegment;
 import org.apache.flink.core.memory.MemorySegmentSource;
+import org.apache.flink.core.memory.RandomAccessInputView;
 import org.apache.flink.core.memory.SeekableDataInputView;
 import org.apache.flink.runtime.io.compression.BlockCompressionFactory;
-import org.apache.flink.runtime.io.disk.RandomAccessInputView;
 import org.apache.flink.runtime.io.disk.iomanager.AbstractChannelWriterOutputView;
 import org.apache.flink.runtime.io.disk.iomanager.BlockChannelWriter;
 import org.apache.flink.runtime.io.disk.iomanager.BulkBlockChannelReader;
 import org.apache.flink.runtime.io.disk.iomanager.FileIOChannel;
 import org.apache.flink.runtime.io.disk.iomanager.IOManager;
-import org.apache.flink.runtime.memory.AbstractPagedInputView;
-import org.apache.flink.runtime.memory.AbstractPagedOutputView;
 import org.apache.flink.table.data.binary.BinaryRowData;
 import org.apache.flink.table.runtime.typeutils.BinaryRowDataSerializer;
 import org.apache.flink.table.runtime.util.FileChannelUtil;
@@ -60,7 +60,15 @@ public class BinaryHashPartition extends AbstractPagedInputView implements Seeka
     final int partitionNumber; // the number of the partition
 
     long probeSideRecordCounter; // number of probe-side records in this partition
+
+    /**
+     * These buffers are null when create the BinaryHashPartition first, it will be assigned value
+     * in two case: 1) when build stage end, if this partition in memory, all the segments occupied
+     * by this partition will be returned to it; 2) when build stage end, if this partition has
+     * spilled to disk, the data read from disk next time will be assigned to it.
+     */
     private MemorySegment[] partitionBuffers;
+
     private int currentBufferNum;
     private int finalBufferLimit;
 
@@ -207,7 +215,7 @@ public class BinaryHashPartition extends AbstractPagedInputView implements Seeka
                 : this.partitionBuffers.length;
     }
 
-    RandomAccessInputView getBuildStateInputView() {
+    RandomAccessInputView getBuildStageInputView() {
         return this.buildSideWriteBuffer.getBuildStageInputView();
     }
 
@@ -488,6 +496,7 @@ public class BinaryHashPartition extends AbstractPagedInputView implements Seeka
     protected static final class BuildSideBuffer extends AbstractPagedOutputView {
 
         private final ArrayList<MemorySegment> targetList;
+
         /** Segments of in memory partition, include the current segment. Cleared after spilled. */
         private final ArrayList<MemorySegment> buildStageSegments;
 
@@ -621,7 +630,7 @@ public class BinaryHashPartition extends AbstractPagedInputView implements Seeka
             }
         }
 
-        final long getPointer() {
+        long getPointer() {
             return this.currentPointer;
         }
 

@@ -15,26 +15,26 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.planner.plan.rules.logical
 
-import org.apache.flink.api.scala._
 import org.apache.flink.table.api._
 import org.apache.flink.table.planner.plan.optimize.program.{BatchOptimizeContext, FlinkChainedProgram, FlinkHepRuleSetProgramBuilder, HEP_RULES_EXECUTION_TYPE}
 import org.apache.flink.table.planner.utils.TableTestBase
 
 import org.apache.calcite.plan.hep.HepMatchOrder
+import org.apache.calcite.rel.rules.PruneEmptyRules
 import org.apache.calcite.tools.RuleSets
-import org.junit.{Before, Test}
+import org.junit.jupiter.api.{BeforeEach, Test}
 
 /**
-  * Test for [[FlinkLimit0RemoveRule]].
-  */
+ * Former test for [[FlinkLimit0RemoveRule]] which now replaced by Calcite's
+ * [[PruneEmptyRules.SORT_FETCH_ZERO_INSTANCE]].
+ */
 class FlinkLimit0RemoveRuleTest extends TableTestBase {
 
   private val util = batchTestUtil()
 
-  @Before
+  @BeforeEach
   def setup(): Unit = {
     val programs = new FlinkChainedProgram[BatchOptimizeContext]()
     programs.addLast(
@@ -42,9 +42,8 @@ class FlinkLimit0RemoveRuleTest extends TableTestBase {
       FlinkHepRuleSetProgramBuilder.newBuilder
         .setHepRulesExecutionType(HEP_RULES_EXECUTION_TYPE.RULE_SEQUENCE)
         .setHepMatchOrder(HepMatchOrder.BOTTOM_UP)
-        .add(RuleSets.ofList(
-          FlinkSubQueryRemoveRule.FILTER,
-          FlinkLimit0RemoveRule.INSTANCE))
+        .add(
+          RuleSets.ofList(FlinkSubQueryRemoveRule.FILTER, PruneEmptyRules.SORT_FETCH_ZERO_INSTANCE))
         .build()
     )
     util.replaceBatchProgram(programs)
@@ -94,6 +93,6 @@ class FlinkLimit0RemoveRuleTest extends TableTestBase {
 
   @Test
   def testLimitZeroWithJoin(): Unit = {
-    util.verifyRelPlan("SELECT * FROM MyTable INNER JOIN (SELECT * FROM MyTable Limit 0) ON TRUE")
+    util.verifyRelPlan("SELECT * FROM MyTable INNER JOIN (SELECT * FROM MyTable LIMIT 0) ON TRUE")
   }
 }

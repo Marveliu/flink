@@ -20,7 +20,6 @@ package org.apache.flink.yarn;
 
 import org.apache.flink.api.common.JobID;
 import org.apache.flink.api.common.JobStatus;
-import org.apache.flink.api.common.time.Deadline;
 import org.apache.flink.client.deployment.ClusterDeploymentException;
 import org.apache.flink.client.deployment.ClusterSpecification;
 import org.apache.flink.client.program.ClusterClient;
@@ -40,13 +39,14 @@ import org.apache.flink.runtime.rest.messages.job.metrics.JobMetricsHeaders;
 import org.apache.flink.runtime.rest.messages.job.metrics.JobMetricsMessageParameters;
 import org.apache.flink.runtime.rest.messages.job.metrics.Metric;
 import org.apache.flink.runtime.testutils.CommonTestUtils;
+import org.apache.flink.runtime.testutils.ZooKeeperTestUtils;
 import org.apache.flink.util.OperatingSystem;
 import org.apache.flink.yarn.configuration.YarnConfigOptions;
 import org.apache.flink.yarn.entrypoint.YarnSessionClusterEntrypoint;
 import org.apache.flink.yarn.testjob.YarnTestJob;
 import org.apache.flink.yarn.util.TestUtils;
 
-import org.apache.flink.shaded.guava30.com.google.common.collect.Iterables;
+import org.apache.flink.shaded.guava33.com.google.common.collect.Iterables;
 
 import org.apache.commons.io.IOUtils;
 import org.apache.commons.lang3.StringUtils;
@@ -64,12 +64,13 @@ import org.apache.hadoop.yarn.server.nodemanager.NodeManager;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.container.Container;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.ResourceScheduler;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.CapacityScheduler;
-import org.junit.AfterClass;
-import org.junit.Before;
-import org.junit.BeforeClass;
-import org.junit.ClassRule;
-import org.junit.Test;
-import org.junit.rules.TemporaryFolder;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nonnull;
 
@@ -91,23 +92,17 @@ import java.util.function.Function;
 import java.util.function.Predicate;
 import java.util.stream.Collectors;
 
+import static org.apache.flink.configuration.RestartStrategyOptions.RestartStrategyType.FIXED_DELAY;
 import static org.apache.flink.util.Preconditions.checkState;
-import static org.hamcrest.MatcherAssert.assertThat;
-import static org.hamcrest.Matchers.empty;
-import static org.hamcrest.Matchers.instanceOf;
-import static org.hamcrest.Matchers.is;
-import static org.hamcrest.Matchers.not;
-import static org.hamcrest.Matchers.notNullValue;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assume.assumeTrue;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assumptions.assumeThat;
 
 /** Tests that verify correct HA behavior. */
-public class YARNHighAvailabilityITCase extends YarnTestBase {
+class YARNHighAvailabilityITCase extends YarnTestBase {
 
-    @ClassRule public static final TemporaryFolder FOLDER = new TemporaryFolder();
+    private static final Logger LOG = LoggerFactory.getLogger(YARNHighAvailabilityITCase.class);
 
     private static final String LOG_DIR = "flink-yarn-tests-ha";
-    private static final Duration TIMEOUT = Duration.ofSeconds(200L);
 
     private static TestingServer zkServer;
     private static String storageDir;
@@ -115,11 +110,11 @@ public class YARNHighAvailabilityITCase extends YarnTestBase {
     private YarnTestJob.StopJobSignal stopJobSignal;
     private JobGraph job;
 
-    @BeforeClass
-    public static void setup() throws Exception {
-        zkServer = new TestingServer();
+    @BeforeAll
+    static void setup(@TempDir File tempDir) throws Exception {
+        zkServer = ZooKeeperTestUtils.createAndStartZookeeperTestingServer();
 
-        storageDir = FOLDER.newFolder().getAbsolutePath();
+        storageDir = tempDir.getAbsolutePath();
 
         // startYARNWithConfig should be implemented by subclass
         YARN_CONFIGURATION.setClass(
@@ -129,26 +124,26 @@ public class YARNHighAvailabilityITCase extends YarnTestBase {
         startYARNWithConfig(YARN_CONFIGURATION);
     }
 
-    @AfterClass
-    public static void teardown() throws Exception {
-        if (zkServer != null) {
-            zkServer.stop();
-            zkServer = null;
+    @AfterAll
+    static void teardown() throws Exception {
+        try {
+            YarnTestBase.teardown();
+        } finally {
+            if (zkServer != null) {
+                zkServer.close();
+                zkServer = null;
+            }
         }
     }
 
-    @Before
-    public void setUp() throws Exception {
-        initJobGraph();
-    }
-
-    private void initJobGraph() throws IOException {
-        stopJobSignal = YarnTestJob.StopJobSignal.usingMarkerFile(FOLDER.newFile().toPath());
+    @BeforeEach
+    void setUp(@TempDir File tempDir) {
+        stopJobSignal = YarnTestJob.StopJobSignal.usingMarkerFile(tempDir.toPath());
         job = YarnTestJob.stoppableJob(stopJobSignal);
         final File testingJar =
                 TestUtils.findFile("..", new TestUtils.TestJarFinder("flink-yarn-tests"));
 
-        assertThat(testingJar, notNullValue());
+        assertThat(testingJar).isNotNull();
 
         job.addJar(new org.apache.flink.core.fs.Path(testingJar.toURI()));
     }
@@ -157,16 +152,18 @@ public class YARNHighAvailabilityITCase extends YarnTestBase {
      * Tests that Yarn will restart a killed {@link YarnSessionClusterEntrypoint} which will then
      * resume a persisted {@link JobGraph}.
      */
-    @Test(timeout = 1_000 * 60 * 30)
-    public void testKillYarnSessionClusterEntrypoint() throws Exception {
+    @Test
+    void testKillYarnSessionClusterEntrypoint() throws Exception {
         runTest(
                 () -> {
-                    assumeTrue(
-                            "This test kills processes via the pkill command. Thus, it only runs on Linux, Mac OS, Free BSD and Solaris.",
-                            OperatingSystem.isLinux()
-                                    || OperatingSystem.isMac()
-                                    || OperatingSystem.isFreeBSD()
-                                    || OperatingSystem.isSolaris());
+                    assumeThat(
+                                    OperatingSystem.isLinux()
+                                            || OperatingSystem.isMac()
+                                            || OperatingSystem.isFreeBSD()
+                                            || OperatingSystem.isSolaris())
+                            .as(
+                                    "This test kills processes via the pkill command. Thus, it only runs on Linux, Mac OS, Free BSD and Solaris.")
+                            .isTrue();
 
                     final YarnClusterDescriptor yarnClusterDescriptor =
                             setupYarnClusterDescriptor();
@@ -192,15 +189,14 @@ public class YARNHighAvailabilityITCase extends YarnTestBase {
                 });
     }
 
-    @Test(timeout = 1_000 * 60 * 30)
-    public void testJobRecoversAfterKillingTaskManager() throws Exception {
+    @Test
+    void testJobRecoversAfterKillingTaskManager() throws Exception {
         runTest(
                 () -> {
                     final YarnClusterDescriptor yarnClusterDescriptor =
                             setupYarnClusterDescriptor();
-                    final RestClusterClient<ApplicationId> restClusterClient =
-                            deploySessionCluster(yarnClusterDescriptor);
-                    try {
+                    try (RestClusterClient<ApplicationId> restClusterClient =
+                            deploySessionCluster(yarnClusterDescriptor)) {
                         final JobID jobId = submitJob(restClusterClient);
                         waitUntilJobIsRunning(restClusterClient, jobId);
 
@@ -210,8 +206,6 @@ public class YARNHighAvailabilityITCase extends YarnTestBase {
                         waitForJobTermination(restClusterClient, jobId);
 
                         killApplicationAndWait(restClusterClient.getClusterId());
-                    } finally {
-                        restClusterClient.close();
                     }
                 });
     }
@@ -220,8 +214,8 @@ public class YARNHighAvailabilityITCase extends YarnTestBase {
      * Tests that we can retrieve an HA enabled cluster by only specifying the application id if no
      * other high-availability.cluster-id has been configured. See FLINK-20866.
      */
-    @Test(timeout = 1_000 * 60 * 30)
-    public void testClusterClientRetrieval() throws Exception {
+    @Test
+    void testClusterClientRetrieval() throws Exception {
         runTest(
                 () -> {
                     final YarnClusterDescriptor yarnClusterDescriptor =
@@ -238,7 +232,7 @@ public class YARNHighAvailabilityITCase extends YarnTestBase {
                         newClusterClient =
                                 newClusterDescriptor.retrieve(clusterId).getClusterClient();
 
-                        assertThat(newClusterClient.listJobs().join(), is(empty()));
+                        assertThat(newClusterClient.listJobs().join()).isEmpty();
 
                         newClusterClient.shutDownCluster();
                     } finally {
@@ -262,9 +256,8 @@ public class YARNHighAvailabilityITCase extends YarnTestBase {
                             yarnClient.getApplicationReport(applicationId);
                     return applicationReport.getCurrentApplicationAttemptId().getAttemptId()
                             >= attemptId;
-                },
-                Deadline.fromNow(TIMEOUT));
-        log.info("Attempt {} id detected.", attemptId);
+                });
+        LOG.info("Attempt {} id detected.", attemptId);
     }
 
     /** Stops a container running {@link YarnTaskExecutorRunner}. */
@@ -294,8 +287,8 @@ public class YARNHighAvailabilityITCase extends YarnTestBase {
             }
         }
 
-        assertNotNull("Unable to find container with TaskManager", taskManagerContainer);
-        assertNotNull("Illegal state", nodeManager);
+        assertThat(taskManagerContainer).isNotNull();
+        assertThat(nodeManager).isNotNull();
 
         StopContainersRequest scr =
                 StopContainersRequest.newInstance(Collections.singletonList(taskManagerContainer));
@@ -319,17 +312,16 @@ public class YARNHighAvailabilityITCase extends YarnTestBase {
                                         EnumSet.of(
                                                 YarnApplicationState.KILLED,
                                                 YarnApplicationState.FINISHED))
-                                .isEmpty(),
-                Deadline.fromNow(TIMEOUT));
+                                .isEmpty());
     }
 
     private void waitForJobTermination(
             final RestClusterClient<ApplicationId> restClusterClient, final JobID jobId)
             throws Exception {
-        log.info("Sending stop job signal");
+        LOG.info("Sending stop job signal");
         stopJobSignal.signal();
         final CompletableFuture<JobResult> jobResult = restClusterClient.requestJobResult(jobId);
-        jobResult.get(TIMEOUT.toMillis(), TimeUnit.MILLISECONDS);
+        jobResult.get(200, TimeUnit.SECONDS);
     }
 
     @Nonnull
@@ -337,15 +329,16 @@ public class YARNHighAvailabilityITCase extends YarnTestBase {
         final Configuration flinkConfiguration = new Configuration();
         flinkConfiguration.set(JobManagerOptions.TOTAL_PROCESS_MEMORY, MemorySize.ofMebiBytes(768));
         flinkConfiguration.set(TaskManagerOptions.TOTAL_PROCESS_MEMORY, MemorySize.parse("1g"));
-        flinkConfiguration.setString(YarnConfigOptions.APPLICATION_ATTEMPTS, "10");
-        flinkConfiguration.setString(HighAvailabilityOptions.HA_MODE, "zookeeper");
-        flinkConfiguration.setString(HighAvailabilityOptions.HA_STORAGE_PATH, storageDir);
-        flinkConfiguration.setString(
+        flinkConfiguration.set(YarnConfigOptions.APPLICATION_ATTEMPTS, 10);
+        flinkConfiguration.set(HighAvailabilityOptions.HA_MODE, "zookeeper");
+        flinkConfiguration.set(HighAvailabilityOptions.HA_STORAGE_PATH, storageDir);
+        flinkConfiguration.set(
                 HighAvailabilityOptions.HA_ZOOKEEPER_QUORUM, zkServer.getConnectString());
-        flinkConfiguration.setInteger(HighAvailabilityOptions.ZOOKEEPER_SESSION_TIMEOUT, 20000);
+        flinkConfiguration.set(
+                HighAvailabilityOptions.ZOOKEEPER_SESSION_TIMEOUT, Duration.ofMillis(20000));
 
-        flinkConfiguration.setString(RestartStrategyOptions.RESTART_STRATEGY, "fixed-delay");
-        flinkConfiguration.setInteger(
+        flinkConfiguration.set(RestartStrategyOptions.RESTART_STRATEGY, FIXED_DELAY.getMainValue());
+        flinkConfiguration.set(
                 RestartStrategyOptions.RESTART_STRATEGY_FIXED_DELAY_ATTEMPTS, Integer.MAX_VALUE);
 
         return createYarnClusterDescriptor(flinkConfiguration);
@@ -369,7 +362,7 @@ public class YARNHighAvailabilityITCase extends YarnTestBase {
                                         .createClusterSpecification())
                         .getClusterClient();
 
-        assertThat(yarnClusterClient, is(instanceOf(RestClusterClient.class)));
+        assertThat(yarnClusterClient).isInstanceOf(RestClusterClient.class);
         return (RestClusterClient<ApplicationId>) yarnClusterClient;
     }
 
@@ -380,17 +373,16 @@ public class YARNHighAvailabilityITCase extends YarnTestBase {
 
     private void killApplicationMaster(final String processName) throws Exception {
         final Set<Integer> origPids = getApplicationMasterPids(processName);
-        assertThat(origPids, not(empty()));
+        assertThat(origPids).isNotEmpty();
 
         final Process exec = Runtime.getRuntime().exec("pkill -f " + processName);
-        assertThat(exec.waitFor(), is(0));
+        assertThat(exec.waitFor()).isEqualTo(0);
 
         CommonTestUtils.waitUntilCondition(
                 () -> {
                     final Set<Integer> curPids = getApplicationMasterPids(processName);
                     return origPids.stream().noneMatch(curPids::contains);
-                },
-                Deadline.fromNow(TIMEOUT));
+                });
     }
 
     private Set<Integer> getApplicationMasterPids(final String processName)
@@ -417,8 +409,7 @@ public class YARNHighAvailabilityITCase extends YarnTestBase {
                             && jobDetails.getJobVertexInfos().stream()
                                     .map(toExecutionState())
                                     .allMatch(isRunning());
-                },
-                Deadline.fromNow(TIMEOUT));
+                });
     }
 
     private static Function<JobDetailsInfo.JobVertexDetailsInfo, ExecutionState>
@@ -436,15 +427,14 @@ public class YARNHighAvailabilityITCase extends YarnTestBase {
             final int expectedFullRestarts)
             throws Exception {
         CommonTestUtils.waitUntilCondition(
-                () -> getJobFullRestarts(restClusterClient, jobId) >= expectedFullRestarts,
-                Deadline.fromNow(TIMEOUT));
+                () -> getJobFullRestarts(restClusterClient, jobId) >= expectedFullRestarts);
     }
 
     private static int getJobFullRestarts(
             final RestClusterClient<ApplicationId> restClusterClient, final JobID jobId)
             throws Exception {
 
-        return getJobMetric(restClusterClient, jobId, "fullRestarts")
+        return getJobMetric(restClusterClient, jobId, "numRestarts")
                 .map(Metric::getValue)
                 .map(Integer::parseInt)
                 .orElse(0);

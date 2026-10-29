@@ -13,27 +13,38 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+parameters:
+  jdk: # the jdk version to use
+
 jobs:
   - job: ${{parameters.stage_name}}_binary
     pool:
-      vmImage: 'ubuntu-20.04'
+      vmImage: 'ubuntu-26.04'
     container: flink-build-container
     workspace:
       clean: all
     steps:
+      # free up disk space on the hosted agent; the full dist build plus the
+      # Maven cache does not fit in the ~16 GB the image leaves free
+      - script: ./tools/ci/free_disk_space.sh
+        target: host
+        displayName: Free up disk space
       - task: Cache@2
         displayName: Cache Maven local repo
         inputs:
-          key: $(CACHE_KEY)
-          restoreKeys: $(CACHE_FALLBACK_KEY)
+          key: $(PIPELINE_START_YEAR) | $(CACHE_KEY)
+          restoreKeys: $(PIPELINE_START_YEAR) | $(CACHE_FALLBACK_KEY)
           path: $(MAVEN_CACHE_FOLDER)
         continueOnError: true
+      - script: |
+          echo "##vso[task.setvariable variable=JAVA_HOME]$JAVA_HOME_${{parameters.jdk}}_X64"
+          echo "##vso[task.setvariable variable=PATH]$JAVA_HOME_${{parameters.jdk}}_X64/bin:$PATH"
+        displayName: "Set JDK"
       - task: CmdLine@2
         displayName: Build snapshot binary release
         inputs:
           script: |
             source ./tools/ci/maven-utils.sh
-            setup_maven
             run_mvn -version
             export MVN="run_mvn"
 
@@ -53,8 +64,10 @@ jobs:
             upload_to_s3 ./tools/releasing/release
         env:
           ARTIFACTS_S3_BUCKET: $(ARTIFACTS_S3_BUCKET)
-          ARTIFACTS_AWS_ACCESS_KEY_ID: $(ARTIFACTS_AWS_ACCESS_KEY_ID)
-          ARTIFACTS_AWS_SECRET_ACCESS_KEY: $(ARTIFACTS_AWS_SECRET_ACCESS_KEY)
+          # Mapped to the names the AWS CLI reads natively, so credentials never
+          # appear on a command line (and thus never in the `set -x` trace).
+          AWS_ACCESS_KEY_ID: $(ARTIFACTS_AWS_ACCESS_KEY_ID)
+          AWS_SECRET_ACCESS_KEY: $(ARTIFACTS_AWS_SECRET_ACCESS_KEY)
       # Activate this to publish the binary release as a pipeline artifact on Azure
       #- task: PublishPipelineArtifact@1
       #  displayName: Upload snapshot binary release
@@ -63,27 +76,38 @@ jobs:
       #    artifact: nightly-release
   - job: ${{parameters.stage_name}}_maven
     pool:
-      vmImage: 'ubuntu-20.04'
+      vmImage: 'ubuntu-26.04'
     container: flink-build-container
     timeoutInMinutes: 240
     workspace:
       clean: all
     steps:
+      # free up disk space on the hosted agent; the snapshot deploy build plus
+      # the Maven cache does not fit in the ~16 GB the image leaves free
+      - script: ./tools/ci/free_disk_space.sh
+        target: host
+        displayName: Free up disk space
       - task: Cache@2
         displayName: Cache Maven local repo
         inputs:
-          key: $(CACHE_KEY)
-          restoreKeys: $(CACHE_FALLBACK_KEY)
+          key: $(PIPELINE_START_YEAR) | $(CACHE_KEY)
+          restoreKeys: $(PIPELINE_START_YEAR) | $(CACHE_FALLBACK_KEY)
           path: $(MAVEN_CACHE_FOLDER)
         continueOnError: true
+      - script: |
+          echo "##vso[task.setvariable variable=JAVA_HOME]$JAVA_HOME_${{parameters.jdk}}_X64"
+          echo "##vso[task.setvariable variable=PATH]$JAVA_HOME_${{parameters.jdk}}_X64/bin:$PATH"
+        displayName: "Set JDK"
       # Upload snapshot
       - task: CmdLine@2
         displayName: Deploy maven snapshot
         inputs:
           script: |
             source ./tools/ci/maven-utils.sh
-            setup_maven
             run_mvn -version
+            # deploy_staging_jars.sh otherwise falls back to the mvn on PATH. Not run_mvn,
+            # since this job builds its own settings file below.
+            export MVN="$MAVEN_WRAPPER"
 
             cd tools
             cat << EOF > deploy-settings.xml

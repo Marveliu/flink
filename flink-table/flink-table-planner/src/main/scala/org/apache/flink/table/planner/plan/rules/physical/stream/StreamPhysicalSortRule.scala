@@ -17,34 +17,52 @@
  */
 package org.apache.flink.table.planner.plan.rules.physical.stream
 
+import org.apache.flink.table.api.TableException
+import org.apache.flink.table.planner.calcite.FlinkTypeFactory
 import org.apache.flink.table.planner.plan.`trait`.FlinkRelDistribution
 import org.apache.flink.table.planner.plan.nodes.FlinkConventions
 import org.apache.flink.table.planner.plan.nodes.logical.FlinkLogicalSort
 import org.apache.flink.table.planner.plan.nodes.physical.stream.StreamPhysicalSort
+import org.apache.flink.table.planner.plan.utils.SortUtil
+import org.apache.flink.table.planner.utils.{InternalConfigOptions, ShortcutUtils}
 
 import org.apache.calcite.plan.{RelOptRule, RelOptRuleCall}
 import org.apache.calcite.rel.RelNode
 import org.apache.calcite.rel.convert.ConverterRule
+import org.apache.calcite.rel.convert.ConverterRule.Config
 
 /**
-  * Rule that matches [[FlinkLogicalSort]] which `fetch` is null or `fetch` is 0,
-  * and converts it to [[StreamPhysicalSort]].
-  */
-class StreamPhysicalSortRule
-  extends ConverterRule(
-    classOf[FlinkLogicalSort],
-    FlinkConventions.LOGICAL,
-    FlinkConventions.STREAM_PHYSICAL,
-    "StreamPhysicalSortRule") {
+ * Rule that matches [[FlinkLogicalSort]] which `fetch` is null or `fetch` is 0, and converts it to
+ * [[StreamPhysicalSort]].
+ */
+class StreamPhysicalSortRule(config: Config) extends ConverterRule(config) {
 
   override def matches(call: RelOptRuleCall): Boolean = {
     val sort: FlinkLogicalSort = call.rel(0)
     !sort.getCollation.getFieldCollations.isEmpty && sort.fetch == null && sort.offset == null &&
-      !StreamPhysicalTemporalSortRule.canConvertToTemporalSort(sort)
+    !StreamPhysicalTemporalSortRule.canConvertToTemporalSort(sort)
   }
 
   override def convert(rel: RelNode): RelNode = {
     val sort: FlinkLogicalSort = rel.asInstanceOf[FlinkLogicalSort]
+    // Reject a non-time-attribute streaming sort here instead of deferring to StreamExecSort.
+    if (
+      !ShortcutUtils
+        .unwrapTableConfig(sort)
+        .get(InternalConfigOptions.TABLE_EXEC_NON_TEMPORAL_SORT_ENABLED)
+    ) {
+      val field = SortUtil.getFirstSortField(sort.getCollation, sort.getInput.getRowType)
+      // A time-attribute first key only reaches here when descending; ascending goes to
+      // StreamPhysicalTemporalSort via matches().
+      val message = if (FlinkTypeFactory.isTimeIndicatorType(field.getType)) {
+        SortUtil.sortKeyTimeAttributeMustBeAscendingMessage(field.getName)
+      } else {
+        SortUtil.sortKeyNotTimeAttributeMessage(
+          field.getName,
+          FlinkTypeFactory.toLogicalType(field.getType))
+      }
+      throw new TableException(message)
+    }
     val input = sort.getInput(0)
     val requiredTraitSet = input.getTraitSet
       .replace(FlinkRelDistribution.SINGLETON)
@@ -54,14 +72,15 @@ class StreamPhysicalSortRule
       .replace(FlinkConventions.STREAM_PHYSICAL)
 
     val newInput: RelNode = RelOptRule.convert(input, requiredTraitSet)
-    new StreamPhysicalSort(
-      rel.getCluster,
-      providedTraitSet,
-      newInput,
-      sort.collation)
+    new StreamPhysicalSort(rel.getCluster, providedTraitSet, newInput, sort.collation)
   }
 }
 
 object StreamPhysicalSortRule {
-  val INSTANCE: RelOptRule = new StreamPhysicalSortRule
+  val INSTANCE: RelOptRule = new StreamPhysicalSortRule(
+    Config.INSTANCE.withConversion(
+      classOf[FlinkLogicalSort],
+      FlinkConventions.LOGICAL,
+      FlinkConventions.STREAM_PHYSICAL,
+      "StreamPhysicalSortRule"))
 }

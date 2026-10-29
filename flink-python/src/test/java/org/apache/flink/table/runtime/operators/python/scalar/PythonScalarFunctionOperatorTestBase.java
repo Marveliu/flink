@@ -18,10 +18,10 @@
 
 package org.apache.flink.table.runtime.operators.python.scalar;
 
-import org.apache.flink.api.common.typeinfo.BasicTypeInfo;
 import org.apache.flink.api.common.typeutils.TypeSerializer;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.configuration.MemorySize;
 import org.apache.flink.configuration.TaskManagerOptions;
 import org.apache.flink.core.memory.ManagedMemoryUseCase;
 import org.apache.flink.python.PythonOptions;
@@ -32,18 +32,20 @@ import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.watermark.Watermark;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
 import org.apache.flink.streaming.util.OneInputStreamOperatorTestHarness;
+import org.apache.flink.table.api.DataTypes;
 import org.apache.flink.table.api.Table;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
+import org.apache.flink.table.functions.python.InputRef;
 import org.apache.flink.table.functions.python.PythonEnv;
 import org.apache.flink.table.functions.python.PythonFunction;
 import org.apache.flink.table.functions.python.PythonFunctionInfo;
+import org.apache.flink.table.functions.python.PythonFunctionInput;
 import org.apache.flink.table.planner.runtime.utils.JavaUserDefinedScalarFunctions.PythonScalarFunction;
 import org.apache.flink.table.types.logical.BigIntType;
 import org.apache.flink.table.types.logical.RowType;
 import org.apache.flink.table.types.logical.VarCharType;
 
-import org.junit.Assert;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.Arrays;
 import java.util.Collection;
@@ -52,6 +54,7 @@ import java.util.concurrent.ConcurrentLinkedQueue;
 
 import static org.apache.flink.table.api.Expressions.$;
 import static org.apache.flink.table.api.Expressions.call;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Base class for Python scalar function operator test. These test that:
@@ -69,7 +72,7 @@ import static org.apache.flink.table.api.Expressions.call;
 public abstract class PythonScalarFunctionOperatorTestBase<IN, OUT, UDFIN> {
 
     @Test
-    public void testRetractionFieldKept() throws Exception {
+    void testRetractionFieldKept() throws Exception {
         OneInputStreamOperatorTestHarness<IN, OUT> testHarness =
                 getTestHarness(new Configuration());
         long initialTime = 0L;
@@ -95,7 +98,7 @@ public abstract class PythonScalarFunctionOperatorTestBase<IN, OUT, UDFIN> {
     @Test
     public void testFinishBundleTriggeredOnCheckpoint() throws Exception {
         Configuration conf = new Configuration();
-        conf.setInteger(PythonOptions.MAX_BUNDLE_SIZE, 10);
+        conf.set(PythonOptions.MAX_BUNDLE_SIZE, 10);
         OneInputStreamOperatorTestHarness<IN, OUT> testHarness = getTestHarness(conf);
 
         long initialTime = 0L;
@@ -119,7 +122,7 @@ public abstract class PythonScalarFunctionOperatorTestBase<IN, OUT, UDFIN> {
     @Test
     public void testFinishBundleTriggeredByCount() throws Exception {
         Configuration conf = new Configuration();
-        conf.setInteger(PythonOptions.MAX_BUNDLE_SIZE, 2);
+        conf.set(PythonOptions.MAX_BUNDLE_SIZE, 2);
         OneInputStreamOperatorTestHarness<IN, OUT> testHarness = getTestHarness(conf);
 
         long initialTime = 0L;
@@ -145,8 +148,8 @@ public abstract class PythonScalarFunctionOperatorTestBase<IN, OUT, UDFIN> {
     @Test
     public void testFinishBundleTriggeredByTime() throws Exception {
         Configuration conf = new Configuration();
-        conf.setInteger(PythonOptions.MAX_BUNDLE_SIZE, 10);
-        conf.setLong(PythonOptions.MAX_BUNDLE_TIME_MILLS, 1000L);
+        conf.set(PythonOptions.MAX_BUNDLE_SIZE, 10);
+        conf.set(PythonOptions.MAX_BUNDLE_TIME_MILLS, 1000L);
         OneInputStreamOperatorTestHarness<IN, OUT> testHarness = getTestHarness(conf);
 
         long initialTime = 0L;
@@ -169,7 +172,7 @@ public abstract class PythonScalarFunctionOperatorTestBase<IN, OUT, UDFIN> {
     @Test
     public void testFinishBundleTriggeredByClose() throws Exception {
         Configuration conf = new Configuration();
-        conf.setInteger(PythonOptions.MAX_BUNDLE_SIZE, 10);
+        conf.set(PythonOptions.MAX_BUNDLE_SIZE, 10);
         OneInputStreamOperatorTestHarness<IN, OUT> testHarness = getTestHarness(conf);
 
         long initialTime = 0L;
@@ -190,7 +193,7 @@ public abstract class PythonScalarFunctionOperatorTestBase<IN, OUT, UDFIN> {
     @Test
     public void testWatermarkProcessedOnFinishBundle() throws Exception {
         Configuration conf = new Configuration();
-        conf.setInteger(PythonOptions.MAX_BUNDLE_SIZE, 10);
+        conf.set(PythonOptions.MAX_BUNDLE_SIZE, 10);
         OneInputStreamOperatorTestHarness<IN, OUT> testHarness = getTestHarness(conf);
         long initialTime = 0L;
         ConcurrentLinkedQueue<Object> expectedOutput = new ConcurrentLinkedQueue<>();
@@ -218,17 +221,15 @@ public abstract class PythonScalarFunctionOperatorTestBase<IN, OUT, UDFIN> {
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
         env.setParallelism(1);
         StreamTableEnvironment tEnv = createTableEnvironment(env);
-        tEnv.getConfig()
-                .getConfiguration()
-                .setString(TaskManagerOptions.TASK_OFF_HEAP_MEMORY.key(), "80mb");
-        tEnv.registerFunction("pyFunc", new PythonScalarFunction("pyFunc"));
-        DataStream<Tuple2<Integer, Integer>> ds = env.fromElements(new Tuple2<>(1, 2));
+        tEnv.getConfig().set(TaskManagerOptions.TASK_OFF_HEAP_MEMORY, MemorySize.parse("80mb"));
+        tEnv.createTemporarySystemFunction("pyFunc", new PythonScalarFunction("pyFunc"));
+        DataStream<Tuple2<Integer, Integer>> ds = env.fromData(new Tuple2<>(1, 2));
         Table t = tEnv.fromDataStream(ds, $("a"), $("b")).select(call("pyFunc", $("a"), $("b")));
         // force generating the physical plan for the given table
-        tEnv.toAppendStream(t, BasicTypeInfo.INT_TYPE_INFO);
+        tEnv.toDataStream(t, DataTypes.INT());
         JobGraph jobGraph = env.getStreamGraph().getJobGraph();
         List<JobVertex> vertices = jobGraph.getVerticesSortedTopologicallyFromSources();
-        Assert.assertEquals(1, vertices.size());
+        assertThat(vertices).hasSize(1);
     }
 
     private OneInputStreamOperatorTestHarness<IN, OUT> getTestHarness(Configuration config)
@@ -243,7 +244,9 @@ public abstract class PythonScalarFunctionOperatorTestBase<IN, OUT, UDFIN> {
                 getTestOperator(
                         config,
                         new PythonFunctionInfo[] {
-                            new PythonFunctionInfo(DummyPythonFunction.INSTANCE, new Integer[] {0})
+                            new PythonFunctionInfo(
+                                    DummyPythonFunction.INSTANCE,
+                                    new PythonFunctionInput[] {new InputRef(0)})
                         },
                         dataType,
                         dataType,

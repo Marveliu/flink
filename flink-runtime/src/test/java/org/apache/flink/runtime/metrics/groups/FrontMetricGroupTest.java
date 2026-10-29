@@ -19,25 +19,24 @@ package org.apache.flink.runtime.metrics.groups;
 
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.MetricOptions;
+import org.apache.flink.runtime.metrics.filter.ReporterFilter;
 import org.apache.flink.runtime.metrics.scope.ScopeFormat;
 import org.apache.flink.runtime.metrics.scope.ScopeFormats;
 import org.apache.flink.runtime.metrics.util.TestingMetricRegistry;
 
-import org.apache.flink.shaded.guava30.com.google.common.collect.ImmutableMap;
+import org.apache.flink.shaded.guava33.com.google.common.collect.ImmutableMap;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.Collections;
 
-import static org.hamcrest.CoreMatchers.is;
-import static org.hamcrest.Matchers.hasEntry;
-import static org.junit.Assert.assertThat;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /** Tests for {@link FrontMetricGroup}. */
-public class FrontMetricGroupTest {
+class FrontMetricGroupTest {
 
     @Test
-    public void testDelimiterReplacement() {
+    void testDelimiterReplacement() {
         final char delimiter = '*';
         final String hostName = "some" + delimiter + "host";
         final String metricName = "hello" + delimiter + "world";
@@ -47,28 +46,32 @@ public class FrontMetricGroupTest {
 
         final FrontMetricGroup<?> frontMetricGroup =
                 new FrontMetricGroup<>(
-                        new ReporterScopedSettings(
-                                0, delimiter, Collections.emptySet(), Collections.emptyMap()),
+                        new ReporterScopedSettings<>(
+                                0,
+                                delimiter,
+                                ReporterFilter.NO_OP_FILTER,
+                                Collections.emptySet(),
+                                Collections.emptyMap()),
                         new ProcessMetricGroup(
                                 TestingMetricRegistry.builder()
                                         .setScopeFormats(ScopeFormats.fromConfig(config))
                                         .build(),
                                 hostName));
 
-        assertThat(
-                frontMetricGroup.getMetricIdentifier(metricName),
-                is(
+        assertThat(frontMetricGroup.getMetricIdentifier(metricName))
+                .isEqualTo(
                         hostName.replace(delimiter, FrontMetricGroup.DEFAULT_REPLACEMENT)
                                 + delimiter
                                 + metricName.replace(
-                                        delimiter, FrontMetricGroup.DEFAULT_REPLACEMENT)));
+                                        delimiter, FrontMetricGroup.DEFAULT_REPLACEMENT));
         // delimiters in variables should not be filtered, because they are usually not used in a
         // context where the delimiter matters
-        assertThat(frontMetricGroup.getAllVariables(), hasEntry(ScopeFormat.SCOPE_HOST, hostName));
+        assertThat(frontMetricGroup.getAllVariables())
+                .containsEntry(ScopeFormat.SCOPE_HOST, hostName);
     }
 
     @Test
-    public void testDelimiterReplacementWithAlternative() {
+    void testDelimiterReplacementWithAlternative() {
         final char delimiter = FrontMetricGroup.DEFAULT_REPLACEMENT;
         final String hostName = "some" + delimiter + "host";
         final String metricName = "hello" + delimiter + "world";
@@ -78,40 +81,45 @@ public class FrontMetricGroupTest {
 
         final FrontMetricGroup<?> frontMetricGroup =
                 new FrontMetricGroup<>(
-                        new ReporterScopedSettings(
-                                0, delimiter, Collections.emptySet(), Collections.emptyMap()),
+                        new ReporterScopedSettings<>(
+                                0,
+                                delimiter,
+                                ReporterFilter.NO_OP_FILTER,
+                                Collections.emptySet(),
+                                Collections.emptyMap()),
                         new ProcessMetricGroup(
                                 TestingMetricRegistry.builder()
                                         .setScopeFormats(ScopeFormats.fromConfig(config))
                                         .build(),
                                 hostName));
 
-        assertThat(
-                frontMetricGroup.getMetricIdentifier(metricName),
-                is(
+        assertThat(frontMetricGroup.getMetricIdentifier(metricName))
+                .isEqualTo(
                         hostName.replace(
                                         delimiter, FrontMetricGroup.DEFAULT_REPLACEMENT_ALTERNATIVE)
                                 + delimiter
                                 + metricName.replace(
                                         delimiter,
-                                        FrontMetricGroup.DEFAULT_REPLACEMENT_ALTERNATIVE)));
+                                        FrontMetricGroup.DEFAULT_REPLACEMENT_ALTERNATIVE));
         // delimiters in variables should not be filtered, because they are usually not used in a
         // context where the delimiter matters
-        assertThat(frontMetricGroup.getAllVariables(), hasEntry(ScopeFormat.SCOPE_HOST, hostName));
+        assertThat(frontMetricGroup.getAllVariables())
+                .containsEntry(ScopeFormat.SCOPE_HOST, hostName);
     }
 
     @Test
-    public void testGetAllVariablesWithAdditionalVariables() {
+    void testGetAllVariablesWithAdditionalVariables() {
         final FrontMetricGroup<?> frontMetricGroup =
                 new FrontMetricGroup<>(
-                        new ReporterScopedSettings(
+                        new ReporterScopedSettings<>(
                                 0,
                                 '.',
+                                ReporterFilter.NO_OP_FILTER,
                                 Collections.emptySet(),
                                 ImmutableMap.of(ScopeFormat.asVariable("foo"), "bar")),
                         new ProcessMetricGroup(TestingMetricRegistry.builder().build(), "host"));
 
-        assertThat(
-                frontMetricGroup.getAllVariables(), hasEntry(ScopeFormat.asVariable("foo"), "bar"));
+        assertThat(frontMetricGroup.getAllVariables())
+                .containsEntry(ScopeFormat.asVariable("foo"), "bar");
     }
 }

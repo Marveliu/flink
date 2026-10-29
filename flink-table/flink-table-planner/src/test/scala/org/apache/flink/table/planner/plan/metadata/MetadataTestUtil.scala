@@ -15,30 +15,34 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.planner.plan.metadata
 
 import org.apache.flink.api.common.typeinfo.{BasicTypeInfo, SqlTimeTypeInfo}
-import org.apache.flink.table.api.{DataTypes, TableConfig, TableException, TableSchema}
-import org.apache.flink.table.catalog.{CatalogTable, Column, ContextResolvedTable, ObjectIdentifier, ResolvedCatalogTable, ResolvedSchema, UniqueConstraint}
+import org.apache.flink.table.api.{DataTypes, TableConfig, TableException}
+import org.apache.flink.table.catalog._
 import org.apache.flink.table.connector.ChangelogMode
 import org.apache.flink.table.connector.source.{DynamicTableSource, ScanTableSource}
+import org.apache.flink.table.legacy.api.TableSchema
 import org.apache.flink.table.module.ModuleManager
 import org.apache.flink.table.plan.stats.{ColumnStats, TableStats}
-import org.apache.flink.table.planner.calcite.{FlinkContext, FlinkContextImpl, FlinkTypeFactory, FlinkTypeSystem}
+import org.apache.flink.table.planner.calcite.{FlinkContext, FlinkContextImpl, FlinkTypeFactory}
+import org.apache.flink.table.planner.plan.`trait`.RelWindowProperties
+import org.apache.flink.table.planner.plan.logical.TumblingWindowSpec
 import org.apache.flink.table.planner.plan.schema.{FlinkPreparingTableBase, TableSourceTable}
 import org.apache.flink.table.planner.plan.stats.FlinkStatistic
 import org.apache.flink.table.runtime.types.TypeInfoLogicalTypeConverter.fromTypeInfoToLogicalType
-import org.apache.flink.table.types.logical.{BigIntType, DoubleType, IntType, LocalZonedTimestampType, LogicalType, TimestampKind, TimestampType, VarCharType}
+import org.apache.flink.table.types.logical._
 import org.apache.flink.table.utils.CatalogManagerMocks
 
 import org.apache.calcite.config.CalciteConnectionConfig
 import org.apache.calcite.jdbc.CalciteSchema
 import org.apache.calcite.rel.`type`.{RelDataType, RelDataTypeFactory}
-import org.apache.calcite.schema.Schema.TableType
 import org.apache.calcite.schema.{Schema, SchemaPlus, Table}
+import org.apache.calcite.schema.Schema.TableType
 import org.apache.calcite.sql.{SqlCall, SqlNode}
+import org.apache.calcite.util.ImmutableBitSet
 
+import java.time.Duration
 import java.util
 import java.util.Collections
 
@@ -58,6 +62,7 @@ object MetadataTestUtil {
     rootSchema.add("TemporalTable1", createTemporalTable1())
     rootSchema.add("TemporalTable2", createTemporalTable2())
     rootSchema.add("TemporalTable3", createTemporalTable3())
+    rootSchema.add("TemporalTable4", createTemporalTable4())
     rootSchema.add("TableSourceTable1", createTableSourceTable1())
     rootSchema.add("TableSourceTable2", createTableSourceTable2())
     rootSchema.add("TableSourceTable3", createTableSourceTable3())
@@ -65,6 +70,9 @@ object MetadataTestUtil {
     rootSchema.add(
       "projected_table_source_table_with_partial_pk",
       createProjectedTableSourceTableWithPartialCompositePrimaryKey())
+    rootSchema.add(
+      "projected_table_source_table_with_immutable_cols",
+      createProjectedTableSourceTableWithImmutableCols())
     rootSchema
   }
 
@@ -78,15 +86,17 @@ object MetadataTestUtil {
         BasicTypeInfo.INT_TYPE_INFO,
         BasicTypeInfo.DOUBLE_TYPE_INFO,
         BasicTypeInfo.STRING_TYPE_INFO,
-        BasicTypeInfo.INT_TYPE_INFO))
+        BasicTypeInfo.INT_TYPE_INFO
+      ))
 
     val colStatsMap = Map[String, ColumnStats](
-      "id" -> new ColumnStats(50L, 0L, 8D, 8, null, 0),
+      "id" -> new ColumnStats(50L, 0L, 8d, 8, null, 0),
       "name" -> new ColumnStats(48L, 0L, 7.2, 12, null, null),
-      "score" -> new ColumnStats(20L, 6L, 8D, 8, 4.8D, 2.7D),
-      "age" -> new ColumnStats(7L, 0L, 4D, 4, 18, 12),
-      "height" -> new ColumnStats(35L, null, 8D, 8, 172.1D, 161.0D),
-      "sex" -> new ColumnStats(2L, 0L, 1D, 1, null, null))
+      "score" -> new ColumnStats(20L, 6L, 8d, 8, 4.8d, 2.7d),
+      "age" -> new ColumnStats(7L, 0L, 4d, 4, 18, 12),
+      "height" -> new ColumnStats(35L, null, 8d, 8, 172.1d, 161.0d),
+      "sex" -> new ColumnStats(2L, 0L, 1d, 1, null, null)
+    )
 
     val tableStats = new TableStats(50L, colStatsMap)
     val uniqueKeys = Set(Set("id").asJava).asJava
@@ -104,7 +114,8 @@ object MetadataTestUtil {
         SqlTimeTypeInfo.DATE,
         BasicTypeInfo.DOUBLE_TYPE_INFO,
         BasicTypeInfo.DOUBLE_TYPE_INFO,
-        BasicTypeInfo.INT_TYPE_INFO))
+        BasicTypeInfo.INT_TYPE_INFO
+      ))
 
     getMetadataTable(schema, new FlinkStatistic(TableStats.UNKNOWN))
   }
@@ -120,10 +131,10 @@ object MetadataTestUtil {
         BasicTypeInfo.INT_TYPE_INFO))
 
     val colStatsMap = Map[String, ColumnStats](
-      "a" -> new ColumnStats(20000000L, 0L, 4D, 4, null, 0),
-      "b" -> new ColumnStats(800000000L, 0L, 8D, 8, 800000000L, 1L),
-      "c" -> new ColumnStats(1581L, 0L, 12D, 12, null, null),
-      "d" -> new ColumnStats(245623352L, 136231L, 88.8D, 140, null, null),
+      "a" -> new ColumnStats(20000000L, 0L, 4d, 4, null, 0),
+      "b" -> new ColumnStats(800000000L, 0L, 8d, 8, 800000000L, 1L),
+      "c" -> new ColumnStats(1581L, 0L, 12d, 12, null, null),
+      "d" -> new ColumnStats(245623352L, 136231L, 88.8d, 140, null, null),
       "e" -> new ColumnStats(null, 0L, 4d, 4, 100, 1)
     )
 
@@ -143,9 +154,9 @@ object MetadataTestUtil {
         BasicTypeInfo.INT_TYPE_INFO))
 
     val colStatsMap = Map[String, ColumnStats](
-      "a" -> new ColumnStats(20000000L, 0L, 4D, 4, null, null),
-      "b" -> new ColumnStats(2556L, 62L, 8D, 8, 5247L, 8L),
-      "c" -> new ColumnStats(682L, 0L, 12D, 12, null, null),
+      "a" -> new ColumnStats(20000000L, 0L, 4d, 4, null, null),
+      "b" -> new ColumnStats(2556L, 62L, 8d, 8, 5247L, 8L),
+      "c" -> new ColumnStats(682L, 0L, 12d, 12, null, null),
       "d" -> new ColumnStats(125234L, 0L, 10.52, 16, null, null),
       "e" -> new ColumnStats(null, 0L, 4d, 4, 300, 200)
     )
@@ -163,11 +174,18 @@ object MetadataTestUtil {
         BasicTypeInfo.STRING_TYPE_INFO))
 
     val colStatsMap = Map[String, ColumnStats](
-      "a" -> new ColumnStats(10L, 1L, 4D, 4, 5, -5),
-      "b" -> new ColumnStats(5L, 0L, 8D, 8, 6.1D, 0D),
+      "a" -> new ColumnStats(10L, 1L, 4d, 4, 5, -5),
+      "b" -> new ColumnStats(5L, 0L, 8d, 8, 6.1d, 0d),
       "c" ->
-        ColumnStats.Builder.builder().setNdv(100L).setNullCount(1L).setAvgLen(16D).setMaxLen(128)
-          .setMax("zzzzz").setMin("").build()
+        ColumnStats.Builder
+          .builder()
+          .setNdv(100L)
+          .setNullCount(1L)
+          .setAvgLen(16d)
+          .setMaxLen(128)
+          .setMax("zzzzz")
+          .setMin("")
+          .build()
     )
 
     val tableStats = new TableStats(100L, colStatsMap)
@@ -177,16 +195,17 @@ object MetadataTestUtil {
   private def createMyTable4(): Table = {
     val schema = new TableSchema(
       Array("a", "b", "c", "d"),
-      Array(BasicTypeInfo.LONG_TYPE_INFO,
+      Array(
+        BasicTypeInfo.LONG_TYPE_INFO,
         BasicTypeInfo.DOUBLE_TYPE_INFO,
         BasicTypeInfo.INT_TYPE_INFO,
         BasicTypeInfo.DOUBLE_TYPE_INFO))
 
     val colStatsMap = Map[String, ColumnStats](
-      "a" -> new ColumnStats(50L, 0L, 8D, 8, 50, 1),
-      "b" -> new ColumnStats(7L, 0L, 8D, 8, 5.1D, 0D),
-      "c" -> new ColumnStats(25L, 0L, 4D, 4, 46, 0),
-      "d" -> new ColumnStats(46L, 0L, 8D, 8, 172.1D, 161.0D)
+      "a" -> new ColumnStats(50L, 0L, 8d, 8, 50, 1),
+      "b" -> new ColumnStats(7L, 0L, 8d, 8, 5.1d, 0d),
+      "c" -> new ColumnStats(25L, 0L, 4d, 4, 46, 0),
+      "d" -> new ColumnStats(46L, 0L, 8d, 8, 172.1d, 161.0d)
     )
 
     val tableStats = new TableStats(50L, colStatsMap)
@@ -201,12 +220,13 @@ object MetadataTestUtil {
       VarCharType.STRING_TYPE,
       new IntType(),
       new LocalZonedTimestampType(true, TimestampKind.PROCTIME, 3),
-      new TimestampType(true, TimestampKind.ROWTIME, 3))
+      new TimestampType(true, TimestampKind.ROWTIME, 3)
+    )
 
     val colStatsMap = Map[String, ColumnStats](
-      "a" -> new ColumnStats(30L, 0L, 4D, 4, 45, 5),
-      "b" -> new ColumnStats(5L, 0L, 32D, 32, null, null),
-      "c" -> new ColumnStats(48L, 0L, 8D, 8, 50, 0)
+      "a" -> new ColumnStats(30L, 0L, 4d, 4, 45, 5),
+      "b" -> new ColumnStats(5L, 0L, 32d, 32, null, null),
+      "c" -> new ColumnStats(48L, 0L, 8d, 8, 50, 0)
     )
 
     val tableStats = new TableStats(50L, colStatsMap)
@@ -220,12 +240,13 @@ object MetadataTestUtil {
       VarCharType.STRING_TYPE,
       new IntType(),
       new LocalZonedTimestampType(true, TimestampKind.PROCTIME, 3),
-      new TimestampType(true, TimestampKind.ROWTIME, 3))
+      new TimestampType(true, TimestampKind.ROWTIME, 3)
+    )
 
     val colStatsMap = Map[String, ColumnStats](
-      "a" -> new ColumnStats(50L, 0L, 8D, 8, 55, 5),
-      "b" -> new ColumnStats(5L, 0L, 16D, 32, null, null),
-      "c" -> new ColumnStats(48L, 0L, 4D, 4, 50, 0)
+      "a" -> new ColumnStats(50L, 0L, 8d, 8, 55, 5),
+      "b" -> new ColumnStats(5L, 0L, 16d, 32, null, null),
+      "c" -> new ColumnStats(48L, 0L, 4d, 4, 50, 0)
     )
 
     val tableStats = new TableStats(50L, colStatsMap)
@@ -240,16 +261,48 @@ object MetadataTestUtil {
       new BigIntType(),
       VarCharType.STRING_TYPE,
       new LocalZonedTimestampType(true, TimestampKind.PROCTIME, 3),
-      new TimestampType(true, TimestampKind.ROWTIME, 3))
+      new TimestampType(true, TimestampKind.ROWTIME, 3)
+    )
 
     val colStatsMap = Map[String, ColumnStats](
-      "a" -> new ColumnStats(3740000000L, 0L, 4D, 4, null, null),
-      "b" -> new ColumnStats(53252726L, 1474L, 8D, 8, 100000000L, -100000000L),
+      "a" -> new ColumnStats(3740000000L, 0L, 4d, 4, null, null),
+      "b" -> new ColumnStats(53252726L, 1474L, 8d, 8, 100000000L, -100000000L),
       "c" -> new ColumnStats(null, 0L, 18.6, 64, null, null)
     )
 
     val tableStats = new TableStats(4000000000L, colStatsMap)
     getMetadataTable(fieldNames, fieldTypes, new FlinkStatistic(tableStats))
+  }
+
+  private def createTemporalTable4(): Table = {
+    val fieldNames = Array("window_start", "window_end", "window_time", "a", "b", "c")
+    val fieldTypes = Array[LogicalType](
+      new TimestampType(false, 3),
+      new TimestampType(false, 3),
+      new TimestampType(true, TimestampKind.ROWTIME, 3),
+      new IntType(),
+      new BigIntType(),
+      VarCharType.STRING_TYPE
+    )
+
+    val windowProperties = RelWindowProperties.create(
+      ImmutableBitSet.of(0),
+      ImmutableBitSet.of(1),
+      ImmutableBitSet.of(2),
+      new TumblingWindowSpec(Duration.ofMinutes(10L), null),
+      fieldTypes.apply(2))
+
+    val colStatsMap = Map[String, ColumnStats](
+      "a" -> new ColumnStats(3740000000L, 0L, 4d, 4, null, null),
+      "b" -> new ColumnStats(53252726L, 1474L, 8d, 8, 100000000L, -100000000L),
+      "c" -> new ColumnStats(null, 0L, 18.6, 64, null, null)
+    )
+
+    val tableStats = new TableStats(4000000000L, colStatsMap)
+    getMetadataTable(
+      fieldNames,
+      fieldTypes,
+      new FlinkStatistic(tableStats, relWindowProperties = windowProperties))
   }
 
   private val flinkContext = new FlinkContextImpl(
@@ -258,7 +311,8 @@ object MetadataTestUtil {
     new ModuleManager,
     null,
     CatalogManagerMocks.createEmptyCatalogManager,
-    null)
+    null,
+    classOf[MockMetaTable].getClassLoader)
 
   private def createProjectedTableSourceTable(): Table = {
     val resolvedSchema = new ResolvedSchema(
@@ -266,13 +320,16 @@ object MetadataTestUtil {
         Column.physical("a", DataTypes.BIGINT().notNull()),
         Column.physical("b", DataTypes.INT()),
         Column.physical("c", DataTypes.VARCHAR(2147483647)),
-        Column.physical("d", DataTypes.BIGINT().notNull())),
+        Column.physical("d", DataTypes.BIGINT().notNull())
+      ),
       Collections.emptyList(),
-      UniqueConstraint.primaryKey("PK_1", util.Arrays.asList("a", "d")))
+      UniqueConstraint.primaryKey("PK_1", util.Arrays.asList("a", "d")),
+      Collections.singletonList(DefaultIndex.newIndex("idx", Collections.singletonList("a"))),
+      null)
 
     val catalogTable = getCatalogTable(resolvedSchema)
 
-    val typeFactory = new FlinkTypeFactory(new FlinkTypeSystem)
+    val typeFactory = new FlinkTypeFactory(Thread.currentThread().getContextClassLoader)
     val rowType = typeFactory.buildRelNodeRowType(
       Seq("a", "c", "d"),
       Seq(new BigIntType(false), new DoubleType(), new VarCharType(false, 100)))
@@ -282,39 +339,41 @@ object MetadataTestUtil {
       new TestTableSource(),
       true,
       ContextResolvedTable.temporary(
-        ObjectIdentifier.of(
-          "default_catalog", "default_database", "projected_table_source_table"),
+        ObjectIdentifier.of("default_catalog", "default_database", "projected_table_source_table"),
         new ResolvedCatalogTable(catalogTable, resolvedSchema)),
       flinkContext)
   }
 
   private def createTableSourceTable1(): Table = {
-    val catalogTable = CatalogTable.of(
-      org.apache.flink.table.api.Schema.newBuilder
-        .column("a", DataTypes.BIGINT.notNull)
-        .column("b", DataTypes.INT.notNull)
-        .column("c", DataTypes.VARCHAR(2147483647).notNull)
-        .column("d", DataTypes.BIGINT.notNull)
-        .primaryKeyNamed("PK_1", "a", "b")
-        .build,
-      null,
-      Collections.emptyList(),
-      Map(
+    val catalogTable = CatalogTable
+      .newBuilder()
+      .schema(
+        org.apache.flink.table.api.Schema.newBuilder
+          .column("a", DataTypes.BIGINT.notNull)
+          .column("b", DataTypes.INT.notNull)
+          .column("c", DataTypes.VARCHAR(2147483647).notNull)
+          .column("d", DataTypes.BIGINT.notNull)
+          .primaryKeyNamed("PK_1", "a", "b")
+          .build)
+      .options(Map(
         "connector" -> "values",
         "bounded" -> "true"
-      )
-    )
+      ))
+      .build()
 
     val resolvedSchema = new ResolvedSchema(
       util.Arrays.asList(
         Column.physical("a", DataTypes.BIGINT().notNull()),
         Column.physical("b", DataTypes.INT().notNull()),
         Column.physical("c", DataTypes.STRING().notNull()),
-        Column.physical("d", DataTypes.BIGINT().notNull())),
+        Column.physical("d", DataTypes.BIGINT().notNull())
+      ),
       Collections.emptyList(),
-      UniqueConstraint.primaryKey("PK_1", util.Arrays.asList("a", "b")))
+      UniqueConstraint.primaryKey("PK_1", util.Arrays.asList("a", "b")),
+      Collections.singletonList(DefaultIndex.newIndex("idx", Collections.singletonList("a"))),
+      null)
 
-    val typeFactory = new FlinkTypeFactory(new FlinkTypeSystem)
+    val typeFactory = new FlinkTypeFactory(Thread.currentThread().getContextClassLoader)
     val rowType = typeFactory.buildRelNodeRowType(
       Seq("a", "b", "c", "d"),
       Seq(new BigIntType(false), new IntType(), new VarCharType(false, 100), new BigIntType(false)))
@@ -336,13 +395,16 @@ object MetadataTestUtil {
         Column.physical("a", DataTypes.BIGINT().notNull()),
         Column.physical("b", DataTypes.INT().notNull()),
         Column.physical("c", DataTypes.STRING().notNull()),
-        Column.physical("d", DataTypes.BIGINT().notNull())),
+        Column.physical("d", DataTypes.BIGINT().notNull())
+      ),
       Collections.emptyList(),
-      UniqueConstraint.primaryKey("PK_1", util.Arrays.asList("b")))
+      UniqueConstraint.primaryKey("PK_1", util.Arrays.asList("b")),
+      Collections.singletonList(DefaultIndex.newIndex("idx", Collections.singletonList("a"))),
+      null)
 
     val catalogTable = getCatalogTable(resolvedSchema)
 
-    val typeFactory = new FlinkTypeFactory(new FlinkTypeSystem)
+    val typeFactory = new FlinkTypeFactory(Thread.currentThread().getContextClassLoader)
     val rowType = typeFactory.buildRelNodeRowType(
       Seq("a", "b", "c", "d"),
       Seq(new BigIntType(false), new IntType(), new VarCharType(false, 100), new BigIntType(false)))
@@ -364,13 +426,16 @@ object MetadataTestUtil {
         Column.physical("a", DataTypes.BIGINT().notNull()),
         Column.physical("b", DataTypes.INT().notNull()),
         Column.physical("c", DataTypes.STRING().notNull()),
-        Column.physical("d", DataTypes.BIGINT().notNull())),
+        Column.physical("d", DataTypes.BIGINT().notNull())
+      ),
       Collections.emptyList(),
+      null,
+      Collections.singletonList(DefaultIndex.newIndex("idx", Collections.singletonList("a"))),
       null)
 
     val catalogTable = getCatalogTable(resolvedSchema)
 
-    val typeFactory = new FlinkTypeFactory(new FlinkTypeSystem)
+    val typeFactory = new FlinkTypeFactory(Thread.currentThread().getContextClassLoader)
     val rowType = typeFactory.buildRelNodeRowType(
       Seq("a", "b", "c", "d"),
       Seq(new BigIntType(false), new IntType(), new VarCharType(false, 100), new BigIntType(false)))
@@ -392,14 +457,14 @@ object MetadataTestUtil {
         Column.physical("a", DataTypes.BIGINT().notNull()),
         Column.physical("b", DataTypes.BIGINT().notNull())),
       Collections.emptyList(),
-      UniqueConstraint.primaryKey("PK_1", util.Arrays.asList("a", "b")))
+      UniqueConstraint.primaryKey("PK_1", util.Arrays.asList("a", "b")),
+      Collections.singletonList(DefaultIndex.newIndex("idx", Collections.singletonList("a"))),
+      null)
 
     val catalogTable = getCatalogTable(resolvedSchema)
 
-    val typeFactory = new FlinkTypeFactory(new FlinkTypeSystem)
-    val rowType = typeFactory.buildRelNodeRowType(
-      Seq("a"),
-      Seq(new BigIntType(false)))
+    val typeFactory = new FlinkTypeFactory(Thread.currentThread().getContextClassLoader)
+    val rowType = typeFactory.buildRelNodeRowType(Seq("a"), Seq(new BigIntType(false)))
 
     new MockTableSourceTable(
       rowType,
@@ -415,16 +480,56 @@ object MetadataTestUtil {
       flinkContext)
   }
 
-  private def getCatalogTable(resolvedSchema: ResolvedSchema) = {
-    CatalogTable.of(
-      org.apache.flink.table.api.Schema.newBuilder.fromResolvedSchema(resolvedSchema).build,
-      null,
+  private def createProjectedTableSourceTableWithImmutableCols(): Table = {
+    val resolvedSchema = new ResolvedSchema(
+      util.Arrays.asList(
+        Column.physical("a", DataTypes.BIGINT().notNull()),
+        Column.physical("b", DataTypes.INT().notNull()),
+        Column.physical("c", DataTypes.STRING().notNull()),
+        Column.physical("d", DataTypes.BIGINT().notNull()),
+        Column.physical("rowtime", DataTypes.TIMESTAMP(3))
+      ),
       Collections.emptyList(),
-      Map(
-        "connector" -> "values",
-        "bounded" -> "true"
-      )
-    )
+      UniqueConstraint.primaryKey("PK_1", util.Arrays.asList("a")),
+      Collections.singletonList(DefaultIndex.newIndex("idx", Collections.singletonList("a"))),
+      ImmutableColumnsConstraint.immutableColumns("imt", util.Arrays.asList("c", "d")))
+
+    val catalogTable = getCatalogTable(resolvedSchema)
+
+    // projected: drop column b, keep a, c, d, rowtime
+    val typeFactory = new FlinkTypeFactory(Thread.currentThread().getContextClassLoader)
+    val rowType = typeFactory.buildRelNodeRowType(
+      Seq("a", "c", "d", "rowtime"),
+      Seq(
+        new BigIntType(false),
+        new VarCharType(false, 100),
+        new BigIntType(false),
+        new TimestampType(true, TimestampKind.ROWTIME, 3)))
+
+    new MockTableSourceTable(
+      rowType,
+      new TestTableSource(),
+      true,
+      ContextResolvedTable.temporary(
+        ObjectIdentifier.of(
+          "default_catalog",
+          "default_database",
+          "projected_table_source_table_with_immutable_cols"),
+        new ResolvedCatalogTable(catalogTable, resolvedSchema)
+      ),
+      flinkContext)
+  }
+
+  private def getCatalogTable(resolvedSchema: ResolvedSchema) = {
+    CatalogTable
+      .newBuilder()
+      .schema(org.apache.flink.table.api.Schema.newBuilder.fromResolvedSchema(resolvedSchema).build)
+      .options(
+        Map(
+          "connector" -> "values",
+          "bounded" -> "true"
+        ))
+      .build()
   }
 
   private def getMetadataTable(
@@ -441,17 +546,22 @@ object MetadataTestUtil {
       fieldNames: Array[String],
       fieldTypes: Array[LogicalType],
       statistic: FlinkStatistic): Table = {
-    val flinkTypeFactory = new FlinkTypeFactory(new FlinkTypeSystem)
+    val flinkTypeFactory = new FlinkTypeFactory(Thread.currentThread().getContextClassLoader)
     val rowType = flinkTypeFactory.buildRelNodeRowType(fieldNames, fieldTypes)
     new MockMetaTable(rowType, statistic)
   }
 }
 
-/** A mock table used for metadata test, it implements both [[Table]]
-  * and [[FlinkPreparingTableBase]]. */
+/**
+ * A mock table used for metadata test, it implements both [[Table]] and
+ * [[FlinkPreparingTableBase]].
+ */
 class MockMetaTable(rowType: RelDataType, statistic: FlinkStatistic)
-  extends FlinkPreparingTableBase(null, rowType,
-    Collections.singletonList("MockMetaTable"), statistic)
+  extends FlinkPreparingTableBase(
+    null,
+    rowType,
+    Collections.singletonList("MockMetaTable"),
+    statistic)
   with Table {
   override def getRowType(typeFactory: RelDataTypeFactory): RelDataType = rowType
 
@@ -459,8 +569,11 @@ class MockMetaTable(rowType: RelDataType, statistic: FlinkStatistic)
 
   override def isRolledUp(column: String): Boolean = false
 
-  override def rolledUpColumnValidInsideAgg(column: String,
-    call: SqlCall, parent: SqlNode, config: CalciteConnectionConfig): Boolean = false
+  override def rolledUpColumnValidInsideAgg(
+      column: String,
+      call: SqlCall,
+      parent: SqlNode,
+      config: CalciteConnectionConfig): Boolean = false
 }
 
 class TestTableSource extends ScanTableSource {
@@ -489,7 +602,8 @@ class MockTableSourceTable(
     tableSource,
     isStreamingMode,
     contextResolvedTable,
-    flinkContext)
+    flinkContext,
+    new FlinkTypeFactory(flinkContext.getClassLoader))
   with Table {
   override def getRowType(typeFactory: RelDataTypeFactory): RelDataType = rowType
 
@@ -497,6 +611,18 @@ class MockTableSourceTable(
 
   override def isRolledUp(column: String): Boolean = false
 
-  override def rolledUpColumnValidInsideAgg(column: String,
-      call: SqlCall, parent: SqlNode, config: CalciteConnectionConfig): Boolean = false
+  override def rolledUpColumnValidInsideAgg(
+      column: String,
+      call: SqlCall,
+      parent: SqlNode,
+      config: CalciteConnectionConfig): Boolean = false
+
+  def copy(newTableSource: DynamicTableSource, newRowType: RelDataType): MockTableSourceTable = {
+    new MockTableSourceTable(
+      newRowType,
+      newTableSource,
+      isStreamingMode,
+      contextResolvedTable,
+      flinkContext)
+  }
 }

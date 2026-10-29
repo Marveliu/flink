@@ -23,16 +23,16 @@ import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.SecurityOptions;
 import org.apache.flink.runtime.net.SSLUtilsTest;
 
-import org.junit.AfterClass;
-import org.junit.BeforeClass;
-import org.junit.ClassRule;
-import org.junit.Test;
-import org.junit.rules.TemporaryFolder;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
 /** This class contains unit tests for the {@link BlobClient} with ssl enabled. */
-public class BlobClientSslTest extends BlobClientTest {
+class BlobClientSslTest extends BlobClientTest {
 
     /** The instance of the SSL BLOB server used during the tests. */
     private static BlobServer blobSslServer;
@@ -46,38 +46,38 @@ public class BlobClientSslTest extends BlobClientTest {
     /** The non-SSL blob service client configuration with SSL-enabled security options. */
     private static Configuration nonSslClientConfig;
 
-    @ClassRule public static TemporaryFolder temporarySslFolder = new TemporaryFolder();
-
     /** Starts the SSL enabled BLOB server. */
-    @BeforeClass
-    public static void startSSLServer() throws IOException {
+    @BeforeAll
+    static void startSSLServer() throws IOException {
         Configuration config =
                 SSLUtilsTest.createInternalSslConfigWithKeyAndTrustStores(
                         SecurityOptions.SSL_PROVIDER.defaultValue());
+        config.set(
+                SecurityOptions.SSL_ALGORITHMS,
+                "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384");
 
-        blobSslServer = new BlobServer(config, temporarySslFolder.newFolder(), new VoidBlobStore());
+        blobSslServer = TestingBlobUtils.createServer(tempDir.resolve("ssl"), config);
         blobSslServer.start();
 
         sslClientConfig = config;
     }
 
-    @BeforeClass
-    public static void startNonSSLServer() throws IOException {
+    @BeforeAll
+    static void startNonSSLServer() throws IOException {
         Configuration config =
                 SSLUtilsTest.createInternalSslConfigWithKeyAndTrustStores(
                         SecurityOptions.SSL_PROVIDER.defaultValue());
-        config.setBoolean(BlobServerOptions.SSL_ENABLED, false);
+        config.set(BlobServerOptions.SSL_ENABLED, false);
 
-        blobNonSslServer =
-                new BlobServer(config, temporarySslFolder.newFolder(), new VoidBlobStore());
+        blobNonSslServer = TestingBlobUtils.createServer(tempDir.resolve("non_ssl"), config);
         blobNonSslServer.start();
 
         nonSslClientConfig = config;
     }
 
     /** Shuts the BLOB server down. */
-    @AfterClass
-    public static void stopServers() throws IOException {
+    @AfterAll
+    static void stopServers() throws IOException {
         if (blobSslServer != null) {
             blobSslServer.close();
         }
@@ -106,31 +106,35 @@ public class BlobClientSslTest extends BlobClientTest {
     }
 
     /** Verify ssl client to non-ssl server failure. */
-    @Test(expected = IOException.class)
-    public void testSSLClientFailure() throws Exception {
+    @Test
+    public void testSSLClientFailure() {
         // SSL client connected to non-ssl server
-        uploadJarFile(blobServer, sslClientConfig);
+        assertThatThrownBy(() -> uploadJarFile(blobServer, sslClientConfig))
+                .isInstanceOf(IOException.class);
     }
 
     /** Verify ssl client to non-ssl server failure. */
-    @Test(expected = IOException.class)
-    public void testSSLClientFailure2() throws Exception {
+    @Test
+    public void testSSLClientFailure2() {
         // SSL client connected to non-ssl server
-        uploadJarFile(blobNonSslServer, sslClientConfig);
+        assertThatThrownBy(() -> uploadJarFile(blobNonSslServer, sslClientConfig))
+                .isInstanceOf(IOException.class);
     }
 
     /** Verify non-ssl client to ssl server failure. */
-    @Test(expected = IOException.class)
-    public void testSSLServerFailure() throws Exception {
+    @Test
+    public void testSSLServerFailure() {
         // Non-SSL client connected to ssl server
-        uploadJarFile(blobSslServer, clientConfig);
+        assertThatThrownBy(() -> uploadJarFile(blobSslServer, clientConfig))
+                .isInstanceOf(IOException.class);
     }
 
     /** Verify non-ssl client to ssl server failure. */
-    @Test(expected = IOException.class)
+    @Test
     public void testSSLServerFailure2() throws Exception {
         // Non-SSL client connected to ssl server
-        uploadJarFile(blobSslServer, nonSslClientConfig);
+        assertThatThrownBy(() -> uploadJarFile(blobSslServer, nonSslClientConfig))
+                .isInstanceOf(IOException.class);
     }
 
     /** Verify non-ssl connection sanity. */
@@ -155,5 +159,67 @@ public class BlobClientSslTest extends BlobClientTest {
     @Test
     public void testNonSSLConnection4() throws Exception {
         uploadJarFile(blobNonSslServer, nonSslClientConfig);
+    }
+
+    /** Verify ssl client to ssl server upload. */
+    @Test
+    public void testUploadJarFilesHelperForApplication() throws Exception {
+        uploadJarFileForApplication(blobSslServer, sslClientConfig);
+    }
+
+    /** Verify ssl client to non-ssl server failure. */
+    @Test
+    public void testSSLClientFailureForApplication() {
+        // SSL client connected to non-ssl server
+        assertThatThrownBy(() -> uploadJarFileForApplication(blobServer, sslClientConfig))
+                .isInstanceOf(IOException.class);
+    }
+
+    /** Verify ssl client to non-ssl server failure. */
+    @Test
+    public void testSSLClientFailure2ForApplication() {
+        // SSL client connected to non-ssl server
+        assertThatThrownBy(() -> uploadJarFileForApplication(blobNonSslServer, sslClientConfig))
+                .isInstanceOf(IOException.class);
+    }
+
+    /** Verify non-ssl client to ssl server failure. */
+    @Test
+    public void testSSLServerFailureForApplication() {
+        // Non-SSL client connected to ssl server
+        assertThatThrownBy(() -> uploadJarFileForApplication(blobSslServer, clientConfig))
+                .isInstanceOf(IOException.class);
+    }
+
+    /** Verify non-ssl client to ssl server failure. */
+    @Test
+    public void testSSLServerFailure2ForApplication() throws Exception {
+        // Non-SSL client connected to ssl server
+        assertThatThrownBy(() -> uploadJarFileForApplication(blobSslServer, nonSslClientConfig))
+                .isInstanceOf(IOException.class);
+    }
+
+    /** Verify non-ssl connection sanity. */
+    @Test
+    public void testNonSSLConnectionForApplication() throws Exception {
+        uploadJarFileForApplication(blobServer, clientConfig);
+    }
+
+    /** Verify non-ssl connection sanity. */
+    @Test
+    public void testNonSSLConnection2ForApplication() throws Exception {
+        uploadJarFileForApplication(blobServer, nonSslClientConfig);
+    }
+
+    /** Verify non-ssl connection sanity. */
+    @Test
+    public void testNonSSLConnection3ForApplication() throws Exception {
+        uploadJarFileForApplication(blobNonSslServer, clientConfig);
+    }
+
+    /** Verify non-ssl connection sanity. */
+    @Test
+    public void testNonSSLConnection4ForApplication() throws Exception {
+        uploadJarFileForApplication(blobNonSslServer, nonSslClientConfig);
     }
 }

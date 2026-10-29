@@ -19,7 +19,10 @@
 package org.apache.flink.table.planner.functions.casting;
 
 import org.apache.flink.annotation.Internal;
+import org.apache.flink.table.planner.codegen.CodeGeneratorContext;
 import org.apache.flink.table.types.logical.LogicalType;
+
+import java.time.ZoneId;
 
 /**
  * Cast rule that has code generation capabilities.
@@ -44,12 +47,27 @@ public interface CodeGeneratorCastRule<IN, OUT> extends CastRule<IN, OUT> {
 
     /** Context for code generation. */
     interface Context {
-        /** @return where the legacy behaviour should be followed or not. */
+        /**
+         * @return whether it's in printing mode or not. Printing is used by {@link
+         *     RowDataToStringConverterImpl} when printing table row results.
+         */
+        boolean isPrinting();
+
+        /**
+         * @return where the legacy behaviour should be followed or not.
+         */
         @Deprecated
         boolean legacyBehaviour();
 
-        /** @return the session time zone term. */
+        /**
+         * @return the session time zone term.
+         */
         String getSessionTimeZoneTerm();
+
+        /**
+         * @return the session time zone.
+         */
+        ZoneId getSessionZoneId();
 
         /**
          * Declare a new variable accessible within the scope of the caller of {@link
@@ -59,10 +77,25 @@ public interface CodeGeneratorCastRule<IN, OUT> extends CastRule<IN, OUT> {
          */
         String declareVariable(String type, String variablePrefix);
 
-        /** @return the term for the type serializer. */
+        /**
+         * @return the term for the type serializer.
+         */
         String declareTypeSerializer(LogicalType type);
 
-        /** @return field term. The field is going to be declared as final. */
+        /**
+         * Declare a field that holds the given object. The class of the object must be public,
+         * because the generated code refers to it by name. The object must be serializable, because
+         * the planner copies it into the generated class and ships it with that class.
+         *
+         * @return the field term
+         */
+        String declareReusableObject(Object object, String fieldPrefix);
+
+        /**
+         * @return field term. The field is going to be declared as final.
+         */
         String declareClassField(String type, String field, String initialization);
+
+        CodeGeneratorContext getCodeGeneratorContext();
     }
 }

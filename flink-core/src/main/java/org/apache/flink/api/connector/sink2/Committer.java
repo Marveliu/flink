@@ -18,15 +18,14 @@
 
 package org.apache.flink.api.connector.sink2;
 
-import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.annotation.Public;
 
 import java.io.IOException;
 import java.util.Collection;
 
 /**
  * The {@code Committer} is responsible for committing the data staged by the {@link
- * TwoPhaseCommittingSink.PrecommittingSinkWriter} in the second step of a two-phase commit
- * protocol.
+ * CommittingSinkWriter} in the second step of a two-phase commit protocol.
  *
  * <p>A commit must be idempotent: If some failure occurs in Flink during commit phase, Flink will
  * restart from previous checkpoint and re-attempt to commit all committables. Thus, some or all
@@ -36,12 +35,12 @@ import java.util.Collection;
  *
  * @param <CommT> The type of information needed to commit the staged data
  */
-@PublicEvolving
+@Public
 public interface Committer<CommT> extends AutoCloseable {
     /**
-     * Commit the given list of {@link CommT}.
+     * Commit the given collection of {@link CommitRequest}.
      *
-     * @param committables A list of commit requests staged by the sink writer.
+     * @param committables A collection of commit requests staged by the sink writer.
      * @throws IOException for reasons that may yield a complete restart of the job.
      */
     void commit(Collection<CommitRequest<CommT>> committables)
@@ -50,9 +49,9 @@ public interface Committer<CommT> extends AutoCloseable {
     /**
      * A request to commit a specific committable.
      *
-     * @param <CommT>
+     * @param <CommT> The type of information needed to commit the staged data
      */
-    @PublicEvolving
+    @Public
     interface CommitRequest<CommT> {
 
         /** Returns the committable. */

@@ -15,55 +15,56 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.planner.plan.stream.sql.join
 
-import org.apache.flink.api.scala._
 import org.apache.flink.table.api._
 import org.apache.flink.table.planner.plan.utils.IntervalJoinUtil
 import org.apache.flink.table.planner.runtime.utils.JavaUserDefinedScalarFunctions.PythonScalarFunction
 import org.apache.flink.table.planner.utils.{StreamTableTestUtil, TableTestBase, TableTestUtil}
 
 import org.apache.calcite.rel.logical.LogicalJoin
-import org.junit.Assert.assertEquals
-import org.junit.Test
+import org.assertj.core.api.Assertions.{assertThat, assertThatExceptionOfType, assertThatThrownBy}
+import org.junit.jupiter.api.Test
 
 class IntervalJoinTest extends TableTestBase {
 
   private val util: StreamTableTestUtil = streamTestUtil()
+  util
+    .addDataStream[(Int, String, Long)]("MyTable", 'a, 'b, 'c, 'proctime.proctime, 'rowtime.rowtime)
   util.addDataStream[(Int, String, Long)](
-    "MyTable", 'a, 'b, 'c, 'proctime.proctime, 'rowtime.rowtime)
-  util.addDataStream[(Int, String, Long)](
-    "MyTable2", 'a, 'b, 'c, 'proctime.proctime, 'rowtime.rowtime)
+    "MyTable2",
+    'a,
+    'b,
+    'c,
+    'proctime.proctime,
+    'rowtime.rowtime)
 
-  util.tableEnv.executeSql(
-    s"""
-       |CREATE TABLE MyTable3 (
-       |  a int,
-       |  b bigint,
-       |  c string,
-       |  rowtime as TO_TIMESTAMP_LTZ(b, 3),
-       |  watermark for rowtime as rowtime
-       |) WITH (
-       |  'connector' = 'values',
-       |  'bounded' = 'false'
-       |)
+  util.tableEnv.executeSql(s"""
+                              |CREATE TABLE MyTable3 (
+                              |  a int,
+                              |  b bigint,
+                              |  c string,
+                              |  rowtime as TO_TIMESTAMP_LTZ(b, 3),
+                              |  watermark for rowtime as rowtime
+                              |) WITH (
+                              |  'connector' = 'values',
+                              |  'bounded' = 'false'
+                              |)
        """.stripMargin)
-  util.tableEnv.executeSql(
-    s"""
-       |CREATE TABLE MyTable4 (
-       |  a int,
-       |  b bigint,
-       |  c string,
-       |  rowtime as TO_TIMESTAMP_LTZ(b, 3),
-       |  watermark for rowtime as rowtime
-       |) WITH (
-       |  'connector' = 'values',
-       |  'bounded' = 'false'
-       |)
+  util.tableEnv.executeSql(s"""
+                              |CREATE TABLE MyTable4 (
+                              |  a int,
+                              |  b bigint,
+                              |  c string,
+                              |  rowtime as TO_TIMESTAMP_LTZ(b, 3),
+                              |  watermark for rowtime as rowtime
+                              |) WITH (
+                              |  'connector' = 'values',
+                              |  'bounded' = 'false'
+                              |)
        """.stripMargin)
 
-  /** There should exist exactly two time conditions **/
+  /** There should exist exactly two time conditions * */
   @Test
   def testInteravlJoinSingleTimeCondition(): Unit = {
     val sql =
@@ -74,7 +75,7 @@ class IntervalJoinTest extends TableTestBase {
     util.verifyExecPlan(sql)
   }
 
-  /** Both time attributes in a join condition must be of the same type **/
+  /** Both time attributes in a join condition must be of the same type * */
   @Test
   def testInteravalDiffTimeIndicator(): Unit = {
     val sql =
@@ -87,13 +88,9 @@ class IntervalJoinTest extends TableTestBase {
     util.verifyExecPlan(sql)
   }
 
-
-  /** Both rowtime types in a join condition must be of the same type **/
+  /** Both rowtime types in a join condition must be of the same type * */
   @Test
   def testIntervalJoinOnDiffRowTimeType(): Unit = {
-    expectedException.expectMessage(
-      "Interval join with rowtime attribute requires same rowtime types," +
-        " but the types are TIMESTAMP(3) *ROWTIME* and TIMESTAMP_LTZ(3) *ROWTIME*")
     val sql =
       """
         |SELECT t2.a FROM MyTable2 t1 JOIN MyTable3 t2 ON
@@ -101,12 +98,16 @@ class IntervalJoinTest extends TableTestBase {
         |  t1.rowtime > t2.rowtime - INTERVAL '5' SECOND AND
         |  t1.rowtime < t2.rowtime + INTERVAL '5' SECOND
       """.stripMargin
-    util.verifyExecPlan(sql)
+
+    assertThatThrownBy(() => util.verifyExecPlan(sql))
+      .hasMessageContaining(
+        "Interval join with rowtime attribute requires same rowtime types," +
+          " but the types are TIMESTAMP(3) *ROWTIME* and TIMESTAMP_LTZ(3) *ROWTIME*")
   }
 
-  /** The time conditions should be an And condition **/
+  /** The time conditions should be an And condition * */
   @Test
-  def testInteravalNotCnfCondition(): Unit = {
+  def testIntervalNotCnfCondition(): Unit = {
     val sql =
       """
         |SELECT t2.a FROM MyTable t1 JOIN MyTable2 t2 ON
@@ -117,8 +118,8 @@ class IntervalJoinTest extends TableTestBase {
     util.verifyExecPlan(sql)
   }
 
-  /** Validates that no rowtime attribute is in the output schema **/
-  @Test(expected = classOf[TableException])
+  /** Validates that no rowtime attribute is in the output schema * */
+  @Test
   def testNoRowtimeAttributeInResult(): Unit = {
     val sql =
       """
@@ -127,23 +128,25 @@ class IntervalJoinTest extends TableTestBase {
         |  t1.proctime BETWEEN t2.proctime - INTERVAL '5' SECOND AND t2.proctime
       """.stripMargin
 
-    util.verifyExecPlan(sql)
+    assertThatExceptionOfType(classOf[TableException])
+      .isThrownBy(() => util.verifyExecPlan(sql))
   }
 
   /**
-    * Currently only the inner join condition can support the Python UDF taking the inputs from
-    * the left table and the right table at the same time.
-    */
-  @Test(expected = classOf[TableException])
+   * Currently only the inner join condition can support the Python UDF taking the inputs from the
+   * left table and the right table at the same time.
+   */
+  @Test
   def testWindowOuterJoinWithPythonFunctionInCondition(): Unit = {
-    util.addFunction("pyFunc", new PythonScalarFunction("pyFunc"))
+    util.addTemporarySystemFunction("pyFunc", new PythonScalarFunction("pyFunc"))
     val sql =
       """
         |SELECT t1.a, t2.b FROM MyTable t1 LEFT OUTER JOIN MyTable2 t2 ON
         |    t1.a = t2.a AND pyFunc(t1.a, t2.a) = t1.a + t2.a AND
         |    t1.proctime BETWEEN t2.proctime - INTERVAL '1' HOUR AND t2.proctime + INTERVAL '1' HOUR
       """.stripMargin
-    util.verifyExecPlan(sql)
+    assertThatExceptionOfType(classOf[TableException])
+      .isThrownBy(() => util.verifyExecPlan(sql))
   }
 
   @Test
@@ -195,7 +198,7 @@ class IntervalJoinTest extends TableTestBase {
 
   @Test
   def testIntervalJoinOnTimestampLtzRowtime(): Unit = {
-       val sql =
+    val sql =
       """
         |SELECT t2.a FROM MyTable3 t1 JOIN MyTable4 t2 ON
         |  t1.a = t2.a AND
@@ -441,7 +444,8 @@ class IntervalJoinTest extends TableTestBase {
         "- INTERVAL '10' SECOND AND t1.rowtime <= t2.rowtime + INTERVAL '10' SECOND",
       -7000,
       10000,
-      "rowtime")
+      "rowtime"
+    )
 
     verifyTimeBoundary(
       "t1.rowtime >= t2.rowtime - INTERVAL '10' SECOND AND " +
@@ -463,9 +467,7 @@ class IntervalJoinTest extends TableTestBase {
         |    t1.rowtime <= t2.rowtime - INTERVAL '5' SECOND AND
         |    t1.c > t2.c
       """.stripMargin
-    verifyRemainConditionConvert(
-      query,
-      ">($2, $6)")
+    verifyRemainConditionConvert(query, ">($2, $6)")
 
     val query1 =
       """
@@ -474,9 +476,7 @@ class IntervalJoinTest extends TableTestBase {
         |    t1.rowtime >= t2.rowtime - INTERVAL '10' SECOND AND
         |    t1.rowtime <= t2.rowtime - INTERVAL '5' SECOND
       """.stripMargin
-    verifyRemainConditionConvert(
-      query1,
-      "")
+    verifyRemainConditionConvert(query1, "")
 
     util.addDataStream[(Int, Long, Int)]("MyTable5", 'a, 'b, 'c, 'proctime.proctime)
     util.addDataStream[(Int, Long, Int)]("MyTable6", 'a, 'b, 'c, 'proctime.proctime)
@@ -488,9 +488,7 @@ class IntervalJoinTest extends TableTestBase {
         |    t1.proctime <= t2.proctime - INTERVAL '5' SECOND AND
         |    t1.c > t2.c
       """.stripMargin
-    verifyRemainConditionConvert(
-      query2,
-      ">($2, $6)")
+    verifyRemainConditionConvert(query2, ">($2, $6)")
   }
 
   @Test
@@ -529,17 +527,17 @@ class IntervalJoinTest extends TableTestBase {
       joinNode.getLeft.getRowType.getFieldCount,
       joinNode.getRowType,
       joinNode.getCluster.getRexBuilder,
-      util.tableEnv.getConfig)
+      util.tableEnv.getConfig,
+      Thread.currentThread().getContextClassLoader
+    )
 
     val timeTypeStr = if (windowBounds.get.isEventTime) "rowtime" else "proctime"
-    assertEquals(expLeftSize, windowBounds.get.getLeftLowerBound)
-    assertEquals(expRightSize, windowBounds.get.getLeftUpperBound)
-    assertEquals(expTimeType, timeTypeStr)
+    assertThat(windowBounds.get.getLeftLowerBound).isEqualTo(expLeftSize)
+    assertThat(windowBounds.get.getLeftUpperBound).isEqualTo(expRightSize)
+    assertThat(timeTypeStr).isEqualTo(expTimeType)
   }
 
-  private def verifyRemainConditionConvert(
-      sqlQuery: String,
-      expectConditionStr: String): Unit = {
+  private def verifyRemainConditionConvert(sqlQuery: String, expectConditionStr: String): Unit = {
 
     val table = util.tableEnv.sqlQuery(sqlQuery)
     val relNode = TableTestUtil.toRelNode(table)
@@ -552,9 +550,11 @@ class IntervalJoinTest extends TableTestBase {
         joinNode.getLeft.getRowType.getFieldCount,
         joinNode.getRowType,
         joinNode.getCluster.getRexBuilder,
-        util.tableEnv.getConfig)
+        util.tableEnv.getConfig,
+        Thread.currentThread().getContextClassLoader
+      )
     val actual: String = remainCondition.getOrElse("").toString
-    assertEquals(expectConditionStr, actual)
+    assertThat(actual).isEqualTo(expectConditionStr)
   }
 
 }

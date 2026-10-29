@@ -26,8 +26,8 @@ under the License.
 
 # BlackHole SQL Connector
 
-{{< label "Sink" >}}
-{{< label "Sink" >}}
+{{< label "Sink: Bounded" >}}
+{{< label "Sink: UnBounded" >}}
 
 The BlackHole connector allows for swallowing all input records. It is designed for:
 
@@ -52,7 +52,7 @@ CREATE TABLE blackhole_table (
 );
 ```
 
-Alternatively, it may be based on an existing schema using the [LIKE Clause]({{< ref "docs/dev/table/sql/create" >}}#create-table).
+Alternatively, it may be based on an existing schema using the [LIKE Clause]({{< ref "docs/sql/reference/ddl/create" >}}#create-table).
 
 
 ```sql

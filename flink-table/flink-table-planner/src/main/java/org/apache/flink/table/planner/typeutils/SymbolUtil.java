@@ -33,6 +33,7 @@ import org.apache.flink.table.utils.DateTimeUtils;
 import com.google.common.collect.BoundType;
 import org.apache.calcite.avatica.util.TimeUnit;
 import org.apache.calcite.avatica.util.TimeUnitRange;
+import org.apache.calcite.rex.RexUnknownAs;
 import org.apache.calcite.sql.SqlJsonConstructorNullClause;
 import org.apache.calcite.sql.SqlJsonEmptyOrError;
 import org.apache.calcite.sql.SqlJsonExistsErrorBehavior;
@@ -185,6 +186,24 @@ public final class SymbolUtil {
 
         // TIME_UNIT_RANGE
         addSymbolMapping(
+                TimeIntervalUnit.MILLENNIUM,
+                DateTimeUtils.TimeUnitRange.MILLENNIUM,
+                TimeUnitRange.MILLENNIUM,
+                "TIME_UNIT_RANGE",
+                "MILLENNIUM");
+        addSymbolMapping(
+                TimeIntervalUnit.CENTURY,
+                DateTimeUtils.TimeUnitRange.CENTURY,
+                TimeUnitRange.CENTURY,
+                "TIME_UNIT_RANGE",
+                "CENTURY");
+        addSymbolMapping(
+                TimeIntervalUnit.DECADE,
+                DateTimeUtils.TimeUnitRange.DECADE,
+                TimeUnitRange.DECADE,
+                "TIME_UNIT_RANGE",
+                "DECADE");
+        addSymbolMapping(
                 TimeIntervalUnit.YEAR,
                 DateTimeUtils.TimeUnitRange.YEAR,
                 TimeUnitRange.YEAR,
@@ -262,6 +281,30 @@ public final class SymbolUtil {
                 TimeUnitRange.SECOND,
                 "TIME_UNIT_RANGE",
                 "SECOND");
+        addSymbolMapping(
+                TimeIntervalUnit.MILLISECOND,
+                DateTimeUtils.TimeUnitRange.MILLISECOND,
+                TimeUnitRange.MILLISECOND,
+                "TIME_UNIT_RANGE",
+                "MILLISECOND");
+        addSymbolMapping(
+                TimeIntervalUnit.MICROSECOND,
+                DateTimeUtils.TimeUnitRange.MICROSECOND,
+                TimeUnitRange.MICROSECOND,
+                "TIME_UNIT_RANGE",
+                "MICROSECOND");
+        addSymbolMapping(
+                TimeIntervalUnit.NANOSECOND,
+                DateTimeUtils.TimeUnitRange.NANOSECOND,
+                TimeUnitRange.NANOSECOND,
+                "TIME_UNIT_RANGE",
+                "NANOSECOND");
+        addSymbolMapping(
+                TimeIntervalUnit.EPOCH,
+                DateTimeUtils.TimeUnitRange.EPOCH,
+                TimeUnitRange.EPOCH,
+                "TIME_UNIT_RANGE",
+                "EPOCH");
         addSymbolMapping(
                 TimeIntervalUnit.QUARTER,
                 DateTimeUtils.TimeUnitRange.QUARTER,
@@ -431,6 +474,11 @@ public final class SymbolUtil {
         // BOUND
         addSymbolMapping(null, null, BoundType.OPEN, "BOUND", "OPEN");
         addSymbolMapping(null, null, BoundType.CLOSED, "BOUND", "CLOSED");
+
+        // UNKNOWN_AS
+        addSymbolMapping(null, null, RexUnknownAs.TRUE, "UNKNOWN_AS", "TRUE");
+        addSymbolMapping(null, null, RexUnknownAs.FALSE, "UNKNOWN_AS", "FALSE");
+        addSymbolMapping(null, null, RexUnknownAs.UNKNOWN, "UNKNOWN_AS", "UNKNOWN");
     }
 
     /**

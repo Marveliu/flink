@@ -19,43 +19,43 @@
 package org.apache.flink.test.streaming.runtime;
 
 import org.apache.flink.api.common.functions.AggregateFunction;
-import org.apache.flink.configuration.Configuration;
+import org.apache.flink.api.common.functions.OpenContext;
 import org.apache.flink.runtime.taskexecutor.GlobalAggregateManager;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
-import org.apache.flink.streaming.api.functions.sink.DiscardingSink;
-import org.apache.flink.streaming.api.functions.source.RichSourceFunction;
+import org.apache.flink.streaming.api.functions.sink.v2.DiscardingSink;
+import org.apache.flink.streaming.api.functions.source.legacy.RichSourceFunction;
 import org.apache.flink.streaming.api.operators.StreamingRuntimeContext;
 import org.apache.flink.test.util.AbstractTestBase;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 
-import static org.junit.Assert.assertEquals;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /** Tests for GlobalAggregate functionality. */
-public class GlobalAggregateITCase extends AbstractTestBase {
+class GlobalAggregateITCase extends AbstractTestBase {
 
     @Test
-    public void testSuccessfulUpdateToGlobalAggregate() throws Exception {
+    void testSuccessfulUpdateToGlobalAggregate() throws Exception {
         StreamExecutionEnvironment streamExecutionEnvironment =
                 StreamExecutionEnvironment.getExecutionEnvironment();
 
         streamExecutionEnvironment
                 .addSource(new TestSourceFunction(new IntegerAggregateFunction(), false))
-                .addSink(new DiscardingSink<>());
+                .sinkTo(new DiscardingSink<>());
 
         streamExecutionEnvironment.execute();
     }
 
     @Test
-    public void testExceptionThrowingAggregateFunction() throws Exception {
+    void testExceptionThrowingAggregateFunction() throws Exception {
         StreamExecutionEnvironment streamExecutionEnvironment =
                 StreamExecutionEnvironment.getExecutionEnvironment();
 
         streamExecutionEnvironment
                 .addSource(new TestSourceFunction(new ExceptionThrowingAggregateFunction(), true))
-                .addSink(new DiscardingSink<>());
+                .sinkTo(new DiscardingSink<>());
 
         streamExecutionEnvironment.execute();
     }
@@ -63,7 +63,7 @@ public class GlobalAggregateITCase extends AbstractTestBase {
     /**
      * Source Function that uses updateGlobalAggregate() functionality exposed via
      * StreamingRuntimeContext to validate communication with JobMaster and test both failure and
-     * sucess scenarios.
+     * success scenarios.
      */
     private static class TestSourceFunction extends RichSourceFunction<Integer> {
 
@@ -79,8 +79,8 @@ public class GlobalAggregateITCase extends AbstractTestBase {
         }
 
         @Override
-        public void open(Configuration parameters) throws Exception {
-            super.open(parameters);
+        public void open(OpenContext openContext) throws Exception {
+            super.open(openContext);
             StreamingRuntimeContext runtimeContext = (StreamingRuntimeContext) getRuntimeContext();
             aggregateManager = runtimeContext.getGlobalAggregateManager();
         }
@@ -100,9 +100,9 @@ public class GlobalAggregateITCase extends AbstractTestBase {
                 }
 
                 if (expectFailures) {
-                    assertEquals(i + 1, exceptionCount);
+                    assertThat(exceptionCount).isEqualTo(i + 1);
                 } else {
-                    assertEquals(expectedAccumulator, actualAccumlator);
+                    assertThat(actualAccumlator).isEqualTo(expectedAccumulator);
                 }
             }
         }

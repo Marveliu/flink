@@ -19,10 +19,12 @@
 package org.apache.flink.table.planner.functions.casting;
 
 import org.apache.flink.table.data.utils.CastExecutor;
+import org.apache.flink.table.planner.codegen.CodeGeneratorContext;
 import org.apache.flink.table.runtime.generated.CompileUtils;
 import org.apache.flink.table.types.logical.LogicalType;
 import org.apache.flink.table.types.logical.utils.LogicalTypeUtils;
 
+import java.time.ZoneId;
 import java.util.Collections;
 
 import static org.apache.flink.table.planner.codegen.CodeGenUtils.boxedTypeTermForType;
@@ -104,6 +106,11 @@ abstract class AbstractExpressionCodeGeneratorCastRule<IN, OUT>
             CastRule.Context ctx) {
         return new CodeGeneratorCastRule.Context() {
             @Override
+            public boolean isPrinting() {
+                return ctx.isPrinting();
+            }
+
+            @Override
             public boolean legacyBehaviour() {
                 return ctx.legacyBehaviour();
             }
@@ -111,6 +118,11 @@ abstract class AbstractExpressionCodeGeneratorCastRule<IN, OUT>
             @Override
             public String getSessionTimeZoneTerm() {
                 return "java.util.TimeZone.getTimeZone(\"" + ctx.getSessionZoneId().getId() + "\")";
+            }
+
+            @Override
+            public ZoneId getSessionZoneId() {
+                return ctx.getSessionZoneId();
             }
 
             @Override
@@ -126,9 +138,20 @@ abstract class AbstractExpressionCodeGeneratorCastRule<IN, OUT>
             }
 
             @Override
+            public String declareReusableObject(Object object, String fieldPrefix) {
+                throw new UnsupportedOperationException(
+                        "No reusable object can be declared when using AbstractExpressionCodeGeneratorCastRule. You should use AbstractCodeGeneratorCastRule instead.");
+            }
+
+            @Override
             public String declareClassField(String type, String field, String initialization) {
                 throw new UnsupportedOperationException(
                         "No class field can be declared when using AbstractExpressionCodeGeneratorCastRule. You should use AbstractCodeGeneratorCastRule instead.");
+            }
+
+            @Override
+            public CodeGeneratorContext getCodeGeneratorContext() {
+                return ctx.getCodeGeneratorContext();
             }
         };
     }

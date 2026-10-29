@@ -18,9 +18,13 @@
 
 package org.apache.flink.sql.parser.dql;
 
+import org.apache.flink.sql.parser.SqlParseUtils;
+import org.apache.flink.sql.parser.SqlUnparseUtils;
+
 import org.apache.calcite.sql.SqlCall;
 import org.apache.calcite.sql.SqlIdentifier;
 import org.apache.calcite.sql.SqlKind;
+import org.apache.calcite.sql.SqlLiteral;
 import org.apache.calcite.sql.SqlNode;
 import org.apache.calcite.sql.SqlNodeList;
 import org.apache.calcite.sql.SqlOperator;
@@ -30,16 +34,23 @@ import org.apache.calcite.sql.parser.SqlParserPos;
 import org.apache.calcite.util.ImmutableNullableList;
 
 import java.util.List;
+import java.util.Map;
 
 import static java.util.Objects.requireNonNull;
 
 /** LOAD MODULE sql call. */
 public class SqlLoadModule extends SqlCall {
     public static final SqlSpecialOperator OPERATOR =
-            new SqlSpecialOperator("LOAD MODULE", SqlKind.OTHER);
+            new SqlSpecialOperator("LOAD MODULE", SqlKind.OTHER) {
+                @Override
+                public SqlCall createCall(
+                        SqlLiteral functionQualifier, SqlParserPos pos, SqlNode... operands) {
+                    return new SqlLoadModule(
+                            pos, (SqlIdentifier) operands[0], (SqlNodeList) operands[1]);
+                }
+            };
 
     private final SqlIdentifier moduleName;
-
     private final SqlNodeList propertyList;
 
     public SqlLoadModule(SqlParserPos pos, SqlIdentifier moduleType, SqlNodeList propertyList) {
@@ -62,31 +73,15 @@ public class SqlLoadModule extends SqlCall {
     public void unparse(SqlWriter writer, int leftPrec, int rightPrec) {
         writer.keyword("LOAD MODULE");
         moduleName.unparse(writer, leftPrec, rightPrec);
-
-        if (this.propertyList.size() > 0) {
-            writer.keyword("WITH");
-            SqlWriter.Frame withFrame = writer.startList("(", ")");
-            for (SqlNode property : propertyList) {
-                printIndent(writer);
-                property.unparse(writer, leftPrec, rightPrec);
-            }
-            writer.newlineAndIndent();
-            writer.endList(withFrame);
-        }
-    }
-
-    private void printIndent(SqlWriter writer) {
-        writer.sep(",", false);
-        writer.newlineAndIndent();
-        writer.print("  ");
+        SqlUnparseUtils.unparseProperties(propertyList, writer, leftPrec, rightPrec);
     }
 
     public SqlIdentifier getModuleName() {
         return moduleName;
     }
 
-    public SqlNodeList getPropertyList() {
-        return propertyList;
+    public Map<String, String> getProperties() {
+        return SqlParseUtils.extractMap(propertyList);
     }
 
     public String moduleName() {

@@ -19,6 +19,7 @@
 package org.apache.flink.runtime.dispatcher;
 
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.core.failure.FailureEnricher;
 import org.apache.flink.runtime.blob.BlobServer;
 import org.apache.flink.runtime.blob.BlobStore;
 import org.apache.flink.runtime.blob.TestingBlobStoreBuilder;
@@ -36,6 +37,8 @@ import javax.annotation.Nullable;
 
 import java.io.File;
 import java.io.IOException;
+import java.util.Collection;
+import java.util.Collections;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ForkJoinPool;
@@ -52,12 +55,13 @@ public class TestingPartialDispatcherServices extends PartialDispatcherServices 
             BlobServer blobServer,
             HeartbeatServices heartbeatServices,
             JobManagerMetricGroupFactory jobManagerMetricGroupFactory,
-            ExecutionGraphInfoStore executionGraphInfoStore,
+            ArchivedApplicationStore archivedApplicationStore,
             FatalErrorHandler fatalErrorHandler,
             HistoryServerArchivist historyServerArchivist,
             @Nullable String metricQueryServiceAddress,
             Executor ioExecutor,
-            DispatcherOperationCaches operationCaches) {
+            DispatcherOperationCaches operationCaches,
+            Collection<FailureEnricher> failureEnrichers) {
         super(
                 configuration,
                 highAvailabilityServices,
@@ -65,12 +69,13 @@ public class TestingPartialDispatcherServices extends PartialDispatcherServices 
                 blobServer,
                 heartbeatServices,
                 jobManagerMetricGroupFactory,
-                executionGraphInfoStore,
+                archivedApplicationStore,
                 fatalErrorHandler,
                 historyServerArchivist,
                 metricQueryServiceAddress,
                 ioExecutor,
-                operationCaches);
+                operationCaches,
+                failureEnrichers);
     }
 
     public static Builder builder() {
@@ -88,8 +93,8 @@ public class TestingPartialDispatcherServices extends PartialDispatcherServices 
         private HeartbeatServices heartbeatServices = new TestingHeartbeatServices();
         private JobManagerMetricGroupFactory jobManagerMetricGroupFactory =
                 UnregisteredMetricGroups::createUnregisteredJobManagerMetricGroup;
-        private ExecutionGraphInfoStore executionGraphInfoStore =
-                new MemoryExecutionGraphInfoStore();
+        private ArchivedApplicationStore archivedApplicationStore =
+                new MemoryArchivedApplicationStore();
         private FatalErrorHandler fatalErrorHandler = NoOpFatalErrorHandler.INSTANCE;
         private HistoryServerArchivist historyServerArchivist = VoidHistoryServerArchivist.INSTANCE;
         @Nullable private String metricQueryServiceAddress = null;
@@ -126,9 +131,9 @@ public class TestingPartialDispatcherServices extends PartialDispatcherServices 
             return this;
         }
 
-        public Builder withExecutionGraphInfoStore(
-                ExecutionGraphInfoStore executionGraphInfoStore) {
-            this.executionGraphInfoStore = executionGraphInfoStore;
+        public Builder withArchivedApplicationStore(
+                ArchivedApplicationStore archivedApplicationStore) {
+            this.archivedApplicationStore = archivedApplicationStore;
             return this;
         }
 
@@ -173,12 +178,13 @@ public class TestingPartialDispatcherServices extends PartialDispatcherServices 
                     blobServer,
                     heartbeatServices,
                     jobManagerMetricGroupFactory,
-                    executionGraphInfoStore,
+                    archivedApplicationStore,
                     fatalErrorHandler,
                     historyServerArchivist,
                     metricQueryServiceAddress,
                     ioExecutor,
-                    operationCaches);
+                    operationCaches,
+                    Collections.emptySet());
         }
     }
 }

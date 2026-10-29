@@ -25,6 +25,11 @@ package org.apache.flink.fn_execution.v1;
 option java_package = "org.apache.flink.fnexecution.v1";
 option java_outer_classname = "FlinkFnApi";
 
+message JobParameter {
+  string key = 1;
+  string value = 2;
+}
+
 // ------------------------------------------------------------------------
 // Table API & SQL
 // ------------------------------------------------------------------------
@@ -34,6 +39,8 @@ message Input {
     UserDefinedFunction udf = 1;
     int32 inputOffset = 2;
     bytes inputConstant = 3;
+    // Reference to a previously computed UDF result (enables cross-subtree CSE).
+    int32 refIndex = 4;
   }
 }
 
@@ -57,6 +64,19 @@ message UserDefinedFunction {
 
   // Whether it's pandas UDF
   bool is_pandas_udf = 5;
+
+  // Whether the scalar UDF consumes and returns Arrow arrays directly
+  bool is_arrow_udf = 6;
+}
+
+// Async execution configuration for async functions
+message AsyncOptions {
+  int32 max_concurrent_operations = 1;  // Max number of concurrent async operations
+  int64 timeout_ms = 2;  // Timeout in milliseconds for async operations
+  // Async retry strategy configuration
+  bool retry_enabled = 3;  // Whether retry is enabled
+  int32 retry_max_attempts = 4;  // Maximum number of retry attempts
+  int64 retry_delay_ms = 5;  // Delay between retries in milliseconds
 }
 
 // A list of user-defined functions to be executed in a batch.
@@ -65,6 +85,16 @@ message UserDefinedFunctions {
   bool metric_enabled = 2;
   repeated OverWindow windows = 3;
   bool profile_enabled = 4;
+  repeated JobParameter job_parameters = 5;
+  AsyncOptions async_options = 6;
+  // The runtime context of the user-defined functions, providing task info such as
+  // task_name, parallelism, subtask_index, etc.
+  UserDefinedDataStreamFunction.RuntimeContext runtime_context = 7;
+  // Positions in `udfs` whose results form the operator output, in output order.
+  // Flattening nested calls for CSE appends intermediate sub-expressions to `udfs`; those are
+  // consumed via Input.refIndex and must not be emitted. Empty means every UDF result is part
+  // of the output, which is the case when no flattening happened.
+  repeated int32 output_indices = 8;
 }
 
 // Used to describe the info of over window in pandas batch over window aggregation
@@ -182,6 +212,10 @@ message UserDefinedAggregateFunctions {
   GroupWindow group_window = 12;
 
   bool profile_enabled = 13;
+  repeated JobParameter job_parameters = 14;
+  // The runtime context of the user-defined aggregate functions, providing task info such as
+  // task_name, parallelism, subtask_index, etc.
+  UserDefinedDataStreamFunction.RuntimeContext runtime_context = 15;
 }
 
 // A representation of the data schema.
@@ -208,6 +242,7 @@ message Schema {
     MULTISET = 18;
     LOCAL_ZONED_TIMESTAMP = 19;
     ZONED_TIMESTAMP = 20;
+    NULL = 21;
   }
 
   message MapInfo {
@@ -310,6 +345,11 @@ message TypeInfo {
     PICKLED_BYTES = 20;
     OBJECT_ARRAY = 21;
     INSTANT = 22;
+    AVRO = 23;
+    LOCAL_DATE = 24;
+    LOCAL_TIME = 25;
+    LOCAL_DATETIME = 26;
+    LOCAL_ZONED_TIMESTAMP = 27;
   }
 
   message MapTypeInfo {
@@ -329,12 +369,17 @@ message TypeInfo {
     repeated TypeInfo field_types = 1;
   }
 
+  message AvroTypeInfo {
+    string schema = 1;
+  }
+
   TypeName type_name = 1;
   oneof type_info {
     TypeInfo collection_element_type = 2;
     RowTypeInfo row_type_info = 3;
     TupleTypeInfo tuple_type_info = 4;
     MapTypeInfo map_type_info = 5;
+    AvroTypeInfo avro_type_info = 6;
   }
 }
 
@@ -346,12 +391,9 @@ message UserDefinedDataStreamFunction {
     KEYED_PROCESS = 2;
     KEYED_CO_PROCESS = 3;
     WINDOW = 4;
+    CO_BROADCAST_PROCESS = 5;
+    KEYED_CO_BROADCAST_PROCESS = 6;
     REVISE_OUTPUT = 100;
-  }
-
-  message JobParameter {
-    string key = 1;
-    string value = 2;
   }
 
   message RuntimeContext {
@@ -371,6 +413,14 @@ message UserDefinedDataStreamFunction {
   bool metric_enabled = 4;
   TypeInfo key_type_info = 5;
   bool profile_enabled = 6;
+  bool has_side_output = 7;
+
+  // The state cache size.
+  int32 state_cache_size = 8;
+  // The map state read cache size.
+  int32 map_state_read_cache_size = 9;
+  // The map_state_write_cache_size.
+  int32 map_state_write_cache_size = 10;
 }
 
 // A representation of State
@@ -479,6 +529,13 @@ message CoderInfoDescriptor {
 
   message ArrowType {
     Schema schema = 1;
+    enum BatchFormat {
+      PANDAS = 0;
+      ARROW = 1;
+    }
+    BatchFormat batch_format = 2;
+    // The sole output field is a result ROW containing physical table columns.
+    bool returns_table_row = 3;
   }
 
   // only used in batch over window

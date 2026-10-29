@@ -25,28 +25,23 @@ import org.apache.flink.test.streaming.runtime.util.TestListResultSink;
 import org.apache.flink.test.util.AbstractTestBase;
 import org.apache.flink.util.Collector;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
-import java.util.Arrays;
-import java.util.Collections;
-import java.util.List;
-
-import static org.junit.Assert.assertEquals;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /** Integration tests for connected streams. */
-@SuppressWarnings("serial")
-public class SelfConnectionITCase extends AbstractTestBase {
+class SelfConnectionITCase extends AbstractTestBase {
 
     /** We connect two different data streams in a chain to a CoMap. */
     @Test
-    public void differentDataStreamSameChain() throws Exception {
+    void differentDataStreamSameChain() throws Exception {
 
         TestListResultSink<String> resultSink = new TestListResultSink<>();
 
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
         env.setParallelism(1);
 
-        DataStream<Integer> src = env.fromElements(1, 3, 5);
+        DataStream<Integer> src = env.fromData(1, 3, 5);
 
         DataStream<String> stringMap = src.map(value -> "x " + value);
 
@@ -69,14 +64,8 @@ public class SelfConnectionITCase extends AbstractTestBase {
 
         env.execute();
 
-        List<String> expected = Arrays.asList("x 1", "x 3", "x 5", "2", "4", "6");
-
-        List<String> result = resultSink.getResult();
-
-        Collections.sort(expected);
-        Collections.sort(result);
-
-        assertEquals(expected, result);
+        assertThat(resultSink.getResult())
+                .containsExactlyInAnyOrder("x 1", "x 3", "x 5", "2", "4", "6");
     }
 
     /**
@@ -84,14 +73,14 @@ public class SelfConnectionITCase extends AbstractTestBase {
      * self-connect.)
      */
     @Test
-    public void differentDataStreamDifferentChain() throws Exception {
+    void differentDataStreamDifferentChain() throws Exception {
 
         TestListResultSink<String> resultSink = new TestListResultSink<>();
 
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
         env.setParallelism(3);
 
-        DataStream<Integer> src = env.fromElements(1, 3, 5).disableChaining();
+        DataStream<Integer> src = env.fromData(1, 3, 5).disableChaining();
 
         DataStream<String> stringMap =
                 src.flatMap(
@@ -126,12 +115,7 @@ public class SelfConnectionITCase extends AbstractTestBase {
 
         env.execute();
 
-        List<String> expected = Arrays.asList("x 1", "x 3", "x 5", "2", "4", "6");
-        List<String> result = resultSink.getResult();
-
-        Collections.sort(expected);
-        Collections.sort(result);
-
-        assertEquals(expected, result);
+        assertThat(resultSink.getResult())
+                .containsExactlyInAnyOrder("x 1", "x 3", "x 5", "2", "4", "6");
     }
 }

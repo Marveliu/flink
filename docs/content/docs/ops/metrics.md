@@ -1,6 +1,6 @@
 ---
 title: "Metrics"
-weight: 6
+weight: 5
 type: docs
 aliases:
   - /ops/metrics.html
@@ -52,7 +52,7 @@ public class MyMapper extends RichMapFunction<String, String> {
   private transient Counter counter;
 
   @Override
-  public void open(Configuration config) {
+  public void open(OpenContext ctx) {
     this.counter = getRuntimeContext()
       .getMetricGroup()
       .counter("myCounter");
@@ -67,24 +67,21 @@ public class MyMapper extends RichMapFunction<String, String> {
 
 ```
 {{< /tab >}}
-{{< tab "Scala" >}}
-```scala
+{{< tab "Python" >}}
+```python
 
-class MyMapper extends RichMapFunction[String,String] {
-  @transient private var counter: Counter = _
+class MyMapper(MapFunction):
+    def __init__(self):
+        self.counter = None
 
-  override def open(parameters: Configuration): Unit = {
-    counter = getRuntimeContext()
-      .getMetricGroup()
-      .counter("myCounter")
-  }
+    def open(self, runtime_context: RuntimeContext):
+        self.counter = runtime_context \
+            .get_metrics_group() \
+            .counter("my_counter")
 
-  override def map(value: String): String = {
-    counter.inc()
-    value
-  }
-}
-
+    def map(self, value: str):
+        self.counter.inc()
+        return value
 ```
 {{< /tab >}}
 {{< /tabs >}}
@@ -99,7 +96,7 @@ public class MyMapper extends RichMapFunction<String, String> {
   private transient Counter counter;
 
   @Override
-  public void open(Configuration config) {
+  public void open(OpenContext ctx) {
     this.counter = getRuntimeContext()
       .getMetricGroup()
       .counter("myCustomCounter", new CustomCounter());
@@ -115,24 +112,9 @@ public class MyMapper extends RichMapFunction<String, String> {
 
 ```
 {{< /tab >}}
-{{< tab "Scala" >}}
-```scala
-
-class MyMapper extends RichMapFunction[String,String] {
-  @transient private var counter: Counter = _
-
-  override def open(parameters: Configuration): Unit = {
-    counter = getRuntimeContext()
-      .getMetricGroup()
-      .counter("myCustomCounter", new CustomCounter())
-  }
-
-  override def map(value: String): String = {
-    counter.inc()
-    value
-  }
-}
-
+{{< tab "Python" >}}
+```python
+Still not supported in Python API.
 ```
 {{< /tab >}}
 {{< /tabs >}}
@@ -151,7 +133,7 @@ public class MyMapper extends RichMapFunction<String, String> {
   private transient int valueToExpose = 0;
 
   @Override
-  public void open(Configuration config) {
+  public void open(OpenContext ctx) {
     getRuntimeContext()
       .getMetricGroup()
       .gauge("MyGauge", new Gauge<Integer>() {
@@ -171,23 +153,21 @@ public class MyMapper extends RichMapFunction<String, String> {
 
 ```
 {{< /tab >}}
-{{< tab "Scala" >}}
-```scala
+{{< tab "Python" >}}
+```python
 
-new class MyMapper extends RichMapFunction[String,String] {
-  @transient private var valueToExpose = 0
+class MyMapper(MapFunction):
+    def __init__(self):
+        self.value_to_expose = 0
 
-  override def open(parameters: Configuration): Unit = {
-    getRuntimeContext()
-      .getMetricGroup()
-      .gauge[Int, ScalaGauge[Int]]("MyGauge", ScalaGauge[Int]( () => valueToExpose ) )
-  }
+    def open(self, runtime_context: RuntimeContext):
+        runtime_context \
+            .get_metrics_group() \
+            .gauge("my_gauge", lambda: self.value_to_expose)
 
-  override def map(value: String): String = {
-    valueToExpose += 1
-    value
-  }
-}
+    def map(self, value: str):
+        self.value_to_expose += 1
+        return value
 
 ```
 {{< /tab >}}
@@ -207,7 +187,7 @@ public class MyMapper extends RichMapFunction<Long, Long> {
   private transient Histogram histogram;
 
   @Override
-  public void open(Configuration config) {
+  public void open(OpenContext ctx) {
     this.histogram = getRuntimeContext()
       .getMetricGroup()
       .histogram("myHistogram", new MyHistogram());
@@ -221,24 +201,9 @@ public class MyMapper extends RichMapFunction<Long, Long> {
 }
 ```
 {{< /tab >}}
-{{< tab "Scala" >}}
-```scala
-
-class MyMapper extends RichMapFunction[Long,Long] {
-  @transient private var histogram: Histogram = _
-
-  override def open(parameters: Configuration): Unit = {
-    histogram = getRuntimeContext()
-      .getMetricGroup()
-      .histogram("myHistogram", new MyHistogram())
-  }
-
-  override def map(value: Long): Long = {
-    histogram.update(value)
-    value
-  }
-}
-
+{{< tab "Python" >}}
+```python
+Still not supported in Python API.
 ```
 {{< /tab >}}
 {{< /tabs >}}
@@ -262,7 +227,7 @@ public class MyMapper extends RichMapFunction<Long, Long> {
   private transient Histogram histogram;
 
   @Override
-  public void open(Configuration config) {
+  public void open(OpenContext ctx) {
     com.codahale.metrics.Histogram dropwizardHistogram =
       new com.codahale.metrics.Histogram(new SlidingWindowReservoir(500));
 
@@ -270,7 +235,7 @@ public class MyMapper extends RichMapFunction<Long, Long> {
       .getMetricGroup()
       .histogram("myHistogram", new DropwizardHistogramWrapper(dropwizardHistogram));
   }
-  
+
   @Override
   public Long map(Long value) throws Exception {
     this.histogram.update(value);
@@ -279,27 +244,9 @@ public class MyMapper extends RichMapFunction<Long, Long> {
 }
 ```
 {{< /tab >}}
-{{< tab "Scala" >}}
-```scala
-
-class MyMapper extends RichMapFunction[Long, Long] {
-  @transient private var histogram: Histogram = _
-
-  override def open(config: Configuration): Unit = {
-    com.codahale.metrics.Histogram dropwizardHistogram =
-      new com.codahale.metrics.Histogram(new SlidingWindowReservoir(500))
-        
-    histogram = getRuntimeContext()
-      .getMetricGroup()
-      .histogram("myHistogram", new DropwizardHistogramWrapper(dropwizardHistogram))
-  }
-  
-  override def map(value: Long): Long = {
-    histogram.update(value)
-    value
-  }
-}
-
+{{< tab "Python" >}}
+```python
+Still not supported in Python API.
 ```
 {{< /tab >}}
 {{< /tabs >}}
@@ -316,7 +263,7 @@ public class MyMapper extends RichMapFunction<Long, Long> {
   private transient Meter meter;
 
   @Override
-  public void open(Configuration config) {
+  public void open(OpenContext ctx) {
     this.meter = getRuntimeContext()
       .getMetricGroup()
       .meter("myMeter", new MyMeter());
@@ -330,23 +277,22 @@ public class MyMapper extends RichMapFunction<Long, Long> {
 }
 ```
 {{< /tab >}}
-{{< tab "Scala" >}}
-```scala
+{{< tab "Python" >}}
+```python
 
-class MyMapper extends RichMapFunction[Long,Long] {
-  @transient private var meter: Meter = _
+class MyMapperMeter(MapFunction):
+    def __init__(self):
+        self.meter = None
 
-  override def open(config: Configuration): Unit = {
-    meter = getRuntimeContext()
-      .getMetricGroup()
-      .meter("myMeter", new MyMeter())
-  }
+    def open(self, runtime_context: RuntimeContext):
+        # an average rate of events per second over 120s, default is 60s.
+        self.meter = runtime_context
+            .get_metrics_group()
+            .meter("my_meter", time_span_in_seconds=120)
 
-  override def map(value: Long): Long = {
-    meter.markEvent()
-    value
-  }
-}
+    def map(self, value: str):
+        self.meter.mark_event()
+        return value
 
 ```
 {{< /tab >}}
@@ -371,7 +317,7 @@ public class MyMapper extends RichMapFunction<Long, Long> {
   private transient Meter meter;
 
   @Override
-  public void open(Configuration config) {
+  public void open(OpenContext ctx) {
     com.codahale.metrics.Meter dropwizardMeter = new com.codahale.metrics.Meter();
 
     this.meter = getRuntimeContext()
@@ -387,26 +333,9 @@ public class MyMapper extends RichMapFunction<Long, Long> {
 }
 ```
 {{< /tab >}}
-{{< tab "Scala" >}}
-```scala
-
-class MyMapper extends RichMapFunction[Long,Long] {
-  @transient private var meter: Meter = _
-
-  override def open(config: Configuration): Unit = {
-    val dropwizardMeter: com.codahale.metrics.Meter = new com.codahale.metrics.Meter()
-  
-    meter = getRuntimeContext()
-      .getMetricGroup()
-      .meter("myMeter", new DropwizardMeterWrapper(dropwizardMeter))
-  }
-
-  override def map(value: Long): Long = {
-    meter.markEvent()
-    value
-  }
-}
-
+{{< tab "Python" >}}
+```python
+Still not supported in Python API.
 ```
 {{< /tab >}}
 {{< /tabs >}}
@@ -418,7 +347,7 @@ Every metric is assigned an identifier and a set of key-value pairs under which 
 The identifier is based on 3 components: a user-defined name when registering the metric, an optional user-defined scope and a system-provided scope.
 For example, if `A.B` is the system scope, `C.D` the user scope and `E` the name, then the identifier for the metric will be `A.B.C.D.E`.
 
-You can configure which delimiter to use for the identifier (default: `.`) by setting the `metrics.scope.delimiter` key in `conf/flink-conf.yaml`.
+You can configure which delimiter to use for the identifier (default: `.`) by setting the `metrics.scope.delimiter` key in [Flink configuration file]({{< ref "docs/deployment/config#flink-configuration-file" >}}).
 
 ### User Scope
 
@@ -441,18 +370,18 @@ counter = getRuntimeContext()
 
 ```
 {{< /tab >}}
-{{< tab "Scala" >}}
-```scala
+{{< tab "Python" >}}
+```python
 
-counter = getRuntimeContext()
-  .getMetricGroup()
-  .addGroup("MyMetrics")
-  .counter("myCounter")
+counter = runtime_context \
+    .get_metric_group() \
+    .add_group("my_metrics") \
+    .counter("my_counter")
 
-counter = getRuntimeContext()
-  .getMetricGroup()
-  .addGroup("MyMetricsKey", "MyMetricsValue")
-  .counter("myCounter")
+counter = runtime_context \
+    .get_metric_group() \
+    .add_group("my_metrics_key", "my_metrics_value") \
+    .counter("my_counter")
 
 ```
 {{< /tab >}}
@@ -462,19 +391,19 @@ counter = getRuntimeContext()
 
 The system scope contains context information about the metric, for example in which task it was registered or what job that task belongs to.
 
-Which context information should be included can be configured by setting the following keys in `conf/flink-conf.yaml`.
+Which context information should be included can be configured by setting the following keys in [Flink configuration file]({{< ref "docs/deployment/config#flink-configuration-file" >}}).
 Each of these keys expect a format string that may contain constants (e.g. "taskmanager") and variables (e.g. "&lt;task_id&gt;") which will be replaced at runtime.
 
 - `metrics.scope.jm`
   - Default: &lt;host&gt;.jobmanager
   - Applied to all metrics that were scoped to a job manager.
-- `metrics.scope.jm.job`
+- `metrics.scope.jm-job`
   - Default: &lt;host&gt;.jobmanager.&lt;job_name&gt;
   - Applied to all metrics that were scoped to a job manager and job.
 - `metrics.scope.tm`
   - Default: &lt;host&gt;.taskmanager.&lt;tm_id&gt;
   - Applied to all metrics that were scoped to a task manager.
-- `metrics.scope.tm.job`
+- `metrics.scope.tm-job`
   - Default: &lt;host&gt;.taskmanager.&lt;tm_id&gt;.&lt;job_name&gt;
   - Applied to all metrics that were scoped to a task manager and job.
 - `metrics.scope.task`
@@ -526,17 +455,39 @@ counter = getRuntimeContext()
 
 ```
 {{< /tab >}}
-{{< tab "Scala" >}}
-```scala
+{{< /tabs >}}
 
-counter = getRuntimeContext()
-  .getMetricGroup()
-  .addGroup("MyMetricsKey", "MyMetricsValue")
-  .counter("myCounter")
+### Additional Variables for operators
+
+You can define custom variables that will be assigned to all metrics reported by a given operator
+using `Transformation.addMetricVariable`. For example:
+
+{{< tabs "32c0ba7f-3acd-831f-4a8b-a2de81b0126e" >}}
+{{< tab "Java" >}}
+```java
+
+fooSource =
+  execEnv.fromSource(
+    kafkaSource,
+    getWatermarkStrategy(),
+    "KafkaSource-Foo")
+      .addMetricVariable("table_name", "Foo");
+
+barSource =
+  execEnv.fromSource(
+    kafkaSource,
+    getWatermarkStrategy(),
+    "KafkaSource-Bar")
+      .addMetricVariable("table_name", "Bar");
 
 ```
 {{< /tab >}}
 {{< /tabs >}}
+
+Will assign `table_name` variable with respective values `Foo` and `Bar`
+to all metrics reported by the `KafkaSource`, like `numRecordsOut` or `currentOutputWatermark`.
+If supported by your chosen metric reporter, those additional variables will be then converted to
+labels or tags.
 
 ## Reporter
 
@@ -598,7 +549,7 @@ Thus, in order to infer the metric identifier:
 </table>
 
 ### Memory
-The memory-related metrics require Oracle's memory management (also included in OpenJDK's Hotspot implementation) to be in place. 
+The memory-related metrics require Oracle's memory management (also included in OpenJDK's Hotspot implementation) to be in place.
 Some metrics might not be exposed when using other JVM implementations (e.g. IBM's J9).
 <table class="table table-bordered">                               
   <thead>                                                          
@@ -626,8 +577,8 @@ Some metrics might not be exposed when using other JVM implementations (e.g. IBM
     <tr>
       <td>Heap.Max</td>
       <td>The maximum amount of heap memory that can be used for memory management (in bytes). <br/>
-      This value might not be necessarily equal to the maximum value specified through -Xmx or 
-      the equivalent Flink configuration parameter. Some GC algorithms allocate heap memory that won't 
+      This value might not be necessarily equal to the maximum value specified through -Xmx or
+      the equivalent Flink configuration parameter. Some GC algorithms allocate heap memory that won't
       be available to the user code and, therefore, not being exposed through the heap metrics.</td>
       <td>Gauge</td>
     </tr>
@@ -705,6 +656,35 @@ Some metrics might not be exposed when using other JVM implementations (e.g. IBM
   </tbody>                                                         
 </table>
 
+### File Descriptors
+<table class="table table-bordered">
+  <thead>
+    <tr>
+      <th class="text-left" style="width: 18%">Scope</th>
+      <th class="text-left" style="width: 22%">Infix</th>
+      <th class="text-left" style="width: 20%">Metrics</th>
+      <th class="text-left" style="width: 32%">Description</th>
+      <th class="text-left" style="width: 8%">Type</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <th rowspan="1"><strong>Job-/TaskManager</strong></th>
+      <td rowspan="1">Status.FileDescriptor.Max</td>
+      <td>Count</td>
+      <td>The max number of file descriptors.</td>
+      <td>Gauge</td>
+    </tr>
+    <tr>
+      <th rowspan="1"><strong>Job-/TaskManager</strong></th>
+      <td rowspan="1">Status.FileDescriptor.Open</td>
+      <td>Count</td>
+      <td>The total open of file descriptors.</td>
+      <td>Gauge</td>
+    </tr>
+  </tbody>
+</table>
+
 ### Threads
 <table class="table table-bordered">
   <thead>
@@ -740,15 +720,20 @@ Some metrics might not be exposed when using other JVM implementations (e.g. IBM
   </thead>
   <tbody>
     <tr>
-      <th rowspan="2"><strong>Job-/TaskManager</strong></th>
-      <td rowspan="2">Status.JVM.GarbageCollector</td>
-      <td>&lt;GarbageCollector&gt;.Count</td>
-      <td>The total number of collections that have occurred.</td>
+      <th rowspan="3"><strong>Job-/TaskManager</strong></th>
+      <td rowspan="3">Status.JVM.GarbageCollector</td>
+      <td>&lt;Collector/All&gt;.Count</td>
+      <td>The total number of collections that have occurred for the given (or all) collector.</td>
       <td>Gauge</td>
     </tr>
     <tr>
-      <td>&lt;GarbageCollector&gt;.Time</td>
-      <td>The total time spent performing garbage collection.</td>
+      <td>&lt;Collector/All&gt;.Time</td>
+      <td>The total time spent performing garbage collection for the given (or all) collector.</td>
+      <td>Gauge</td>
+    </tr>
+    <tr>
+      <td>&lt;Collector/All&gt;.TimeMsPerSecond</td>
+      <td>The time (in milliseconds) spent garbage collecting per second for the given (or all) collector.</td>
       <td>Gauge</td>
     </tr>
   </tbody>
@@ -782,7 +767,7 @@ Some metrics might not be exposed when using other JVM implementations (e.g. IBM
 </table>
 
 
-### Network 
+### Network
 
 {{< hint warning >}}
 Deprecated: use [Default shuffle service metrics](#default-shuffle-service)
@@ -840,12 +825,12 @@ Deprecated: use [Default shuffle service metrics](#default-shuffle-service)
     </tr>
     <tr>
       <td>outPoolUsage</td>
-      <td>An estimate of the output buffers usage.</td>
+      <td>An estimate of the output buffers usage. The pool usage can be > 100% if overdraft buffers are being used.</td>
       <td>Gauge</td>
     </tr>
     <tr>
       <td rowspan="4">Network.&lt;Input|Output&gt;.&lt;gate|partition&gt;<br />
-        <strong>(only available if <tt>taskmanager.net.detailed-metrics</tt> config option is set)</strong></td>
+        <strong>(only available if <tt>taskmanager.network.detailed-metrics</tt> config option is set)</strong></td>
       <td>totalQueueLen</td>
       <td>Total number of queued buffers in all input/output channels.</td>
       <td>Gauge</td>
@@ -960,12 +945,12 @@ Metrics related to data exchange between task executors using netty network comm
     </tr>
     <tr>
       <td>outPoolUsage</td>
-      <td>An estimate of the output buffers usage.</td>
+      <td>An estimate of the output buffers usage. The pool usage can be > 100% if overdraft buffers are being used.</td>
       <td>Gauge</td>
     </tr>
     <tr>
       <td rowspan="4">Shuffle.Netty.&lt;Input|Output&gt;.&lt;gate|partition&gt;<br />
-        <strong>(only available if <tt>taskmanager.net.detailed-metrics</tt> config option is set)</strong></td>
+        <strong>(only available if <tt>taskmanager.network.detailed-metrics</tt> config option is set)</strong></td>
       <td>totalQueueLen</td>
       <td>Total number of queued buffers in all input/output channels.</td>
       <td>Gauge</td>
@@ -1041,7 +1026,7 @@ Metrics related to data exchange between task executors using netty network comm
   </thead>
   <tbody>
     <tr>
-      <th rowspan="4"><strong>JobManager</strong></th>
+      <th rowspan="5"><strong>JobManager</strong></th>
       <td>numRegisteredTaskManagers</td>
       <td>The number of registered taskmanagers.</td>
       <td>Gauge</td>
@@ -1167,13 +1152,13 @@ Whether these metrics are reported depends on the [metrics.job.status.enable]({{
       <td>Gauge</td>
     </tr>
     <tr>
-      <td>fullRestarts</td>
-      <td><span class="label label-danger">Attention:</span> deprecated, use <b>numRestarts</b>.</td>
+      <td>numRestarts</td>
+      <td>The total number of restarts since this job was submitted, including full restarts, fine-grained restarts and restarts triggered by rescaling.</td>
       <td>Gauge</td>
     </tr>
     <tr>
-      <td>numRestarts</td>
-      <td>The total number of restarts since this job was submitted, including full restarts and fine-grained restarts.</td>
+      <td>numRescales</td>
+      <td>The total number of restarts triggered by rescaling, including scale up and scale down.</td>
       <td>Gauge</td>
     </tr>
   </tbody>
@@ -1193,7 +1178,7 @@ Note that for failed checkpoints, metrics are updated on a best efforts basis an
   </thead>
   <tbody>
     <tr>
-      <th rowspan="8"><strong>Job (only available on JobManager)</strong></th>
+      <th rowspan="10"><strong>Job (only available on JobManager)</strong></th>
       <td>lastCheckpointDuration</td>
       <td>The time it took to complete the last checkpoint (in milliseconds).</td>
       <td>Gauge</td>
@@ -1204,8 +1189,23 @@ Note that for failed checkpoints, metrics are updated on a best efforts basis an
       <td>Gauge</td>
     </tr>
     <tr>
+      <td>lastCompletedCheckpointId</td>
+      <td>The identifier of the last completed checkpoint.</td>
+      <td>Gauge</td>
+    </tr>
+    <tr>
+      <td>lastCheckpointCompletedTimestamp</td>
+      <td>The timestamp of the last completed checkpoint (in milliseconds).</td>
+      <td>Gauge</td>
+    </tr>
+    <tr>
       <td>lastCheckpointFullSize</td>
       <td>The full size of the last checkpoint (in bytes).</td>
+      <td>Gauge</td>
+    </tr>
+    <tr>
+      <td>lastCheckpointMetadataSize</td>
+      <td>The metadata file size of the last checkpoint (in bytes).</td>
       <td>Gauge</td>
     </tr>
     <tr>
@@ -1249,11 +1249,386 @@ Note that for failed checkpoints, metrics are updated on a best efforts basis an
       <td>The time in nanoseconds that elapsed between the creation of the last checkpoint and the time when the checkpointing process has started by this Task. This delay shows how long it takes for the first checkpoint barrier to reach the task. A high value indicates back-pressure. If only a specific task has a long start delay, the most likely reason is data skew.</td>
       <td>Gauge</td>
     </tr>
+    <tr>
+      <th rowspan="4"><strong>Job (only available on TaskManager)</strong></th>
+      <td>fileMerging.logicalFileCount</td>
+      <td>The number of logical files of file merging mechanism.</td>
+      <td>Gauge</td>
+    </tr>
+    <tr>
+      <td>fileMerging.logicalFileSize</td>
+      <td>The total size of logical files of file merging mechanism on one task manager for one job.</td>
+      <td>Gauge</td>
+    </tr>
+    <tr>
+      <td>fileMerging.physicalFileCount</td>
+      <td>The number of physical files of file merging mechanism.</td>
+      <td>Gauge</td>
+    </tr>
+    <tr>
+      <td>fileMerging.physicalFileSize</td>
+      <td>The total size of physical files of file merging mechanism on one task manager for one job, usually larger than <samp>fileMerging.logicalFileSize</samp>.</td>
+      <td>Gauge</td>
+    </tr>
+  </tbody>
+</table>
+
+### State Access Latency
+
+<table class="table table-bordered">
+  <thead>
+    <tr>
+      <th class="text-left" style="width: 18%">Scope</th>
+      <th class="text-left" style="width: 26%">Metrics</th>
+      <th class="text-left" style="width: 48%">Description</th>
+      <th class="text-left" style="width: 8%">Type</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <th rowspan="27"><strong>Task/Operator</strong></th>
+      <td>stateClearLatency</td>
+      <td>The latency of clear operation for state</td>
+      <td>Histogram</td>
+    </tr>
+    <tr>
+      <td>valueStateGetLatency</td>
+      <td>The latency of Get operation for value state</td>
+      <td>Histogram</td>
+    </tr>
+    <tr>
+      <td>valueStateUpdateLatency</td>
+      <td>The latency of update operation for value state</td>
+      <td>Histogram</td>
+    </tr>
+    <tr>
+      <td>listStateGetLatency</td>
+      <td>The latency of get operation for list state</td>
+      <td>Histogram</td>
+    </tr>
+    <tr>
+      <td>listStateAddLatency</td>
+      <td>The latency of add operation for list state</td>
+      <td>Histogram</td>
+    </tr>
+    <tr>
+      <td>listStateAddAllLatency</td>
+      <td>The latency of addAll operation for list state</td>
+      <td>Histogram</td>
+    </tr>
+    <tr>
+      <td>listStateUpdateLatency</td>
+      <td>The latency of update operation for list state</td>
+      <td>Histogram</td>
+    </tr>
+    <tr>
+      <td>listStateMergeNamespacesLatency</td>
+      <td>The latency of merge namespace operation for list state</td>
+      <td>Histogram</td>
+    </tr>
+    <tr>
+      <td>mapStateGetLatency</td>
+      <td>The latency of get operation for map state</td>
+      <td>Histogram</td>
+    </tr>
+    <tr>
+      <td>mapStatePutLatency</td>
+      <td>The latency of put operation for map state</td>
+      <td>Histogram</td>
+    </tr>
+    <tr>
+      <td>mapStatePutAllLatency</td>
+      <td>The latency of putAll operation for map state</td>
+      <td>Histogram</td>
+    </tr>
+    <tr>
+      <td>mapStateRemoveLatency</td>
+      <td>The latency of remove operation for map state</td>
+      <td>Histogram</td>
+    </tr>
+    <tr>
+      <td>mapStateContainsLatency</td>
+      <td>The latency of contains operation for map state</td>
+      <td>Histogram</td>
+    </tr>
+    <tr>
+      <td>mapStateEntriesInitLatency</td>
+      <td>The init latency of entries operation for map state</td>
+      <td>Histogram</td>
+    </tr>
+    <tr>
+      <td>mapStateKeysInitLatency</td>
+      <td>The init latency of keys operation for map state</td>
+      <td>Histogram</td>
+    </tr>
+    <tr>
+      <td>mapStateValuesInitLatency</td>
+      <td>The init latency of values operation for map state</td>
+      <td>Histogram</td>
+    </tr>
+    <tr>
+      <td>mapStateIteratorInitLatency</td>
+      <td>The init latency of iterator operation for map state</td>
+      <td>Histogram</td>
+    </tr>
+    <tr>
+      <td>mapStateIsEmptyLatency</td>
+      <td>The latency of isEmpty operation for map state</td>
+      <td>Histogram</td>
+    </tr>
+    <tr>
+      <td>mapStateIteratorHasNextLatency</td>
+      <td>The latency of iterator#hasNext operation for map state</td>
+      <td>Histogram</td>
+    </tr>
+    <tr>
+      <td>mapStateIteratorNextLatency</td>
+      <td>The latency of iterator#next operation for map state</td>
+      <td>Histogram</td>
+    </tr>
+    <tr>
+      <td>mapStateIteratorRemoveLatency</td>
+      <td>The latency of iterator#remove operation for map state</td>
+      <td>Histogram</td>
+    </tr>
+    <tr>
+      <td>aggregatingStateGetLatency</td>
+      <td>The latency of get operation for aggregating state</td>
+      <td>Histogram</td>
+    </tr>
+    <tr>
+      <td>aggregatingStateAddLatency</td>
+      <td>The latency of add operation for aggregating state</td>
+      <td>Histogram</td>
+    </tr>
+    <tr>
+      <td>aggregatingStateMergeNamespacesLatency</td>
+      <td>The latency of merge namespace operation for aggregating state</td>
+      <td>Histogram</td>
+    </tr>
+    <tr>
+      <td>reducingStateGetLatency</td>
+      <td>The latency of get operation for reducing state</td>
+      <td>Histogram</td>
+    </tr>
+    <tr>
+      <td>reducingStateAddLatency</td>
+      <td>The latency of add operation for reducing state</td>
+      <td>Histogram</td>
+    </tr>
+    <tr>
+      <td>reducingStateMergeNamespacesLatency</td>
+      <td>The latency of merge namespace operation for reducing state</td>
+      <td>Histogram</td>
+    </tr>
+  </tbody>
+</table>
+
+### State Size
+
+<table class="table table-bordered">
+  <thead>
+    <tr>
+      <th class="text-left" style="width: 18%">Scope</th>
+      <th class="text-left" style="width: 26%">Metrics</th>
+      <th class="text-left" style="width: 48%">Description</th>
+      <th class="text-left" style="width: 8%">Type</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <th rowspan="27"><strong>Task/Operator</strong></th>
+      <td>valueStateGetKeySize</td>
+      <td>The key size of get operation for value state</td>
+      <td>Histogram</td>
+    </tr>
+    <tr>
+      <td>valueStateGetValueSize</td>
+      <td>The value size of get operation for value state</td>
+      <td>Histogram</td>
+    </tr>
+    <tr>
+      <td>valueStateUpdateKeySize</td>
+      <td>The key size of update operation for value state</td>
+      <td>Histogram</td>
+    </tr>
+    <tr>
+      <td>valueStateUpdateValueSize</td>
+      <td>The value size of update operation for value state</td>
+      <td>Histogram</td>
+    </tr>
+    <tr>
+      <td>reducingStateGetKeySize</td>
+      <td>The key size of get operation for reducing state</td>
+      <td>Histogram</td>
+    </tr>
+    <tr>
+      <td>reducingStateGetValueSize</td>
+      <td>The value size of get operation for reducing state</td>
+      <td>Histogram</td>
+    </tr>
+    <tr>
+      <td>reducingStateAddKeySize</td>
+      <td>The key size of add operation for reducing state</td>
+      <td>Histogram</td>
+    </tr>
+    <tr>
+      <td>reducingStateAddValueSize</td>
+      <td>The value size of add operation for reducing state</td>
+      <td>Histogram</td>
+    </tr>
+    <tr>
+      <td>aggregatingStateGetKeySize</td>
+      <td>The key size of get operation for aggregating state</td>
+      <td>Histogram</td>
+    </tr>
+    <tr>
+      <td>aggregatingStateAddKeySize</td>
+      <td>The key size of add operation for aggregating state</td>
+      <td>Histogram</td>
+    </tr>
+    <tr>
+      <td>listStateGetKeySize</td>
+      <td>The key size of get operation for list state</td>
+      <td>Histogram</td>
+    </tr>
+    <tr>
+      <td>listStateGetValueSize</td>
+      <td>The value size of get operation for list state</td>
+      <td>Histogram</td>
+    </tr>
+    <tr>
+      <td>listStateAddKeySize</td>
+      <td>The key size of add operation for list state</td>
+      <td>Histogram</td>
+    </tr>
+    <tr>
+      <td>listStateAddValueSize</td>
+      <td>The value size of add operation for list state</td>
+      <td>Histogram</td>
+    </tr>
+    <tr>
+      <td>listStateAddAllKeySize</td>
+      <td>The key size of addAll operation for list state</td>
+      <td>Histogram</td>
+    </tr>
+    <tr>
+      <td>listStateAddAllValueSize</td>
+      <td>The value size of addAll operation for list state</td>
+      <td>Histogram</td>
+    </tr>
+    <tr>
+      <td>listStateUpdateKeySize</td>
+      <td>The key size of update operation for list state</td>
+      <td>Histogram</td>
+    </tr>
+    <tr>
+      <td>listStateUpdateValueSize</td>
+      <td>The value size of update operation for list state</td>
+      <td>Histogram</td>
+    </tr>
+    <tr>
+      <td>mapStateGetKeySize</td>
+      <td>The key size of get operation for map state</td>
+      <td>Histogram</td>
+    </tr>
+    <tr>
+      <td>mapStateGetValueSize</td>
+      <td>The value size of get operation for map state</td>
+      <td>Histogram</td>
+    </tr>
+    <tr>
+      <td>mapStatePutKeySize</td>
+      <td>The key size of put operation for map state</td>
+      <td>Histogram</td>
+    </tr>
+    <tr>
+      <td>mapStatePutValueSize</td>
+      <td>The value size of put operation for map state</td>
+      <td>Histogram</td>
+    </tr>
+    <tr>
+      <td>mapStateIteratorKeySize</td>
+      <td>The key size of iterator#next operation for map state</td>
+      <td>Histogram</td>
+    </tr>
+    <tr>
+      <td>mapStateIteratorValueSize</td>
+      <td>The value size of iterator#next operation for map state</td>
+      <td>Histogram</td>
+    </tr>
+    <tr>
+      <td>mapStateRemoveKeySize</td>
+      <td>The key size of remove operation for map state</td>
+      <td>Histogram</td>
+    </tr>
+    <tr>
+      <td>mapStateContainsKeySize</td>
+      <td>The key size of contains operation for map state</td>
+      <td>Histogram</td>
+    </tr>
+    <tr>
+      <td>mapStateIsEmptyKeySize</td>
+      <td>The key size of isEmpty operation for map state</td>
+      <td>Histogram</td>
+    </tr>
   </tbody>
 </table>
 
 ### RocksDB
 Certain RocksDB native metrics are available but disabled by default, you can find full documentation [here]({{< ref "docs/deployment/config" >}}#rocksdb-native-metrics)
+
+### ForSt
+
+Certain ForSt native metrics are available but disabled by default, you can find full documentation [here]({{< ref "docs/deployment/config" >}}#forst-native-metrics)
+
+Besides that, we support the following metrics:
+
+<table class="table table-bordered">
+  <thead>
+    <tr>
+      <th class="text-left" style="width: 15%">Scope</th>
+      <th class="text-left" style="width: 15%">Infix</th>
+      <th class="text-left" style="width: 15%">Metrics</th>
+      <th class="text-left" style="width: 50%">Description</th>
+      <th class="text-left" style="width: 5%">Type</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <th rowspan="4"><strong>Task/Operator</strong></th>
+      <td rowspan="4">forst.fileCache</td>
+      <td>hit</td>
+      <td>The hit count of ForSt state backend cache.</td>
+      <td>Counter</td>
+    </tr>
+    <tr>
+      <td>miss</td>
+      <td>The miss count of ForSt state backend cache.</td>
+      <td>Counter</td>
+    </tr>
+    <tr>
+      <td>usedBytes</td>
+      <td>The bytes cached in ForSt state backend cache.</td>
+      <td>Gauge</td>
+    </tr>
+    <tr>
+      <td>remainingBytes</td>
+      <td>The remaining space in the volume for the configured cache. Only available when 'state.backend.forst.cache.reserve-size' is set above 0. </td>
+      <td>Gauge</td>
+    </tr>
+    <tr>
+      <td>lru.evict</td>
+      <td>The number of cache files that are evicted from LRU.</td>
+      <td>Gauge</td>
+    </tr>
+    <tr>
+      <td>lru.loadback</td>
+      <td>The number of cache files that are loaded back from remote storage into the LRU. </td>
+      <td>Gauge</td>
+    </tr>
+  </tbody>
+</table>
 
 ### State Changelog
 
@@ -1270,7 +1645,7 @@ Note that the metrics are only available via reporters.
   </thead>
   <tbody>
     <tr>
-      <th rowspan="20"><strong>Job (only available on TaskManager)</strong></th>
+      <th rowspan="8"><strong>Job (only available on TaskManager)</strong></th>
       <td>numberOfUploadRequests</td>
       <td>Total number of upload requests made</td>
       <td>Counter</td>
@@ -1283,6 +1658,11 @@ Note that the metrics are only available via reporters.
     <tr>
       <td>attemptsPerUpload</td>
       <td>The number of attempts per upload</td>
+      <td>Histogram</td>
+    </tr>
+    <tr>
+      <td>totalAttemptsPerUpload</td>
+      <td>The total count distributions of attempts for per upload</td>
       <td>Histogram</td>
     </tr>
     <tr>
@@ -1303,7 +1683,48 @@ Note that the metrics are only available via reporters.
     <tr>
       <td>uploadQueueSize</td>
       <td>Current size of upload queue. Queue items can be packed together and form a single upload.</td>
-      <td>Meter</td>
+      <td>Gauge</td>
+    </tr>
+    <tr>
+      <th rowspan="8"><strong>Task/Operator</strong></th>
+      <td>startedMaterialization</td>
+      <td>The number of started materializations.</td>
+      <td>Counter</td>
+    </tr>
+    <tr>
+      <td>completedMaterialization</td>
+      <td>The number of successfully completed materializations.</td>
+      <td>Counter</td>
+    </tr>
+    <tr>
+      <td>failedMaterialization</td>
+      <td>The number of failed materializations.</td>
+      <td>Counter</td>
+    </tr>
+    <tr>
+      <td>lastDurationOfMaterialization</td>
+      <td>The duration of the last materialization (in milliseconds).</td>
+      <td>Gauge</td>
+    </tr>
+    <tr>
+      <td>lastFullSizeOfMaterialization</td>
+      <td>The full size of the materialization part of the last reported checkpoint (in bytes).</td>
+      <td>Gauge</td>
+    </tr>
+    <tr>
+      <td>lastIncSizeOfMaterialization</td>
+      <td>The incremental size of the materialization part of the last reported checkpoint (in bytes).</td>
+      <td>Gauge</td>
+    </tr>
+    <tr>
+      <td>lastFullSizeOfNonMaterialization</td>
+      <td>The full size of the non-materialization part of the last reported checkpoint (in bytes).</td>
+      <td>Gauge</td>
+    </tr>
+    <tr>
+      <td>lastIncSizeOfNonMaterialization</td>
+      <td>The incremental size of the non-materialization part of the last reported checkpoint (in bytes).</td>
+      <td>Gauge</td>
     </tr>
   </tbody>
 </table>
@@ -1326,7 +1747,7 @@ Note that the metrics are only available via reporters.
       <td>Histogram</td>
     </tr>
     <tr>
-      <th rowspan="20"><strong>Task</strong></th>
+      <th rowspan="27"><strong>Task</strong></th>
       <td>numBytesInLocal</td>
       <td><span class="label label-danger">Attention:</span> deprecated, use <a href="{{< ref "docs/ops/metrics" >}}#default-shuffle-service">Default shuffle service metrics</a>.</td>
       <td>Counter</td>
@@ -1387,6 +1808,16 @@ Note that the metrics are only available via reporters.
       <td>Meter</td>
     </tr>
     <tr>
+      <td>numFiredTimers</td>
+      <td>The total number of timers this task has fired.</td>
+      <td>Counter</td>
+    </tr>
+    <tr>
+      <td>numFiredTimersPerSecond</td>
+      <td>The number of timers this task fires per second.</td>
+      <td>Meter</td>
+    </tr>
+    <tr>
       <td>isBackPressured</td>
       <td>Whether the task is back-pressured.</td>
       <td>Gauge</td>
@@ -1425,6 +1856,31 @@ Note that the metrics are only available via reporters.
       <td>maxHardBackPressuredTimeMs</td>
       <td>Maximum recorded duration of a single consecutive period of the task being in the hard back pressure state in the last sampling period. Please check softBackPressuredTimeMsPerSecond and hardBackPressuredTimeMsPerSecond for more information.</td>
       <td>Gauge</td>
+    </tr>
+    <tr>
+      <td>changelogBusyTimeMsPerSecond</td>
+      <td>The time (in milliseconds) taken by the Changelog state backend to do IO operations, only positive when Changelog state backend is enabled. Please check 'state.changelog.dstl.dfs.upload.max-in-flight' for more information.</td>
+      <td>Gauge</td>
+    </tr>
+    <tr>
+      <td>mailboxMailsPerSecond</td>
+      <td>The number of actions processed from the task's mailbox per second which includes all actions, e.g., checkpointing, timer, or cancellation actions.</td>
+      <td>Meter</td>
+    </tr>
+    <tr>
+      <td>mailboxLatencyMs</td>
+      <td>The latency is the time that actions spend waiting in the task's mailbox before being processed. The metric is a statistic of the latency in milliseconds that is measured approximately once every second and includes the last 60 measurements.</td>
+      <td>Histogram</td>
+    </tr>
+    <tr>
+      <td>mailboxQueueSize</td>
+      <td>The number of actions in the task's mailbox that are waiting to be processed.</td>
+      <td>Gauge</td>
+    </tr>
+    <tr>
+      <td>initializationTime</td>
+      <td>The time in milliseconds that one task spends on initialization, return 0 when the task is not in initialization/running status. Most of the initialization time is usually spent in restoring from the checkpoint.</td>
+      <td>Counter</td>
     </tr>
     <tr>
       <td rowspan="2"><strong>Task (only if buffer debloating is enabled and in non-source tasks)</strong></td>
@@ -1500,6 +1956,56 @@ Note that the metrics are only available via reporters.
     <tr>
       <td>numSplitsProcessed</td>
       <td>The total number of InputSplits this data source has processed (if the operator is a data source).</td>
+      <td>Gauge</td>
+    </tr>
+    <tr>
+      <th rowspan="7"><strong>Split</strong></th>
+      <td>watermark.currentWatermark</td>
+      <td>
+        The last watermark this split has received (in milliseconds).
+      </td>
+      <td>Gauge</td>
+    </tr>
+    <tr>
+      <td>watermark.activeTimeMsPerSecond</td>
+      <td>
+        The time (in milliseconds) this split has been active (i.e. not paused due to watermark alignment or idle due to idleness detection) per second.
+      </td>
+      <td>Gauge</td>
+    </tr>
+    <tr>
+      <td>watermark.pausedTimeMsPerSecond</td>
+      <td>
+        The time (in milliseconds) this split has been paused due to watermark alignment per second.
+      </td>
+      <td>Gauge</td>
+    </tr>
+    <tr>
+      <td>watermark.idleTimeMsPerSecond</td>
+      <td>
+        The time (in milliseconds) this split has been marked idle by idleness detection per second.
+      </td>
+      <td>Gauge</td>
+    </tr>
+    <tr>
+      <td>watermark.accumulatedActiveTimeMs</td>
+      <td>
+        Accumulated time (in milliseconds) this split was active since it was registered
+      </td>
+      <td>Gauge</td>
+    </tr>
+    <tr>
+      <td>watermark.accumulatedPausedTimeMs</td>
+      <td>
+        Accumulated time (in milliseconds) this split was paused since it was registered
+      </td>
+      <td>Gauge</td>
+    </tr>
+    <tr>
+      <td>watermark.accumulatedIdleTimeMs</td>
+      <td>
+        Accumulated time (in milliseconds) this split was idle since it was registered
+      </td>
       <td>Gauge</td>
     </tr>
   </tbody>
@@ -1588,7 +2094,7 @@ Please refer to [Kafka monitoring]({{< ref "docs/connectors/datastream/kafka" >}
       <th rowspan="1">Operator</th>
       <td>loopFrequencyHz</td>
       <td>stream, shardId</td>
-      <td>The number of calls to getRecords in one second. 
+      <td>The number of calls to getRecords in one second.
       </td>
       <td>Gauge</td>
     </tr>
@@ -1671,12 +2177,12 @@ configured interval (`metrics.system-resource-probing-interval`).
 System resources reporting requires an optional dependency to be present on the
 classpath (for example placed in Flink's `lib` directory):
 
-  - `com.github.oshi:oshi-core:3.4.0` (licensed under EPL 1.0 license)
+  - `com.github.oshi:oshi-core:6.1.5` (licensed under MIT license)
 
 Including it's transitive dependencies:
 
-  - `net.java.dev.jna:jna-platform:jar:4.2.2`
-  - `net.java.dev.jna:jna:jar:4.2.2`
+  - `net.java.dev.jna:jna-platform:jar:5.10.0`
+  - `net.java.dev.jna:jna:jar:5.10.0`
 
 Failures in this regard will be reported as warning messages like `NoClassDefFoundError`
 logged by `SystemResourcesMetricsInitializer` during the startup.
@@ -1694,38 +2200,42 @@ logged by `SystemResourcesMetricsInitializer` during the startup.
   </thead>
   <tbody>
     <tr>
-      <th rowspan="12"><strong>Job-/TaskManager</strong></th>
-      <td rowspan="12">System.CPU</td>
+      <th rowspan="13"><strong>Job-/TaskManager</strong></th>
+      <td rowspan="13">System.CPU</td>
       <td>Usage</td>
       <td>Overall % of CPU usage on the machine.</td>
     </tr>
     <tr>
       <td>Idle</td>
-      <td>% of CPU Idle usage on the machine.</td>
+      <td>% of CPU Idle time on the machine.</td>
     </tr>
     <tr>
       <td>Sys</td>
-      <td>% of System CPU usage on the machine.</td>
+      <td>% of System CPU time on the machine.</td>
     </tr>
     <tr>
       <td>User</td>
-      <td>% of User CPU usage on the machine.</td>
+      <td>% of User CPU time on the machine.</td>
     </tr>
     <tr>
       <td>IOWait</td>
-      <td>% of IOWait CPU usage on the machine.</td>
+      <td>% of IOWait CPU time on the machine.</td>
     </tr>
     <tr>
       <td>Irq</td>
-      <td>% of Irq CPU usage on the machine.</td>
+      <td>% of Irq CPU time on the machine.</td>
     </tr>
     <tr>
       <td>SoftIrq</td>
-      <td>% of SoftIrq CPU usage on the machine.</td>
+      <td>% of SoftIrq CPU time on the machine.</td>
     </tr>
     <tr>
       <td>Nice</td>
-      <td>% of Nice Idle usage on the machine.</td>
+      <td>% of Nice CPU time on the machine.</td>
+    </tr>
+    <tr>
+      <td>Steal</td>
+      <td>% of Steal CPU time on the machine.</td>
     </tr>
     <tr>
       <td>Load1min</td>
@@ -1805,6 +2315,103 @@ logged by `SystemResourcesMetricsInitializer` during the startup.
   </tbody>
 </table>
 
+### Speculative Execution
+
+Metrics below can be used to measure the effectiveness of speculative execution.
+
+<table class="table table-bordered">
+  <thead>
+    <tr>
+      <th class="text-left" style="width: 18%">Scope</th>
+      <th class="text-left" style="width: 26%">Metrics</th>
+      <th class="text-left" style="width: 48%">Description</th>
+      <th class="text-left" style="width: 8%">Type</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <th rowspan="2"><strong>Job (only available on JobManager)</strong></th>
+      <td>numSlowExecutionVertices</td>
+      <td>Number of slow execution vertices at the moment.</td>
+      <td>Gauge</td>
+    </tr>
+    <tr>
+      <td>numEffectiveSpeculativeExecutions</td>
+      <td>Number of effective speculative execution attempts, i.e. speculative execution attempts which
+      finish earlier than their corresponding original attempts.</td>
+      <td>Counter</td>
+    </tr>
+  </tbody>
+</table>
+
+### Async State Processing
+
+<table class="table table-bordered">
+  <thead>
+    <tr>
+      <th class="text-left" style="width: 15%">Scope</th>
+      <th class="text-left" style="width: 10%">Infix</th>
+      <th class="text-left" style="width: 20%">Metrics</th>
+      <th class="text-left" style="width: 50%">Description</th>
+      <th class="text-left" style="width: 5%">Type</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <th rowspan="4"><strong>Operator</strong></th>
+      <td rowspan="4">asyncStateProcessing</td>
+      <td>numInFlightRecords</td>
+      <td>The number of in-flight records in the async execution controller's buffers.</td>
+      <td>Gauge</td>
+    </tr>
+    <tr>
+      <td>activeBufferSize</td>
+      <td>The number of records which are pending to be processed.</td>
+      <td>Gauge</td>
+    </tr>
+    <tr>
+      <td>blockingBufferSize</td>
+      <td>The number of records which are blocked by the ongoing records.</td>
+      <td>Gauge</td>
+    </tr>
+    <tr>
+      <td>numBlockingKeys</td>
+      <td>The number of different keys are blocked in async execution controller.</td>
+      <td>Gauge</td>
+    </tr>
+  </tbody>
+</table>
+
+### UDF
+
+The following metrics are registered per SQL/Table user-defined function when UDF metrics are enabled (see [UDF metrics](#udf-metrics) below). They are registered only on the operator that runs the function, under the infix `udf.<udf_name>`, so the identifier is the operator scope (`metrics.scope.operator`) followed by `udf.<udf_name>.<metric>`.
+
+<table class="table table-bordered">
+  <thead>
+    <tr>
+      <th class="text-left" style="width: 15%">Scope</th>
+      <th class="text-left" style="width: 15%">Infix</th>
+      <th class="text-left" style="width: 15%">Metrics</th>
+      <th class="text-left" style="width: 50%">Description</th>
+      <th class="text-left" style="width: 5%">Type</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <th rowspan="2"><strong>Operator</strong></th>
+      <td rowspan="2">udf.&lt;udf_name&gt;</td>
+      <td>udfProcessingTime</td>
+      <td>The time (in nanoseconds) taken by a single invocation of the user-defined function. For asynchronous functions this spans from dispatch to completion. Sampled: only one invocation out of every <samp>table.exec.udf-metric.sample-interval</samp> is measured.</td>
+      <td>Histogram</td>
+    </tr>
+    <tr>
+      <td>udfExceptionCount</td>
+      <td>The number of exceptions escaping the user-defined function. For synchronous functions this counts exceptions propagating out of <samp>eval</samp>; for asynchronous functions it counts exceptional completions. Counted on every invocation, not sampled.</td>
+      <td>Counter</td>
+    </tr>
+  </tbody>
+</table>
+
 ## End-to-End latency tracking
 
 Flink allows to track the latency of records travelling through the system. This feature is disabled by default.
@@ -1813,7 +2420,7 @@ To enable the latency tracking you must set the `latencyTrackingInterval` to a p
 
 At the `latencyTrackingInterval`, the sources will periodically emit a special record, called a `LatencyMarker`.
 The marker contains a timestamp from the time when the record has been emitted at the sources.
-Latency markers can not overtake regular user records, thus if records are queuing up in front of an operator, 
+Latency markers can not overtake regular user records, thus if records are queuing up in front of an operator,
 it will add to the latency tracked by the marker.
 
 Note that the latency markers are not accounting for the time user records spend in operators as they are
@@ -1821,29 +2428,65 @@ bypassing them. In particular the markers are not accounting for the time record
 Only if operators are not able to accept new records, thus they are queuing up, the latency measured using
 the markers will reflect that.
 
-The `LatencyMarker`s are used to derive a distribution of the latency between the sources of the topology and each 
-downstream operator. These distributions are reported as histogram metrics. The granularity of these distributions can 
-be controlled in the [Flink configuration]({{< ref "docs/deployment/config" >}}#metrics-latency-interval). For the highest 
-granularity `subtask` Flink will derive the latency distribution between every source subtask and every downstream 
-subtask, which results in quadratic (in the terms of the parallelism) number of histograms. 
+The `LatencyMarker`s are used to derive a distribution of the latency between the sources of the topology and each
+downstream operator. These distributions are reported as histogram metrics. The granularity of these distributions can
+be controlled in the [Flink configuration]({{< ref "docs/deployment/config" >}}#metrics-latency-interval). For the highest
+granularity `subtask` Flink will derive the latency distribution between every source subtask and every downstream
+subtask, which results in quadratic (in the terms of the parallelism) number of histograms.
 
 Currently, Flink assumes that the clocks of all machines in the cluster are in sync. We recommend setting
 up an automated clock synchronisation service (like NTP) to avoid false latency results.
 
 <span class="label label-danger">Warning</span> Enabling latency metrics can significantly impact the performance
-of the cluster (in particular for `subtask` granularity). It is highly recommended to only use them for debugging 
+of the cluster (in particular for `subtask` granularity). It is highly recommended to only use them for debugging
 purposes.
 
 ## State access latency tracking
 
 Flink also allows to track the keyed state access latency for standard Flink state-backends or customized state backends which extending from `AbstractStateBackend`. This feature is disabled by default.
-To enable this feature you must set the `state.backend.latency-track.keyed-state-enabled` to true in the [Flink configuration]({{< ref "docs/deployment/config" >}}#state-backends-latency-tracking-options).
+To enable this feature you must set the `state.latency-track.keyed-state-enabled` to true in the [Flink configuration]({{< ref "docs/deployment/config" >}}#state-backends-latency-tracking-options).
 
-Once tracking keyed state access latency is enabled, Flink will sample the state access latency every `N` access, in which `N` is defined by `state.backend.latency-track.sample-interval`.
+Once tracking keyed state access latency is enabled, Flink will sample the state access latency every `N` access, in which `N` is defined by `state.latency-track.sample-interval`.
 This configuration has a default value of 100. A smaller value will get more accurate results but have a higher performance impact since it is sampled more frequently.
 
-As the type of this latency metrics is histogram, `state.backend.latency-track.history-size` will control the maximum number of recorded values in history, which has the default value of 128.
+As the type of this latency metrics is histogram, `state.latency-track.history-size` will control the maximum number of recorded values in history, which has the default value of 128.
 A larger value of this configuration will require more memory, but will provide a more accurate result.
+
+<span class="label label-danger">Warning</span> Enabling state-access-latency metrics may impact the performance.
+It is recommended to only use them for debugging purposes.
+
+## State key/value size tracking
+
+Flink also allows to track the keyed state key/value size for standard Flink state-backends or customized state backends which extending from `AbstractStateBackend`. This feature is disabled by default.
+To enable this feature you must set the `state.size-track.keyed-state-enabled` to true in the [Flink configuration]({{< ref "docs/deployment/config" >}}#state-backends-size-tracking-options).
+
+Once tracking keyed state key/value size is enabled, Flink will sample the state size every `N` access, in which `N` is defined by `state.size-track.sample-interval`.
+This configuration has a default value of 100. A smaller value will get more accurate results but have a higher performance impact since it is sampled more frequently.
+
+As the type of this key/value size metrics is histogram, `state.size-track.history-size` will control the maximum number of recorded values in history, which has the default value of 128.
+A larger value of this configuration will require more memory, but will provide a more accurate result.
+
+<span class="label label-danger">Warning</span> Enabling state-size metrics may impact the performance.
+It is recommended to only use them for debugging purposes.
+If state.ttl is enabled, the size of the value will include the size of the TTL-related timestamp.
+The value size of AggregatingState is not accounted for because AggregatingState returns a result processed by a user-defined AggregateFunction, whereas currently, only the actual stored data size in the state can be tracked.
+
+## UDF metrics
+
+Flink can track the processing time and exceptions of SQL/Table user-defined functions on a per-operator basis. This feature is disabled by default.
+To enable it you must set `table.exec.udf-metric-enabled` to `true`. When disabled, nothing is registered and there is no overhead.
+
+Once enabled, each user-defined function gets two metrics on the operator that runs it, scoped under `udf.<udf_name>`: a `udfProcessingTime` histogram and a `udfExceptionCount` counter.
+
+Flink samples the processing time every `N` invocations, in which `N` is defined by `table.exec.udf-metric.sample-interval`.
+This configuration has a default value of 100. A smaller value will get more accurate results but have a higher performance impact since it is sampled more frequently.
+Because only the sampled invocations are timed, the remaining invocations cost a single counter increment, so the default interval keeps the overhead of the enabled path small.
+Exceptions are counted on every invocation and are not sampled.
+
+The metrics cover scalar and table functions that a query calls directly, both synchronous and asynchronous. Not covered: Python functions (they run in dedicated Python operators), process table functions (`PROCESS_TABLE`), aggregate functions, functions registered through the deprecated `registerFunction` API, and the functions invoked internally by lookup joins, model prediction, and vector search.
+
+<span class="label label-danger">Warning</span> Enabling UDF metrics may impact the performance, both from the sampled timing and from the metric reporter.
+It is recommended to only use them for debugging purposes.
 
 ## REST API integration
 
@@ -1865,6 +2508,7 @@ Request metrics aggregated across all entities of the respective type:
   - `/taskmanagers/metrics`
   - `/jobs/metrics`
   - `/jobs/<jobid>/vertices/<vertexid>/subtasks/metrics`
+  - `/jobs/<jobid>/vertices/<vertexid>/jm-operator-metrics`
 
 Request metrics aggregated over a subset of all entities of the respective type:
 
@@ -1872,7 +2516,7 @@ Request metrics aggregated over a subset of all entities of the respective type:
   - `/jobs/metrics?jobs=D,E,F`
   - `/jobs/<jobid>/vertices/<vertexid>/subtasks/metrics?subtask=1,2,3`
 
-<span class="label label-danger">Warning</span> Metric names can contain special characters that you need to be escape when querying metrics.
+<span class="label label-danger">Warning</span> Metric names can contain special characters that you need to escape when querying metrics.
 For example, "`a_+_b`" would be escaped to "`a_%2B_b`".
 
 List of characters that should be escaped:

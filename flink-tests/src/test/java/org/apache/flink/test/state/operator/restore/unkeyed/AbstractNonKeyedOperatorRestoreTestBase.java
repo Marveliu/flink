@@ -25,12 +25,6 @@ import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.test.state.operator.restore.AbstractOperatorRestoreTestBase;
 import org.apache.flink.test.state.operator.restore.ExecutionMode;
 
-import org.junit.runner.RunWith;
-import org.junit.runners.Parameterized;
-
-import java.util.Arrays;
-import java.util.Collection;
-
 import static org.apache.flink.test.state.operator.restore.unkeyed.NonKeyedJob.createFirstStatefulMap;
 import static org.apache.flink.test.state.operator.restore.unkeyed.NonKeyedJob.createSecondStatefulMap;
 import static org.apache.flink.test.state.operator.restore.unkeyed.NonKeyedJob.createSource;
@@ -38,41 +32,10 @@ import static org.apache.flink.test.state.operator.restore.unkeyed.NonKeyedJob.c
 import static org.apache.flink.test.state.operator.restore.unkeyed.NonKeyedJob.createThirdStatefulMap;
 
 /** Base class for all non-keyed operator restore tests. */
-@RunWith(Parameterized.class)
-public abstract class AbstractNonKeyedOperatorRestoreTestBase
-        extends AbstractOperatorRestoreTestBase {
-
-    private final FlinkVersion flinkVersion;
-
-    @Parameterized.Parameters(name = "Migrate Savepoint: {0}")
-    public static Collection<FlinkVersion> parameters() {
-        return Arrays.asList(
-                FlinkVersion.v1_3,
-                FlinkVersion.v1_4,
-                FlinkVersion.v1_5,
-                FlinkVersion.v1_6,
-                FlinkVersion.v1_7,
-                FlinkVersion.v1_8,
-                FlinkVersion.v1_9,
-                FlinkVersion.v1_10,
-                FlinkVersion.v1_11,
-                FlinkVersion.v1_12,
-                FlinkVersion.v1_13,
-                FlinkVersion.v1_14);
-    }
-
-    protected AbstractNonKeyedOperatorRestoreTestBase(FlinkVersion flinkVersion) {
-        this.flinkVersion = flinkVersion;
-    }
-
-    protected AbstractNonKeyedOperatorRestoreTestBase(
-            FlinkVersion flinkVersion, boolean allowNonRestoredState) {
-        super(allowNonRestoredState);
-        this.flinkVersion = flinkVersion;
-    }
+abstract class AbstractNonKeyedOperatorRestoreTestBase extends AbstractOperatorRestoreTestBase {
 
     @Override
-    public void createMigrationJob(StreamExecutionEnvironment env) {
+    protected void createMigrationJob(StreamExecutionEnvironment env) {
         /** Source -> StatefulMap1 -> CHAIN(StatefulMap2 -> Map -> StatefulMap3) */
         DataStream<Integer> source = createSource(env, ExecutionMode.MIGRATE);
 
@@ -91,7 +54,7 @@ public abstract class AbstractNonKeyedOperatorRestoreTestBase
     }
 
     @Override
-    protected String getMigrationSavepointName() {
+    protected String getMigrationSavepointName(FlinkVersion flinkVersion) {
         return "nonKeyed-flink" + flinkVersion;
     }
 }

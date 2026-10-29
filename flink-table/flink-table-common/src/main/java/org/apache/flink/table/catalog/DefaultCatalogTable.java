@@ -19,6 +19,7 @@
 package org.apache.flink.table.catalog;
 
 import org.apache.flink.annotation.Internal;
+import org.apache.flink.configuration.ConfigurationUtils;
 import org.apache.flink.table.api.Schema;
 
 import javax.annotation.Nullable;
@@ -37,18 +38,45 @@ public class DefaultCatalogTable implements CatalogTable {
 
     private final Schema schema;
     private final @Nullable String comment;
+    private final @Nullable TableDistribution distribution;
     private final List<String> partitionKeys;
     private final Map<String, String> options;
+    private final @Nullable Long snapshot;
+    private final @Nullable UnresolvedIdentifier connection;
 
     protected DefaultCatalogTable(
             Schema schema,
             @Nullable String comment,
             List<String> partitionKeys,
             Map<String, String> options) {
+        this(schema, comment, partitionKeys, options, null, null);
+    }
+
+    protected DefaultCatalogTable(
+            Schema schema,
+            @Nullable String comment,
+            List<String> partitionKeys,
+            Map<String, String> options,
+            @Nullable Long snapshot,
+            @Nullable TableDistribution distribution) {
+        this(schema, comment, partitionKeys, options, snapshot, distribution, null);
+    }
+
+    protected DefaultCatalogTable(
+            Schema schema,
+            @Nullable String comment,
+            List<String> partitionKeys,
+            Map<String, String> options,
+            @Nullable Long snapshot,
+            @Nullable TableDistribution distribution,
+            @Nullable UnresolvedIdentifier connection) {
         this.schema = checkNotNull(schema, "Schema must not be null.");
         this.comment = comment;
         this.partitionKeys = checkNotNull(partitionKeys, "Partition keys must not be null.");
         this.options = checkNotNull(options, "Options must not be null.");
+        this.snapshot = snapshot;
+        this.distribution = distribution;
+        this.connection = connection;
 
         checkArgument(
                 options.entrySet().stream()
@@ -77,18 +105,35 @@ public class DefaultCatalogTable implements CatalogTable {
     }
 
     @Override
+    public Optional<TableDistribution> getDistribution() {
+        return Optional.ofNullable(distribution);
+    }
+
+    @Override
+    public Optional<UnresolvedIdentifier> getConnection() {
+        return Optional.ofNullable(connection);
+    }
+
+    @Override
     public Map<String, String> getOptions() {
         return options;
     }
 
     @Override
+    public Optional<Long> getSnapshot() {
+        return Optional.ofNullable(snapshot);
+    }
+
+    @Override
     public CatalogBaseTable copy() {
-        return new DefaultCatalogTable(schema, comment, partitionKeys, options);
+        return new DefaultCatalogTable(
+                schema, comment, partitionKeys, options, snapshot, distribution, connection);
     }
 
     @Override
     public CatalogTable copy(Map<String, String> options) {
-        return new DefaultCatalogTable(schema, comment, partitionKeys, options);
+        return new DefaultCatalogTable(
+                schema, comment, partitionKeys, options, snapshot, distribution, connection);
     }
 
     @Override
@@ -102,12 +147,6 @@ public class DefaultCatalogTable implements CatalogTable {
     }
 
     @Override
-    public Map<String, String> toProperties() {
-        throw new UnsupportedOperationException(
-                "Only a resolved catalog table can be serialized into a map of string properties.");
-    }
-
-    @Override
     public boolean equals(Object o) {
         if (this == o) {
             return true;
@@ -118,13 +157,17 @@ public class DefaultCatalogTable implements CatalogTable {
         DefaultCatalogTable that = (DefaultCatalogTable) o;
         return schema.equals(that.schema)
                 && Objects.equals(comment, that.comment)
+                && Objects.equals(distribution, that.distribution)
                 && partitionKeys.equals(that.partitionKeys)
-                && options.equals(that.options);
+                && options.equals(that.options)
+                && Objects.equals(snapshot, that.snapshot)
+                && Objects.equals(connection, that.connection);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(schema, comment, partitionKeys, options);
+        return Objects.hash(
+                schema, comment, distribution, partitionKeys, options, snapshot, connection);
     }
 
     @Override
@@ -134,11 +177,17 @@ public class DefaultCatalogTable implements CatalogTable {
                 + schema
                 + ", comment='"
                 + comment
-                + '\''
+                + "'"
+                + ", distribution="
+                + distribution
                 + ", partitionKeys="
                 + partitionKeys
                 + ", options="
-                + options
+                + ConfigurationUtils.hideSensitiveValues(options, List.of())
+                + ", snapshot="
+                + snapshot
+                + ", connection="
+                + connection
                 + '}';
     }
 }

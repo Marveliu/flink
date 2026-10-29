@@ -20,29 +20,30 @@ package org.apache.flink.test.streaming.api.datastream;
 
 import org.apache.flink.api.common.functions.AbstractRichFunction;
 import org.apache.flink.api.common.functions.MapFunction;
-import org.apache.flink.configuration.Configuration;
+import org.apache.flink.api.common.functions.OpenContext;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.operators.StreamingRuntimeContext;
-import org.apache.flink.util.TestLogger;
+import org.apache.flink.util.TestLoggerExtension;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 
 import static org.apache.flink.util.Preconditions.checkNotNull;
-import static org.junit.Assert.assertEquals;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /** Tests the uid translation to {@link org.apache.flink.runtime.jobgraph.OperatorID}. */
-@SuppressWarnings("serial")
-public class GetOperatorUniqueIDTest extends TestLogger {
+@ExtendWith(TestLoggerExtension.class)
+class GetOperatorUniqueIDTest {
 
     /**
      * If expected values ever change double check that the change is not braking the contract of
      * {@link StreamingRuntimeContext#getOperatorUniqueID()} being stable between job submissions.
      */
     @Test
-    public void testGetOperatorUniqueID() throws Exception {
+    void testGetOperatorUniqueID() throws Exception {
         StreamExecutionEnvironment env = StreamExecutionEnvironment.createLocalEnvironment();
 
-        env.fromElements(1, 2, 3)
+        env.fromData(1, 2, 3)
                 .map(new VerifyOperatorIDMapFunction("6c4f323f22da8fb6e34f80c61be7a689"))
                 .uid("42")
                 .map(new VerifyOperatorIDMapFunction("3e129e83691e7737fbf876b47452acbc"))
@@ -62,12 +63,11 @@ public class GetOperatorUniqueIDTest extends TestLogger {
         }
 
         @Override
-        public void open(Configuration parameters) throws Exception {
-            super.open(parameters);
+        public void open(OpenContext openContext) throws Exception {
+            super.open(openContext);
 
-            assertEquals(
-                    expectedOperatorUniqueID,
-                    ((StreamingRuntimeContext) getRuntimeContext()).getOperatorUniqueID());
+            assertThat(((StreamingRuntimeContext) getRuntimeContext()).getOperatorUniqueID())
+                    .isEqualTo(expectedOperatorUniqueID);
         }
 
         @Override

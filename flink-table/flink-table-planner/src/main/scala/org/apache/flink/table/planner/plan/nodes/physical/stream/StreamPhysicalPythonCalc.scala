@@ -15,49 +15,45 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.planner.plan.nodes.physical.stream
 
 import org.apache.flink.table.api.TableException
 import org.apache.flink.table.planner.calcite.FlinkTypeFactory
+import org.apache.flink.table.planner.plan.nodes.exec.{ExecNode, InputProperty}
 import org.apache.flink.table.planner.plan.nodes.exec.stream.StreamExecPythonCalc
-import org.apache.flink.table.planner.plan.nodes.exec.{InputProperty, ExecNode}
+import org.apache.flink.table.planner.plan.utils.PythonUtil
+import org.apache.flink.table.planner.utils.ShortcutUtils.unwrapTableConfig
 
 import org.apache.calcite.plan.{RelOptCluster, RelTraitSet}
-import org.apache.calcite.rel.RelNode
 import org.apache.calcite.rel.`type`.RelDataType
+import org.apache.calcite.rel.RelNode
 import org.apache.calcite.rel.core.Calc
 import org.apache.calcite.rex.RexProgram
 
 import scala.collection.JavaConversions._
 
-/**
-  * Stream physical RelNode for Python ScalarFunctions.
-  */
+/** Stream physical RelNode for Python ScalarFunctions. */
 class StreamPhysicalPythonCalc(
     cluster: RelOptCluster,
     traitSet: RelTraitSet,
     inputRel: RelNode,
     calcProgram: RexProgram,
     outputRowType: RelDataType)
-  extends StreamPhysicalCalcBase(
-    cluster,
-    traitSet,
-    inputRel,
-    calcProgram,
-    outputRowType) {
+  extends StreamPhysicalCalcBase(cluster, traitSet, inputRel, calcProgram, outputRowType) {
 
   override def copy(traitSet: RelTraitSet, child: RelNode, program: RexProgram): Calc = {
     new StreamPhysicalPythonCalc(cluster, traitSet, child, program, outputRowType)
   }
 
   override def translateToExecNode(): ExecNode[_] = {
+    PythonUtil.validatePythonCalcConcurrency(this, calcProgram)
     val projection = calcProgram.getProjectList.map(calcProgram.expandLocalRef)
     if (calcProgram.getCondition != null) {
       throw new TableException("The condition of StreamPhysicalPythonCalc should be null.")
     }
 
     new StreamExecPythonCalc(
+      unwrapTableConfig(this),
       projection,
       InputProperty.DEFAULT,
       FlinkTypeFactory.toLogicalRowType(getRowType),

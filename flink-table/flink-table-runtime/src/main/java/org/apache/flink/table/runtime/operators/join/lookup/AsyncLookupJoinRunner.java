@@ -19,18 +19,22 @@
 package org.apache.flink.table.runtime.operators.join.lookup;
 
 import org.apache.flink.annotation.VisibleForTesting;
+import org.apache.flink.api.common.functions.DefaultOpenContext;
+import org.apache.flink.api.common.functions.OpenContext;
 import org.apache.flink.api.common.functions.util.FunctionUtils;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.streaming.api.functions.async.AsyncFunction;
+import org.apache.flink.streaming.api.functions.async.CollectionSupplier;
 import org.apache.flink.streaming.api.functions.async.ResultFuture;
-import org.apache.flink.streaming.api.functions.async.RichAsyncFunction;
 import org.apache.flink.table.data.GenericRowData;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.data.conversion.DataStructureConverter;
 import org.apache.flink.table.data.utils.JoinedRowData;
 import org.apache.flink.table.runtime.collector.TableFunctionResultFuture;
+import org.apache.flink.table.runtime.generated.FilterCondition;
 import org.apache.flink.table.runtime.generated.GeneratedFunction;
 import org.apache.flink.table.runtime.generated.GeneratedResultFuture;
+import org.apache.flink.table.runtime.operators.AbstractAsyncFunctionRunner;
 import org.apache.flink.table.runtime.typeutils.RowDataSerializer;
 
 import java.util.ArrayList;
@@ -39,18 +43,18 @@ import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /** The async join runner to lookup the dimension table. */
-public class AsyncLookupJoinRunner extends RichAsyncFunction<RowData, RowData> {
+public class AsyncLookupJoinRunner extends AbstractAsyncFunctionRunner<Object> {
     private static final long serialVersionUID = -6664660022391632480L;
 
-    private final GeneratedFunction<AsyncFunction<RowData, Object>> generatedFetcher;
     private final DataStructureConverter<RowData, Object> fetcherConverter;
     private final GeneratedResultFuture<TableFunctionResultFuture<RowData>> generatedResultFuture;
+    private final GeneratedFunction<FilterCondition> generatedPreFilterCondition;
+
     private final boolean isLeftOuterJoin;
     private final int asyncBufferCapacity;
-
-    private transient AsyncFunction<RowData, Object> fetcher;
 
     protected final RowDataSerializer rightRowSerializer;
 
@@ -59,6 +63,7 @@ public class AsyncLookupJoinRunner extends RichAsyncFunction<RowData, RowData> {
      * We use {@link BlockingQueue} to make sure the head {@link ResultFuture}s are available.
      */
     private transient BlockingQueue<JoinedRowResultFuture> resultFutureBuffer;
+
     /**
      * A Collection contains all ResultFutures in the runner which is used to invoke {@code close()}
      * on every ResultFuture. {@link #resultFutureBuffer} may not contain all the ResultFutures
@@ -66,32 +71,38 @@ public class AsyncLookupJoinRunner extends RichAsyncFunction<RowData, RowData> {
      */
     private transient List<JoinedRowResultFuture> allResultFutures;
 
+    protected transient FilterCondition preFilterCondition;
+
     public AsyncLookupJoinRunner(
             GeneratedFunction<AsyncFunction<RowData, Object>> generatedFetcher,
             DataStructureConverter<RowData, Object> fetcherConverter,
             GeneratedResultFuture<TableFunctionResultFuture<RowData>> generatedResultFuture,
+            GeneratedFunction<FilterCondition> generatedPreFilterCondition,
             RowDataSerializer rightRowSerializer,
             boolean isLeftOuterJoin,
             int asyncBufferCapacity) {
-        this.generatedFetcher = generatedFetcher;
+        super(generatedFetcher);
         this.fetcherConverter = fetcherConverter;
         this.generatedResultFuture = generatedResultFuture;
+        this.generatedPreFilterCondition = generatedPreFilterCondition;
         this.rightRowSerializer = rightRowSerializer;
         this.isLeftOuterJoin = isLeftOuterJoin;
         this.asyncBufferCapacity = asyncBufferCapacity;
     }
 
     @Override
-    public void open(Configuration parameters) throws Exception {
-        super.open(parameters);
-        this.fetcher = generatedFetcher.newInstance(getRuntimeContext().getUserCodeClassLoader());
+    public void open(OpenContext openContext) throws Exception {
+        super.open(openContext);
+        ClassLoader cl = getRuntimeContext().getUserCodeClassLoader();
+        this.preFilterCondition = generatedPreFilterCondition.newInstance(cl);
         FunctionUtils.setFunctionRuntimeContext(fetcher, getRuntimeContext());
-        FunctionUtils.openFunction(fetcher, parameters);
+        FunctionUtils.setFunctionRuntimeContext(preFilterCondition, getRuntimeContext());
+        FunctionUtils.openFunction(preFilterCondition, openContext);
 
         // try to compile the generated ResultFuture, fail fast if the code is corrupt.
-        generatedResultFuture.compile(getRuntimeContext().getUserCodeClassLoader());
+        generatedResultFuture.compile(cl);
 
-        fetcherConverter.open(getRuntimeContext().getUserCodeClassLoader());
+        fetcherConverter.open(cl);
 
         // asyncBufferCapacity + 1 as the queue size in order to avoid
         // blocking on the queue when taking a collector.
@@ -101,7 +112,7 @@ public class AsyncLookupJoinRunner extends RichAsyncFunction<RowData, RowData> {
             JoinedRowResultFuture rf =
                     new JoinedRowResultFuture(
                             resultFutureBuffer,
-                            createFetcherResultFuture(parameters),
+                            createFetcherResultFuture(new Configuration()),
                             fetcherConverter,
                             isLeftOuterJoin,
                             rightRowSerializer.getArity());
@@ -114,11 +125,19 @@ public class AsyncLookupJoinRunner extends RichAsyncFunction<RowData, RowData> {
     @Override
     public void asyncInvoke(RowData input, ResultFuture<RowData> resultFuture) throws Exception {
         JoinedRowResultFuture outResultFuture = resultFutureBuffer.take();
+        if (!outResultFuture.inuse.compareAndSet(false, true)) {
+            throw new IllegalStateException(
+                    "JoinedRowResultFuture is already in use, cannot be acquired concurrently");
+        }
         // the input row is copied when object reuse in AsyncWaitOperator
         outResultFuture.reset(input, resultFuture);
 
-        // fetcher has copied the input field when object reuse is enabled
-        fetcher.asyncInvoke(input, outResultFuture);
+        if (preFilterCondition.apply(FilterCondition.Context.INVALID_CONTEXT, input)) {
+            // fetcher has copied the input field when object reuse is enabled
+            fetcher.asyncInvoke(input, outResultFuture);
+        } else {
+            outResultFuture.complete(Collections.emptyList());
+        }
     }
 
     public TableFunctionResultFuture<RowData> createFetcherResultFuture(Configuration parameters)
@@ -126,15 +145,78 @@ public class AsyncLookupJoinRunner extends RichAsyncFunction<RowData, RowData> {
         TableFunctionResultFuture<RowData> resultFuture =
                 generatedResultFuture.newInstance(getRuntimeContext().getUserCodeClassLoader());
         FunctionUtils.setFunctionRuntimeContext(resultFuture, getRuntimeContext());
-        FunctionUtils.openFunction(resultFuture, parameters);
+        FunctionUtils.openFunction(resultFuture, DefaultOpenContext.INSTANCE);
         return resultFuture;
+    }
+
+    @Override
+    public void timeout(RowData input, ResultFuture<RowData> resultFuture) throws Exception {
+        JoinedRowResultFuture inFlightFuture = findInFlightFuture(input);
+        if (!retireInFlightFuture(inFlightFuture)) {
+            // current future is already completed and reused
+            return;
+        }
+
+        JoinedRowResultFuture replacementFuture = createReplacementFuture(input, resultFuture);
+        dispatchTimeout(input, replacementFuture);
+    }
+
+    private JoinedRowResultFuture findInFlightFuture(RowData input) {
+        // Reference equality on leftRow is intentional: AsyncWaitOperator passes the same
+        // RowData instance to both asyncInvoke and timeout for a given record (the operator
+        // already deep-copies under object reuse).
+        for (JoinedRowResultFuture resultFuture : allResultFutures) {
+            if (resultFuture.leftRow == input) {
+                return resultFuture;
+            }
+        }
+        return null;
+    }
+
+    private boolean retireInFlightFuture(JoinedRowResultFuture inFlightFuture) throws Exception {
+        if (inFlightFuture == null || !inFlightFuture.inuse.compareAndSet(true, false)) {
+            return false;
+        }
+
+        allResultFutures.remove(inFlightFuture);
+        inFlightFuture.close();
+        return true;
+    }
+
+    private JoinedRowResultFuture createReplacementFuture(
+            RowData input, ResultFuture<RowData> resultFuture) throws Exception {
+        JoinedRowResultFuture replacementFuture =
+                new JoinedRowResultFuture(
+                        resultFutureBuffer,
+                        createFetcherResultFuture(new Configuration()),
+                        fetcherConverter,
+                        isLeftOuterJoin,
+                        rightRowSerializer.getArity());
+        replacementFuture.inuse.set(true);
+        replacementFuture.reset(input, resultFuture);
+        allResultFutures.add(replacementFuture);
+        return replacementFuture;
+    }
+
+    private void dispatchTimeout(RowData input, JoinedRowResultFuture replacementFuture)
+            throws Exception {
+        // Retire the original in-flight future first so late completions are ignored, then route
+        // the timeout handling through a fresh JoinedRowResultFuture. The generated fetcher's own
+        // timeout method (rendered when the user UDF provides one) decides how to complete the
+        // replacement future; if no user timeout method is present, the default
+        // AsyncFunction.timeout raises a TimeoutException as before.
+        try {
+            fetcher.timeout(input, replacementFuture);
+        } catch (Throwable t) {
+            replacementFuture.completeExceptionally(t);
+        }
     }
 
     @Override
     public void close() throws Exception {
         super.close();
-        if (fetcher != null) {
-            FunctionUtils.closeFunction(fetcher);
+        if (preFilterCondition != null) {
+            FunctionUtils.closeFunction(preFilterCondition);
         }
         if (allResultFutures != null) {
             for (JoinedRowResultFuture rf : allResultFutures) {
@@ -167,12 +249,14 @@ public class AsyncLookupJoinRunner extends RichAsyncFunction<RowData, RowData> {
      */
     private static final class JoinedRowResultFuture implements ResultFuture<Object> {
 
+        private final AtomicBoolean inuse = new AtomicBoolean(false);
+
         private final BlockingQueue<JoinedRowResultFuture> resultFutureBuffer;
         private final TableFunctionResultFuture<RowData> joinConditionResultFuture;
         private final DataStructureConverter<RowData, Object> resultConverter;
         private final boolean isLeftOuterJoin;
 
-        private final DelegateResultFuture delegate;
+        private final DelegateResultFuture<RowData> delegate;
         private final GenericRowData nullRow;
 
         private RowData leftRow;
@@ -188,7 +272,7 @@ public class AsyncLookupJoinRunner extends RichAsyncFunction<RowData, RowData> {
             this.joinConditionResultFuture = joinConditionResultFuture;
             this.resultConverter = resultConverter;
             this.isLeftOuterJoin = isLeftOuterJoin;
-            this.delegate = new DelegateResultFuture();
+            this.delegate = new DelegateResultFuture<>();
             this.nullRow = new GenericRowData(rightArity);
         }
 
@@ -203,77 +287,128 @@ public class AsyncLookupJoinRunner extends RichAsyncFunction<RowData, RowData> {
         @Override
         @SuppressWarnings({"unchecked", "rawtypes"})
         public void complete(Collection<Object> result) {
-            Collection<RowData> rowDataCollection;
-            if (resultConverter.isIdentityConversion()) {
-                rowDataCollection = (Collection) result;
-            } else {
-                rowDataCollection = new ArrayList<>(result.size());
-                for (Object element : result) {
-                    rowDataCollection.add(resultConverter.toInternal(element));
-                }
-            }
-
-            // call condition collector first,
-            // the filtered result will be routed to the delegateCollector
-            try {
-                joinConditionResultFuture.complete(rowDataCollection);
-            } catch (Throwable t) {
-                // we should catch the exception here to let the framework know
-                completeExceptionally(t);
+            if (!inuse.compareAndSet(true, false)) {
                 return;
             }
 
-            Collection<RowData> rightRows = delegate.collection;
-            if (rightRows == null || rightRows.isEmpty()) {
-                if (isLeftOuterJoin) {
-                    RowData outRow = new JoinedRowData(leftRow.getRowKind(), leftRow, nullRow);
-                    realOutput.complete(Collections.singleton(outRow));
-                } else {
-                    realOutput.complete(Collections.emptyList());
-                }
-            } else {
-                List<RowData> outRows = new ArrayList<>();
-                for (RowData rightRow : rightRows) {
-                    RowData outRow = new JoinedRowData(leftRow.getRowKind(), leftRow, rightRow);
-                    outRows.add(outRow);
-                }
-                realOutput.complete(outRows);
-            }
             try {
-                // put this collector to the queue to avoid this collector is used
-                // again before outRows in the collector is not consumed.
-                resultFutureBuffer.put(this);
-            } catch (InterruptedException e) {
-                completeExceptionally(e);
+                Collection<RowData> rowDataCollection;
+                if (resultConverter.isIdentityConversion()) {
+                    rowDataCollection = (Collection) result;
+                } else {
+                    rowDataCollection = new ArrayList<>(result.size());
+                    for (Object element : result) {
+                        rowDataCollection.add(resultConverter.toInternal(element));
+                    }
+                }
+
+                // call condition collector first,
+                // the filtered result will be routed to the delegateCollector
+                joinConditionResultFuture.complete(rowDataCollection);
+                if (delegate.isCompletedExceptionally) {
+                    // inuse is changed, this.completeExceptionally should not be called by delegate
+                    realOutput.completeExceptionally(delegate.error);
+                    return;
+                }
+
+                Collection<RowData> rightRows = delegate.collection;
+                if (rightRows == null || rightRows.isEmpty()) {
+                    if (isLeftOuterJoin) {
+                        RowData outRow = new JoinedRowData(leftRow.getRowKind(), leftRow, nullRow);
+                        realOutput.complete(Collections.singleton(outRow));
+                    } else {
+                        realOutput.complete(Collections.emptyList());
+                    }
+                } else {
+                    List<RowData> outRows = new ArrayList<>();
+                    for (RowData rightRow : rightRows) {
+                        RowData outRow = new JoinedRowData(leftRow.getRowKind(), leftRow, rightRow);
+                        outRows.add(outRow);
+                    }
+                    realOutput.complete(outRows);
+                }
+            } catch (Throwable t) {
+                // we should catch the exception here to let the framework know
+                realOutput.completeExceptionally(t);
+            } finally {
+                recycle();
             }
         }
 
         @Override
         public void completeExceptionally(Throwable error) {
-            realOutput.completeExceptionally(error);
+            if (!inuse.compareAndSet(true, false)) {
+                return;
+            }
+            try {
+                realOutput.completeExceptionally(error);
+            } finally {
+                recycle();
+            }
+        }
+
+        /**
+         * Unsupported, because the containing classes are AsyncFunctions which don't have access to
+         * the mailbox to invoke from the caller thread.
+         */
+        @Override
+        public void complete(CollectionSupplier<Object> supplier) {
+            throw new UnsupportedOperationException();
         }
 
         public void close() throws Exception {
             joinConditionResultFuture.close();
         }
 
-        private final class DelegateResultFuture implements ResultFuture<RowData> {
-
-            private Collection<RowData> collection;
-
-            public void reset() {
-                this.collection = null;
+        private void recycle() {
+            final ResultFuture<RowData> output = realOutput;
+            leftRow = null;
+            realOutput = null;
+            try {
+                // put this collector to the queue to avoid this collector is used
+                // again before outRows in the collector is not consumed.
+                resultFutureBuffer.put(this);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                if (output != null) {
+                    output.completeExceptionally(e);
+                }
             }
+        }
+    }
 
-            @Override
-            public void complete(Collection<RowData> result) {
-                this.collection = result;
-            }
+    private static final class DelegateResultFuture<T> implements ResultFuture<T> {
 
-            @Override
-            public void completeExceptionally(Throwable error) {
-                JoinedRowResultFuture.this.completeExceptionally(error);
-            }
+        private Collection<T> collection;
+        private boolean isCompletedExceptionally = false;
+        private Throwable error;
+
+        private DelegateResultFuture() {}
+
+        public void reset() {
+            this.collection = null;
+            this.error = null;
+            this.isCompletedExceptionally = false;
+        }
+
+        @Override
+        public void complete(Collection<T> result) {
+            this.collection = result;
+        }
+
+        @Override
+        public void completeExceptionally(Throwable error) {
+            this.isCompletedExceptionally = true;
+            this.error = error;
+        }
+
+        /**
+         * Unsupported, because the containing classes are AsyncFunctions which don't have access to
+         * the mailbox to invoke from the caller thread.
+         */
+        @Override
+        public void complete(CollectionSupplier<T> supplier) {
+            throw new UnsupportedOperationException();
         }
     }
 }

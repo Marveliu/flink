@@ -17,6 +17,7 @@
  */
 package org.apache.flink.table.planner.codegen
 
+import org.apache.flink.api.common.functions.{DefaultOpenContext, OpenContext}
 import org.apache.flink.configuration.Configuration
 import org.apache.flink.table.planner.codegen.CodeGenUtils._
 import org.apache.flink.table.planner.codegen.Indenter.toISC
@@ -25,23 +26,29 @@ import org.apache.flink.table.runtime.generated.GeneratedCollector
 import org.apache.flink.table.types.logical.LogicalType
 import org.apache.flink.util.Collector
 
-/**
-  * A code generator for generating [[Collector]]s.
-  */
+/** A code generator for generating [[Collector]]s. */
 object CollectorCodeGenerator {
 
   /**
    * Generates a [[TableFunctionCollector]] that can be passed to Java compiler.
    *
-   * @param ctx The context of the code generator
-   * @param name Class name of the table function collector. Must not be unique but has to be a
-   *             valid Java class identifier.
-   * @param bodyCode body code for the collector method
-   * @param inputType The type of the element being collected
-   * @param collectedType The type of the element collected by the collector
-   * @param inputTerm The term of the input element
-   * @param collectedTerm The term of the collected element
-   * @return instance of GeneratedCollector
+   * @param ctx
+   *   The context of the code generator
+   * @param name
+   *   Class name of the table function collector. Must not be unique but has to be a valid Java
+   *   class identifier.
+   * @param bodyCode
+   *   body code for the collector method
+   * @param inputType
+   *   The type of the element being collected
+   * @param collectedType
+   *   The type of the element collected by the collector
+   * @param inputTerm
+   *   The term of the input element
+   * @param collectedTerm
+   *   The term of the collected element
+   * @return
+   *   instance of GeneratedCollector
    */
   def generateTableFunctionCollector(
       ctx: CodeGeneratorContext,
@@ -51,9 +58,9 @@ object CollectorCodeGenerator {
       collectedType: LogicalType,
       inputTerm: String = CodeGenUtils.DEFAULT_INPUT1_TERM,
       collectedTerm: String = CodeGenUtils.DEFAULT_INPUT2_TERM)
-    : GeneratedCollector[TableFunctionCollector[_]] = {
+      : GeneratedCollector[TableFunctionCollector[_]] = {
 
-    val funcName = newName(name)
+    val funcName = newName(ctx, name)
     val input1TypeClass = boxedTypeTermForType(inputType)
     val input2TypeClass = boxedTypeTermForType(collectedType)
 
@@ -68,7 +75,7 @@ object CollectorCodeGenerator {
         }
 
         @Override
-        public void open(${className[Configuration]} parameters) throws Exception {
+        public void open(${className[OpenContext]} openContext) throws Exception {
           ${ctx.reuseOpenCode()}
         }
 
@@ -93,21 +100,26 @@ object CollectorCodeGenerator {
       }
     """.stripMargin
 
-    new GeneratedCollector(
-      funcName, funcCode, ctx.references.toArray, ctx.tableConfig.getConfiguration)
+    new GeneratedCollector(funcName, funcCode, ctx.references.toArray, ctx.tableConfig)
   }
 
   /**
    * Generates a [[Collector]] that wraps another [[Collector]].
    *
-   * @param ctx The context of the code generator
-   * @param name Class name of the collector. Must not be unique but has to be a
-   *             valid Java class identifier.
-   * @param inputType The type of the element being collected
-   * @param inputTerm The term of the input element
-   * @param inputConversion The term for converting the input
-   * @param bodyCode body code for the collector method
-   * @return instance of GeneratedCollector
+   * @param ctx
+   *   The context of the code generator
+   * @param name
+   *   Class name of the collector. Must not be unique but has to be a valid Java class identifier.
+   * @param inputType
+   *   The type of the element being collected
+   * @param inputTerm
+   *   The term of the input element
+   * @param inputConversion
+   *   The term for converting the input
+   * @param bodyCode
+   *   body code for the collector method
+   * @return
+   *   instance of GeneratedCollector
    */
   def generateWrappingCollector(
       ctx: CodeGeneratorContext,
@@ -115,10 +127,9 @@ object CollectorCodeGenerator {
       inputType: LogicalType,
       inputTerm: String,
       inputConversion: (String) => String,
-      bodyCode: String)
-    : GeneratedCollector[WrappingCollector[_]] = {
+      bodyCode: String): GeneratedCollector[WrappingCollector[_]] = {
 
-    val funcName = newName(name)
+    val funcName = newName(ctx, name)
     val inputTypeTerm = boxedTypeTermForType(inputType)
 
     val funcCode =
@@ -132,7 +143,7 @@ object CollectorCodeGenerator {
         }
 
         @Override
-        public void open(${className[Configuration]} parameters) throws Exception {
+        public void open(${className[OpenContext]} openContext) throws Exception {
           ${ctx.reuseOpenCode()}
         }
 
@@ -156,15 +167,13 @@ object CollectorCodeGenerator {
       }
     """.stripMargin
 
-    new GeneratedCollector(
-      funcName, funcCode, ctx.references.toArray, ctx.tableConfig.getConfiguration)
+    new GeneratedCollector(funcName, funcCode, ctx.references.toArray, ctx.tableConfig)
   }
 
   def addToContext(
       ctx: CodeGeneratorContext,
       collectorTerm: String,
-      generatedCollector: GeneratedCollector[_])
-    : Unit = {
+      generatedCollector: GeneratedCollector[_]): Unit = {
 
     ctx.addReusableMember(s"private ${generatedCollector.getClassName} $collectorTerm = null;")
     ctx.addReusableInnerClass(generatedCollector.getClassName, generatedCollector.getCode)
@@ -172,7 +181,7 @@ object CollectorCodeGenerator {
       s"""
          |$collectorTerm = new ${generatedCollector.getClassName}();
          |$collectorTerm.setRuntimeContext(getRuntimeContext());
-         |$collectorTerm.open(new ${className[Configuration]}());
+         |$collectorTerm.open(new ${className[DefaultOpenContext]}());
          |""".stripMargin
     ctx.addReusableOpenStatement(openCollector)
 

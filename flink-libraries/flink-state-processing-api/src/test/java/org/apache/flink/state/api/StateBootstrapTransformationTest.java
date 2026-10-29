@@ -18,6 +18,7 @@
 
 package org.apache.flink.state.api;
 
+import org.apache.flink.api.common.InvalidProgramException;
 import org.apache.flink.api.java.functions.KeySelector;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.core.fs.Path;
@@ -28,24 +29,26 @@ import org.apache.flink.state.api.functions.BroadcastStateBootstrapFunction;
 import org.apache.flink.state.api.functions.KeyedStateBootstrapFunction;
 import org.apache.flink.state.api.functions.StateBootstrapFunction;
 import org.apache.flink.state.api.output.TaggedOperatorSubtaskState;
-import org.apache.flink.state.api.runtime.OperatorIDGenerator;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.graph.StreamConfig;
 import org.apache.flink.test.util.AbstractTestBase;
 
-import org.junit.Assert;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatNoException;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** Tests for bootstrap transformations. */
-public class StateBootstrapTransformationTest extends AbstractTestBase {
+class StateBootstrapTransformationTest extends AbstractTestBase {
 
     @Test
-    public void testBroadcastStateTransformationParallelism() {
+    void testBroadcastStateTransformationParallelism() {
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
         env.setParallelism(10);
 
-        DataStream<Integer> input = env.fromElements(0);
+        DataStream<Integer> input = env.fromData(0);
 
         StateBootstrapTransformation<Integer> transformation =
                 OperatorTransformation.bootstrapWith(input)
@@ -54,23 +57,22 @@ public class StateBootstrapTransformationTest extends AbstractTestBase {
         int maxParallelism = transformation.getMaxParallelism(4);
         DataStream<TaggedOperatorSubtaskState> result =
                 transformation.writeOperatorSubtaskStates(
-                        OperatorIDGenerator.fromUid("uid"),
+                        OperatorIdentifier.forUid("uid"),
                         new HashMapStateBackend(),
                         new Path(),
                         maxParallelism);
 
-        Assert.assertEquals(
-                "Broadcast transformations should always be run at parallelism 1",
-                1,
-                result.getParallelism());
+        assertThat(result.getParallelism())
+                .as("Broadcast transformations should always be run at parallelism 1")
+                .isOne();
     }
 
     @Test
-    public void testDefaultParallelismRespectedWhenLessThanMaxParallelism() {
+    void testDefaultParallelismRespectedWhenLessThanMaxParallelism() {
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
         env.setParallelism(4);
 
-        DataStream<Integer> input = env.fromElements(0);
+        DataStream<Integer> input = env.fromData(0);
 
         StateBootstrapTransformation<Integer> transformation =
                 OperatorTransformation.bootstrapWith(input)
@@ -79,23 +81,23 @@ public class StateBootstrapTransformationTest extends AbstractTestBase {
         int maxParallelism = transformation.getMaxParallelism(10);
         DataStream<TaggedOperatorSubtaskState> result =
                 transformation.writeOperatorSubtaskStates(
-                        OperatorIDGenerator.fromUid("uid"),
+                        OperatorIdentifier.forUid("uid"),
                         new HashMapStateBackend(),
                         new Path(),
                         maxParallelism);
 
-        Assert.assertEquals(
-                "The parallelism of a data set should not change when less than the max parallelism of the savepoint",
-                env.getParallelism(),
-                result.getParallelism());
+        assertThat(result.getParallelism())
+                .as(
+                        "The parallelism of a data set should not change when less than the max parallelism of the savepoint")
+                .isEqualTo(env.getParallelism());
     }
 
     @Test
-    public void testMaxParallelismRespected() {
+    void testMaxParallelismRespected() {
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
         env.setParallelism(10);
 
-        DataStream<Integer> input = env.fromElements(0);
+        DataStream<Integer> input = env.fromData(0);
 
         StateBootstrapTransformation<Integer> transformation =
                 OperatorTransformation.bootstrapWith(input)
@@ -104,23 +106,23 @@ public class StateBootstrapTransformationTest extends AbstractTestBase {
         int maxParallelism = transformation.getMaxParallelism(4);
         DataStream<TaggedOperatorSubtaskState> result =
                 transformation.writeOperatorSubtaskStates(
-                        OperatorIDGenerator.fromUid("uid"),
+                        OperatorIdentifier.forUid("uid"),
                         new HashMapStateBackend(),
                         new Path(),
                         maxParallelism);
 
-        Assert.assertEquals(
-                "The parallelism of a data set should be constrained my the savepoint max parallelism",
-                4,
-                result.getParallelism());
+        assertThat(result.getParallelism())
+                .as(
+                        "The parallelism of a data set should be constrained my the savepoint max parallelism")
+                .isEqualTo(4);
     }
 
     @Test
-    public void testOperatorSpecificMaxParallelismRespected() {
+    void testOperatorSpecificMaxParallelismRespected() {
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
         env.setParallelism(4);
 
-        DataStream<Integer> input = env.fromElements(0);
+        DataStream<Integer> input = env.fromData(0);
 
         StateBootstrapTransformation<Integer> transformation =
                 OperatorTransformation.bootstrapWith(input)
@@ -130,21 +132,21 @@ public class StateBootstrapTransformationTest extends AbstractTestBase {
         int maxParallelism = transformation.getMaxParallelism(4);
         DataStream<TaggedOperatorSubtaskState> result =
                 transformation.writeOperatorSubtaskStates(
-                        OperatorIDGenerator.fromUid("uid"),
+                        OperatorIdentifier.forUid("uid"),
                         new HashMapStateBackend(),
                         new Path(),
                         maxParallelism);
 
-        Assert.assertEquals(
-                "The parallelism of a data set should be constrained my the savepoint max parallelism",
-                1,
-                result.getParallelism());
+        assertThat(result.getParallelism())
+                .as(
+                        "The parallelism of a data set should be constrained my the savepoint max parallelism")
+                .isOne();
     }
 
     @Test
-    public void testStreamConfig() {
+    void testStreamConfig() {
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
-        DataStream<String> input = env.fromElements("");
+        DataStream<String> input = env.fromData("");
 
         StateBootstrapTransformation<String> transformation =
                 OperatorTransformation.bootstrapWith(input)
@@ -153,17 +155,58 @@ public class StateBootstrapTransformationTest extends AbstractTestBase {
 
         StreamConfig config =
                 transformation.getConfig(
-                        OperatorIDGenerator.fromUid("uid"),
+                        OperatorIdentifier.forUid("uid"),
                         new HashMapStateBackend(),
                         new Configuration(),
                         null);
         KeySelector selector =
                 config.getStatePartitioner(0, Thread.currentThread().getContextClassLoader());
 
-        Assert.assertEquals(
-                "Incorrect key selector forwarded to stream operator",
-                CustomKeySelector.class,
-                selector.getClass());
+        assertThat(selector.getClass())
+                .as("Incorrect key selector forwarded to stream operator")
+                .isEqualTo(CustomKeySelector.class);
+    }
+
+    @Test
+    void testUnhashableKeyTypeIsRejected() {
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        DataStream<byte[]> input = env.fromData(new byte[] {1});
+
+        StateBootstrapTransformation<byte[]> transformation =
+                OperatorTransformation.bootstrapWith(input)
+                        .keyBy(new ArrayKeySelector())
+                        .transform(new ExampleArrayKeyedStateBootstrapFunction());
+
+        assertThatThrownBy(
+                        () ->
+                                transformation.writeOperatorSubtaskStates(
+                                        OperatorIdentifier.forUid("uid"),
+                                        new HashMapStateBackend(),
+                                        new Path(),
+                                        transformation.getMaxParallelism(4)))
+                .as("An array key cannot be hashed reliably and must be rejected")
+                .isInstanceOf(InvalidProgramException.class)
+                .hasMessageContaining("cannot be used as key");
+    }
+
+    @Test
+    void testHashableKeyTypeIsAccepted() {
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        DataStream<String> input = env.fromData("");
+
+        StateBootstrapTransformation<String> transformation =
+                OperatorTransformation.bootstrapWith(input)
+                        .keyBy(new CustomKeySelector())
+                        .transform(new ExampleKeyedStateBootstrapFunction());
+
+        assertThatNoException()
+                .isThrownBy(
+                        () ->
+                                transformation.writeOperatorSubtaskStates(
+                                        OperatorIdentifier.forUid("uid"),
+                                        new HashMapStateBackend(),
+                                        new Path(),
+                                        transformation.getMaxParallelism(4)));
     }
 
     private static class CustomKeySelector implements KeySelector<String, String> {
@@ -198,5 +241,20 @@ public class StateBootstrapTransformationTest extends AbstractTestBase {
 
         @Override
         public void processElement(String value, Context ctx) throws Exception {}
+    }
+
+    private static class ArrayKeySelector implements KeySelector<byte[], byte[]> {
+
+        @Override
+        public byte[] getKey(byte[] value) throws Exception {
+            return value;
+        }
+    }
+
+    private static class ExampleArrayKeyedStateBootstrapFunction
+            extends KeyedStateBootstrapFunction<byte[], byte[]> {
+
+        @Override
+        public void processElement(byte[] value, Context ctx) throws Exception {}
     }
 }

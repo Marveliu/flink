@@ -19,15 +19,20 @@
 package org.apache.flink.runtime.webmonitor.handlers;
 
 import org.apache.flink.api.common.JobID;
-import org.apache.flink.runtime.jobgraph.RestoreMode;
+import org.apache.flink.core.execution.RecoveryClaimMode;
 import org.apache.flink.runtime.rest.messages.RestRequestMarshallingTestBase;
+import org.apache.flink.testutils.junit.extensions.parameterized.NoOpTestExtension;
+
+import org.junit.jupiter.api.extension.ExtendWith;
 
 import java.util.Arrays;
+import java.util.Collections;
 
-import static org.junit.Assert.assertEquals;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /** Tests for {@link JarRunRequestBody}. */
-public class JarRunRequestBodyTest extends RestRequestMarshallingTestBase<JarRunRequestBody> {
+@ExtendWith(NoOpTestExtension.class)
+class JarRunRequestBodyTest extends RestRequestMarshallingTestBase<JarRunRequestBody> {
 
     @Override
     protected Class<JarRunRequestBody> getTestRequestClass() {
@@ -38,25 +43,27 @@ public class JarRunRequestBodyTest extends RestRequestMarshallingTestBase<JarRun
     protected JarRunRequestBody getTestRequestInstance() {
         return new JarRunRequestBody(
                 "hello",
-                "world",
                 Arrays.asList("boo", "far"),
                 4,
                 new JobID(),
                 true,
                 "foo/bar",
-                RestoreMode.CLAIM);
+                RecoveryClaimMode.CLAIM,
+                Collections.singletonMap("key", "value"));
     }
 
     @Override
     protected void assertOriginalEqualsToUnmarshalled(
             final JarRunRequestBody expected, final JarRunRequestBody actual) {
-        assertEquals(expected.getEntryClassName(), actual.getEntryClassName());
-        assertEquals(expected.getProgramArguments(), actual.getProgramArguments());
-        assertEquals(expected.getProgramArgumentsList(), actual.getProgramArgumentsList());
-        assertEquals(expected.getParallelism(), actual.getParallelism());
-        assertEquals(expected.getJobId(), actual.getJobId());
-        assertEquals(expected.getAllowNonRestoredState(), actual.getAllowNonRestoredState());
-        assertEquals(expected.getSavepointPath(), actual.getSavepointPath());
-        assertEquals(expected.getRestoreMode(), actual.getRestoreMode());
+        assertThat(actual.getEntryClassName()).isEqualTo(expected.getEntryClassName());
+        assertThat(actual.getProgramArgumentsList()).isEqualTo(expected.getProgramArgumentsList());
+        assertThat(actual.getParallelism()).isEqualTo(expected.getParallelism());
+        assertThat(actual.getJobId()).isEqualTo(expected.getJobId());
+        assertThat(actual.getAllowNonRestoredState())
+                .isEqualTo(expected.getAllowNonRestoredState());
+        assertThat(actual.getSavepointPath()).isEqualTo(expected.getSavepointPath());
+        assertThat(actual.getRecoveryClaimMode()).isEqualTo(expected.getRecoveryClaimMode());
+        assertThat(actual.getFlinkConfiguration().toMap())
+                .containsExactlyEntriesOf(expected.getFlinkConfiguration().toMap());
     }
 }

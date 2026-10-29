@@ -27,9 +27,13 @@ import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.core.memory.DataOutputViewStreamWrapper;
 import org.apache.flink.queryablestate.client.state.serialization.KvStateSerializer;
 import org.apache.flink.runtime.state.internal.InternalListState;
+import org.apache.flink.runtime.state.ttl.TtlAwareSerializer;
+import org.apache.flink.runtime.state.ttl.TtlTimeProvider;
+import org.apache.flink.runtime.state.ttl.TtlValue;
 import org.apache.flink.util.Preconditions;
 
 import java.io.ByteArrayOutputStream;
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -106,7 +110,7 @@ class HeapListState<K, N, V> extends AbstractHeapMergingState<K, N, V, List<V>, 
             final TypeSerializer<K> safeKeySerializer,
             final TypeSerializer<N> safeNamespaceSerializer,
             final TypeSerializer<List<V>> safeValueSerializer)
-            throws Exception {
+            throws IOException {
 
         Preconditions.checkNotNull(serializedKeyAndNamespace);
         Preconditions.checkNotNull(safeKeySerializer);
@@ -139,6 +143,20 @@ class HeapListState<K, N, V> extends AbstractHeapMergingState<K, N, V, List<V>, 
         view.flush();
 
         return baos.toByteArray();
+    }
+
+    @SuppressWarnings("unchecked")
+    public List<V> migrateTtlValue(
+            List<V> stateValue,
+            TtlAwareSerializer<List<V>, ?> currentTtlAwareSerializer,
+            TtlTimeProvider ttlTimeProvider) {
+        if (currentTtlAwareSerializer.isTtlEnabled()) {
+            stateValue.replaceAll(v -> (V) new TtlValue<>(v, ttlTimeProvider.currentTimestamp()));
+        } else {
+            stateValue.replaceAll(v -> (V) ((TtlValue<?>) v).getUserValue());
+        }
+
+        return stateValue;
     }
 
     // ------------------------------------------------------------------------
@@ -202,5 +220,16 @@ class HeapListState<K, N, V> extends AbstractHeapMergingState<K, N, V, List<V>, 
                         (TypeSerializer<List<E>>) stateTable.getStateSerializer(),
                         stateTable.getNamespaceSerializer(),
                         (List<E>) stateDesc.getDefaultValue());
+    }
+
+    @SuppressWarnings("unchecked")
+    static <E, K, N, SV, S extends State, IS extends S> IS update(
+            StateDescriptor<S, SV> stateDesc, StateTable<K, N, SV> stateTable, IS existingState) {
+        return (IS)
+                ((HeapListState<K, N, E>) existingState)
+                        .setNamespaceSerializer(stateTable.getNamespaceSerializer())
+                        .setValueSerializer(
+                                (TypeSerializer<List<E>>) stateTable.getStateSerializer())
+                        .setDefaultValue((List<E>) stateDesc.getDefaultValue());
     }
 }

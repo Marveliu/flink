@@ -16,40 +16,38 @@
  * limitations under the License.
  */
 
-import { ChangeDetectionStrategy, ChangeDetectorRef, Component, OnDestroy, OnInit } from '@angular/core';
-import { Subject } from 'rxjs';
-import { mergeMap, takeUntil } from 'rxjs/operators';
+import { DecimalPipe, NgIf } from '@angular/common';
+import { ChangeDetectionStrategy, ChangeDetectorRef, Component, Input, OnDestroy, OnInit } from '@angular/core';
+import { Observable, Subject } from 'rxjs';
+import { takeUntil } from 'rxjs/operators';
 
-import { Overview } from 'interfaces';
-import { OverviewService, StatusService } from 'services';
+import { OverviewWithApplicationStatistics } from '@flink-runtime-web/interfaces';
+import { NzCardModule } from 'ng-zorro-antd/card';
+import { NzDividerModule } from 'ng-zorro-antd/divider';
+import { NzGridModule } from 'ng-zorro-antd/grid';
 
 @Component({
   selector: 'flink-overview-statistic',
   templateUrl: './overview-statistic.component.html',
   styleUrls: ['./overview-statistic.component.less'],
-  changeDetection: ChangeDetectionStrategy.OnPush
+  changeDetection: ChangeDetectionStrategy.OnPush,
+  imports: [NzGridModule, NgIf, NzCardModule, NzDividerModule, DecimalPipe]
 })
 export class OverviewStatisticComponent implements OnInit, OnDestroy {
-  public statistic: Overview | null;
+  @Input() statisticData$: Observable<OverviewWithApplicationStatistics> | null = null;
+  public statistic: OverviewWithApplicationStatistics | null = null;
 
   private readonly destroy$ = new Subject<void>();
 
-  constructor(
-    private readonly statusService: StatusService,
-    private readonly overviewService: OverviewService,
-    private readonly cdr: ChangeDetectorRef
-  ) {}
+  constructor(private readonly cdr: ChangeDetectorRef) {}
 
   public ngOnInit(): void {
-    this.statusService.refresh$
-      .pipe(
-        takeUntil(this.destroy$),
-        mergeMap(() => this.overviewService.loadOverview())
-      )
-      .subscribe(data => {
+    if (this.statisticData$) {
+      this.statisticData$.pipe(takeUntil(this.destroy$)).subscribe(data => {
         this.statistic = data;
         this.cdr.markForCheck();
       });
+    }
   }
 
   public ngOnDestroy(): void {

@@ -22,11 +22,12 @@ import org.apache.flink.configuration.ClusterOptions;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.IllegalConfigurationException;
 import org.apache.flink.configuration.JobManagerOptions;
+import org.apache.flink.configuration.RestOptions;
 import org.apache.flink.configuration.SchedulerExecutionMode;
 import org.apache.flink.runtime.clusterframework.ApplicationStatus;
 import org.apache.flink.runtime.clusterframework.types.ResourceID;
-import org.apache.flink.runtime.dispatcher.ExecutionGraphInfoStore;
-import org.apache.flink.runtime.dispatcher.MemoryExecutionGraphInfoStore;
+import org.apache.flink.runtime.dispatcher.ArchivedApplicationStore;
+import org.apache.flink.runtime.dispatcher.MemoryArchivedApplicationStore;
 import org.apache.flink.runtime.dispatcher.PartialDispatcherServices;
 import org.apache.flink.runtime.dispatcher.runner.DispatcherRunner;
 import org.apache.flink.runtime.dispatcher.runner.DispatcherRunnerFactory;
@@ -35,8 +36,8 @@ import org.apache.flink.runtime.entrypoint.component.DefaultDispatcherResourceMa
 import org.apache.flink.runtime.entrypoint.component.DispatcherResourceManagerComponentFactory;
 import org.apache.flink.runtime.highavailability.HighAvailabilityServices;
 import org.apache.flink.runtime.highavailability.TestingHighAvailabilityServicesBuilder;
-import org.apache.flink.runtime.jobmanager.JobPersistenceComponentFactory;
-import org.apache.flink.runtime.leaderelection.LeaderElectionService;
+import org.apache.flink.runtime.jobmanager.PersistenceComponentFactory;
+import org.apache.flink.runtime.leaderelection.LeaderElection;
 import org.apache.flink.runtime.resourcemanager.ResourceManagerFactory;
 import org.apache.flink.runtime.resourcemanager.StandaloneResourceManagerFactory;
 import org.apache.flink.runtime.resourcemanager.TestingResourceManagerFactory;
@@ -44,6 +45,8 @@ import org.apache.flink.runtime.rest.SessionRestEndpointFactory;
 import org.apache.flink.runtime.rpc.FatalErrorHandler;
 import org.apache.flink.runtime.rpc.RpcService;
 import org.apache.flink.runtime.rpc.RpcSystemUtils;
+import org.apache.flink.runtime.security.token.ExceptionThrowingDelegationTokenProvider;
+import org.apache.flink.runtime.security.token.ExceptionThrowingDelegationTokenReceiver;
 import org.apache.flink.runtime.testutils.TestJvmProcess;
 import org.apache.flink.runtime.testutils.TestingClusterEntrypointProcess;
 import org.apache.flink.runtime.util.SignalHandler;
@@ -53,6 +56,7 @@ import org.apache.flink.util.TestLogger;
 import org.apache.flink.util.concurrent.FutureUtils;
 import org.apache.flink.util.concurrent.ScheduledExecutor;
 
+import org.junit.After;
 import org.junit.Before;
 import org.junit.ClassRule;
 import org.junit.Test;
@@ -66,6 +70,7 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.hamcrest.CoreMatchers.is;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.junit.Assert.assertFalse;
@@ -89,6 +94,16 @@ public class ClusterEntrypointTest extends TestLogger {
     @Before
     public void before() {
         flinkConfig = new Configuration();
+        flinkConfig.set(RestOptions.BIND_PORT, "0");
+        flinkConfig.set(JobManagerOptions.PORT, 0);
+        ExceptionThrowingDelegationTokenProvider.reset();
+        ExceptionThrowingDelegationTokenReceiver.reset();
+    }
+
+    @After
+    public void after() {
+        ExceptionThrowingDelegationTokenProvider.reset();
+        ExceptionThrowingDelegationTokenReceiver.reset();
     }
 
     @Test(expected = IllegalConfigurationException.class)
@@ -99,13 +114,42 @@ public class ClusterEntrypointTest extends TestLogger {
     }
 
     @Test
+    public void testClusterStartShouldObtainTokens() throws Exception {
+        ExceptionThrowingDelegationTokenProvider.addToken.set(true);
+        final HighAvailabilityServices testingHaService =
+                new TestingHighAvailabilityServicesBuilder().build();
+        final TestingEntryPoint testingEntryPoint =
+                new TestingEntryPoint.Builder()
+                        .setConfiguration(flinkConfig)
+                        .setHighAvailabilityServices(testingHaService)
+                        .build();
+
+        final CompletableFuture<ApplicationStatus> appStatusFuture =
+                startClusterEntrypoint(testingEntryPoint);
+
+        testingEntryPoint.closeAsync();
+        assertThat(
+                appStatusFuture.get(TIMEOUT_MS, TimeUnit.MILLISECONDS),
+                is(ApplicationStatus.UNKNOWN));
+        assertThat(
+                ExceptionThrowingDelegationTokenReceiver.onNewTokensObtainedCallCount.get(), is(1));
+    }
+
+    @Test
+    public void testCloseAsyncDoesNotFailBeforeInitialization() {
+        TestingEntryPoint entryPoint = new TestingEntryPoint.Builder().build();
+
+        assertThatCode(() -> entryPoint.closeAsync().join()).doesNotThrowAnyException();
+    }
+
+    @Test
     public void testCloseAsyncShouldNotCleanUpHAData() throws Exception {
         final CompletableFuture<Void> closeFuture = new CompletableFuture<>();
-        final CompletableFuture<Void> closeAndCleanupAllDataFuture = new CompletableFuture<>();
+        final CompletableFuture<Void> cleanupAllDataFuture = new CompletableFuture<>();
         final HighAvailabilityServices testingHaService =
                 new TestingHighAvailabilityServicesBuilder()
                         .setCloseFuture(closeFuture)
-                        .setCloseAndCleanupAllDataFuture(closeAndCleanupAllDataFuture)
+                        .setCleanupAllDataFuture(cleanupAllDataFuture)
                         .build();
         final TestingEntryPoint testingEntryPoint =
                 new TestingEntryPoint.Builder()
@@ -121,7 +165,7 @@ public class ClusterEntrypointTest extends TestLogger {
                 appStatusFuture.get(TIMEOUT_MS, TimeUnit.MILLISECONDS),
                 is(ApplicationStatus.UNKNOWN));
         assertThat(closeFuture.isDone(), is(true));
-        assertThat(closeAndCleanupAllDataFuture.isDone(), is(false));
+        assertThat(cleanupAllDataFuture.isDone(), is(false));
     }
 
     @Test
@@ -151,13 +195,13 @@ public class ClusterEntrypointTest extends TestLogger {
     @Test
     public void testClusterFinishedNormallyShouldDeregisterAppAndCleanupHAData() throws Exception {
         final CompletableFuture<Void> deregisterFuture = new CompletableFuture<>();
-        final CompletableFuture<Void> closeAndCleanupAllDataFuture = new CompletableFuture<>();
+        final CompletableFuture<Void> cleanupAllDataFuture = new CompletableFuture<>();
         final CompletableFuture<ApplicationStatus> dispatcherShutDownFuture =
                 new CompletableFuture<>();
 
         final HighAvailabilityServices testingHaService =
                 new TestingHighAvailabilityServicesBuilder()
-                        .setCloseAndCleanupAllDataFuture(closeAndCleanupAllDataFuture)
+                        .setCleanupAllDataFuture(cleanupAllDataFuture)
                         .build();
         final TestingResourceManagerFactory testingResourceManagerFactory =
                 new TestingResourceManagerFactory.Builder()
@@ -188,7 +232,7 @@ public class ClusterEntrypointTest extends TestLogger {
                 appStatusFuture.get(TIMEOUT_MS, TimeUnit.MILLISECONDS),
                 is(ApplicationStatus.SUCCEEDED));
         assertThat(deregisterFuture.isDone(), is(true));
-        assertThat(closeAndCleanupAllDataFuture.isDone(), is(true));
+        assertThat(cleanupAllDataFuture.isDone(), is(true));
     }
 
     @Test
@@ -348,9 +392,9 @@ public class ClusterEntrypointTest extends TestLogger {
         }
 
         @Override
-        protected ExecutionGraphInfoStore createSerializableExecutionGraphStore(
+        protected ArchivedApplicationStore createArchivedApplicationStore(
                 Configuration configuration, ScheduledExecutor scheduledExecutor) {
-            return new MemoryExecutionGraphInfoStore();
+            return new MemoryArchivedApplicationStore();
         }
 
         @Override
@@ -416,9 +460,9 @@ public class ClusterEntrypointTest extends TestLogger {
 
         @Override
         public DispatcherRunner createDispatcherRunner(
-                LeaderElectionService leaderElectionService,
+                LeaderElection leaderElection,
                 FatalErrorHandler fatalErrorHandler,
-                JobPersistenceComponentFactory jobPersistenceComponentFactory,
+                PersistenceComponentFactory persistenceComponentFactory,
                 Executor ioExecutor,
                 RpcService rpcService,
                 PartialDispatcherServices partialDispatcherServices)

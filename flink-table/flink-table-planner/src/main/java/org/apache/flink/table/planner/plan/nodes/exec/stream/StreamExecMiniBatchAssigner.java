@@ -20,6 +20,7 @@ package org.apache.flink.table.planner.plan.nodes.exec.stream;
 
 import org.apache.flink.FlinkVersion;
 import org.apache.flink.api.dag.Transformation;
+import org.apache.flink.configuration.ReadableConfig;
 import org.apache.flink.streaming.api.operators.OneInputStreamOperator;
 import org.apache.flink.table.api.TableException;
 import org.apache.flink.table.data.RowData;
@@ -35,7 +36,7 @@ import org.apache.flink.table.planner.plan.nodes.exec.utils.ExecNodeUtil;
 import org.apache.flink.table.planner.plan.trait.MiniBatchInterval;
 import org.apache.flink.table.planner.plan.trait.MiniBatchMode;
 import org.apache.flink.table.runtime.operators.wmassigners.ProcTimeMiniBatchAssignerOperator;
-import org.apache.flink.table.runtime.operators.wmassigners.RowTimeMiniBatchAssginerOperator;
+import org.apache.flink.table.runtime.operators.wmassigners.RowTimeMiniBatchAssignerOperator;
 import org.apache.flink.table.runtime.typeutils.InternalTypeInfo;
 import org.apache.flink.table.types.logical.RowType;
 
@@ -73,6 +74,7 @@ public class StreamExecMiniBatchAssigner extends ExecNodeBase<RowData>
     private final MiniBatchInterval miniBatchInterval;
 
     public StreamExecMiniBatchAssigner(
+            ReadableConfig tableConfig,
             MiniBatchInterval miniBatchInterval,
             InputProperty inputProperty,
             RowType outputType,
@@ -80,6 +82,7 @@ public class StreamExecMiniBatchAssigner extends ExecNodeBase<RowData>
         this(
                 ExecNodeContext.newNodeId(),
                 ExecNodeContext.newContext(StreamExecMiniBatchAssigner.class),
+                ExecNodeContext.newPersistedConfig(StreamExecMiniBatchAssigner.class, tableConfig),
                 miniBatchInterval,
                 Collections.singletonList(inputProperty),
                 outputType,
@@ -90,11 +93,12 @@ public class StreamExecMiniBatchAssigner extends ExecNodeBase<RowData>
     public StreamExecMiniBatchAssigner(
             @JsonProperty(FIELD_NAME_ID) int id,
             @JsonProperty(FIELD_NAME_TYPE) ExecNodeContext context,
+            @JsonProperty(FIELD_NAME_CONFIGURATION) ReadableConfig persistedConfig,
             @JsonProperty(FIELD_NAME_MINI_BATCH_INTERVAL) MiniBatchInterval miniBatchInterval,
             @JsonProperty(FIELD_NAME_INPUT_PROPERTIES) List<InputProperty> inputProperties,
             @JsonProperty(FIELD_NAME_OUTPUT_TYPE) RowType outputType,
             @JsonProperty(FIELD_NAME_DESCRIPTION) String description) {
-        super(id, context, inputProperties, outputType, description);
+        super(id, context, persistedConfig, inputProperties, outputType, description);
         this.miniBatchInterval = checkNotNull(miniBatchInterval);
     }
 
@@ -109,7 +113,7 @@ public class StreamExecMiniBatchAssigner extends ExecNodeBase<RowData>
         if (miniBatchInterval.getMode() == MiniBatchMode.ProcTime) {
             operator = new ProcTimeMiniBatchAssignerOperator(miniBatchInterval.getInterval());
         } else if (miniBatchInterval.getMode() == MiniBatchMode.RowTime) {
-            operator = new RowTimeMiniBatchAssginerOperator(miniBatchInterval.getInterval());
+            operator = new RowTimeMiniBatchAssignerOperator(miniBatchInterval.getInterval());
         } else {
             throw new TableException(
                     String.format(
@@ -122,6 +126,7 @@ public class StreamExecMiniBatchAssigner extends ExecNodeBase<RowData>
                 createTransformationMeta(MINI_BATCH_ASSIGNER_TRANSFORMATION, config),
                 operator,
                 InternalTypeInfo.of(getOutputType()),
-                inputTransform.getParallelism());
+                inputTransform.getParallelism(),
+                false);
     }
 }

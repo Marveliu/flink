@@ -18,23 +18,30 @@
 
 package org.apache.flink.table.types.inference.strategies;
 
+import org.apache.flink.api.common.typeinfo.BasicArrayTypeInfo;
+import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.table.api.DataTypes;
 import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.types.inference.CallContext;
 import org.apache.flink.table.types.logical.BinaryType;
 import org.apache.flink.table.types.logical.CharType;
 import org.apache.flink.table.types.logical.DecimalType;
+import org.apache.flink.table.types.logical.LegacyTypeInformationType;
 import org.apache.flink.table.types.logical.LogicalType;
 import org.apache.flink.table.types.logical.LogicalTypeFamily;
 import org.apache.flink.table.types.logical.LogicalTypeRoot;
 import org.apache.flink.table.types.logical.VarBinaryType;
 import org.apache.flink.table.types.logical.VarCharType;
 import org.apache.flink.table.types.logical.utils.LogicalTypeCasts;
+import org.apache.flink.table.types.utils.TypeConversions;
 
 import javax.annotation.Nullable;
 
+import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.regex.Pattern;
+import java.util.regex.PatternSyntaxException;
 
 import static org.apache.flink.table.types.logical.LogicalTypeFamily.APPROXIMATE_NUMERIC;
 import static org.apache.flink.table.types.logical.LogicalTypeFamily.EXACT_NUMERIC;
@@ -183,6 +190,8 @@ final class StrategyUtils {
                 return DataTypes.INTERVAL(DataTypes.SECOND());
             case NULL:
                 return DataTypes.NULL();
+            case DESCRIPTOR:
+                return DataTypes.DESCRIPTOR();
             case ARRAY:
             case MULTISET:
             case MAP:
@@ -194,6 +203,51 @@ final class StrategyUtils {
             case UNRESOLVED:
             default:
                 return null;
+        }
+    }
+
+    static Optional<DataType> extractLegacyArrayElement(DataType arrayType) {
+        final LogicalType logicalType = arrayType.getLogicalType();
+        if (logicalType instanceof LegacyTypeInformationType) {
+            final TypeInformation<?> typeInformation =
+                    ((LegacyTypeInformationType<?>) logicalType).getTypeInformation();
+            if (typeInformation instanceof BasicArrayTypeInfo) {
+                return Optional.of(
+                        TypeConversions.fromLegacyInfoToDataType(
+                                        ((BasicArrayTypeInfo<?, ?>) typeInformation)
+                                                .getComponentInfo())
+                                .nullable());
+            }
+        }
+        return Optional.empty();
+    }
+
+    /**
+     * Validates that the argument at {@code regexArgPos} is a literal that compiles as a Java
+     * regex. Non-literal or null-literal regex arguments are deferred to runtime.
+     *
+     * @return {@link Optional#empty()} when the argument is not a literal, is a {@code NULL}
+     *     literal, or compiles cleanly; the result of {@link CallContext#fail} otherwise.
+     */
+    static Optional<List<DataType>> validateLiteralPattern(
+            final CallContext callContext, final int regexArgPos, final boolean throwOnFailure) {
+        if (!callContext.isArgumentLiteral(regexArgPos)
+                || callContext.isArgumentNull(regexArgPos)) {
+            return Optional.empty();
+        }
+        final Optional<String> pattern = callContext.getArgumentValue(regexArgPos, String.class);
+        if (pattern.isEmpty()) {
+            return Optional.empty();
+        }
+        try {
+            Pattern.compile(pattern.get());
+            return Optional.empty();
+        } catch (PatternSyntaxException e) {
+            return callContext.fail(
+                    throwOnFailure,
+                    "Invalid regular expression for %s: %s",
+                    callContext.getName(),
+                    e.getMessage());
         }
     }
 

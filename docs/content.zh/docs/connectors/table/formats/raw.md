@@ -105,6 +105,17 @@ Format 参数
       <td>指定字节序来编码数字值的字节。有效值为'big-endian'和'little-endian'。
       更多细节可查阅 <a href="https://zh.wikipedia.org/wiki/字节序">字节序</a>。</td>
     </tr>
+    <tr>
+      <td><h5>raw.line-delimiter</h5></td>
+      <td>可选</td>
+      <td style="word-wrap: break-word;">(无)</td>
+      <td>String</td>
+      <td>指定行分隔符，用于在反序列化时将一条消息拆分为多行。设置后，每条消息将使用
+      'raw.charset' 解码，并按此分隔符切分，每段输出一条数据行。在序列化时，分隔符字节会被
+      追加到每条序列化值的末尾。常用值为 '\n'（换行符）或 '||'。
+      <br><strong>注意：</strong>当序列化与反序列化使用相同的分隔符配置时，两者具有
+      round-trip 兼容性：序列化器追加的末尾分隔符会在反序列化时自动被去除。</td>
+    </tr>
     </tbody>
 </table>
 
@@ -167,6 +178,17 @@ Format 参数
       <td><code>RAW</code></td>
       <td>通过 RAW 类型的底层 TypeSerializer 序列化的字节序列。</td>
     </tr>
+    <tr>
+      <td><code>VARIANT</code></td>
+      <td>A UTF-8 (by default) encoded JSON document.<br>
+       The encoding charset can be configured by 'raw.charset'.<br>
+       On read, the decoded text is parsed like <code>PARSE_JSON</code>, so duplicate object keys are rejected and
+       malformed JSON fails the job. On write, the value is rendered by <code>Variant#toJson</code>. The round trip is
+       value-lossless but not byte-lossless: insignificant whitespace is dropped and object keys are ordered.</td>
+    </tr>
     </tbody>
 </table>
+
+Note: combining `VARIANT` with `raw.line-delimiter` gives you newline-delimited JSON, where each line of a message
+becomes one row.
 

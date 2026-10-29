@@ -19,6 +19,7 @@
 package org.apache.flink.table.types.logical;
 
 import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.table.legacy.types.logical.TypeInformationRawType;
 
 /**
  * The visitor definition of {@link LogicalType}. The visitor transforms a logical type into
@@ -87,6 +88,22 @@ public interface LogicalTypeVisitor<R> {
     R visit(RawType<?> rawType);
 
     R visit(SymbolType<?> symbolType);
+
+    default R visit(DescriptorType descriptorType) {
+        return visit((LogicalType) descriptorType);
+    }
+
+    default R visit(VariantType variantType) {
+        return visit((LogicalType) variantType);
+    }
+
+    default R visit(BitmapType bitmapType) {
+        return visit((LogicalType) bitmapType);
+    }
+
+    default R visit(UuidType uuidType) {
+        return visit((LogicalType) uuidType);
+    }
 
     R visit(LogicalType other);
 }

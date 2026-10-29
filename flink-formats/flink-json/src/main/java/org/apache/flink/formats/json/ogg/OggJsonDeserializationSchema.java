@@ -33,8 +33,12 @@ import org.apache.flink.table.types.utils.DataTypeUtils;
 import org.apache.flink.types.RowKind;
 import org.apache.flink.util.Collector;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.io.IOException;
 import java.io.Serializable;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.stream.Collectors;
@@ -55,6 +59,8 @@ import static java.lang.String.format;
 @Internal
 public final class OggJsonDeserializationSchema implements DeserializationSchema<RowData> {
     private static final long serialVersionUID = 1L;
+
+    private static final Logger LOG = LoggerFactory.getLogger(OggJsonDeserializationSchema.class);
 
     private static final String OP_CREATE = "I"; // insert
     private static final String OP_UPDATE = "U"; // update
@@ -80,6 +86,9 @@ public final class OggJsonDeserializationSchema implements DeserializationSchema
 
     /** Flag indicating whether to ignore invalid fields/rows (default: throw an exception). */
     private final boolean ignoreParseErrors;
+
+    /** List of data to be processed. */
+    private transient List<GenericRowData> genericRowDataList;
 
     public OggJsonDeserializationSchema(
             DataType physicalDataType,
@@ -144,6 +153,12 @@ public final class OggJsonDeserializationSchema implements DeserializationSchema
     }
 
     @Override
+    public void open(InitializationContext context) throws Exception {
+        genericRowDataList = new ArrayList<>();
+        jsonDeserializer.open(context);
+    }
+
+    @Override
     public RowData deserialize(byte[] message) {
         throw new RuntimeException(
                 "Please invoke DeserializationSchema#deserialize(byte[], Collector<RowData>) instead.");
@@ -155,6 +170,7 @@ public final class OggJsonDeserializationSchema implements DeserializationSchema
             // skip tombstone messages
             return;
         }
+        genericRowDataList.clear();
         try {
             GenericRowData row = (GenericRowData) jsonDeserializer.deserialize(message);
 
@@ -163,7 +179,7 @@ public final class OggJsonDeserializationSchema implements DeserializationSchema
             String op = row.getField(2).toString();
             if (OP_CREATE.equals(op)) {
                 after.setRowKind(RowKind.INSERT);
-                emitRow(row, after, out);
+                genericRowDataList.add(emitRow(row, after));
             } else if (OP_UPDATE.equals(op)) {
                 if (before == null) {
                     throw new IllegalStateException(
@@ -171,21 +187,27 @@ public final class OggJsonDeserializationSchema implements DeserializationSchema
                 }
                 before.setRowKind(RowKind.UPDATE_BEFORE);
                 after.setRowKind(RowKind.UPDATE_AFTER);
-                emitRow(row, before, out);
-                emitRow(row, after, out);
+                genericRowDataList.add(emitRow(row, before));
+                genericRowDataList.add(emitRow(row, after));
             } else if (OP_DELETE.equals(op)) {
                 if (before == null) {
                     throw new IllegalStateException(
                             String.format(REPLICA_IDENTITY_EXCEPTION, "DELETE"));
                 }
                 before.setRowKind(RowKind.DELETE);
-                emitRow(row, before, out);
+                genericRowDataList.add(emitRow(row, before));
             } else {
                 if (!ignoreParseErrors) {
                     throw new IOException(
                             format(
                                     "Unknown \"op_type\" value \"%s\". The Ogg JSON message is '%s'",
                                     op, new String(message)));
+                }
+                if (LOG.isDebugEnabled()) {
+                    LOG.debug(
+                            "Unknown \"op_type\" value '{}'. The Ogg JSON message is '{}'.",
+                            op,
+                            new String(message));
                 }
             }
         } catch (Throwable t) {
@@ -194,17 +216,21 @@ public final class OggJsonDeserializationSchema implements DeserializationSchema
                 throw new IOException(
                         format("Corrupt Ogg JSON message '%s'.", new String(message)), t);
             }
+            if (LOG.isDebugEnabled()) {
+                LOG.debug("Corrupt Ogg JSON message '{}'.", new String(message), t);
+            }
+        }
+        for (GenericRowData genericRowData : genericRowDataList) {
+            out.collect(genericRowData);
         }
     }
 
     // --------------------------------------------------------------------------------------------
 
-    private void emitRow(
-            GenericRowData rootRow, GenericRowData physicalRow, Collector<RowData> out) {
+    private GenericRowData emitRow(GenericRowData rootRow, GenericRowData physicalRow) {
         // shortcut in case no output projection is required
         if (!hasMetadata) {
-            out.collect(physicalRow);
-            return;
+            return physicalRow;
         }
 
         final int physicalArity = physicalRow.getArity();
@@ -221,8 +247,7 @@ public final class OggJsonDeserializationSchema implements DeserializationSchema
             producedRow.setField(
                     physicalArity + metadataPos, metadataConverters[metadataPos].convert(rootRow));
         }
-
-        out.collect(producedRow);
+        return producedRow;
     }
 
     @Override

@@ -19,6 +19,8 @@
 package org.apache.flink.table.planner.plan.nodes.exec.common;
 
 import org.apache.flink.api.dag.Transformation;
+import org.apache.flink.configuration.ReadableConfig;
+import org.apache.flink.table.connector.ChangelogMode;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.planner.codegen.CalcCodeGenerator;
 import org.apache.flink.table.planner.codegen.CodeGeneratorContext;
@@ -31,10 +33,12 @@ import org.apache.flink.table.planner.plan.nodes.exec.InputProperty;
 import org.apache.flink.table.planner.plan.nodes.exec.SingleTransformationTranslator;
 import org.apache.flink.table.planner.plan.nodes.exec.utils.ExecNodeUtil;
 import org.apache.flink.table.planner.utils.JavaScalaConversionUtil;
+import org.apache.flink.table.planner.utils.ShortcutUtils;
 import org.apache.flink.table.runtime.operators.CodeGenOperatorFactory;
 import org.apache.flink.table.runtime.typeutils.InternalTypeInfo;
 import org.apache.flink.table.types.logical.RowType;
 
+import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.annotation.JsonInclude;
 import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.annotation.JsonProperty;
 
 import org.apache.calcite.rex.RexNode;
@@ -55,12 +59,23 @@ public abstract class CommonExecCalc extends ExecNodeBase<RowData>
 
     public static final String FIELD_NAME_PROJECTION = "projection";
     public static final String FIELD_NAME_CONDITION = "condition";
+    public static final String FIELD_NAME_PARTIAL_DELETE_KEYS = "partialDeleteKeys";
 
     @JsonProperty(FIELD_NAME_PROJECTION)
-    private final List<RexNode> projection;
+    protected final List<RexNode> projection;
 
     @JsonProperty(FIELD_NAME_CONDITION)
-    private final @Nullable RexNode condition;
+    protected final @Nullable RexNode condition;
+
+    /**
+     * Output column indices that serve as keys for partial deletes. Only set when this calc deals
+     * with {@link ChangelogMode#keyOnlyDeletes()}. When a {@code -D} row enters, only these output
+     * columns are evaluated (from {@link #projection}); every other column becomes a typed {@code
+     * NULL} instead of evaluating its (potentially unsafe) expression.
+     */
+    @JsonProperty(FIELD_NAME_PARTIAL_DELETE_KEYS)
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    protected final @Nullable int[] partialDeleteKeys;
 
     private final Class<?> operatorBaseClass;
     private final boolean retainHeader;
@@ -68,17 +83,20 @@ public abstract class CommonExecCalc extends ExecNodeBase<RowData>
     protected CommonExecCalc(
             int id,
             ExecNodeContext context,
+            ReadableConfig persistedConfig,
             List<RexNode> projection,
             @Nullable RexNode condition,
+            @Nullable int[] partialDeleteKeys,
             Class<?> operatorBaseClass,
             boolean retainHeader,
             List<InputProperty> inputProperties,
             RowType outputType,
             String description) {
-        super(id, context, inputProperties, outputType, description);
+        super(id, context, persistedConfig, inputProperties, outputType, description);
         checkArgument(inputProperties.size() == 1);
         this.projection = checkNotNull(projection);
         this.condition = condition;
+        this.partialDeleteKeys = partialDeleteKeys;
         this.operatorBaseClass = checkNotNull(operatorBaseClass);
         this.retainHeader = retainHeader;
     }
@@ -91,16 +109,18 @@ public abstract class CommonExecCalc extends ExecNodeBase<RowData>
         final Transformation<RowData> inputTransform =
                 (Transformation<RowData>) inputEdge.translateToPlan(planner);
         final CodeGeneratorContext ctx =
-                new CodeGeneratorContext(config.getTableConfig())
+                new CodeGeneratorContext(config, planner.getFlinkContext().getClassLoader())
                         .setOperatorBaseClass(operatorBaseClass);
 
         final CodeGenOperatorFactory<RowData> substituteStreamOperator =
                 CalcCodeGenerator.generateCalcOperator(
                         ctx,
-                        inputTransform,
+                        (RowType) inputEdge.getOutputType(),
                         (RowType) getOutputType(),
                         JavaScalaConversionUtil.toScala(projection),
-                        JavaScalaConversionUtil.toScala(Optional.ofNullable(this.condition)),
+                        JavaScalaConversionUtil.toScala(Optional.ofNullable(condition)),
+                        partialDeleteKeys,
+                        ShortcutUtils.unwrapTypeFactory(planner),
                         retainHeader,
                         getClass().getSimpleName());
         return ExecNodeUtil.createOneInputTransformation(
@@ -108,6 +128,7 @@ public abstract class CommonExecCalc extends ExecNodeBase<RowData>
                 createTransformationMeta(CALC_TRANSFORMATION, config),
                 substituteStreamOperator,
                 InternalTypeInfo.of(getOutputType()),
-                inputTransform.getParallelism());
+                inputTransform.getParallelism(),
+                false);
     }
 }

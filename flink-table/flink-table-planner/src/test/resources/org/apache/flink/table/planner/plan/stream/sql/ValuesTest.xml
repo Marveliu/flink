@@ -23,11 +23,12 @@ limitations under the License.
     <Resource name="ast">
       <![CDATA[
 LogicalProject(a=[$0], b=[$1]), rowType=[RecordType(INTEGER a, DECIMAL(20, 1) b)]
-+- LogicalUnion(all=[true]), rowType=[RecordType(INTEGER EXPR$0, DECIMAL(20, 1) EXPR$1)]
-   :- LogicalProject(EXPR$0=[1], EXPR$1=[2.0:DECIMAL(2, 1)]), rowType=[RecordType(INTEGER EXPR$0, DECIMAL(2, 1) EXPR$1)]
-   :  +- LogicalValues(tuples=[[{ 0 }]]), rowType=[RecordType(INTEGER ZERO)]
-   +- LogicalProject(EXPR$0=[3], EXPR$1=[4:BIGINT]), rowType=[RecordType(INTEGER EXPR$0, BIGINT EXPR$1)]
-      +- LogicalValues(tuples=[[{ 0 }]]), rowType=[RecordType(INTEGER ZERO)]
++- LogicalProject(a=[$0], b=[$1]), rowType=[RecordType(INTEGER a, DECIMAL(20, 1) b)]
+   +- LogicalUnion(all=[true]), rowType=[RecordType(INTEGER EXPR$0, DECIMAL(20, 1) EXPR$1)]
+      :- LogicalProject(EXPR$0=[1], EXPR$1=[2.0:DECIMAL(20, 1)]), rowType=[RecordType(INTEGER EXPR$0, DECIMAL(20, 1) EXPR$1)]
+      :  +- LogicalValues(tuples=[[{ 0 }]]), rowType=[RecordType(INTEGER ZERO)]
+      +- LogicalProject(EXPR$0=[3], EXPR$1=[4:DECIMAL(20, 1)]), rowType=[RecordType(INTEGER EXPR$0, DECIMAL(20, 1) EXPR$1)]
+         +- LogicalValues(tuples=[[{ 0 }]]), rowType=[RecordType(INTEGER ZERO)]
 ]]>
     </Resource>
     <Resource name="optimized rel plan">
@@ -35,24 +36,8 @@ LogicalProject(a=[$0], b=[$1]), rowType=[RecordType(INTEGER a, DECIMAL(20, 1) b)
 Union(all=[true], union=[EXPR$0, EXPR$1]), rowType=[RecordType(INTEGER EXPR$0, DECIMAL(20, 1) EXPR$1)]
 :- Calc(select=[1 AS EXPR$0, 2.0 AS EXPR$1]), rowType=[RecordType(INTEGER EXPR$0, DECIMAL(20, 1) EXPR$1)]
 :  +- Values(tuples=[[{ 0 }]]), rowType=[RecordType(INTEGER ZERO)]
-+- Calc(select=[3 AS EXPR$0, 4.0 AS EXPR$1]), rowType=[RecordType(INTEGER EXPR$0, DECIMAL(20, 1) EXPR$1)]
++- Calc(select=[3 AS EXPR$0, 4 AS EXPR$1]), rowType=[RecordType(INTEGER EXPR$0, DECIMAL(20, 1) EXPR$1)]
    +- Values(tuples=[[{ 0 }]]), rowType=[RecordType(INTEGER ZERO)]
-]]>
-    </Resource>
-  </TestCase>
-  <TestCase name="testSingleRow">
-    <Resource name="sql">
-      <![CDATA[SELECT * FROM (VALUES (1, 2, 3)) AS T(a, b, c)]]>
-    </Resource>
-    <Resource name="ast">
-      <![CDATA[
-LogicalProject(a=[$0], b=[$1], c=[$2])
-+- LogicalValues(tuples=[[{ 1, 2, 3 }]])
-]]>
-    </Resource>
-    <Resource name="optimized exec plan">
-      <![CDATA[
-Values(tuples=[[{ 1, 2, 3 }]])
 ]]>
     </Resource>
   </TestCase>
@@ -63,13 +48,14 @@ Values(tuples=[[{ 1, 2, 3 }]])
     <Resource name="ast">
       <![CDATA[
 LogicalProject(a=[$0], b=[$1])
-+- LogicalUnion(all=[true])
-   :- LogicalProject(EXPR$0=[1], EXPR$1=[2])
-   :  +- LogicalValues(tuples=[[{ 0 }]])
-   :- LogicalProject(EXPR$0=[3], EXPR$1=[null:INTEGER])
-   :  +- LogicalValues(tuples=[[{ 0 }]])
-   +- LogicalProject(EXPR$0=[4], EXPR$1=[5])
-      +- LogicalValues(tuples=[[{ 0 }]])
++- LogicalProject(a=[$0], b=[$1])
+   +- LogicalUnion(all=[true])
+      :- LogicalProject(EXPR$0=[1], EXPR$1=[2])
+      :  +- LogicalValues(tuples=[[{ 0 }]])
+      :- LogicalProject(EXPR$0=[3], EXPR$1=[null:INTEGER])
+      :  +- LogicalValues(tuples=[[{ 0 }]])
+      +- LogicalProject(EXPR$0=[4], EXPR$1=[5])
+         +- LogicalValues(tuples=[[{ 0 }]])
 ]]>
     </Resource>
     <Resource name="optimized exec plan">
@@ -90,14 +76,32 @@ Union(all=[true], union=[EXPR$0, EXPR$1])
     </Resource>
     <Resource name="ast">
       <![CDATA[
-LogicalProject(EXPR$0=[null:INTEGER])
-+- LogicalValues(tuples=[[{ 0 }]])
+LogicalProject(EXPR$0=[$0])
++- LogicalProject(EXPR$0=[null:INTEGER])
+   +- LogicalValues(tuples=[[{ 0 }]])
 ]]>
     </Resource>
     <Resource name="optimized exec plan">
       <![CDATA[
 Calc(select=[null:INTEGER AS EXPR$0])
 +- Values(tuples=[[{ 0 }]])
+]]>
+    </Resource>
+  </TestCase>
+  <TestCase name="testSingleRow">
+    <Resource name="sql">
+      <![CDATA[SELECT * FROM (VALUES (1, 2, 3)) AS T(a, b, c)]]>
+    </Resource>
+    <Resource name="ast">
+      <![CDATA[
+LogicalProject(a=[$0], b=[$1], c=[$2])
++- LogicalValues(tuples=[[{ 1, 2, 3 }]])
+]]>
+    </Resource>
+    <Resource name="optimized exec plan">
+      <![CDATA[
+Calc(select=[1 AS a, 2 AS b, 3 AS c])
++- Values(tuples=[[{ 1, 2, 3 }]])
 ]]>
     </Resource>
   </TestCase>
